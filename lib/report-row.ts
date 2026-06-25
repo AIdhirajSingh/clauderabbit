@@ -30,6 +30,8 @@ export interface ReportRow {
   packages_json: unknown;
   risky_json: unknown;
   logs_json: unknown;
+  /** The dynamic sandbox forensic record (`forensic-record@1`), or null. */
+  forensics_json?: unknown;
   owners?: OwnerRow | null;
 }
 
@@ -98,5 +100,8 @@ export function reportRowToReport(row: ReportRow): Report {
     packages: row.packages_json,
     risky: row.risky_json,
     logs: row.logs_json,
+    // `normalizeReport` accepts `forensics` or `forensics_json` and coerces it
+    // to the strict `Forensics` shape; a null/absent column omits the section.
+    forensics_json: row.forensics_json,
   });
 }

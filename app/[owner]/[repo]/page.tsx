@@ -30,7 +30,7 @@ export const revalidate = 600;
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 const REPORT_SELECT =
-  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score)";
+  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,forensics_json,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score)";
 
 interface RouteParams {
   params: Promise<{ owner: string; repo: string }>;
