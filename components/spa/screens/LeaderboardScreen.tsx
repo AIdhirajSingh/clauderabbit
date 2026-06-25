@@ -8,8 +8,20 @@
  */
 
 import { onActivate, useApp } from "../state";
+import { buildForensicsView } from "@/lib/report-view";
+import type { Forensics } from "@/lib/types";
 import styles from "../spa.module.css";
 import { Chevron } from "../components/glyphs";
+
+/**
+ * Concise board marker for a caught repo, derived from its forensic record:
+ * the C2 host (and geo) the sandbox caught it calling, or a credential-theft
+ * note. Returns null when there is no forensic record (demo rows) — the board
+ * then shows only its existing reason, faithful to the original design.
+ */
+function boardMarker(forensics: Forensics | undefined): string | null {
+  return buildForensicsView(forensics)?._boardMarker ?? null;
+}
 
 export function LeaderboardScreen() {
   const app = useApp();
@@ -123,6 +135,10 @@ export function LeaderboardScreen() {
                     {hero.owner}/{hero.name}
                   </div>
                   <div style={{ fontSize: 14.5, color: "var(--t3)", lineHeight: 1.5 }}>{hero.reason}</div>
+                  {(() => {
+                    const marker = boardMarker(hero.forensics);
+                    return marker ? <SandboxCatch color={hero._color} marker={marker} /> : null;
+                  })()}
                 </div>
               </div>
             </div>
@@ -130,7 +146,9 @@ export function LeaderboardScreen() {
         )}
 
         <div style={{ border: "1px solid var(--line)", borderRadius: 20, overflow: "hidden", background: "var(--s1)", boxShadow: "var(--shadow-lg)" }}>
-          {app.leaderRest.map((r) => (
+          {app.leaderRest.map((r) => {
+            const marker = boardMarker(r.forensics);
+            return (
             <div
               key={r.rank}
               {...onActivate(r.onOpen)}
@@ -170,6 +188,7 @@ export function LeaderboardScreen() {
                   {r.owner}/{r.name}
                 </div>
                 <div style={{ fontSize: 13, color: "var(--t4)", lineHeight: 1.45 }}>{r.reason}</div>
+                {marker && <SandboxCatch color={r._color} marker={marker} />}
               </div>
               <span style={{ fontSize: 11, color: r._color, padding: "4px 10px", border: `1px solid ${r._color}`, borderRadius: 100, whiteSpace: "nowrap", flexShrink: 0 }}>
                 {r._band}
@@ -178,7 +197,8 @@ export function LeaderboardScreen() {
                 <Chevron size={16} />
               </span>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 22, marginTop: 32, flexWrap: "wrap" }}>
@@ -188,6 +208,37 @@ export function LeaderboardScreen() {
           <LegendDot color="var(--red)" label="under 60 dangerous" />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The concise sandbox-catch marker shown beneath a row's reason when a forensic
+ * record exists: a small "Sandbox" eyebrow tag plus the C2 host (and geo) the
+ * run was caught calling. Score-colored per the one band logic.
+ */
+function SandboxCatch({ color, marker }: { color: string; marker: string }) {
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 7, flexWrap: "wrap" }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 11,
+          color,
+          padding: "3px 9px",
+          border: `1px solid ${color}`,
+          borderRadius: 100,
+          letterSpacing: "0.04em",
+        }}
+      >
+        <span style={{ width: 5, height: 5, borderRadius: "50%", background: color, boxShadow: `0 0 6px ${color}` }} />
+        Sandbox
+      </span>
+      <span className="tnum" style={{ fontSize: 12.5, color: "var(--t3)", wordBreak: "break-word" }}>
+        {marker}
+      </span>
     </div>
   );
 }
