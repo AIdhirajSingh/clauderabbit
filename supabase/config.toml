@@ -164,11 +164,15 @@ site_url = "http://localhost:2311"
 # The OAuth + magic-link flows redirect to /auth/callback on the app origin; the bare origin is
 # allowed too so a coerced redirect still lands on the SPA. (Production origins are added in the
 # Supabase dashboard's URL configuration — this list governs local dev.)
+#
+# STANDARDIZED ON `localhost` — never `127.0.0.1`. site_url, every redirect here, and the
+# NEXT_PUBLIC_SITE_URL / window.location.origin the app sends as `redirectTo` all resolve to
+# `http://localhost:2311`. A localhost vs 127.0.0.1 split between Site URL and the redirect
+# allowlist is the classic Google-OAuth failure (the provider rejects the callback because the
+# host does not match), so the 127.0.0.1 variants are intentionally NOT listed.
 additional_redirect_urls = [
   "http://localhost:2311",
   "http://localhost:2311/auth/callback",
-  "http://127.0.0.1:2311",
-  "http://127.0.0.1:2311/auth/callback",
 ]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
