@@ -24,6 +24,7 @@ import {
   GitHubRateLimitError,
   type OwnerSignal,
   ownerSignal,
+  PrivateRepoError,
   type RepoMetadata,
   RepoNotFoundError,
   resolveRepo,
@@ -594,10 +595,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // 1. Resolve repo → canonical owner/repo + SHA + metadata + files.
+  //
+  // SAFETY RAIL (public-only): resolveRepo refuses any non-public repo by
+  // throwing PrivateRepoError immediately after reading repo metadata — BEFORE
+  // it fetches any file contents. We catch it here and return a clear 403 with
+  // NO cache touch, NO model call, and NO DB write. A private repo never reaches
+  // analysis or the public /owner/repo report.
   let resolved;
   try {
     resolved = await resolveRepo(ownerInput, repoInput, refInput);
   } catch (e) {
+    if (e instanceof PrivateRepoError) {
+      return jsonResponse({ error: e.message }, 403);
+    }
     if (e instanceof RepoNotFoundError) {
       return jsonResponse({ error: e.message }, 404);
     }
@@ -611,6 +621,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const { metadata, commitSha, ref, files } = resolved;
   const ownerLogin = metadata.ownerLogin;
   const repoName = metadata.repoName;
+
+  // Defense in depth: even if resolveRepo's guard were bypassed, never proceed
+  // to analyze or persist a repo whose metadata is not public.
+  if (metadata.isPrivate || metadata.visibility !== "public") {
+    return jsonResponse(
+      { error: "Claude Rabbit only scans public repositories." },
+      403,
+    );
+  }
 
   // 2. Cache check by (owner_login, repo_name, commit_sha).
   try {
