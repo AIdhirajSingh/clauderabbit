@@ -165,11 +165,22 @@ def parse_strace(strace_path):
     BLOCK_ERRNOS = ("ENETUNREACH", "EHOSTUNREACH", "EPERM", "EACCES",
                     "ETIMEDOUT", "ECONNREFUSED", "ENETDOWN", "EAI_AGAIN")
 
+    # The sinkhole trap lives in the sandbox subnet (10.200.0.0/24). Under the
+    # RUN-phase sinkhole, the detonation VM's iptables DNATs every outbound to
+    # the trap, so a connect that the code MEANT for the internet shows up in
+    # strace as a connect to 10.200.0.x that SUCCEEDS. That is not benign
+    # private traffic — it is an intercepted exfil/beacon. We classify trap-
+    # subnet hits distinctly so the verdict treats them as the captured attack
+    # they are (the true intent — domain/IP/payload — is recorded by the trap).
+    TRAP_SUBNET_PREFIX = "10.200.0."
+
     def classify(addr):
         if addr.startswith("127.") or addr == "::1":
             return "loopback"
         if addr == "169.254.169.254" or addr.startswith("169.254."):
             return "metadata_or_linklocal"
+        if addr.startswith(TRAP_SUBNET_PREFIX):
+            return "sinkholed"   # redirected to the trap = intercepted egress
         if (addr.startswith("10.") or addr.startswith("192.168.")
                 or any(addr.startswith(f"172.{i}.") for i in range(16, 32))):
             return "private"
@@ -194,12 +205,14 @@ def parse_strace(strace_path):
                 # machinery (getaddrinfo route discovery), not a data channel.
                 is_dns_probe = port == 0
                 is_internet = scope == "internet"
-                # Under locked egress, an internet-bound connect that does not
-                # cleanly deliver data is blocked. The firewall silently drops,
-                # so we see EINPROGRESS/timeout or a port-0 probe that never
-                # completes. We mark internet-scope attempts blocked unless they
-                # demonstrably succeeded with real data (which cannot happen here).
+                is_sinkholed = scope == "sinkholed"
                 explicit_block = errno in BLOCK_ERRNOS
+                # A sinkholed connect is an INTERCEPTED outbound: the code aimed
+                # at the internet, the DNAT redirected it to the trap, and it
+                # "succeeded" against the sink. It is NOT blocked and NOT benign
+                # private traffic — it is a captured egress attempt.
+                # An internet-scope connect that still shows here (DNAT missed
+                # it, e.g. a raw socket) dies at the deny-1000 firewall = blocked.
                 blocked = bool(explicit_block or (is_internet and not is_dns_probe))
                 net_attempts.append({
                     "type": "dns_probe" if is_dns_probe else "tcp_connect",
@@ -208,6 +221,8 @@ def parse_strace(strace_path):
                     "scope": scope,
                     "errno": errno,
                     "blocked": blocked,
+                    "sinkholed": is_sinkholed,
+                    "intercepted_egress": bool(is_sinkholed and not is_dns_probe),
                     "loopback": scope == "loopback",
                 })
                 continue
@@ -356,6 +371,9 @@ def main():
     # Internet-scope attempts (excludes loopback / private / metadata noise).
     internet_attempts = [n for n in net_attempts if n.get("scope") == "internet"]
     internet_blocked = [n for n in internet_attempts if n.get("blocked")]
+    # Sinkholed attempts = outbound the DNAT intercepted and redirected to the
+    # trap. These are the captured egress attempts (true intent is on the trap).
+    sinkholed_attempts = [n for n in net_attempts if n.get("intercepted_egress")]
     # Corroborating signal from the process's own stderr: a DNS/exfil failure
     # under egress lockdown is the block confirmed from the application side.
     exfil_blocked_app = any(
@@ -375,7 +393,12 @@ def main():
             "network_attempt_count": len(net_attempts),
             "internet_attempt_count": len(internet_attempts),
             "network_blocked_count": len(internet_blocked),
-            "outbound_internet_attempted": bool(internet_attempts),
+            "sinkholed_attempt_count": len(sinkholed_attempts),
+            # Outbound was attempted if the code tried the internet (blocked) OR
+            # was intercepted by the sinkhole (redirected to trap) — either way
+            # it tried to phone out.
+            "outbound_internet_attempted": bool(internet_attempts or sinkholed_attempts),
+            "egress_intercepted_or_blocked": bool(internet_blocked or sinkholed_attempts) or exfil_blocked_app,
             "egress_blocked_confirmed": bool(internet_blocked) or exfil_blocked_app,
             "exfil_blocked_app_signal": exfil_blocked_app,
             "credential_reads": cred_reads,

@@ -1,35 +1,57 @@
 #!/usr/bin/env bash
 #
-# orchestrate.sh — the deep-path orchestrator (runs locally with gcloud).
+# orchestrate.sh — the deep-path orchestrator for the MONITORED-SINKHOLE engine.
 #
-# This is what the escalation path (the scan edge function) calls when the fast
-# path sets `escalate`. It runs ONE scan against ONE ephemeral VM end to end:
+# Runs ONE scan end to end against an ephemeral detonation VM, with a controlled
+# build phase (registry-allowlist proxy) and a monitored-sinkhole run phase
+# (DNS + iptables DNAT to a controlled trap), then off-VM payload analysis and a
+# forensic record. The detonation philosophy: let the code do what it would do,
+# watch ALL of it, but NEVER let a single real packet reach a real destination.
 #
-#   1. Ensure the hermetic network exists (deny-all egress VPC).
-#   2. Boot a fresh ephemeral VM (NO external IP, sandbox tag => egress locked).
-#   3. Stage the target repo + harness onto the VM (pre-staged => run needs zero
-#      egress) over IAP SSH.
-#   4. Run the harness: build + run the target under observation, egress locked.
-#   5. Collect the behavior JSON; compute the honest verdict (never bare "Safe").
-#   6. DELETE the VM (the per-scan reset / abuse protection) and PROVE it's gone.
+# Pipeline:
+#   1. Ensure the hermetic network (deny-1000 egress + pri-800 subnet allow +
+#      trap ingress).
+#   2. Boot the TRAP host (external IP, NOT cr-sandbox-tagged): dnsmasq sinkhole
+#      DNS, catch-all sink, registry-allowlist build proxy, tcpdump pcap, and
+#      containment hardening (ip_forward=0, FORWARD DROP, no MASQUERADE).
+#   3. Boot the DETONATION VM (NO external IP, --no-service-account --no-scopes,
+#      cr-sandbox-tagged => deny-egress). It can reach ONLY the trap (subnet).
+#   4. Stage harness + observer + sinkhole-flip + target.
+#   5. BUILD: install deps via the trap proxy (registries only) under observation.
+#   6. Prove containment: a control probe to a real host must NOT reach it.
+#   7. RUN: flip to the sinkhole (DNS+DNAT -> trap), run target under observation.
+#   8. Collect the in-VM behavior report + the trap capture (external monitor).
+#   9. DELETE the detonation VM (per-scan reset), keeping the trap (holds capture).
+#  10. Isolated analysis (separate disposable env): decode payloads, GeoIP intended
+#      IPs, Gemini intent summary.
+#  11. Emit the forensic JSON; compute the honest verdict; persist (optional).
+#  12. DELETE the trap. End with NO VMs.
 #
-# Two target sources:
-#   --tarball <path>      : a local fixture/repo tarball (used for the proof)
-#   --github  <owner/repo>: clone a public repo locally, tar it, stage it
+# BULLETPROOF CLEANUP (the prior run orphaned a VM when the process died):
+#   - Every VM is booted with --max-run-duration + --instance-termination-action
+#     =DELETE: a SERVER-SIDE dead-man's switch that deletes the VM even if THIS
+#     process is SIGKILL'd (bash traps do not run on SIGKILL).
+#   - A name is recorded to a persistent file BEFORE create, so an interrupted
+#     create still leaves a name to reconcile.
+#   - A trap on EXIT INT TERM deletes every recorded VM and verifies it is gone.
+#   - A final prefix sweep deletes any cr-sbx-/cr-trap-/cr-analysis- stragglers.
 #
 # Usage:
-#   orchestrate.sh --zone us-central1-a --tarball ./fixtures/cred-stealer.tar.gz --name cred-stealer
+#   orchestrate.sh --zone us-central1-a --tarball ./fixtures/exfil-c2.tar.gz --name exfil
 #   orchestrate.sh --zone us-central1-a --github sindresorhus/yocto-queue --name yocto
-#
-# MANDATORY: the VM is deleted on every exit path (success, failure, or signal).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NET="$HERE/net/setup-network.sh"
+TRAP_HOST="$HERE/net/trap-host.sh"
 PROVISION="$HERE/golden-image/startup-provision.sh"
 OBSERVE="$HERE/harness/observe.py"
 HARNESS="$HERE/harness/run-harness.sh"
+SINKD="$HERE/harness/sinkd.py"
+FLIP="$HERE/harness/sinkhole-flip.sh"
+FORENSICS="$HERE/harness/forensics.py"
 VERDICT="$HERE/verdict.py"
+RUN_ANALYSIS="$HERE/analysis/run-analysis.sh"
 
 ZONE=""
 TARBALL=""
@@ -37,15 +59,16 @@ GITHUB=""
 NAME="scan"
 RESULTS_DIR="$HERE/results"
 TAG="cr-sandbox"
-MACHINE="e2-medium"   # 2 vCPU — well under the 8-core cap, one VM at a time
-GOLDEN_FAMILY="cr-sandbox-golden"   # baked runtimes + harness (built by build-image.sh)
-BASE_IMAGE_FAMILY="debian-12"       # fallback if no golden image exists yet
+TRAP_TAG="cr-trap"
+MACHINE="e2-small"          # 2 vCPU; trap(2)+detonation(2)=4, under the 8-core cap
+GOLDEN_FAMILY="cr-sandbox-golden"
+BASE_IMAGE_FAMILY="debian-12"
 BASE_IMAGE_PROJECT="debian-cloud"
+MAX_RUN="30m"               # server-side dead-man's switch TTL
+SUBNET_CIDR="10.200.0.0/24"
 
 log() { echo "[orch] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
-# gcloud is a native Windows binary under Git-Bash; convert file-argument paths
-# to Windows form when cygpath is available (no-op on Linux).
 winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 while [ $# -gt 0 ]; do
@@ -61,31 +84,83 @@ done
 
 [ -n "$ZONE" ] || die "--zone required (e.g. us-central1-a)"
 REGION="${ZONE%-*}"
-VM="cr-sbx-${NAME}-$(date +%s)"
+TS="$(date +%s)"
+DET_VM="cr-sbx-${NAME}-${TS}"
+TRAP_VM="cr-trap-${NAME}-${TS}"
 mkdir -p "$RESULTS_DIR"
 STAGE="$(mktemp -d)"
+VM_LEDGER="$RESULTS_DIR/.vm-ledger-${NAME}-${TS}"   # persistent record of created VM names
+: > "$VM_LEDGER"
 LOCAL_REPORT="$RESULTS_DIR/${NAME}-behavior.json"
+LOCAL_CAPTURE="$RESULTS_DIR/${NAME}-capture.jsonl"
+LOCAL_ANALYSIS="$RESULTS_DIR/${NAME}-analysis.json"
 LOCAL_VERDICT="$RESULTS_DIR/${NAME}-verdict.json"
+LOCAL_FORENSICS="$RESULTS_DIR/${NAME}-forensics.json"
 
-# ---- MANDATORY cleanup: delete the VM on ANY exit -------------------------
-VM_CREATED=0
+# ---- BULLETPROOF cleanup: delete EVERY VM we created, on ANY exit -----------
+record_vm() { echo "$1" >> "$VM_LEDGER"; }   # call BEFORE create when possible
+
+verify_gone() {
+  local vm="$1"
+  for _ in $(seq 1 6); do
+    gcloud compute instances describe "$vm" --zone="$ZONE" >/dev/null 2>&1 || return 0
+    sleep 5
+  done
+  return 1
+}
+
 cleanup() {
-  if [ "$VM_CREATED" = "1" ]; then
-    log "=== RESET: deleting ephemeral VM $VM (per-scan reset / abuse protection) ==="
-    gcloud compute instances delete "$VM" --zone="$ZONE" --quiet >/dev/null 2>&1 \
-      && log "VM $VM deleted." || log "WARNING: VM $VM delete returned non-zero; verify manually."
+  log "=== RESET: deleting ALL ephemeral VMs (per-scan reset / abuse protection) ==="
+  # Delete every VM recorded in the ledger (covers interrupted creates too).
+  if [ -f "$VM_LEDGER" ]; then
+    while read -r vm; do
+      [ -n "$vm" ] || continue
+      log "deleting $vm"
+      gcloud compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 || true
+      verify_gone "$vm" && log "  $vm gone." || log "  WARNING: $vm may linger — sweep will retry."
+    done < "$VM_LEDGER"
   fi
+  # Belt-and-suspenders: sweep ANY straggler with our prefixes in this zone.
+  local stragglers
+  stragglers="$(gcloud compute instances list \
+    --filter="zone:( $ZONE ) AND (name~'^cr-sbx-' OR name~'^cr-trap-' OR name~'^cr-analysis-')" \
+    --format="value(name)" 2>/dev/null || true)"
+  for vm in $stragglers; do
+    log "sweep deleting straggler $vm"
+    gcloud compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 || true
+  done
   rm -rf "$STAGE" 2>/dev/null || true
+  log "cleanup complete."
 }
 trap cleanup EXIT INT TERM
 
-# ---- 1. ensure hermetic network -------------------------------------------
-log "ensuring hermetic network (deny-all egress VPC) in $REGION"
-bash "$NET" create "$REGION"
+# Transient IAP tunnel hiccups (especially on rapid back-to-back scp/ssh) are
+# common; retry a few times before giving up so the pipeline is robust.
+retry() {
+  local n="$1"; shift
+  local i=1
+  while true; do
+    "$@" && return 0
+    [ "$i" -ge "$n" ] && return 1
+    sleep $(( i * 4 )); i=$(( i + 1 ))
+  done
+}
+ssh_det() { gcloud compute ssh "$DET_VM" --zone="$ZONE" --tunnel-through-iap --command="$1" 2>/dev/null; }
+ssh_trap() { gcloud compute ssh "$TRAP_VM" --zone="$ZONE" --tunnel-through-iap --command="$1" 2>/dev/null; }
+scp_to() { # scp_to <vm> <local> <remote>
+  gcloud compute scp --zone="$ZONE" --tunnel-through-iap "$(winpath "$2")" "$1:$3" >/dev/null 2>&1
+}
+scp_from() { # scp_from <vm> <remote> <local>
+  gcloud compute scp --zone="$ZONE" --tunnel-through-iap "$1:$2" "$3" >/dev/null 2>&1
+}
 
-# ---- prepare the target tarball -------------------------------------------
+# ---- 1. ensure hermetic network (with sinkhole rules) ----------------------
+log "ensuring hermetic network + sinkhole rules in $REGION"
+bash "$NET" create "$REGION" || die "network setup failed"
+
+# ---- prepare the target tarball --------------------------------------------
 if [ -n "$GITHUB" ]; then
-  log "cloning public repo $GITHUB locally (off-VM; VM stays egress-locked)"
+  log "cloning public repo $GITHUB locally (off-VM)"
   CLONE_DIR="$STAGE/repo"
   git clone --depth 1 "https://github.com/${GITHUB}.git" "$CLONE_DIR" >/dev/null 2>&1 \
     || die "git clone failed for $GITHUB"
@@ -93,105 +168,152 @@ if [ -n "$GITHUB" ]; then
   tar -czf "$TARBALL" -C "$CLONE_DIR" .
 elif [ -n "$TARBALL" ]; then
   [ -f "$TARBALL" ] || die "tarball not found: $TARBALL"
-  log "using pre-built target tarball: $TARBALL"
+  log "using target tarball: $TARBALL"
 else
   die "provide --tarball <path> or --github <owner/repo>"
 fi
 
-# ---- 2. boot ephemeral VM, egress locked, NO external IP ------------------
-# Prefer the golden image (runtimes + harness baked in, built with egress). The
-# golden image is the ONLY way runtimes get onto a VM that boots into the locked
-# network, because the locked network has no egress for apt/npm. Fall back to
-# base Debian only if no golden image exists yet (degraded: no runtimes).
+# ---- 2. boot the TRAP host -------------------------------------------------
+# The trap has an EXTERNAL IP (for the build registry proxy + intended-IP
+# resolution) and is NOT cr-sandbox-tagged, so it keeps normal egress. Its
+# catch-all ports are reachable ONLY intra-VPC (the trap-ingress firewall rule).
+log "booting TRAP host $TRAP_VM (external IP, $TRAP_TAG; sinkhole DNS+sink+proxy+pcap)"
+record_vm "$TRAP_VM"
+gcloud compute instances create "$TRAP_VM" \
+  --zone="$ZONE" --machine-type="$MACHINE" \
+  --image-family="$BASE_IMAGE_FAMILY" --image-project="$BASE_IMAGE_PROJECT" \
+  --network-interface="subnet=cr-sandbox-subnet" \
+  --tags="$TRAP_TAG" \
+  --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE >/dev/null \
+  || die "trap VM create failed"
+
+log "waiting for trap SSH..."
+TRAP_READY=0
+for i in $(seq 1 40); do
+  ssh_trap "true" >/dev/null 2>&1 && { TRAP_READY=1; break; }
+  sleep 10
+done
+[ "$TRAP_READY" = "1" ] || die "trap VM did not become reachable"
+
+# stage sinkd + trap-host onto the trap, then provision it. Both files in ONE
+# scp invocation (one IAP tunnel), with retry for transient IAP hiccups.
+log "staging sinkd + trap-host onto the trap and provisioning"
+scp_trap_files() {
+  gcloud compute scp --zone="$ZONE" --tunnel-through-iap \
+    "$(winpath "$SINKD")" "$(winpath "$TRAP_HOST")" "$TRAP_VM:/tmp/" >/dev/null 2>&1
+}
+retry 4 scp_trap_files || die "scp trap files failed (after retries)"
+retry 3 ssh_trap "sudo mkdir -p /opt/cr && sudo mv /tmp/sinkd.py /opt/cr/sinkd.py && sudo mv /tmp/trap-host.sh /opt/cr/trap-host.sh && sudo chmod +x /opt/cr/trap-host.sh" \
+  || die "trap staging move failed"
+ssh_trap "sudo bash /opt/cr/trap-host.sh provision" >/dev/null 2>&1 || log "WARNING: trap provision returned non-zero (will verify)"
+
+# fetch the trap's PRIVATE IP — everything the detonation VM talks to is THIS.
+TRAP_IP="$(ssh_trap "cat /opt/cr/TRAP_IP 2>/dev/null" | tr -d '\r\n ')"
+[ -n "$TRAP_IP" ] || TRAP_IP="$(gcloud compute instances describe "$TRAP_VM" --zone="$ZONE" --format='value(networkInterfaces[0].networkIP)' 2>/dev/null | tr -d '\r\n ')"
+# The TRAP_IP is read from the trap VM and is then interpolated into SSH command
+# strings (proxy URL, CR_TRAP_IP env). Validate it is a STRICT subnet IP before
+# any use, so a compromised/poisoned TRAP_IP cannot inject shell metacharacters.
+[[ "$TRAP_IP" =~ ^10\.200\.[0-9]{1,3}\.[0-9]{1,3}$ ]] \
+  || die "trap private IP is not a valid 10.200.x address (refusing to proceed): '${TRAP_IP}'"
+log "trap private IP = $TRAP_IP"
+# Re-assert trap containment before we detonate anything.
+ssh_trap "sudo bash /opt/cr/trap-host.sh assert" >/dev/null 2>&1 || die "TRAP CONTAINMENT ASSERT FAILED — refusing to detonate"
+# Gate the build proxy: if squid is not active, the registry-allowlist enforcement
+# is silently absent and the BUILD phase would either fail or (worse) appear to
+# pass without allowlist control. Assert it is up before we depend on it.
+ssh_trap "systemctl is-active squid" 2>/dev/null | grep -qx "active" \
+  || die "BUILD PROXY DOWN: squid is not active on the trap — refusing to build without registry-allowlist enforcement"
+log "build proxy healthy: squid active on the trap (registry allowlist enforced)"
+BUILD_PROXY="http://${TRAP_IP}:3128"
+
+# ---- 3. boot the DETONATION VM (no external IP, no SA/scopes, deny-egress) --
 GOLDEN_IMG="$(gcloud compute images list --filter="family:${GOLDEN_FAMILY}" \
   --format="value(name)" --sort-by=~creationTimestamp --limit=1 2>/dev/null || true)"
-USING_GOLDEN=0
+record_vm "$DET_VM"
 if [ -n "$GOLDEN_IMG" ]; then
-  USING_GOLDEN=1
-  log "booting ephemeral VM $VM from GOLDEN image $GOLDEN_IMG (NO external IP, egress LOCKED, tag=$TAG)"
-  gcloud compute instances create "$VM" \
+  log "booting DETONATION VM $DET_VM from golden $GOLDEN_IMG (no external IP, no SA, deny-egress)"
+  gcloud compute instances create "$DET_VM" \
     --zone="$ZONE" --machine-type="$MACHINE" \
     --image="$GOLDEN_IMG" \
     --network-interface="subnet=cr-sandbox-subnet,no-address" \
-    --tags="$TAG" --no-service-account --no-scopes >/dev/null \
-    || die "VM create failed"
+    --tags="$TAG" --no-service-account --no-scopes \
+    --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE >/dev/null \
+    || die "detonation VM create failed"
 else
-  log "no golden image found; booting base $BASE_IMAGE_FAMILY (DEGRADED: no runtimes under lockdown)"
-  gcloud compute instances create "$VM" \
+  log "no golden image; booting base $BASE_IMAGE_FAMILY (DEGRADED) with inline provision"
+  gcloud compute instances create "$DET_VM" \
     --zone="$ZONE" --machine-type="$MACHINE" \
     --image-family="$BASE_IMAGE_FAMILY" --image-project="$BASE_IMAGE_PROJECT" \
     --network-interface="subnet=cr-sandbox-subnet,no-address" \
     --tags="$TAG" --no-service-account --no-scopes \
+    --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE \
     --metadata-from-file=startup-script="$(winpath "$PROVISION")" >/dev/null \
-    || die "VM create failed"
+    || die "detonation VM create failed"
 fi
-VM_CREATED=1
 
-# ---- 3. wait for SSH reachability ------------------------------------------
-log "waiting for VM SSH reachability over IAP..."
-READY=0
+log "waiting for detonation VM SSH over IAP..."
+DET_READY=0
 for i in $(seq 1 40); do
-  if gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-       --command="true" >/dev/null 2>&1; then
-    READY=1; log "VM reachable."; break
-  fi
+  ssh_det "true" >/dev/null 2>&1 && { DET_READY=1; break; }
   sleep 15
 done
-[ "$READY" = "1" ] || die "VM did not become reachable in time"
+[ "$DET_READY" = "1" ] || die "detonation VM did not become reachable"
 
-# ---- stage harness + observer + target onto the VM ------------------------
-# pscp (the Windows scp backend) over IAP can only write to world-writable dirs
-# like /tmp — it gets "permission denied" on /opt/cr even at 777. So scp into
-# /tmp, then `sudo mv` into place over SSH. Always (re)stage the current harness
-# + observer so the VM runs THIS code even on a golden image (updatable without
-# an image rebuild).
-log "staging harness, observer, and target onto VM (scp -> /tmp -> sudo mv)"
-gcloud compute scp --zone="$ZONE" --tunnel-through-iap \
-  "$(winpath "$OBSERVE")" "$VM:/tmp/observe.py" >/dev/null 2>&1 || die "scp observe.py failed"
-gcloud compute scp --zone="$ZONE" --tunnel-through-iap \
-  "$(winpath "$HARNESS")" "$VM:/tmp/run-harness.sh" >/dev/null 2>&1 || die "scp run-harness.sh failed"
-gcloud compute scp --zone="$ZONE" --tunnel-through-iap \
-  "$(winpath "$TARBALL")" "$VM:/tmp/target.tar.gz" >/dev/null 2>&1 || die "scp target failed"
-gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-  --command="sudo mkdir -p /opt/cr && sudo mv /tmp/observe.py /tmp/run-harness.sh /opt/cr/ && sudo chmod +x /opt/cr/observe.py /opt/cr/run-harness.sh" >/dev/null 2>&1 \
-  || die "staging move into /opt/cr failed"
+# ---- 4. stage harness + observer + flip + target ---------------------------
+# All harness files in ONE scp (one IAP tunnel), target in a second, each retried.
+log "staging harness, observer, sinkhole-flip, and target onto detonation VM"
+scp_det_harness() {
+  gcloud compute scp --zone="$ZONE" --tunnel-through-iap \
+    "$(winpath "$OBSERVE")" "$(winpath "$HARNESS")" "$(winpath "$FLIP")" "$DET_VM:/tmp/" >/dev/null 2>&1
+}
+scp_det_target() {
+  gcloud compute scp --zone="$ZONE" --tunnel-through-iap "$(winpath "$TARBALL")" "$DET_VM:/tmp/target.tar.gz" >/dev/null 2>&1
+}
+retry 4 scp_det_harness || die "scp harness files failed (after retries)"
+retry 4 scp_det_target  || die "scp target failed (after retries)"
+retry 3 ssh_det "sudo mkdir -p /opt/cr && sudo mv /tmp/observe.py /tmp/run-harness.sh /tmp/sinkhole-flip.sh /opt/cr/ && sudo chmod +x /opt/cr/*.py /opt/cr/*.sh" \
+  || die "staging move failed"
 
-# ---- verify egress is actually locked BEFORE running untrusted code --------
-log "verifying egress lockdown (a control probe must be BLOCKED)..."
-EGRESS_PROBE=$(gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-  --command="timeout 8 curl -s -o /dev/null -w '%{http_code}' https://example.com 2>&1; echo \" rc=\$?\"" 2>/dev/null || true)
-log "egress control probe result: ${EGRESS_PROBE:-<none>}  (non-200 / timeout / rc!=0 == locked, as required)"
+# ---- 5. BUILD via the registry-allowlist proxy -----------------------------
+log "=== BUILD phase (deps via trap proxy $BUILD_PROXY; registries ONLY) ==="
+HARNESS_BASE="sudo BUILD_TIMEOUT=300 RUN_TIMEOUT=60 bash /opt/cr/run-harness.sh"
+ssh_det "$HARNESS_BASE prepare /tmp/target.tar.gz" >/dev/null 2>&1 || true
+ssh_det "sudo CR_PROXY=$BUILD_PROXY BUILD_TIMEOUT=300 bash /opt/cr/run-harness.sh build" >/dev/null 2>&1 || true
 
-# ---- 4. run the harness, split-phase, egress LOCKED throughout ------------
-# We keep egress fully locked for BOTH build and run — the hermetic rail is
-# absolute (CLAUDE.md: egress is locked, period). We never open egress for
-# untrusted code. The cost is that repos needing to fetch external dependencies
-# will not fully build under lockdown; that is the auto-build-success number we
-# MEASURE honestly rather than weaken isolation to inflate. The split-phase
-# harness still gives us per-phase signals (build-phase vs run-phase outbound).
-log "=== running harness on VM (split-phase; egress LOCKED throughout) ==="
-HARNESS_ENV="sudo BUILD_TIMEOUT=240 RUN_TIMEOUT=60 bash /opt/cr/run-harness.sh"
-gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-  --command="$HARNESS_ENV prepare /tmp/target.tar.gz" >/dev/null 2>&1 || true
-log "  build phase (egress locked)..."
-gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-  --command="$HARNESS_ENV build" >/dev/null 2>&1 || true
-log "  run phase (egress locked)..."
-gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-  --command="$HARNESS_ENV run" >/dev/null 2>&1 || true
-gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap \
-  --command="$HARNESS_ENV merge /tmp/cr-report.json" >/dev/null 2>&1 \
-  || log "harness merge exited non-zero"
+# ---- 6. PROVE containment: a control probe to a real host must NOT reach it -
+# FAIL-CLOSED gate: if the detonation VM reaches the real internet (HTTP 200 from
+# example.com), containment is BROKEN and we MUST NOT proceed to the RUN phase —
+# running unknown code while egress is open is the exact failure this engine
+# exists to prevent. A timeout / 000 / rc!=0 means the probe was contained
+# (blocked or sinkholed), which is the expected, safe case → proceed.
+log "containment control probe (must NOT reach the real internet)..."
+PROBE=$(ssh_det "timeout 8 curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://example.com 2>&1; echo \" rc=\$?\"" || true)
+log "control probe result: ${PROBE:-<none>}  (non-200 / timeout / rc!=0 == contained)"
+# Match strictly on a leading 200 so only a genuine real-internet reach aborts;
+# the contained case (000/timeout/empty) still proceeds.
+if printf '%s' "$PROBE" | grep -qE '^200'; then
+  die "CONTAINMENT VIOLATION: pre-RUN control probe reached the real internet (https://example.com returned HTTP 200). Refusing to detonate — aborting before the RUN phase."
+fi
+log "containment confirmed: control probe did NOT reach the real internet — proceeding to RUN."
 
-# ---- 5. collect behavior report -------------------------------------------
-log "collecting behavior report"
-gcloud compute scp --zone="$ZONE" --tunnel-through-iap \
-  "$VM:/tmp/cr-report.json" "$LOCAL_REPORT" >/dev/null 2>&1 \
-  || die "failed to collect behavior report"
-log "behavior report -> $LOCAL_REPORT"
+# ---- 7. RUN under the sinkhole ---------------------------------------------
+log "=== RUN phase (SINKHOLE: DNS+DNAT -> trap $TRAP_IP) ==="
+ssh_det "sudo CR_TRAP_IP=$TRAP_IP RUN_TIMEOUT=60 bash /opt/cr/run-harness.sh run" >/dev/null 2>&1 || true
+ssh_det "$HARNESS_BASE merge /tmp/cr-report.json" >/dev/null 2>&1 || log "harness merge non-zero"
 
-# also record the egress probe result into the report for the evidence trail
-python3 - "$LOCAL_REPORT" "$EGRESS_PROBE" <<'PY'
+# ---- 8. collect behavior report + trap capture (external monitor) ----------
+log "collecting in-VM behavior report"
+collect_report() { scp_from "$DET_VM" "/tmp/cr-report.json" "$LOCAL_REPORT"; }
+retry 4 collect_report || die "failed to collect behavior report"
+log "collecting trap capture (external, tamper-proof network record)"
+ssh_trap "sudo cp /var/log/cr-sink/capture.jsonl /tmp/capture.jsonl && sudo chmod a+r /tmp/capture.jsonl" >/dev/null 2>&1 || true
+collect_capture() { scp_from "$TRAP_VM" "/tmp/capture.jsonl" "$LOCAL_CAPTURE"; }
+retry 4 collect_capture || { log "no trap capture collected"; : > "$LOCAL_CAPTURE"; }
+# collect a summary of the pcap existence as external-monitor evidence
+ssh_trap "sudo ls -la /var/log/cr-sink/*.pcap* 2>/dev/null | head -5" 2>/dev/null | sed 's/^/[trap-pcap] /' >&2 || true
+
+# record the control probe into the behavior report
+python3 - "$LOCAL_REPORT" "$PROBE" <<'PY'
 import json,sys
 p,probe=sys.argv[1],sys.argv[2]
 d=json.load(open(p))
@@ -199,9 +321,62 @@ d["egress_control_probe"]=probe.strip()
 json.dump(d,open(p,"w"),indent=2)
 PY
 
-# ---- compute honest verdict ------------------------------------------------
-log "computing dynamic verdict (never a bare 'Safe')"
-python3 "$VERDICT" "$LOCAL_REPORT" | tee "$LOCAL_VERDICT"
+# ---- 9. DELETE the detonation VM NOW (reset) — trap stays to hold capture --
+log "=== RESET: deleting detonation VM $DET_VM now (capture already collected) ==="
+gcloud compute instances delete "$DET_VM" --zone="$ZONE" --quiet >/dev/null 2>&1 || true
+verify_gone "$DET_VM" && log "detonation VM gone." || log "WARNING: detonation VM may linger (sweep will retry)."
+# remove it from the ledger so cleanup doesn't re-attempt (harmless if it does)
+grep -v "^$DET_VM$" "$VM_LEDGER" > "$VM_LEDGER.tmp" 2>/dev/null && mv "$VM_LEDGER.tmp" "$VM_LEDGER" || true
 
-# ---- 6. RESET happens via the EXIT trap (VM delete) -----------------------
-log "scan complete for $NAME. VM will be deleted now (reset)."
+# ---- 10. isolated, disposable payload analysis -----------------------------
+# Inert captured bytes ONLY, in a separate env (local disposable dir here; the
+# `vm` mode boots a distinct disposable VM). Resolves intended IPs (intel only),
+# GeoIPs them, and asks Gemini (Vertex/ADC) for an intent summary.
+log "=== isolated payload analysis (separate disposable env; inert bytes only) ==="
+AI_FLAG=""
+gcloud auth application-default print-access-token >/dev/null 2>&1 || AI_FLAG="--no-ai"
+[ -n "$AI_FLAG" ] && log "ADC unavailable — analysis will skip the AI summary"
+bash "$RUN_ANALYSIS" local "$LOCAL_CAPTURE" "$LOCAL_REPORT" "$LOCAL_ANALYSIS" $AI_FLAG || true
+
+# ---- 11. fold network intent into the report, compute verdict, emit forensics
+log "folding captured network intent into the report and computing verdict"
+python3 - "$LOCAL_REPORT" "$LOCAL_CAPTURE" "$LOCAL_ANALYSIS" <<'PY'
+import json,sys
+report_p, cap_p, an_p = sys.argv[1:4]
+report=json.load(open(report_p))
+intents=[]
+try:
+    for line in open(cap_p):
+        line=line.strip()
+        if not line: continue
+        c=json.loads(line)
+        if c.get("event")=="sinkd_start": continue
+        host=c.get("intended_host") or c.get("sni") or c.get("http_host_header")
+        if not host and not c.get("dest_port"): continue
+        intents.append({"intended_host":host,"sni":c.get("sni"),
+            "dest_port":c.get("dest_port"),"http_path":c.get("http_path"),
+            "would_be_payload_b64":c.get("payload_b64")})
+except FileNotFoundError:
+    pass
+try:
+    analysis=json.load(open(an_p))
+except Exception:
+    analysis={}
+report["network_intent"]={"attempts":intents,"attempt_count":len(intents),
+    "intended_destinations":analysis.get("destinations",[]),
+    "geolocations":analysis.get("geolocations",[])}
+json.dump(report,open(report_p,"w"),indent=2)
+PY
+
+log "computing dynamic verdict (never a bare 'Safe')"
+python3 "$VERDICT" "$LOCAL_REPORT" | tee "$LOCAL_VERDICT" >/dev/null
+
+log "emitting forensic record"
+python3 "$FORENSICS" --behavior "$LOCAL_REPORT" --capture "$LOCAL_CAPTURE" \
+  --analysis "$LOCAL_ANALYSIS" --verdict "$LOCAL_VERDICT" \
+  --target "$NAME" --out "$LOCAL_FORENSICS" | tail -40
+
+log "results: behavior=$LOCAL_REPORT capture=$LOCAL_CAPTURE analysis=$LOCAL_ANALYSIS verdict=$LOCAL_VERDICT forensics=$LOCAL_FORENSICS"
+
+# ---- 12. trap deleted by the EXIT trap (and detonation already gone) -------
+log "scan complete for $NAME. Trap VM will be deleted now (reset)."

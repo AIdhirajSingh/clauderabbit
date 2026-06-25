@@ -73,31 +73,86 @@ def build_verdict(report):
     internet_attempts = agg.get("internet_attempt_count", 0)
     net_blocked = agg.get("network_blocked_count", 0)
     run_outbound = agg.get("run_outbound_attempted", False)
+    # Sinkholed = the monitored-sinkhole INTERCEPTED the outbound and redirected
+    # it to the trap. Total sinkholed vs RUN-phase-only sinkholed matters a lot:
+    # a package manager fetching deps during BUILD also gets sinkholed (its
+    # registry connect is redirected to the trap), and that is NOT malicious.
+    sinkholed = agg.get("sinkholed_attempt_count", 0)
+    run_sinkholed = agg.get("run_sinkholed_attempt_count", 0)
     any_outbound = bool(agg.get("outbound_internet_attempted", False)
+                        or agg.get("egress_intercepted_or_blocked", False)
                         or agg.get("egress_blocked_confirmed", False)
                         or agg.get("exfil_blocked_app_signal", False))
     app_blocked = agg.get("exfil_blocked_app_signal", False)
 
-    malicious_outbound = (cred_reads > 0 and any_outbound) or run_outbound
+    # Caught network intent gathered by the sinkhole trap (the would-be C2,
+    # mining pool, etc.). Captured inert; NO real packet reached it. A captured
+    # HOST/SNI/payload is the difference between "the package manager pinged the
+    # registry" (no host extracted, build phase) and "the code tried to ship
+    # data to evil-c2" (host + payload captured).
+    net_intent = report.get("network_intent", {})
+    captured_hosts = sorted({
+        a.get("intended_host") for a in net_intent.get("attempts", [])
+        if a.get("intended_host")
+    })
+    captured_payload = any(
+        a.get("would_be_payload_b64") for a in net_intent.get("attempts", [])
+    )
+
+    # A sinkholed connection is the CAUGHT-ATTACK signal only when it is NOT just
+    # benign build-phase package-manager chatter. It counts as an attack if any of:
+    #   - it happened during the RUN phase (after install completed), OR
+    #   - the code also read high-value credentials (exfil shape), OR
+    #   - the trap captured a real intended host or a payload (deliberate exfil).
+    # Build-phase-only sinkhole hits with no host, no payload, and no cred read
+    # are the dependency manager reaching the registry — reported honestly, not
+    # as malice.
+    attack_sinkholed = bool(
+        run_sinkholed or (sinkholed and (cred_reads > 0 or captured_hosts or captured_payload))
+    )
+    benign_build_sinkhole = bool(sinkholed and not attack_sinkholed)
+
+    malicious_outbound = (cred_reads > 0 and any_outbound) or run_outbound or attack_sinkholed
     if malicious_outbound:
-        when = "after install (run phase)" if run_outbound else "during install"
-        blocked_phrase = (
-            f"{net_blocked} of {internet_attempts} internet-bound connect(s) "
-            f"blocked by sandbox egress lockdown"
-            if internet_attempts else
-            "the attempt failed because the sandbox denies all egress"
-            if app_blocked else "blocked by sandbox egress lockdown"
-        )
+        when = "after install (run phase)" if (run_outbound or run_sinkholed) else "during install"
+        if attack_sinkholed:
+            host_phrase = (
+                f" The sinkhole captured the intended destination(s): "
+                f"{', '.join(captured_hosts[:5])}." if captured_hosts else ""
+            )
+            blocked_phrase = (
+                f"{sinkholed} outbound connection(s) INTERCEPTED by the "
+                f"monitored sinkhole and redirected to a controlled trap; the "
+                f"would-be payload was captured inert and NO real packet reached "
+                f"the real destination.{host_phrase}"
+            )
+        else:
+            blocked_phrase = (
+                f"{net_blocked} of {internet_attempts} internet-bound connect(s) "
+                f"blocked by sandbox egress lockdown"
+                if internet_attempts else
+                "the attempt failed because the sandbox denies all egress"
+                if app_blocked else "blocked by sandbox egress lockdown"
+            )
         findings.append({
             "signal": "outbound_network",
-            "severity": "critical" if cred_reads > 0 else "high",
+            "severity": "critical" if (cred_reads > 0 or attack_sinkholed) else "high",
             "detail": (
                 f"Code attempted to reach a non-local internet host {when} "
-                f"({blocked_phrase}). Outbound from the sandbox is denied by "
-                f"firewall; the attempt itself is the signal."
+                f"({blocked_phrase}). The attempt itself is the signal."
             ),
         })
-        score -= 30
+        # A sinkholed (caught) attack is weighted heavier than a merely-blocked one.
+        score -= 40 if attack_sinkholed else 30
+    elif benign_build_sinkhole:
+        # Build-phase package-manager traffic, intercepted by the sinkhole but
+        # carrying no host/payload and no credential theft. Honest note, NOT malice.
+        not_verified.append(
+            "During the build phase the package manager made network connections "
+            "(intercepted by the sandbox sinkhole) to fetch declared dependencies; "
+            "no credential access, no captured exfil destination, and no payload "
+            "were observed — consistent with normal dependency installation."
+        )
     elif any_outbound:
         # build-phase-only outbound, no cred theft → dependency fetch, honest note
         not_verified.append(
@@ -108,6 +163,11 @@ def build_verdict(report):
 
     # --- exfiltration pattern: high-value cred read + outbound attempt ------
     if cred_reads > 0 and any_outbound:
+        caught = (
+            " The sinkhole captured the exfil destination and the would-be "
+            "payload inert — confirming intent without ever delivering it."
+            if attack_sinkholed else ""
+        )
         findings.append({
             "signal": "exfiltration_pattern",
             "severity": "critical",
@@ -115,7 +175,7 @@ def build_verdict(report):
                 "Behavior matches a credential-exfiltration pattern: read of "
                 "high-value credential paths combined with an outbound network "
                 "attempt. This is the classic install-time supply-chain attack "
-                "shape."
+                f"shape.{caught}"
             ),
         })
         score -= 25
@@ -189,24 +249,39 @@ def build_verdict(report):
         )
     else:
         crit = sum(1 for f in findings if f["severity"] == "critical")
-        if crit:
+        if attack_sinkholed:
+            headline = (
+                "Malicious behavior CAUGHT: this code tried to phone out and the "
+                "sinkhole intercepted it — destination and payload captured, "
+                "nothing delivered."
+            )
+        elif crit:
             headline = "Malicious behavior observed when we ran this code."
         else:
             headline = "Suspicious behavior observed when we ran this code."
 
-    return {
+    verdict = {
         "schema": "claude-rabbit/dynamic-verdict@1",
         "dynamic_score": score,            # 0-100, code/behavior only
         "score_color": color,              # fixed color logic
         "one_word": label,                 # never a bare "Safe"
         "headline": headline,
         "code_behavior_findings": findings,
+        # The intent the sinkhole captured (would-be destinations); empty if none.
+        "captured_network_intent": captured_hosts,
+        "egress_intercepted_count": sinkholed,
+        "attack_egress_intercepted": attack_sinkholed,
         "not_verified": not_verified,
         "signal_class": "code_behavior",   # explicitly NOT reputation
         "auto_build_succeeded": report.get("auto_build_succeeded", False),
         "ran_without_crash": report.get("ran_without_crash", False),
         "project_type": report.get("project_type"),
     }
+    # Rail enforcement at the SOURCE (defense in depth): any caller of
+    # build_verdict() — not just main() — gets the never-bare-"Safe" guarantee.
+    _blob = json.dumps(verdict)
+    assert '"Safe"' not in _blob and "'Safe'" not in _blob, "RAIL VIOLATION: bare 'Safe'"
+    return verdict
 
 
 def main():
