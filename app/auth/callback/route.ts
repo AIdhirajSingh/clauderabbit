@@ -11,6 +11,13 @@
  * a route handler, where the cookie store IS writable), then we redirect to `/`
  * — the SPA, which reads the now-present session and flips into the dashboard.
  *
+ * Because the cookies are written here (server-side), the browser Supabase client
+ * the SPA boots with already has a valid session on the post-redirect load: it
+ * fires `INITIAL_SESSION` (with the session), NOT `SIGNED_IN`. So we append
+ * `?auth=ok` to the success redirect; the SPA reads that marker to know it just
+ * returned from a real sign-in — routing to the dashboard and restoring the
+ * pending repo — then strips the param from the URL.
+ *
  * The server client holds only the publishable key (no secret ever here).
  */
 
@@ -61,7 +68,13 @@ export async function GET(request: Request): Promise<Response> {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (error) {
       redirectTo.pathname = "/";
+      redirectTo.search = "";
       redirectTo.searchParams.set("auth_error", "exchange_failed");
+    } else {
+      // Mark a real sign-in so the SPA routes to the dashboard on the
+      // post-redirect load (where the browser client fires INITIAL_SESSION,
+      // not SIGNED_IN). The SPA strips this param after consuming it.
+      redirectTo.searchParams.set("auth", "ok");
     }
     return NextResponse.redirect(redirectTo);
   }
@@ -73,7 +86,10 @@ export async function GET(request: Request): Promise<Response> {
     });
     if (error) {
       redirectTo.pathname = "/";
+      redirectTo.search = "";
       redirectTo.searchParams.set("auth_error", "otp_failed");
+    } else {
+      redirectTo.searchParams.set("auth", "ok");
     }
     return NextResponse.redirect(redirectTo);
   }

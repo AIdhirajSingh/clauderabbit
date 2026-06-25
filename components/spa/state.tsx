@@ -673,6 +673,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
     };
 
+    /**
+     * Land a freshly-signed-in user on the dashboard, restoring the repo they
+     * were about to scan when the login gate fired (persisted across the
+     * full-page OAuth/magic-link redirect, which wiped reducer state).
+     */
+    const landSignedIn = () => {
+      let pending: string | null = null;
+      try {
+        pending = localStorage.getItem(PENDING_REPO_KEY);
+        if (pending) localStorage.removeItem(PENDING_REPO_KEY);
+      } catch {
+        pending = null;
+      }
+      patch({
+        screen: "dashboard",
+        pendingRepo: null,
+        ...(pending ? { input: pending } : {}),
+      });
+      toast("Signed in.", "var(--green)");
+    };
+
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       sessionRef.current = session;
       patch(profileFromSession(session));
@@ -682,24 +703,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setTimeout(() => applyProfileRow(session), 0);
       }
 
-      if (event === "SIGNED_IN") {
-        // A real sign-in (incl. return from the OAuth/magic-link redirect, which
-        // wiped React state). Restore the repo the user was about to scan and
-        // land them in the dashboard ready to go.
-        let pending: string | null = null;
+      // A real sign-in lands on the dashboard. This is SIGNED_IN for a same-tab
+      // sign-in, OR the INITIAL_SESSION right after the auth-callback redirect
+      // (marked with ?auth=ok) — where the browser client already holds the
+      // cookie-borne session and so never emits SIGNED_IN. We read+strip the
+      // marker HERE, at event time (not in the effect body), so a StrictMode
+      // double-mount can't consume it before the live subscription fires, and a
+      // reload (marker already stripped) won't re-land.
+      let shouldLand = event === "SIGNED_IN";
+      if (!shouldLand && event === "INITIAL_SESSION" && session) {
         try {
-          pending = localStorage.getItem(PENDING_REPO_KEY);
-          if (pending) localStorage.removeItem(PENDING_REPO_KEY);
+          const u = new URL(window.location.href);
+          if (u.searchParams.get("auth") === "ok") {
+            u.searchParams.delete("auth");
+            window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+            shouldLand = true;
+          }
         } catch {
-          pending = null;
+          shouldLand = false;
         }
-        patch({
-          screen: "dashboard",
-          pendingRepo: null,
-          ...(pending ? { input: pending } : {}),
-        });
-        toast("Signed in.", "var(--green)");
       }
+      if (shouldLand) landSignedIn();
 
       if (event === "SIGNED_OUT") {
         patch({ screen: "home", editName: false });
