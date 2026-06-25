@@ -13,7 +13,7 @@
 let leftpad;
 try {
   leftpad = require('leftpad');
-} catch (e) {
+} catch {
   leftpad = (s, n, c) => String(s).padStart(n, c || '0');
 }
 

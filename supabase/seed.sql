@@ -100,7 +100,7 @@ insert into public.reports
    confidence, scan_path,
    stats_json, packages_json, risky_json, logs_json)
 select
-  'soren-vestergaard', 'ratchet', 'a91f3c0000000000000000000000000000000001', 'main',
+  'verdant', 'ratchet', 'a91f3c0000000000000000000000000000000001', 'main',
   o.id,
   96, 'Trusted', true, false,
   'A mature HTTP router for Node. Built and ran cleanly in our static pass; no install hooks, no network calls at install, no credential access. Maintained by an established author with a long track record.',
@@ -157,7 +157,7 @@ insert into public.reports
    confidence, scan_path,
    stats_json, packages_json, risky_json, logs_json)
 select
-  'marlow-dev', 'envguard', 'c4e8a00000000000000000000000000000000003', 'main',
+  'marlow', 'envguard', 'c4e8a00000000000000000000000000000000003', 'main',
   o.id,
   88, 'Likely safe', false, false,
   'A configuration and environment-variable validator. Code read cleanly and reputation is solid, but the owner account is younger and one dependency is lightly maintained. No malicious behavior observed in our tests.',
@@ -189,7 +189,7 @@ insert into public.reports
    confidence, scan_path,
    stats_json, packages_json, risky_json, logs_json)
 select
-  'quickdev-tools', 'setup-helper', 'f0192a0000000000000000000000000000000004', 'main',
+  'quickdev', 'setup-helper', 'f0192a0000000000000000000000000000000004', 'main',
   o.id,
   71, 'Caution', false, true,
   'A one-command project bootstrapper with a large postinstall script. We escalated to a sandbox run. The install script contacts a telemetry endpoint and writes outside the project directory. No credential theft observed, but the install-time behavior is more than this tool needs.',
@@ -223,7 +223,7 @@ insert into public.reports
    confidence, scan_path,
    stats_json, packages_json, risky_json, logs_json)
 select
-  'corewallet-io', 'keystore-tools', '2bd7e10000000000000000000000000000000005', 'main',
+  'corewallet', 'keystore-tools', '2bd7e10000000000000000000000000000000005', 'main',
   o.id,
   44, 'High risk', false, true,
   'Marketed as a wallet keystore utility. In the sandbox it actively read SSH keys and shell history on first run. We could not verify any legitimate function that requires that access. Do not run this outside a throwaway environment.',
@@ -257,7 +257,7 @@ insert into public.reports
    confidence, scan_path,
    stats_json, packages_json, risky_json, logs_json)
 select
-  'fastlib-pkg', 'crypto-utils', '9ee0a20000000000000000000000000000000006', 'main',
+  'fastlib', 'crypto-utils', '9ee0a20000000000000000000000000000000006', 'main',
   o.id,
   18, 'Malicious', false, true,
   'Presented as a cryptography helper. The code is heavily obfuscated and on execution it began mining and attempted to reach a hardcoded command-and-control host. This is active install-time malware. Do not run.',
@@ -337,12 +337,12 @@ select
   ev.is_dynamic,
   now() - (ev.offset_secs || ' seconds')::interval
 from (values
-  (1, 'soren-vestergaard', 'ratchet',       'fast',  96, false,   0),
-  (2, 'fastlib-pkg',       'crypto-utils',  'deep',  18, true,   12),
-  (3, 'marlow-dev',        'envguard',      'fast',  88, false,  40),
-  (4, 'quickdev-tools',    'setup-helper',  'deep',  71, true,   60),
-  (5, 'ana-mirza',         'pomodoro-cli',  'fast',  94, false, 120),
-  (6, 'devkit',            'clipboard-sync','deep',   9, true,  180)
+  (1, 'verdant',     'ratchet',       'fast',  96, false,   0),
+  (2, 'fastlib',     'crypto-utils',  'deep',  18, true,   12),
+  (3, 'marlow',      'envguard',      'fast',  88, false,  40),
+  (4, 'quickdev',    'setup-helper',  'deep',  71, true,   60),
+  (5, 'ana-mirza',   'pomodoro-cli',  'fast',  94, false, 120),
+  (6, 'devkit',      'clipboard-sync','deep',   9, true,  180)
 ) as ev(ord, owner_login, repo_name, scan_path, score, is_dynamic, offset_secs)
 join public.reports r
   on r.owner_login = ev.owner_login
