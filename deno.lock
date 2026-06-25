@@ -1,0 +1,28 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/supabase-js@2": "2.108.2"
+  },
+  "jsr": {
+    "@supabase/supabase-js@2.108.2": {
+      "integrity": "db603b534b1939a216ef004fe9fdd0c72bb4ba097fb04be23ea76cb8c70272aa"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@supabase/ssr@0.8",
+        "npm:@supabase/supabase-js@^2.108.2",
+        "npm:@types/node@^26.0.1",
+        "npm:@types/react-dom@^19.2.0",
+        "npm:@types/react@^19.2.17",
+        "npm:eslint-config-next@^16.2.9",
+        "npm:eslint@^10.5.0",
+        "npm:next@^16.2.9",
+        "npm:react-dom@^19.2.7",
+        "npm:react@^19.2.7",
+        "npm:typescript@^6.0.3"
+      ]
+    }
+  }
+}
