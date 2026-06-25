@@ -47,6 +47,11 @@ export interface RepoMetadata {
   pushedAt: string | null;
   license: string | null;
   hasLockfile: boolean;
+  /** True when GitHub reports the repo as private. Claude Rabbit only scans
+   * public repos — a private repo must be refused before any fetch/model/persist. */
+  isPrivate: boolean;
+  /** GitHub's repo visibility ("public" | "private" | "internal"). */
+  visibility: string;
 }
 
 /** Owner reputation signal — kept separate from code/behavior. */
@@ -82,6 +87,18 @@ export class GitHubRateLimitError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GitHubRateLimitError";
+  }
+}
+
+/**
+ * Thrown when the resolved repo is NOT public. Claude Rabbit is a public-repo
+ * product and publishes its reports publicly, so a private repo must be refused
+ * before any file fetch, model call, or DB write happens.
+ */
+export class PrivateRepoError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrivateRepoError";
   }
 }
 
@@ -136,6 +153,8 @@ interface GhRepoResponse {
   created_at: string | null;
   pushed_at: string | null;
   license: { spdx_id?: string; name?: string } | null;
+  private: boolean;
+  visibility?: string;
 }
 
 interface GhUserResponse {
@@ -343,6 +362,18 @@ export async function resolveRepo(
   }
   const repoData = (await repoRes.json()) as GhRepoResponse;
 
+  // SAFETY RAIL: refuse non-public repos BEFORE any file fetch, model call, or
+  // DB write. The server-side GITHUB_TOKEN can read private repos the token
+  // owner has access to; analyzing one would publish its code to a public
+  // /owner/repo report. Claude Rabbit only scans PUBLIC repositories.
+  const visibility = repoData.visibility ?? (repoData.private ? "private" : "public");
+  if (repoData.private === true || visibility !== "public") {
+    // repoRes body is already consumed by .json() above; nothing left to fetch.
+    throw new PrivateRepoError(
+      "Claude Rabbit only scans public repositories.",
+    );
+  }
+
   // Canonical casing — avoids duplicate cache rows for Facebook/React vs facebook/react.
   const owner = repoData.owner.login;
   const repo = repoData.name;
@@ -430,6 +461,11 @@ export async function resolveRepo(
     pushedAt: repoData.pushed_at,
     license: repoData.license?.spdx_id ?? repoData.license?.name ?? null,
     hasLockfile,
+    // Reaching here means the private/visibility guard above did NOT throw, so
+    // the repo is provably public. These fields document that for downstream
+    // defense-in-depth checks.
+    isPrivate: false,
+    visibility,
   };
 
   return { metadata, commitSha, ref: resolvedRef, files, treeTruncated };
