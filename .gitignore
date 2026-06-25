@@ -28,6 +28,9 @@ supabase/.branches/
 # design bundle staging (extracted from the zip; not source-controlled)
 design-source/
 
+# local agent/editor tooling
+.claude/
+
 # os / editor
 .DS_Store
 *.pem
