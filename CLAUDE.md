@@ -4,6 +4,8 @@ This file is the project constitution. It is read every session and it is bindin
 
 Your universal engineering method (research, plan-and-audit, per-file and per-unit verification, persistent context, per-unit git, total ownership) is already in force via the global protocol. This file does not repeat it. This file holds only what is specific and non-negotiable to Claude Rabbit.
 
+Infrastructure facts — accounts, services, GCP, the $300 credit, secrets, the Gemini-via-Vertex backend, model strings — are **not** in this file. They live in **`INFRASTRUCTURE.md`** at the repo root. This file is the SOP (the rules); `INFRASTRUCTURE.md` is the reference (the facts). Read `INFRASTRUCTURE.md` before any work that touches infra, and treat its facts as authoritative — do not guess or re-derive them.
+
 ---
 
 ## What Claude Rabbit is
@@ -32,24 +34,24 @@ Also structural, everywhere a verdict is explained: **reputation signals and cod
 
 ## Secrets architecture — absolute
 
-This has real security consequences and is always in force.
+This has real security consequences and is always in force. The exact secret names, the service-account method, and all infra facts live in **`INFRASTRUCTURE.md`** — read it. The binding rules are here:
 
-- **All model and search API keys live in Supabase edge-function secrets, server-side. Never client-side. Never in the repo.** Every scan, score blend, and model/search call happens in edge functions where the keys live.
-- The client holds only `NEXT_PUBLIC_SUPABASE_URL` and the Supabase **publishable** key. Nothing else. The app points at Supabase; Supabase holds the rest.
-- This project uses the **new Supabase key system** (publishable `sb_publishable_…` + secret `sb_secret_…`). The legacy JWT anon/service_role keys are deprecated and are not used.
-- The secret key is available to edge functions automatically; do not duplicate it into custom secrets.
+- **All model, search, and cloud credentials live in Supabase edge-function secrets, server-side. Never client-side. Never in the repo.** Every scan, score blend, and model/search call happens in edge functions where the keys live.
+- The client holds only the Supabase URL and the Supabase **publishable** key. Nothing else. The app points at Supabase; Supabase holds the rest.
 - **Never commit `.env`, `.env.local`, `.env*`, or `*-key.json`.** Confirm `.gitignore` covers them before any commit that could touch them.
+- Service-account keys are disposable: if one is lost or exposed, rotate it (new key, delete old) — never back one up or copy it outside Supabase secrets.
 
-If you are ever about to place a real key anywhere a client or the repo could see it, stop. That is the one move this section exists to prevent.
+If you are ever about to place a real key anywhere a client or the repo could see it, stop. That is the one move this section exists to prevent. For which secrets exist and how the edge function reads them, see `INFRASTRUCTURE.md`.
 
 ---
 
 ## Environment — the facts, do not re-derive or guess
 
+The exact accounts, project IDs, regions, secret names, model strings, the Gemini-via-Vertex backend, and the GCP credit all live in **`INFRASTRUCTURE.md`**. Read it before doing anything that touches infra; do not guess these facts. The binding architectural rules are here:
+
 - **Framework: Next.js (App Router).** Server-rendered report pages are the SEO surface. The same app serves the homepage, the public `/owner/repo` reports, and the API routes that orchestrate scans. This is the framework for the entire web layer. Do not substitute another.
-- **Supabase** project in Mumbai (ap-south-1): database, auth (Google + email), and edge functions. All scanning, score blending, model/search calls, and DB writes happen in edge functions.
-- **GCP** project ID `gen-lang-client-0062239756` — Claude Rabbit's permanent GCP home (Gemini now, sandbox VMs later).
-- **Gemini is the placeholder model** wired through the fast-path edge function, used to prove the end-to-end pipe. The real models (DeepSeek fast-path, Brave reputation, Kimi K2.7 + OpenCode in the sandbox) swap in once the flow works. Swapping the model proves the wrapper; the dynamic sandbox engine is a separate, harder thing and is the real product.
+- **Supabase** provides database, auth (Google + email), and edge functions. All scanning, score blending, model/search calls, and DB writes happen in edge functions (Deno/TypeScript).
+- **Gemini is the placeholder model**, called via the **Vertex backend** (see `INFRASTRUCTURE.md` for SDK, auth, and why Vertex not AI Studio), wired through the fast-path edge function to prove the end-to-end pipe. The real models (DeepSeek fast-path, Brave reputation, Kimi K2.7 + OpenCode in the sandbox) swap in once the flow works, behind a clean seam. Swapping the model proves the wrapper; the dynamic sandbox engine is a separate, harder thing and is the real product.
 
 ---
 
