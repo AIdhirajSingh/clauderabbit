@@ -1,0 +1,10 @@
+{
+  "name": "harmless-telemetry",
+  "version": "1.0.0",
+  "description": "Innocuous-looking telemetry helper (SYNTHETIC EXFIL FIXTURE for Claude Rabbit sinkhole proof — NOT real malware, do NOT publish).",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "MIT"
+}
