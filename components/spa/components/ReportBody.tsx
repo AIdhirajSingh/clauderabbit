@@ -17,7 +17,12 @@
  */
 
 import type { ReactNode } from "react";
-import type { RepoView } from "@/lib/report-view";
+import type {
+  ForensicsAttemptView,
+  ForensicsPayloadView,
+  ForensicsView,
+  RepoView,
+} from "@/lib/report-view";
 import { RING_CIRC } from "@/lib/report-view";
 import { StarIcon } from "./glyphs";
 
@@ -308,6 +313,9 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
           ))}
         </div>
 
+        {/* forensic record — only for repos that escalated to a sandbox run */}
+        {r._forensics && <ForensicSection f={r._forensics} />}
+
         {/* final verdict */}
         <div
           style={{
@@ -363,6 +371,473 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
       <span style={{ fontSize: 13, color: "var(--t3)" }}>{label}</span>
       {children}
+    </div>
+  );
+}
+
+// ───────────────────────── forensic section ─────────────────────────
+// The evidence-backed record of what running the repo in the sandbox revealed.
+// Faithful to design.md: eyebrow labels, hairline cards on faint fills, the one
+// score-color logic (green/blue/amber/red), serif hero numbers, no monospace,
+// and — per CLAUDE.md — strictly code/behavior + network intent (no reputation
+// in here, that stays in its own panel above). Never a bare "Safe": when the
+// run was dormant/unverified it says so.
+
+/** A small uppercase eyebrow label used to title each forensic block. */
+function Eyebrow({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ fontSize: 11, color: "var(--t4)", letterSpacing: "0.16em", textTransform: "uppercase" }}>
+      {children}
+    </span>
+  );
+}
+
+/** A bordered forensic block (hairline card on a faint fill). */
+function Block({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 16, padding: 22, background: "var(--s1)", ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function ForensicSection({ f }: { f: ForensicsView }) {
+  const run = f.raw.what_it_ran;
+  const beh = f.raw.in_vm_behavior;
+  const cont = f.raw.containment;
+
+  return (
+    <section
+      aria-label="Sandbox forensic record"
+      style={{
+        position: "relative",
+        border: `1px solid ${f._verdictColor}`,
+        borderRadius: 22,
+        padding: 30,
+        background: f._verdictTint,
+        marginBottom: 18,
+        overflow: "hidden",
+        animation: "riseIn .6s var(--ease) both",
+      }}
+    >
+      {/* header: caught/dormant verdict, kept to code & behavior */}
+      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 14, flexWrap: "wrap" }}>
+        <span
+          style={{ position: "relative", width: 8, height: 8 }}
+          aria-hidden="true"
+        >
+          <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: f._verdictColor }} />
+          {f._caughtAttack && (
+            <span
+              style={{
+                position: "absolute",
+                inset: 0,
+                borderRadius: "50%",
+                background: f._verdictColor,
+                animation: "pulseRing 2s ease-out infinite",
+              }}
+            />
+          )}
+        </span>
+        <Eyebrow>Sandbox forensic record</Eyebrow>
+        <span style={{ fontSize: 11.5, color: "var(--t2)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
+          We ran it
+        </span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 12, flexWrap: "wrap" }}>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "6px 14px",
+            borderRadius: 100,
+            border: `1px solid ${f._verdictColor}`,
+            background: "var(--s1)",
+          }}
+        >
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: f._verdictColor, boxShadow: `0 0 8px ${f._verdictColor}` }} />
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: f._verdictColor }}>{f._verdictWord}</span>
+        </span>
+        <span style={{ fontSize: 13, color: "var(--t4)" }}>{f._verdictBand}</span>
+      </div>
+
+      <p style={{ fontSize: 16, color: "var(--t1)", lineHeight: 1.6, margin: "0 0 24px", textWrap: "pretty" }}>
+        {f._headline}
+      </p>
+
+      {/* what it ran — the runtime story */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ marginBottom: 12 }}>
+          <Eyebrow>What it ran</Eyebrow>
+        </div>
+        <Block>
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            {run.project_type && (
+              <Row label="Project type">
+                <span style={{ fontSize: 13, color: "var(--t1)", fontWeight: 500 }}>{run.project_type}</span>
+              </Row>
+            )}
+            {run.install_command && (
+              <Row label="Install">
+                <span className="tnum" style={{ fontSize: 12.5, color: "var(--t2)", textAlign: "right", maxWidth: "60%", wordBreak: "break-word" }}>
+                  {run.install_command}
+                </span>
+              </Row>
+            )}
+            {run.run_command && (
+              <Row label="Run">
+                <span className="tnum" style={{ fontSize: 12.5, color: "var(--t2)", textAlign: "right", maxWidth: "60%", wordBreak: "break-word" }}>
+                  {run.run_command}
+                </span>
+              </Row>
+            )}
+            <Row label="Auto-build">
+              <span style={{ fontSize: 13, color: run.auto_build_succeeded ? "var(--t1)" : "var(--amber)", fontWeight: 500 }}>
+                {run.auto_build_succeeded ? "Built unattended" : "Did not build"}
+              </span>
+            </Row>
+            <Row label="Ran to completion">
+              <span style={{ fontSize: 13, color: run.ran_without_crash ? "var(--t1)" : "var(--amber)", fontWeight: 500 }}>
+                {run.ran_without_crash ? "Yes" : "No / crashed"}
+              </span>
+            </Row>
+          </div>
+        </Block>
+      </div>
+
+      {/* network intent — what it tried to reach */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ marginBottom: 12 }}>
+          <Eyebrow>Network intent — what it tried to reach</Eyebrow>
+        </div>
+        {f._namedAttempts.length > 0 ? (
+          <NetworkIntentTable attempts={f._namedAttempts} blockedNoHostCount={f._blockedNoHostCount} />
+        ) : (
+          <Block>
+            <p style={{ fontSize: 13.5, color: "var(--t3)", lineHeight: 1.6, margin: 0 }}>
+              {f._blockedNoHostCount > 0
+                ? `${f._blockedNoHostCount} outbound connection attempt(s) were intercepted by the sandbox sinkhole, but none resolved a named destination. No exfiltration target was captured during this run.`
+                : "No outbound connection attempts were observed during this run."}
+            </p>
+          </Block>
+        )}
+      </div>
+
+      {/* captured exfil payload — inert, never delivered */}
+      {f._payloads.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <Eyebrow>Attempted exfil payload</Eyebrow>
+            <span style={{ fontSize: 10.5, color: f._verdictColor, padding: "3px 9px", border: `1px solid ${f._verdictColor}`, borderRadius: 6, fontWeight: 500 }}>
+              Captured, never delivered
+            </span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {f._payloads.map((p, i) => (
+              <PayloadBlock key={`${p.host ?? "payload"}-${i}`} payload={p} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* in-VM behavior — kept distinct from network intent */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ marginBottom: 12 }}>
+          <Eyebrow>In-VM behavior</Eyebrow>
+        </div>
+        <Block>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14, marginBottom: beh.credential_reads_detail.some((c) => c.high_value) ? 18 : 0 }}>
+            <BehaviorStat
+              value={beh.high_value_credential_reads}
+              label="High-value credential reads"
+              danger={beh.high_value_credential_reads > 0}
+              hint="from planted decoys"
+            />
+            <BehaviorStat value={beh.process_exec_count} label="Processes spawned" />
+            <BehaviorStat value={beh.files_dropped_count} label="Files dropped" />
+            <BehaviorStat
+              value={beh.high_cpu ? "High" : `${beh.run_cpu_cores_busy.toFixed(2)}`}
+              label={beh.high_cpu ? "CPU (mining-class)" : "CPU cores busy"}
+              danger={beh.high_cpu}
+            />
+          </div>
+          {beh.credential_reads_detail.some((c) => c.high_value) && (
+            <div style={{ paddingTop: 16, borderTop: "1px solid var(--line)" }}>
+              <div style={{ fontSize: 12, color: "var(--t4)", marginBottom: 11 }}>
+                Credential paths it read (decoys planted by the sandbox)
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {beh.credential_reads_detail
+                  .filter((c) => c.high_value)
+                  .map((c, i) => (
+                    // Index key: attacker-controlled `c.path` could repeat and
+                    // break duplicate-key reconciliation. This is a static list.
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: f._verdictColor, flexShrink: 0 }} />
+                      <span className="tnum" style={{ fontSize: 12.5, color: "var(--t2)", wordBreak: "break-all" }}>
+                        {c.path}
+                      </span>
+                      {c.succeeded && (
+                        <span style={{ fontSize: 10.5, color: "var(--t4)", flexShrink: 0 }}>read</span>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </Block>
+      </div>
+
+      {/* containment proof — the dual-source invariant */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ marginBottom: 12 }}>
+          <Eyebrow>Containment proof</Eyebrow>
+        </div>
+        {/*
+          The heading text AND glyph are gated on the actual containment fact —
+          never assert "no packet reached its destination" unless the record
+          confirms it. When NOT confirmed, show a distinct amber state that says
+          containment was not verified for this run (never imply safety). This is
+          the never-bare-Safe rail applied to the containment claim.
+        */}
+        <Block
+          style={{
+            borderColor: cont.no_real_packet_reached_destination
+              ? "oklch(0.80 0.14 158 / 0.45)"
+              : "var(--amber)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+            <span
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: "50%",
+                border: cont.no_real_packet_reached_destination
+                  ? "1px solid oklch(0.80 0.14 158 / 0.5)"
+                  : "1px solid var(--amber)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                marginTop: 1,
+              }}
+              aria-hidden="true"
+            >
+              {cont.no_real_packet_reached_destination ? (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M2.5 6.2l2.2 2.3 4.8-5" stroke="var(--green)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 3v3.4M6 8.6v.05" stroke="var(--amber)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </span>
+            <span
+              style={{
+                fontSize: 14.5,
+                color: cont.no_real_packet_reached_destination ? "var(--t1)" : "var(--amber)",
+                fontWeight: 500,
+                lineHeight: 1.5,
+              }}
+            >
+              {cont.no_real_packet_reached_destination
+                ? "No real packet reached its destination"
+                : "Containment was NOT confirmed for this run"}
+            </span>
+          </div>
+          <p style={{ fontSize: 12.5, color: "var(--t3)", lineHeight: 1.6, margin: 0 }}>
+            {cont.containment_notes ||
+              (cont.no_real_packet_reached_destination
+                ? ""
+                : "This run did not produce a positive proof that egress was fully contained. Treat any captured outbound attempt as potentially uncontained and run this code only inside a disposable environment.")}
+          </p>
+          <div style={{ display: "flex", gap: 18, marginTop: 14, flexWrap: "wrap" }}>
+            <ContainmentFlag on={cont.external_monitor_saw_egress} label="External monitor saw the egress attempt" />
+            <ContainmentFlag on={cont.in_vm_saw_egress} label="In-VM trace corroborated it" />
+          </div>
+        </Block>
+      </div>
+
+      {/* honest not-verified — never a bare Safe */}
+      <div style={{ paddingTop: 18, borderTop: "1px solid var(--line2)" }}>
+        {f._possiblyDormant && (
+          <p style={{ fontSize: 13.5, color: "var(--amber)", lineHeight: 1.6, margin: "0 0 12px" }}>
+            This code ran to completion but exhibited no observable behavior. That is reported as unverified, not clean —
+            condition-gated or trap-aware code that withholds its payload looks exactly like this.
+          </p>
+        )}
+        {f._notVerified.length > 0 && (
+          <>
+            <div style={{ fontSize: 12, color: "var(--t4)", marginBottom: 11 }}>What this sandbox run did not verify</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {f._notVerified.map((nv, i) => (
+                // Index key: `nv` is attacker-influenced text that could repeat;
+                // this is a static display list, so the index is the safe key.
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13, color: "var(--t3)", lineHeight: 1.55 }}>
+                  <span style={{ color: "var(--t5)", flexShrink: 0 }}>—</span>
+                  <span style={{ textWrap: "pretty" }}>{nv}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The network-intent table: domain · intended IP · geolocation · port. */
+function NetworkIntentTable({
+  attempts,
+  blockedNoHostCount,
+}: {
+  attempts: ForensicsAttemptView[];
+  blockedNoHostCount: number;
+}) {
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "var(--s1)" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1.6fr 1fr 1.4fr 0.6fr",
+          gap: 12,
+          padding: "12px 20px",
+          borderBottom: "1px solid var(--line)",
+        }}
+      >
+        <ColHead>Domain called</ColHead>
+        <ColHead>Routing</ColHead>
+        <ColHead>Geolocation</ColHead>
+        <ColHead>Port</ColHead>
+      </div>
+      {attempts.map((a, i) => {
+        const host = a.intended_host ?? a.http_host_header ?? a.sni ?? "—";
+        return (
+          <div
+            key={`${host}-${a.captured_at ?? i}`}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.6fr 1fr 1.4fr 0.6fr",
+              gap: 12,
+              padding: "14px 20px",
+              borderBottom: "1px solid var(--line)",
+              alignItems: "center",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: a._color, boxShadow: `0 0 6px ${a._color}`, flexShrink: 0 }} />
+                <span className="tnum" style={{ fontSize: 13, color: "var(--t1)", fontWeight: 500, wordBreak: "break-all" }}>
+                  {host}
+                </span>
+              </div>
+              {(a.http_method || a.http_path) && (
+                <div className="tnum" style={{ fontSize: 11.5, color: "var(--t4)", marginTop: 4, wordBreak: "break-all" }}>
+                  {[a.http_method, a.http_path].filter(Boolean).join(" ")}
+                </div>
+              )}
+            </div>
+            <span className="tnum" style={{ fontSize: 12.5, color: "var(--t3)" }}>
+              not routed to
+            </span>
+            <span className="tnum" style={{ fontSize: 12.5, color: "var(--t3)", wordBreak: "break-word" }}>
+              {a._geoLabel || "unresolved"}
+            </span>
+            <span className="tnum" style={{ fontSize: 12.5, color: "var(--t2)" }}>
+              {a.dest_port ?? "—"}
+            </span>
+          </div>
+        );
+      })}
+      {blockedNoHostCount > 0 && (
+        <div style={{ padding: "12px 20px", fontSize: 12, color: "var(--t4)", lineHeight: 1.5 }}>
+          + {blockedNoHostCount} further outbound attempt(s) intercepted with no resolved destination.
+        </div>
+      )}
+      <div style={{ padding: "11px 20px", borderTop: "1px solid var(--line)", fontSize: 11.5, color: "var(--t4)", lineHeight: 1.5 }}>
+        Intended IPs were resolved off-VM for intelligence only and were never routed to.
+      </div>
+    </div>
+  );
+}
+
+/** A column header in the network-intent table. */
+function ColHead({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ fontSize: 10.5, color: "var(--t4)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+      {children}
+    </span>
+  );
+}
+
+/** One decoded would-be payload, shown inert. */
+function PayloadBlock({ payload }: { payload: ForensicsPayloadView }) {
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 13, overflow: "hidden", background: "var(--s2)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "11px 16px", borderBottom: "1px solid var(--line)" }}>
+        <span className="tnum" style={{ fontSize: 12, color: "var(--t3)", wordBreak: "break-all" }}>
+          {payload.host ? `to ${payload.host}` : "captured payload"}
+        </span>
+        <span className="tnum" style={{ fontSize: 11.5, color: "var(--t4)", flexShrink: 0 }}>
+          {payload.bytesLen} bytes, inert
+        </span>
+      </div>
+      <pre
+        style={{
+          margin: 0,
+          padding: "14px 16px",
+          fontFamily: "inherit",
+          fontSize: 12,
+          lineHeight: 1.55,
+          color: "var(--t2)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          maxHeight: 220,
+          overflow: "auto",
+        }}
+      >
+        {payload.text}
+        {payload.truncated ? "\n… (truncated)" : ""}
+      </pre>
+    </div>
+  );
+}
+
+/** A single in-VM behavior stat (serif figure + label), red when dangerous. */
+function BehaviorStat({
+  value,
+  label,
+  danger,
+  hint,
+}: {
+  value: number | string;
+  label: string;
+  danger?: boolean;
+  hint?: string;
+}) {
+  return (
+    <div>
+      <div className="serif tnum" style={{ fontSize: 24, color: danger ? "var(--red)" : "var(--t1)", lineHeight: 1 }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--t4)", marginTop: 7, lineHeight: 1.4 }}>
+        {label}
+        {hint ? <span style={{ color: "var(--t5)" }}> · {hint}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/** A check/cross flag for a containment corroboration source. */
+function ContainmentFlag({ on, label }: { on: boolean; label: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: on ? "var(--green)" : "var(--t5)" }} aria-hidden="true" />
+      <span style={{ fontSize: 12, color: "var(--t3)" }}>{label}</span>
     </div>
   );
 }
