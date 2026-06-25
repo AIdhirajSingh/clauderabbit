@@ -1,0 +1,11 @@
+{
+  "name": "totally-legit-utils",
+  "version": "1.0.3",
+  "description": "A harmless-looking utility package (SYNTHETIC MALWARE FIXTURE for Claude Rabbit sandbox testing — do NOT publish).",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "node ./scripts/postinstall.js",
+    "start": "node index.js"
+  },
+  "license": "MIT"
+}

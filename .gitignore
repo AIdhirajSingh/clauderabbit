@@ -2,6 +2,7 @@
 .env
 .env.local
 .env*
+!.env.example
 *-key.json
 
 # dependencies
@@ -24,6 +25,15 @@ next-env.d.ts
 # supabase
 supabase/.temp/
 supabase/.branches/
+
+# sandbox runtime artifacts (results, local test work, staged tarballs)
+sandbox/results/
+sandbox/.work*/
+sandbox/**/*.tar.gz
+
+# python bytecode
+__pycache__/
+*.pyc
 
 # design bundle staging (extracted from the zip; not source-controlled)
 design-source/
