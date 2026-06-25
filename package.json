@@ -1,0 +1,29 @@
+{
+  "name": "claude-rabbit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Rabbit — paste a public GitHub repo, get an honest 0-100 safety score. Everyone reads the code; we run it.",
+  "scripts": {
+    "dev": "next dev -p 2311",
+    "build": "next build",
+    "start": "next start -p 2311",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "next": "^16.2.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^10.5.0",
+    "eslint-config-next": "^16.2.9",
+    "typescript": "^6.0.3"
+  }
+}

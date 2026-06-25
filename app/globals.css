@@ -1,0 +1,88 @@
+/*
+ * Claude Rabbit design system — ported verbatim from the Claude Design export
+ * (`design-source/Claude Rabbit.dc.html`, the <style> block, lines ~27–103).
+ *
+ * This is the shipped design system: the warm-stone light theme + warm-charcoal
+ * dark theme custom properties, the keyframes, the reset, and the helper
+ * classes. It is not paraphrased or "improved".
+ *
+ * ONE faithful Next.js adaptation: the source `html,body` rule hardcoded
+ * `background:#f3f1ec` (the light bg); here it is `background:var(--bg)` so the
+ * page background follows the active theme. Everything else is byte-for-byte.
+ */
+
+:root{
+  /* LIGHT THEME (default) — warm stone */
+  --bg:#f3f1ec; --bg2:#e9e5dd; --paper:#fbfaf7;
+  --s1:rgba(40,34,24,0.028); --s2:rgba(40,34,24,0.055); --s3:rgba(40,34,24,0.085);
+  --glass:rgba(251,250,247,0.72); --glass2:rgba(255,255,255,0.55);
+  --line:rgba(40,34,24,0.10); --line2:rgba(40,34,24,0.16); --line3:rgba(40,34,24,0.28);
+  --t1:#221f1a; --t2:#403a32; --t3:#6d665b; --t4:#928a7d; --t5:#b0a797; --t6:#cdc5b6;
+  --ink:#221f1a; --ink-fg:#f7f5f0; --inkhi:rgba(255,255,255,0.16);
+  --green:oklch(0.56 0.13 154); --green-g:oklch(0.56 0.13 154 / 0.16); --green-t:oklch(0.56 0.13 154 / 0.085);
+  --blue:oklch(0.54 0.12 248); --blue-g:oklch(0.54 0.12 248 / 0.16); --blue-t:oklch(0.54 0.12 248 / 0.085);
+  --amber:oklch(0.66 0.13 62); --amber-g:oklch(0.66 0.13 62 / 0.18); --amber-t:oklch(0.66 0.13 62 / 0.10);
+  --red:oklch(0.55 0.19 27); --red-g:oklch(0.55 0.19 27 / 0.16); --red-t:oklch(0.55 0.19 27 / 0.085);
+  --gold:oklch(0.68 0.13 76);
+  --shadow-sm:0 1px 2px rgba(40,34,24,0.05), 0 3px 8px rgba(40,34,24,0.04);
+  --shadow:0 1px 2px rgba(40,34,24,0.04), 0 14px 40px rgba(40,34,24,0.09);
+  --shadow-lg:0 2px 6px rgba(40,34,24,0.05), 0 30px 70px rgba(40,34,24,0.13);
+  --grain-op:0.04; --grain-blend:multiply; --scrollthumb:rgba(40,34,24,0.16); --scrolltrackborder:var(--bg);
+  --ease:cubic-bezier(0.23,1,0.32,1); --easeio:cubic-bezier(0.77,0,0.175,1); --drawer:cubic-bezier(0.32,0.72,0,1);
+}
+[data-theme="dark"]{
+  /* DARK THEME — warm charcoal */
+  --bg:#16130f; --bg2:#1e1a15; --paper:#1d1916;
+  --s1:rgba(255,255,255,0.026); --s2:rgba(255,255,255,0.05); --s3:rgba(255,255,255,0.085);
+  --glass:rgba(22,19,15,0.66); --glass2:rgba(255,255,255,0.04);
+  --line:rgba(255,255,255,0.08); --line2:rgba(255,255,255,0.13); --line3:rgba(255,255,255,0.22);
+  --t1:#f4f1ea; --t2:#d9d4ca; --t3:#a39c90; --t4:#7e7669; --t5:#574f44; --t6:#39322a;
+  --ink:#f4f1ea; --ink-fg:#1a1714; --inkhi:rgba(255,255,255,0.5);
+  --green:oklch(0.80 0.14 158); --green-g:oklch(0.80 0.14 158 / 0.40); --green-t:oklch(0.80 0.14 158 / 0.13);
+  --blue:oklch(0.74 0.11 232); --blue-g:oklch(0.74 0.11 232 / 0.40); --blue-t:oklch(0.74 0.11 232 / 0.13);
+  --amber:oklch(0.83 0.13 80); --amber-g:oklch(0.83 0.13 80 / 0.40); --amber-t:oklch(0.83 0.13 80 / 0.13);
+  --red:oklch(0.66 0.20 25); --red-g:oklch(0.66 0.20 25 / 0.40); --red-t:oklch(0.66 0.20 25 / 0.13);
+  --gold:oklch(0.84 0.15 86);
+  --shadow-sm:0 1px 2px rgba(0,0,0,0.3), 0 3px 10px rgba(0,0,0,0.3);
+  --shadow:0 1px 2px rgba(0,0,0,0.35), 0 16px 44px rgba(0,0,0,0.5);
+  --shadow-lg:0 2px 8px rgba(0,0,0,0.4), 0 30px 70px rgba(0,0,0,0.6);
+  --grain-op:0.5; --grain-blend:overlay; --scrollthumb:rgba(255,255,255,0.12); --scrolltrackborder:var(--bg);
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); scroll-behavior:smooth; }
+body{ font-family:'Geist',system-ui,sans-serif; -webkit-font-smoothing:antialiased; color:var(--t2); font-feature-settings:"ss01","cv01"; letter-spacing:0.005em; }
+::selection{ background:var(--s3); }
+::-webkit-scrollbar{ width:11px; height:11px; }
+::-webkit-scrollbar-thumb{ background:var(--scrollthumb); border-radius:8px; border:3px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-track{ background:transparent; }
+input,button,textarea{ font-family:inherit; }
+.serif{ font-family:'Instrument Serif',Georgia,serif; font-weight:400; letter-spacing:-0.005em; }
+.tnum{ font-variant-numeric:tabular-nums; }
+.reveal{ opacity:0; transform:translateY(26px); transition:opacity .85s var(--ease), transform .85s var(--ease); will-change:opacity,transform; }
+.reveal.show{ opacity:1; transform:none; }
+.cr-root[data-app="out"]{ padding-left:0; }
+.cr-root[data-app="exp"]{ padding-left:292px; }
+.cr-root[data-app="col"]{ padding-left:100px; }
+.cr-sidebar[data-collapsed="false"]{ width:264px; }
+.cr-sidebar[data-collapsed="true"]{ width:72px; }
+.cr-sidebar > div{ animation:fadeIn .3s var(--ease) both; }
+@keyframes rabbitDot{ 0%,100%{ opacity:.16; transform:scale(.66);} 42%{ opacity:1; transform:scale(1);} }
+@keyframes screenIn{ from{ opacity:0; transform:translateY(10px); filter:blur(6px);} to{ opacity:1; transform:translateY(0); filter:blur(0);} }
+@keyframes fadeIn{ from{opacity:0;} to{opacity:1;} }
+@keyframes riseIn{ from{ opacity:0; transform:translateY(20px);} to{ opacity:1; transform:translateY(0);} }
+@keyframes ringDraw{ from{ stroke-dashoffset:327;} }
+@keyframes barGrow{ from{ transform:scaleX(0);} }
+@keyframes spinSlow{ to{ transform:rotate(360deg);} }
+@keyframes pulseRing{ 0%{ transform:scale(1); opacity:.55;} 100%{ transform:scale(2.4); opacity:0;} }
+@keyframes logIn{ from{ opacity:0; transform:translateX(-7px);} to{ opacity:1; transform:translateX(0);} }
+@keyframes floatY{ 0%,100%{ transform:translateY(0);} 50%{ transform:translateY(-5px);} }
+@keyframes scoreGlow{ 0%,100%{ opacity:.5;} 50%{ opacity:.9;} }
+@keyframes drawerIn{ from{ opacity:0; transform:scale(0.985); filter:blur(8px);} to{ opacity:1; transform:scale(1); filter:blur(0);} }
+@keyframes shimmer{ 0%{ background-position:-180% 0;} 100%{ background-position:180% 0;} }
+@keyframes marqueeUp{ from{transform:translateY(0);} to{transform:translateY(-50%);} }
+@keyframes marqueeDown{ from{transform:translateY(-50%);} to{transform:translateY(0);} }
+@keyframes orbFloat{ 0%,100%{ transform:translateY(0) scale(1);} 50%{ transform:translateY(-7px) scale(1.04);} }
+@keyframes ringspin{ from{ transform:rotate(0deg);} to{ transform:rotate(360deg);} }
+@keyframes cardspin{ from{ transform:rotate(0deg);} to{ transform:rotate(-360deg);} }
+@keyframes orbCardFloat{ 0%,100%{ transform:translateY(0);} 50%{ transform:translateY(-6px);} }
+@media (prefers-reduced-motion:reduce){ .reveal{ transition:opacity .4s ease; transform:none; } *{ animation-duration:.001ms !important; } }
