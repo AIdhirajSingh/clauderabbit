@@ -1,0 +1,10 @@
+# Normalize line endings to LF in the repo (Vercel/Linux builds get LF; Windows checkout may show CRLF)
+* text=auto eol=lf
+
+# Binary / non-diffable
+*.png binary
+*.jpg binary
+*.woff2 binary
+*.zip binary
+*.tar.gz binary
+*.mp4 binary
