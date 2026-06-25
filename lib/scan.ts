@@ -33,7 +33,13 @@ interface ScanArgs {
   repo: string;
   ref?: string;
   deviceId?: string;
-  userId?: string;
+  /**
+   * The current user's Supabase session access token, when signed in. Sent as
+   * `Authorization: Bearer <token>` so the edge function can verify it server-
+   * side (`auth.getUser(token)`) and attribute the scan to a TRUSTED user id.
+   * The publishable `apikey` header is still sent for gateway routing.
+   */
+  accessToken?: string;
 }
 
 const SEVERITIES: ReadonlySet<string> = new Set<Severity>(["high", "med", "low"]);
@@ -167,15 +173,18 @@ export async function runScan(args: ScanArgs): Promise<ScanResult> {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // `apikey` is the publishable key — it routes the request at the
+        // Functions gateway. The Bearer carries the USER session token when
+        // signed in (so the function can verify + attribute it); otherwise it
+        // falls back to the publishable key for the logged-out free scan.
         apikey: key,
-        Authorization: `Bearer ${key}`,
+        Authorization: `Bearer ${args.accessToken ?? key}`,
       },
       body: JSON.stringify({
         owner: args.owner,
         repo: args.repo,
         ...(args.ref ? { ref: args.ref } : {}),
         ...(args.deviceId ? { deviceId: args.deviceId } : {}),
-        ...(args.userId ? { userId: args.userId } : {}),
       }),
     });
   } catch {

@@ -39,6 +39,8 @@ import {
 } from "@/lib/report-view";
 import { parseRepoInput } from "@/lib/parse-repo";
 import { runScan } from "@/lib/scan";
+import { createClient } from "@/lib/supabase/client";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import type {
   ActivityEntry,
   LeaderboardEntry,
@@ -66,6 +68,13 @@ const AD_SECONDS = 15;
 const TOAST_MS = 3400;
 /** Delay between picking a suggestion chip and firing the scan. */
 const SUGGESTION_PICK_MS = 140;
+/**
+ * localStorage key for the repo the user was about to scan when the login gate
+ * fired. Persisted here (not just in reducer state) because a real OAuth/magic-
+ * link sign-in is a full-page redirect that wipes React state — on return we
+ * restore it so the user lands ready to scan what they came for.
+ */
+const PENDING_REPO_KEY = "cr-pending-repo";
 
 export type Screen =
   | "home"
@@ -134,8 +143,10 @@ const initialState: State = {
   failed: false,
   toast: null,
   toastColor: "var(--t3)",
-  profileName: "Ana Mirza",
-  profileEmail: "ana@mirza.dev",
+  // Identity is populated from the real Supabase session on sign-in (see the
+  // auth effect in AppProvider); empty until then.
+  profileName: "",
+  profileEmail: "",
   editName: false,
   editDraft: "",
   starCount: "0",
@@ -366,6 +377,39 @@ function getDeviceId(): string | undefined {
   }
 }
 
+/** Derive a display name from a Supabase session user (metadata → email local part). */
+function nameFromSession(session: Session): string {
+  const u = session.user;
+  const meta = (u.user_metadata ?? {}) as Record<string, unknown>;
+  const fromMeta =
+    (typeof meta.full_name === "string" && meta.full_name) ||
+    (typeof meta.name === "string" && meta.name) ||
+    "";
+  if (fromMeta) return fromMeta;
+  const email = u.email ?? "";
+  const local = email.split("@")[0];
+  return local || "Account";
+}
+
+/** The auth-derived fields the SPA mirrors into reducer state on sign-in. */
+interface AuthProfile {
+  loggedIn: boolean;
+  profileName: string;
+  profileEmail: string;
+}
+
+/** Build the reducer patch for a session (or the signed-out defaults when null). */
+function profileFromSession(session: Session | null): AuthProfile {
+  if (!session) {
+    return { loggedIn: false, profileName: "", profileEmail: "" };
+  }
+  return {
+    loggedIn: true,
+    profileName: nameFromSession(session),
+    profileEmail: session.user.email ?? "",
+  };
+}
+
 /** Look up a report by id from the live scan cache first, then the demo set. */
 function reportById(
   id: string | null,
@@ -428,7 +472,9 @@ export interface AppApi {
   closeLogs: () => void;
   openLeaderboard: () => void;
   backFromLeaderboard: () => void;
-  doLogin: () => void;
+  signInWithGoogle: () => void;
+  signInWithGitHub: () => void;
+  signInWithEmail: (email: string) => void;
   logout: () => void;
   exportPDF: () => void;
   copyLink: () => void;
@@ -508,6 +554,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The pending live-scan target (owner/repo + ref) for retry.
   const liveScanTarget = useRef<{ owner: string; repo: string; ref?: string } | null>(null);
 
+  // The browser Supabase client — a stable single instance (useRef, NOT useMemo)
+  // so we never spawn multiple GoTrueClient instances fighting over the auth
+  // lock. Created lazily inside the auth effect (refs must not be written during
+  // render); null until then, and null permanently if the publishable env is
+  // missing (createClient throws), in which case the app stays logged-out.
+  const supabaseRef = useRef<SupabaseClient | null>(null);
+  /** Get (or lazily create) the browser client. Safe to call post-mount only. */
+  const getSupabase = useCallback((): SupabaseClient | null => {
+    if (supabaseRef.current === null) {
+      try {
+        supabaseRef.current = createClient();
+      } catch {
+        return null;
+      }
+    }
+    return supabaseRef.current;
+  }, []);
+  // The freshest session, for the scan path's Authorization token. Updated by
+  // the auth listener; read inside scan handlers (which run after commit).
+  const sessionRef = useRef<Session | null>(null);
+
   const patch = useCallback((p: Partial<State>) => dispatch({ type: "PATCH", patch: p }), []);
 
   const toast = useCallback(
@@ -580,6 +647,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // No window / malformed URL — nothing to prefill.
     }
   }, [patch]);
+
+  // ── real Supabase auth: session → loggedIn (mount, with cleanup) ──
+  // `onAuthStateChange` fires INITIAL_SESSION immediately (covering the initial
+  // read), then SIGNED_IN / SIGNED_OUT / TOKEN_REFRESHED as they happen. We
+  // mirror the session into reducer state and keep `sessionRef` fresh for the
+  // scan path's Authorization token. Per Supabase guidance we do NOT `await`
+  // any supabase call INSIDE the callback (it holds the auth lock and can
+  // deadlock) — the optional profiles-row fetch is deferred to a microtask.
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const applyProfileRow = (session: Session) => {
+      // Deferred (not awaited inside the auth callback). Overrides the display
+      // name with the user's saved profiles.display_name when present.
+      void supabase
+        .from("profiles")
+        .select("display_name")
+        .eq("id", session.user.id)
+        .maybeSingle()
+        .then(({ data }) => {
+          const name = (data as { display_name: string | null } | null)?.display_name;
+          if (name && name.trim()) patch({ profileName: name.trim() });
+        });
+    };
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      sessionRef.current = session;
+      patch(profileFromSession(session));
+
+      if (session && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
+        // Defer the profile-row read out of the auth-lock callback.
+        setTimeout(() => applyProfileRow(session), 0);
+      }
+
+      if (event === "SIGNED_IN") {
+        // A real sign-in (incl. return from the OAuth/magic-link redirect, which
+        // wiped React state). Restore the repo the user was about to scan and
+        // land them in the dashboard ready to go.
+        let pending: string | null = null;
+        try {
+          pending = localStorage.getItem(PENDING_REPO_KEY);
+          if (pending) localStorage.removeItem(PENDING_REPO_KEY);
+        } catch {
+          pending = null;
+        }
+        patch({
+          screen: "dashboard",
+          pendingRepo: null,
+          ...(pending ? { input: pending } : {}),
+        });
+        toast("Signed in.", "var(--green)");
+      }
+
+      if (event === "SIGNED_OUT") {
+        patch({ screen: "home", editName: false });
+      }
+    });
+
+    return () => sub.subscription.unsubscribe();
+  }, [getSupabase, patch, toast]);
 
   // ── one-shot cleanup for any timers still pending at unmount ──
   useEffect(() => {
@@ -692,8 +820,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }, PROC_STEP_MS);
 
-      const deviceId = stateRef.current.loggedIn ? undefined : getDeviceId();
-      runScan({ owner, repo, ...(ref ? { ref } : {}), ...(deviceId ? { deviceId } : {}) })
+      // Always send the deviceId (limits are tracked by login AND device) plus
+      // the session access token when signed in, so the function can verify the
+      // user and enforce the per-user / per-device daily limit server-side.
+      const deviceId = getDeviceId();
+      const accessToken = sessionRef.current?.access_token;
+      runScan({
+        owner,
+        repo,
+        ...(ref ? { ref } : {}),
+        ...(deviceId ? { deviceId } : {}),
+        ...(accessToken ? { accessToken } : {}),
+      })
         .then((result) => {
           // Ignore a resolution that has been superseded (newer scan / retry).
           if (token !== liveScanToken.current) return;
@@ -772,6 +910,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Login gate (preserved exactly): after the free first scan, logged-out
     // users must sign in to continue. The pending repo (input) is restored on login.
     if (fresh >= 1 && !stateRef.current.loggedIn && stateRef.current.screen !== "dashboard") {
+      // Persist the pending repo across the full-page OAuth/magic-link redirect
+      // (which wipes reducer state); the auth listener restores it on SIGNED_IN.
+      try {
+        localStorage.setItem(PENDING_REPO_KEY, id);
+      } catch {
+        // Storage unavailable — pendingRepo still set in-memory for same-tab login.
+      }
       patch({ screen: "login", pendingRepo: id });
       toast("Sign in to continue scanning.", "var(--blue)");
       return;
@@ -897,15 +1042,81 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patch],
   );
 
-  const doLogin = useCallback(() => {
-    patch({ loggedIn: true, screen: "dashboard", pendingRepo: null });
-    toast("Signed in. Welcome back, Ana.", "var(--green)");
-  }, [patch, toast]);
+  /** The app origin used for OAuth / magic-link redirect targets. */
+  const authRedirectUrl = useCallback((): string => {
+    const origin =
+      typeof window !== "undefined" && window.location?.origin
+        ? window.location.origin
+        : process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
+    return `${origin.replace(/\/$/, "")}/auth/callback`;
+  }, []);
+
+  /** Start an OAuth provider — a full-page redirect; the callback finishes the session. */
+  const signInWithProvider = useCallback(
+    (provider: "google" | "github", label: string) => {
+      const supabase = getSupabase();
+      if (!supabase) {
+        toast("Sign-in is not configured.", "var(--amber)");
+        return;
+      }
+      void supabase.auth
+        .signInWithOAuth({
+          provider,
+          options: { redirectTo: authRedirectUrl() },
+        })
+        .then(({ error }) => {
+          if (error) toast(`Could not start ${label} sign-in.`, "var(--amber)");
+        });
+    },
+    [authRedirectUrl, getSupabase, toast],
+  );
+
+  const signInWithGoogle = useCallback(
+    () => signInWithProvider("google", "Google"),
+    [signInWithProvider],
+  );
+  const signInWithGitHub = useCallback(
+    () => signInWithProvider("github", "GitHub"),
+    [signInWithProvider],
+  );
+
+  /** Send an email magic-link / OTP. No provider creds needed; works on its own. */
+  const signInWithEmail = useCallback(
+    (email: string) => {
+      const addr = (email || "").trim();
+      if (!addr || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) {
+        toast("Enter a valid email address.", "var(--amber)");
+        return;
+      }
+      const supabase = getSupabase();
+      if (!supabase) {
+        toast("Sign-in is not configured.", "var(--amber)");
+        return;
+      }
+      void supabase.auth
+        .signInWithOtp({
+          email: addr,
+          options: { emailRedirectTo: authRedirectUrl() },
+        })
+        .then(({ error }) => {
+          if (error) {
+            toast("Could not send the sign-in link. Try again.", "var(--amber)");
+          } else {
+            toast("Check your email for the sign-in link.", "var(--blue)");
+          }
+        });
+    },
+    [authRedirectUrl, getSupabase, toast],
+  );
 
   const logout = useCallback(() => {
+    const supabase = getSupabase();
+    // The SIGNED_OUT listener resets screen/loggedIn; patch immediately too so
+    // the UI flips even if the network sign-out is slow, then confirm.
     patch({ loggedIn: false, screen: "home", editName: false });
     toast("Signed out.");
-  }, [patch, toast]);
+    if (supabase) void supabase.auth.signOut();
+  }, [getSupabase, patch, toast]);
 
   const exportPDF = useCallback(() => toast("PDF report generated.", "var(--green)"), [toast]);
   const copyLink = useCallback(() => {
@@ -938,9 +1149,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const saveName = useCallback(() => {
     const cur = stateRef.current;
-    patch({ profileName: (cur.editDraft || "").trim() || cur.profileName, editName: false });
+    const next = (cur.editDraft || "").trim() || cur.profileName;
+    // Optimistic local update (the UI flips immediately).
+    patch({ profileName: next, editName: false });
     toast("Profile updated.", "var(--green)");
-  }, [patch, toast]);
+    // Persist to the user's own profiles row (RLS allows own-row update).
+    const supabase = getSupabase();
+    const userId = sessionRef.current?.user.id;
+    if (supabase && userId) {
+      void supabase
+        .from("profiles")
+        .update({ display_name: next })
+        .eq("id", userId)
+        .then(({ error }) => {
+          if (error) toast("Saved locally, but the server update failed.", "var(--amber)");
+        });
+    }
+  }, [getSupabase, patch, toast]);
   const cancelName = useCallback(() => patch({ editName: false }), [patch]);
 
   const toggleTheme = useCallback(() => {
@@ -1174,7 +1399,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       closeLogs,
       openLeaderboard,
       backFromLeaderboard,
-      doLogin,
+      signInWithGoogle,
+      signInWithGitHub,
+      signInWithEmail,
       logout,
       exportPDF,
       copyLink,
@@ -1225,7 +1452,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       closeLogs,
       openLeaderboard,
       backFromLeaderboard,
-      doLogin,
+      signInWithGoogle,
+      signInWithGitHub,
+      signInWithEmail,
       logout,
       exportPDF,
       copyLink,

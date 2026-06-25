@@ -155,12 +155,21 @@ max_indexes = 5
 [auth]
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
-# in emails.
-site_url = "http://127.0.0.1:3000"
+# in emails. The app runs on localhost:2311 (see package.json `dev` / NEXT_PUBLIC_SITE_URL), so
+# this MUST match or auth providers reject the redirectTo / emailRedirectTo back to the app.
+site_url = "http://localhost:2311"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+# The OAuth + magic-link flows redirect to /auth/callback on the app origin; the bare origin is
+# allowed too so a coerced redirect still lands on the SPA. (Production origins are added in the
+# Supabase dashboard's URL configuration — this list governs local dev.)
+additional_redirect_urls = [
+  "http://localhost:2311",
+  "http://localhost:2311/auth/callback",
+  "http://127.0.0.1:2311",
+  "http://127.0.0.1:2311/auth/callback",
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.
@@ -333,6 +342,26 @@ url = ""
 skip_nonce_check = false
 # If enabled, it will allow the user to successfully authenticate when the provider does not return an email address.
 email_optional = false
+
+# Google OAuth. Wired but credential-driven: the client id/secret come from env so no secret
+# lives in the repo. Email magic-link/OTP works WITHOUT these (no provider creds needed). To make
+# Google sign-in fully functional you must, in the Supabase dashboard (a console step):
+#   1. Create an OAuth 2.0 Client ID in Google Cloud (project gen-lang-client-0062239756),
+#      authorized redirect URI = https://mjvlczaytkhvsolnhhkz.supabase.co/auth/v1/callback
+#   2. Set the client id + secret under Authentication → Providers → Google, and enable it.
+# For local `supabase start`, set SUPABASE_AUTH_GOOGLE_CLIENT_ID / _SECRET in the environment and
+# the block below reads them. `skip_nonce_check` is required for local Google sign-in only.
+[auth.external.google]
+enabled = true
+client_id = "env(SUPABASE_AUTH_GOOGLE_CLIENT_ID)"
+# DO NOT commit your OAuth provider secret to git. Use environment variable substitution instead:
+secret = "env(SUPABASE_AUTH_GOOGLE_SECRET)"
+# Overrides the default auth callback URL derived from auth.external_url.
+redirect_uri = ""
+# Overrides the default auth provider URL (self-hosted / single-tenant). Empty = Google's default.
+url = ""
+# Required for local sign in with Google auth (skips the OIDC nonce check). Local-dev only.
+skip_nonce_check = true
 
 # Allow Solana wallet holders to sign in to your project via the Sign in with Solana (SIWS, EIP-4361) standard.
 # You can configure "web3" rate limit in the [auth.rate_limit] section and set up [auth.captcha] if self-hosting.

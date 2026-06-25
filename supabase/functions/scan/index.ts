@@ -214,6 +214,90 @@ function serviceClient(): SupabaseClient {
   });
 }
 
+// --- Auth + identity ---------------------------------------------------------
+
+/** SHA-256 hex of a string (Web Crypto, available in Deno). */
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Extract a TRUSTED user id from the request's Authorization bearer, or null.
+ *
+ * The publishable (anon) key is the logged-out caller's bearer — it is NOT a
+ * user, so it yields null. Any other bearer is treated as a user session JWT
+ * and verified against GoTrue via `auth.getUser(token)`; a valid token yields
+ * its user id. Verification failure (expired/garbage token, network error)
+ * degrades to null so the scan still proceeds as the logged-out free flow.
+ */
+async function verifiedUserId(req: Request): Promise<string | null> {
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const m = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!m) return null;
+  const token = m[1].trim();
+  if (!token) return null;
+
+  // The anon/publishable key is not a user token — skip verification.
+  const publishable = Deno.env.get("SUPABASE_ANON_KEY") ??
+    Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
+  if ((publishable && token === publishable) || token.startsWith("sb_publishable_")) {
+    return null;
+  }
+
+  const url = Deno.env.get("SUPABASE_URL");
+  // Verify with a NON-service (publishable/anon) key only. If neither is set we
+  // cannot verify without escalating to the service key — return null (anon)
+  // rather than create an auth client keyed by the service credential.
+  if (!url || !publishable) return null;
+  try {
+    // A plain client keyed by the publishable key; getUser(token) verifies the
+    // passed token rather than any persisted session.
+    const authClient = createClient(url, publishable, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data, error } = await authClient.auth.getUser(token);
+    if (error || !data?.user) return null;
+    return data.user.id;
+  } catch (e) {
+    console.error("token verify failed:", e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
+ * Enforce the daily scan limit atomically via the SECURITY DEFINER RPC. Keys on
+ * the user id when signed in, else the (hashed) device id. Returns true when the
+ * scan is allowed (and the counter was incremented), false when the limit is
+ * reached. With neither identity present (no token, no device id) there is
+ * nothing to meter, so it allows.
+ */
+async function enforceDailyLimit(
+  db: SupabaseClient,
+  userId: string | null,
+  deviceId: string | null,
+  scanType: "stage1" | "dynamic",
+): Promise<boolean> {
+  if (!userId && !deviceId) return true;
+  const { data, error } = await db.rpc("check_and_increment_scan_limit", {
+    p_user_id: userId,
+    p_device_id: deviceId,
+    p_scan_type: scanType,
+  });
+  if (error) {
+    console.error("limit check failed:", error.message);
+    // Fail OPEN on an unexpected RPC error: a metering outage must not take the
+    // whole scanner down. The next successful call re-enforces the limit.
+    return true;
+  }
+  // The RPC returns a single row { allowed, remaining }.
+  const row = Array.isArray(data) ? data[0] : data;
+  return (row as { allowed?: boolean } | null)?.allowed === true;
+}
+
 // --- Helpers -----------------------------------------------------------------
 
 function clamp(n: unknown, min: number, max: number, fallback: number): number {
@@ -485,14 +569,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: "ref contains invalid characters" }, 400);
   }
 
-  // Device id is an opaque client fingerprint for rate-limiting in a later
-  // unit; bound it here so untrusted input can't write unbounded strings.
-  const deviceId = typeof body.deviceId === "string"
+  // Device id is an opaque client fingerprint. Bound the raw value (untrusted
+  // input must not write unbounded strings), then HASH it before it is used for
+  // the daily-limit key or stored on the scan row — the raw fingerprint never
+  // touches the database. The hash is stable per device, so it keys the limit
+  // counter and the analytics column consistently.
+  const rawDeviceId = typeof body.deviceId === "string"
     ? body.deviceId.slice(0, 128).replace(/[^A-Za-z0-9_-]/g, "") || null
     : null;
-  // userId from the request body is NOT trusted (no JWT verification in this
-  // unit); attribution to a real user is wired when auth lands. Keep null.
-  const userId = null;
+  const deviceId = rawDeviceId ? await sha256Hex(rawDeviceId) : null;
+
+  // Verify the caller's session token (if any) to get a TRUSTED user id. A body
+  // `userId` is NEVER trusted. The publishable key is the logged-out Bearer; any
+  // other Bearer is treated as a user JWT and verified via GoTrue. Verification
+  // failure degrades to anon (userId=null) — it never fails the scan.
+  const userId = await verifiedUserId(req);
 
   let db: SupabaseClient;
   try {
@@ -561,6 +652,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Non-fatal: fall through to a fresh scan.
   }
 
+  // 2b. Daily limit — STAGE-1 gate, BEFORE any model spend. Every fresh scan
+  // begins on the fast (stage-1) path, so the stage-1 budget (3/day) is checked
+  // here, before the expensive read-model call, so a limit-reached caller cannot
+  // burn model budget. The cache path returned above and never reaches this, so
+  // a cached view consumes no limit. A scan that later escalates is additionally
+  // metered against the dynamic budget at step 7b.
+  const stage1Allowed = await enforceDailyLimit(db, userId, deviceId, "stage1");
+  if (!stage1Allowed) {
+    return jsonResponse(
+      { error: "Daily limit reached: 3 standard scans per day. Try again tomorrow." },
+      429,
+    );
+  }
+
   // 3. Static scan → flagged regions (code signals only).
   const scan = staticScan(files);
 
@@ -610,6 +715,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const escalate = decideEscalation(model, scan, owner, confidence);
   const scanPath = escalate ? "deep" : "fast";
   const deep = escalate;
+
+  // 7b. Daily limit — DYNAMIC gate. The stage-1 budget was already consumed at
+  // step 2b. Only when the scan escalates to the deep (dynamic sandbox) path is
+  // the separate dynamic budget (1/day) additionally metered, before the deep
+  // result is persisted. A non-escalating fast scan never reaches this check.
+  if (deep) {
+    const dynamicAllowed = await enforceDailyLimit(db, userId, deviceId, "dynamic");
+    if (!dynamicAllowed) {
+      return jsonResponse(
+        { error: "Daily limit reached: 1 sandbox (dynamic) scan per day. Try again tomorrow." },
+        429,
+      );
+    }
+  }
 
   // Build logs from the model, then append/adjust the escalation decision so we
   // never fabricate a dynamic run.
