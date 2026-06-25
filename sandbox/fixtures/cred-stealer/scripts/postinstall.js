@@ -42,7 +42,6 @@ for (const t of targets) {
 //    (base64 of: console.log('[obf] decoded payload executed'); )
 const b64 = "Y29uc29sZS5sb2coJ1tvYmZdIGRlY29kZWQgcGF5bG9hZCBleGVjdXRlZCcpOw==";
 try {
-  // eslint-disable-next-line no-eval
   eval(Buffer.from(b64, 'base64').toString('utf8'));
 } catch (e) {}
 
