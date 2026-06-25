@@ -27,23 +27,31 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { ACTIVITY, DEMO_ORDER, LEADERBOARD, REPOS, useCases } from "@/lib/demo-data";
+import { ACTIVITY, LEADERBOARD, REPOS, useCases } from "@/lib/demo-data";
 import { bandColor, bandGlow, bandLabel, bandTint } from "@/lib/score";
+import {
+  buildReportView,
+  logColor,
+  type LogChapterView,
+  type PackageScoreView,
+  type RepoView,
+  type RiskyItemView,
+} from "@/lib/report-view";
+import { parseRepoInput } from "@/lib/parse-repo";
+import { runScan } from "@/lib/scan";
 import type {
   ActivityEntry,
   LeaderboardEntry,
   LogChapter,
-  PackageScore,
   Report,
-  RiskyItem,
   UseCase,
 } from "@/lib/types";
 import type { SnapProps } from "./components/Snap";
 
+export type { LogChapterView, PackageScoreView, RepoView, RiskyItemView };
+
 // ───────────────────────────── constants ─────────────────────────────
 
-/** Circumference of the score ring (r=52 → ~327), used for stroke-dashoffset. */
-const RING_CIRC = 327;
 /** Star count-up target and duration, from the prototype's componentDidMount. */
 const STAR_TARGET = 24318;
 const STAR_DUR = 1200;
@@ -101,6 +109,14 @@ interface State {
   pendingRepo: string | null;
   theme: Theme;
   sidebarCollapsed: boolean;
+  /** Live scan results keyed by "owner/repo" id (real repos, not demo). */
+  liveReports: Record<string, Report>;
+  /**
+   * True while a REAL scan's network request is in flight: the processing
+   * screen runs the generic chapter timeline (no pre-known demo logs) and the
+   * report is shown when `runScan` resolves rather than on a fixed timer.
+   */
+  procLive: boolean;
 }
 
 const initialState: State = {
@@ -131,6 +147,8 @@ const initialState: State = {
   pendingRepo: null,
   theme: "light",
   sidebarCollapsed: false,
+  liveReports: {},
+  procLive: false,
 };
 
 type Action = { type: "PATCH"; patch: Partial<State> };
@@ -145,42 +163,9 @@ function reducer(state: State, action: Action): State {
 }
 
 // ───────────────────────── derived view types ─────────────────────────
-
-/** A risky item with the prototype's derived severity/kind display fields. */
-export interface RiskyItemView extends RiskyItem {
-  _sevColor: string;
-  _sevLabel: string;
-  _kindLabel: string;
-}
-
-/** A package score with derived band color + tint. */
-export interface PackageScoreView extends PackageScore {
-  _color: string;
-  _tint: string;
-}
-
-/** A log chapter with its derived band color. */
-export interface LogChapterView extends LogChapter {
-  _color: string;
-}
-
-/** A full report enriched with every derived field the report screen reads. */
-export interface RepoView extends Omit<Report, "packages" | "risky" | "logs"> {
-  _color: string;
-  _glow: string;
-  _tint: string;
-  _band: string;
-  _ring: number;
-  _hasRisky: boolean;
-  _finalNote: string;
-  _notVerified: string[];
-  _repBar: number;
-  _ownerInitial: string;
-  _ageColor: string;
-  packages: PackageScoreView[];
-  risky: RiskyItemView[];
-  logs: LogChapterView[];
-}
+// RiskyItemView / PackageScoreView / LogChapterView / RepoView are defined in
+// lib/report-view.ts (the shared derivation used by both the SPA and the
+// server-rendered report page) and re-exported above.
 
 /** A processing-timeline chapter with derived dot/line/loader/check styling. */
 export interface ProcChapterView {
@@ -322,69 +307,81 @@ const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = [
   { id: "r5", label: "fastlib/crypto-utils" },
 ];
 
-// ───────────────── pure derivation helpers (from the prototype) ─────────────────
+/**
+ * Generic fast-path timeline shown while a REAL scan is in flight (the live
+ * scan has no pre-known demo logs). Mirrors the fast-path chapters the edge
+ * function actually runs: clone → static scan → reputation → read. The step
+ * advances on the same timer as the demo flow; the report is shown when the
+ * network call resolves, not when the timer ends.
+ */
+const LIVE_PROC_CHAPTERS: LogChapter[] = [
+  {
+    ch: "Clone",
+    kind: "ok",
+    lines: ["Resolving the repository and its latest commit", "Reading the tree at the resolved SHA"],
+  },
+  {
+    ch: "Static scan",
+    kind: "ok",
+    lines: ["Scanning for install hooks, obfuscation, and credential access", "Flagging regions for the read model"],
+  },
+  {
+    ch: "Reputation",
+    kind: "ok",
+    lines: ["Checking owner account age and history", "Folding in community signal (kept separate from code)"],
+  },
+  {
+    ch: "Read",
+    kind: "ok",
+    lines: ["Read model reading only the flagged regions", "Blending the score and finalizing the verdict"],
+  },
+];
 
-function finalNote(score: number): string {
-  if (score >= 90)
-    return "No malicious behavior observed in our tests. The code read clean and reputation is strong. We did not exhaustively execute every branch, and a clean read is not a guarantee.";
-  if (score >= 80)
-    return "No malicious behavior observed in our tests. The caveats above are worth noting, and the owner is not yet long-established, but nothing here points to harm.";
-  if (score >= 60)
-    return "We observed undisclosed install-time behavior. This is not confirmed malicious, but it is more than this tool needs. Run it only inside a sandbox or throwaway environment.";
-  return "We observed active credential access or network behavior consistent with malware. Do not run this outside a fully disposable environment. The blocked outbound attempts are themselves the detection signal.";
-}
+// ───────────────── report-view derivation (shared) ─────────────────
+// finalNote / notVerified / sev* / kindLabel / logColor / buildReportView all
+// live in lib/report-view.ts so the SPA and the server page derive identically.
+// `logColor` is imported above for the processing timeline. The SPA holds live
+// reports (from real scans) by id in `liveReports`, falling back to demo REPOS.
 
-function notVerified(r: Report): string[] {
-  const base = [
-    "Every conditional and time-triggered branch",
-    "Behavior under real credentials (none were present in the sandbox)",
-  ];
-  if (!r.deep) {
-    base.unshift("Full runtime behavior (this repo did not escalate to a sandbox run)");
+/**
+ * Stable per-device id for rate-limiting pre-auth scans (the edge function's
+ * `deviceId`). Persisted in localStorage; charset bounded to what the function
+ * accepts (`[A-Za-z0-9_-]`). Returns undefined if storage/crypto is unavailable.
+ */
+function getDeviceId(): string | undefined {
+  try {
+    const KEY = "cr-device-id";
+    let id = localStorage.getItem(KEY);
+    if (!id) {
+      const rand =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2) + Date.now().toString(36);
+      id = rand.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+      localStorage.setItem(KEY, id);
+    }
+    return id || undefined;
+  } catch {
+    return undefined;
   }
-  return base;
 }
 
-function sevColor(severity: RiskyItem["severity"]): string {
-  return severity === "high" ? "var(--red)" : severity === "med" ? "var(--amber)" : "var(--blue)";
-}
-function sevLabel(severity: RiskyItem["severity"]): string {
-  return severity === "high" ? "High" : severity === "med" ? "Medium" : "Low";
-}
-function kindLabel(kind: RiskyItem["kind"]): string {
-  return kind === "behavior" ? "Behavior" : kind === "rep" ? "Reputation" : "Code";
-}
-function logColor(kind: LogChapter["kind"]): string {
-  return kind === "bad" ? "var(--red)" : kind === "warn" ? "var(--amber)" : "var(--green)";
+/** Look up a report by id from the live scan cache first, then the demo set. */
+function reportById(
+  id: string | null,
+  live: Record<string, Report>,
+): Report | null {
+  if (!id) return null;
+  return live[id] ?? REPOS[id] ?? null;
 }
 
 /** Enriches a report id into the full `RepoView` (prototype's `viewRepo`). */
-function viewRepo(id: string | null): RepoView | null {
-  if (!id) return null;
-  const r = REPOS[id];
-  if (!r) return null;
-  return {
-    ...r,
-    _color: bandColor(r.score),
-    _glow: bandGlow(r.score),
-    _tint: bandTint(r.score),
-    _band: bandLabel(r.score),
-    _ring: RING_CIRC * (1 - r.score / 100),
-    _hasRisky: r.risky.length > 0,
-    _finalNote: finalNote(r.score),
-    _notVerified: notVerified(r),
-    _repBar: r.reputation.sentScore,
-    _ownerInitial: (r.ownerHistory.name || "?").slice(0, 1).toUpperCase(),
-    _ageColor: r.ownerHistory.established ? "var(--t1)" : "var(--amber)",
-    packages: r.packages.map((p) => ({ ...p, _color: bandColor(p.score), _tint: bandTint(p.score) })),
-    risky: r.risky.map((x) => ({
-      ...x,
-      _sevColor: sevColor(x.severity),
-      _sevLabel: sevLabel(x.severity),
-      _kindLabel: kindLabel(x.kind),
-    })),
-    logs: r.logs.map((l) => ({ ...l, _color: logColor(l.kind) })),
-  };
+function viewRepo(
+  id: string | null,
+  live: Record<string, Report>,
+): RepoView | null {
+  const r = reportById(id, live);
+  return r ? buildReportView(r) : null;
 }
 
 // ───────────────────────────── context shape ─────────────────────────────
@@ -505,6 +502,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const tailTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sidebarClickAt = useRef(0);
+  // Monotonic token for the in-flight live scan; a stale resolution (retry /
+  // navigated away) is ignored when its token no longer matches.
+  const liveScanToken = useRef(0);
+  // The pending live-scan target (owner/repo + ref) for retry.
+  const liveScanTarget = useRef<{ owner: string; repo: string; ref?: string } | null>(null);
 
   const patch = useCallback((p: Partial<State>) => dispatch({ type: "PATCH", patch: p }), []);
 
@@ -565,6 +567,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => mq.removeEventListener("change", handler);
   }, [patch]);
 
+  // ── prefill the scan box from a `?repo=owner/repo` query param (mount) ──
+  // The public "not yet scanned" page links home with the repo prefilled, so
+  // the user lands ready to scan it. We only prefill the input (no auto-scan)
+  // to keep the first-scan-free / login UX entirely in the user's hands.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const repoParam = params.get("repo");
+      if (repoParam) patch({ input: repoParam });
+    } catch {
+      // No window / malformed URL — nothing to prefill.
+    }
+  }, [patch]);
+
   // ── one-shot cleanup for any timers still pending at unmount ──
   useEffect(() => {
     return () => {
@@ -578,15 +594,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ── handlers ──
 
-  const resolveInput = useCallback((): string => {
+  /**
+   * Match the current input against a seeded DEMO repo (r1–r6). Returns the demo
+   * id when the input clearly names one (so the showcase flows stay instant), or
+   * null when it does not — a null means "treat as a real repo and scan it live".
+   * Unlike the prototype's round-robin fallback, an unmatched input now falls
+   * through to a real scan rather than silently picking a random demo.
+   */
+  const resolveDemoId = useCallback((): string | null => {
     const v = (stateRef.current.input || "").toLowerCase().trim();
     for (const id in REPOS) {
       const r = REPOS[id];
       if (!r) continue;
       if (v.includes(r.owner + "/" + r.name) || (r.name.length > 4 && v.includes(r.name))) return id;
     }
-    const fallback = DEMO_ORDER[stateRef.current.scanCount % DEMO_ORDER.length];
-    return fallback ?? "r2";
+    return null;
   }, []);
 
   const startProcessing = useCallback(
@@ -632,6 +654,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patch],
   );
 
+  /**
+   * Real scan: show the processing screen with the generic live timeline, fire
+   * the actual edge-function call, and resolve to the report (success) or the
+   * failed state (error). The timeline animates while the request is in flight;
+   * the report is shown when the network resolves, not on a fixed timer. The
+   * last chapter stays "active" (spinner) until the response lands.
+   */
+  const startLiveProcessing = useCallback(
+    (owner: string, repo: string, ref: string | undefined, from: Screen) => {
+      const id = `${owner}/${repo}`;
+      liveScanTarget.current = { owner, repo, ...(ref ? { ref } : {}) };
+      const token = ++liveScanToken.current;
+
+      patch({
+        screen: "processing",
+        procRepoId: id,
+        procLive: true,
+        sourceScreen: from,
+        procStep: 0,
+        procDeep: false,
+        failed: false,
+      });
+
+      if (procTimer.current) clearInterval(procTimer.current);
+      if (adTimer.current) clearInterval(adTimer.current);
+      const total = LIVE_PROC_CHAPTERS.length;
+      // Advance through the chapters, then hold on the last one until the
+      // network call resolves (do not auto-advance past it).
+      procTimer.current = setInterval(() => {
+        const step = stateRef.current.procStep + 1;
+        if (step >= total - 1) {
+          patch({ procStep: total - 1 });
+          if (procTimer.current) clearInterval(procTimer.current);
+        } else {
+          patch({ procStep: step });
+        }
+      }, PROC_STEP_MS);
+
+      const deviceId = stateRef.current.loggedIn ? undefined : getDeviceId();
+      runScan({ owner, repo, ...(ref ? { ref } : {}), ...(deviceId ? { deviceId } : {}) })
+        .then((result) => {
+          // Ignore a resolution that has been superseded (newer scan / retry).
+          if (token !== liveScanToken.current) return;
+          if (procTimer.current) clearInterval(procTimer.current);
+          if (!result.ok) {
+            patch({ failed: true });
+            return;
+          }
+          const report = result.report;
+          const cur = stateRef.current;
+          patch({
+            screen: "report",
+            procLive: false,
+            activeRepoId: id,
+            liveReports: { ...cur.liveReports, [id]: report },
+            scanCount: cur.scanCount + 1,
+            scannedIds: cur.scannedIds.includes(id) ? cur.scannedIds : [...cur.scannedIds, id],
+            stage1Used: cur.stage1Used + (report.deep ? 0 : 1),
+            dynamicUsed: cur.dynamicUsed + (report.deep ? 1 : 0),
+            showLogs: false,
+          });
+          if (report.cached) {
+            toast("Cached report, served instantly. No compute.", bandColor(report.score));
+          }
+        })
+        .catch(() => {
+          // runScan never rejects, but guard anyway so a thrown error still
+          // surfaces the retryable failed state rather than hanging the loader.
+          if (token !== liveScanToken.current) return;
+          if (procTimer.current) clearInterval(procTimer.current);
+          patch({ failed: true });
+        });
+    },
+    [patch, toast],
+  );
+
   const startAd = useCallback(
     (id: string, from: Screen) => {
       patch({ screen: "ad", adCount: AD_SECONDS, procRepoId: id, sourceScreen: from });
@@ -655,17 +753,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Cancel any pending suggestion-chip pick so a stale delayed call can't fire
     // with an outdated screen after the user has navigated away.
     if (pickTimer.current) clearTimeout(pickTimer.current);
-    const id = resolveInput();
-    const repo = REPOS[id];
-    if (!repo) return;
+
     const fresh = stateRef.current.scanCount;
     const from: Screen = stateRef.current.screen === "dashboard" ? "dashboard" : "home";
+
+    // Branch: a seeded DEMO repo (instant showcase) vs a REAL repo (live scan).
+    const demoId = resolveDemoId();
+    const parsed = demoId ? null : parseRepoInput(stateRef.current.input);
+
+    if (!demoId && !parsed) {
+      toast("Enter a GitHub repo as owner/repo or a github.com URL.", "var(--amber)");
+      return;
+    }
+
+    // The id used for gating + history: the demo id, or "owner/repo" for real.
+    const id = demoId ?? `${parsed!.owner}/${parsed!.repo}`;
+
+    // Login gate (preserved exactly): after the free first scan, logged-out
+    // users must sign in to continue. The pending repo (input) is restored on login.
     if (fresh >= 1 && !stateRef.current.loggedIn && stateRef.current.screen !== "dashboard") {
       patch({ screen: "login", pendingRepo: id });
       toast("Sign in to continue scanning.", "var(--blue)");
       return;
     }
-    if (repo.cached || stateRef.current.scannedIds.includes(id)) {
+
+    if (demoId) {
+      // ── DEMO path (unchanged): instant cached view, ad gate, or instant proc. ──
+      const repo = REPOS[demoId];
+      if (!repo) return;
+      if (repo.cached || stateRef.current.scannedIds.includes(demoId)) {
+        patch({
+          activeRepoId: demoId,
+          sourceScreen: from,
+          screen: "report",
+          scanCount: stateRef.current.scanCount + 1,
+          showLogs: false,
+        });
+        toast("Cached report, served instantly. No compute.", bandColor(repo.score));
+        return;
+      }
+      if (fresh === 0) {
+        toast("Scan started. First one is on us.", "var(--green)");
+        startProcessing(demoId, from);
+      } else {
+        startAd(demoId, from);
+      }
+      return;
+    }
+
+    // ── REAL path: same first-scan-free / ad UX, but a real backend scan. ──
+    // The parser yields owner/repo only; the edge function resolves the default
+    // branch when no ref is given, so a live scan does not pass a ref here.
+    const { owner, repo } = parsed!;
+    const ref: string | undefined = undefined;
+    // A repo we already scanned this session: serve the live-cached report.
+    const cachedReport = stateRef.current.liveReports[id];
+    if (cachedReport && stateRef.current.scannedIds.includes(id)) {
       patch({
         activeRepoId: id,
         sourceScreen: from,
@@ -673,31 +816,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
         scanCount: stateRef.current.scanCount + 1,
         showLogs: false,
       });
-      toast("Cached report, served instantly. No compute.", bandColor(repo.score));
+      toast("Cached report, served instantly. No compute.", bandColor(cachedReport.score));
       return;
     }
     if (fresh === 0) {
       toast("Scan started. First one is on us.", "var(--green)");
-      startProcessing(id, from);
+      startLiveProcessing(owner, repo, ref, from);
     } else {
-      startAd(id, from);
+      patch({ screen: "ad", adCount: AD_SECONDS, sourceScreen: from });
+      if (adTimer.current) clearInterval(adTimer.current);
+      if (procTimer.current) clearInterval(procTimer.current);
+      // The ad gates a real scan: when it ends, kick off the live scan.
+      liveScanTarget.current = { owner, repo };
+      patch({ procRepoId: id });
+      adTimer.current = setInterval(() => {
+        const c = stateRef.current.adCount - 1;
+        if (c <= 0) {
+          if (adTimer.current) clearInterval(adTimer.current);
+          patch({ adCount: 0 });
+          startLiveProcessing(owner, repo, ref, from);
+        } else {
+          patch({ adCount: c });
+        }
+      }, 1000);
     }
-  }, [patch, resolveInput, startAd, startProcessing, toast]);
+  }, [patch, resolveDemoId, startAd, startLiveProcessing, startProcessing, toast]);
 
   const skipAd = useCallback(() => {
     if (adTimer.current) clearInterval(adTimer.current);
-    startProcessing(stateRef.current.procRepoId ?? "", stateRef.current.sourceScreen);
-  }, [startProcessing]);
+    // A live scan target takes priority (the ad gated a real scan); else demo.
+    const target = liveScanTarget.current;
+    const cur = stateRef.current;
+    if (cur.procLive || (target && (!cur.procRepoId || !REPOS[cur.procRepoId]))) {
+      if (target) {
+        startLiveProcessing(target.owner, target.repo, target.ref, cur.sourceScreen);
+        return;
+      }
+    }
+    startProcessing(cur.procRepoId ?? "", cur.sourceScreen);
+  }, [startLiveProcessing, startProcessing]);
 
   const failProcessing = useCallback(() => {
     if (procTimer.current) clearInterval(procTimer.current);
     if (tailTimer.current) clearTimeout(tailTimer.current);
+    // Invalidate any in-flight live scan so a late resolution can't override
+    // the failed state the user just triggered.
+    liveScanToken.current++;
     patch({ failed: true });
   }, [patch]);
 
   const retryScan = useCallback(() => {
-    startProcessing(stateRef.current.procRepoId ?? "", stateRef.current.sourceScreen);
-  }, [startProcessing]);
+    const cur = stateRef.current;
+    const target = liveScanTarget.current;
+    // Retry a real scan if the failed scan was a live one; else the demo flow.
+    if (cur.procLive && target) {
+      startLiveProcessing(target.owner, target.repo, target.ref, cur.sourceScreen);
+    } else {
+      startProcessing(cur.procRepoId ?? "", cur.sourceScreen);
+    }
+  }, [startLiveProcessing, startProcessing]);
 
   const openReport = useCallback(
     (id: string, from?: Screen) => {
@@ -732,8 +909,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const exportPDF = useCallback(() => toast("PDF report generated.", "var(--green)"), [toast]);
   const copyLink = useCallback(() => {
-    const r = stateRef.current.activeRepoId ? REPOS[stateRef.current.activeRepoId] : null;
-    toast("Link copied: claude-rabbit.dev/" + (r ? r.owner + "/" + r.name : ""), "var(--green)");
+    const cur = stateRef.current;
+    const r = reportById(cur.activeRepoId, cur.liveReports);
+    const path = r ? `${r.owner}/${r.name}` : "";
+    // Copy the real public report URL (the SEO surface) when one is available.
+    const origin =
+      typeof window !== "undefined" && window.location?.origin
+        ? window.location.origin
+        : "https://claude-rabbit.dev";
+    const url = `${origin}/${path}`;
+    try {
+      navigator.clipboard?.writeText(url);
+    } catch {
+      // Clipboard unavailable (insecure context / denied) — still confirm visually.
+    }
+    toast("Link copied: " + url.replace(/^https?:\/\//, ""), "var(--green)");
   }, [toast]);
 
   const goDashboard = useCallback(() => patch({ screen: "dashboard" }), [patch]);
@@ -805,16 +995,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ── selectors (mirror renderVals) ──
 
-  const active = useMemo(() => viewRepo(state.activeRepoId), [state.activeRepoId]);
+  const active = useMemo(
+    () => viewRepo(state.activeRepoId, state.liveReports),
+    [state.activeRepoId, state.liveReports],
+  );
   const activeRepoClean = !!(active && !active._hasRisky);
 
-  const procRepo = state.procRepoId ? REPOS[state.procRepoId] : null;
+  // The processing screen drives off a demo repo's known logs OR, for a real
+  // scan in flight, the generic live timeline. `procLogs` is whichever applies.
+  const procDemoRepo = state.procRepoId ? REPOS[state.procRepoId] : null;
+  const procLogs = useMemo<LogChapter[]>(
+    () => (state.procLive ? LIVE_PROC_CHAPTERS : (procDemoRepo?.logs ?? [])),
+    [state.procLive, procDemoRepo],
+  );
   const procChapters = useMemo<ProcChapterView[]>(() => {
-    if (!procRepo) return [];
-    return procRepo.logs.map((l, i) => {
+    if (procLogs.length === 0) return [];
+    return procLogs.map((l, i) => {
       const st = i < state.procStep ? "done" : i === state.procStep ? "active" : "pending";
       const col = logColor(l.kind);
-      const isLast = i >= procRepo.logs.length - 1;
+      const isLast = i >= procLogs.length - 1;
       return {
         ch: l.ch,
         lines: l.lines,
@@ -828,11 +1027,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         _lineThrough: isLast ? "transparent" : st === "done" ? col : "var(--line)",
       };
     });
-  }, [procRepo, state.procStep]);
+  }, [procLogs, state.procStep]);
 
-  const procName = procRepo ? procRepo.owner + "/" + procRepo.name : "";
-  const procPhase = procRepo
-    ? state.procStep >= procRepo.logs.length - 1
+  // For a live scan the repo name comes from the pending id; otherwise the demo repo.
+  const procName = procDemoRepo
+    ? procDemoRepo.owner + "/" + procDemoRepo.name
+    : state.procLive && state.procRepoId
+      ? state.procRepoId
+      : "";
+  const procPhase = procLogs.length
+    ? state.procStep >= procLogs.length - 1
       ? "Finalizing verdict"
       : state.procDeep && state.procStep >= 3
         ? "Running in the sandbox"
@@ -889,7 +1093,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () =>
       state.scannedIds
         .map((id) => {
-          const r = REPOS[id];
+          const r = reportById(id, state.liveReports);
           return r
             ? {
                 id,
@@ -904,7 +1108,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         })
         .filter((h): h is HistoryItem => h !== null)
         .reverse(),
-    [state.scannedIds, openReport],
+    [state.scannedIds, state.liveReports, openReport],
   );
 
   const historyGroups = useMemo<HistoryGroup[]>(() => {
@@ -919,7 +1123,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const scannedCount = state.scannedIds.length + 5;
   const protectedCount =
     state.scannedIds.filter((id) => {
-      const r = REPOS[id];
+      const r = reportById(id, state.liveReports);
       return r ? r.score < 60 : false;
     }).length + 2;
 
