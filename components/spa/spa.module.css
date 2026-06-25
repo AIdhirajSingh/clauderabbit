@@ -1,0 +1,254 @@
+/*
+ * Hover / active / focus styles for the Claude Rabbit SPA.
+ *
+ * The DC prototype expressed interactive states with `style-hover="…"`,
+ * `style-active="…"`, and `style-focus="…"` pseudo-state attributes that inline
+ * React style cannot represent. Each rule below carries the EXACT declarations
+ * from the corresponding element in `design-source/Claude Rabbit.dc.html`, so
+ * the hover/active/focus visuals match the design byte-for-byte. Base
+ * (non-pseudo) styles stay inline on the elements; these rules add only the
+ * state deltas. Class names are grouped by the screen/region they belong to.
+ */
+
+/* ── sidebar (expanded) ── */
+.sbIconBtn:hover {
+  background: var(--s2);
+  color: var(--t1);
+}
+.sbNavBtn:hover {
+  background: var(--s2);
+}
+.sbNavBtnMuted:hover {
+  background: var(--s2);
+  color: var(--t1);
+}
+.sbHistoryBtn:hover {
+  background: var(--s2);
+}
+.sbProfileBtn:hover {
+  background: var(--s2);
+}
+.sbThemeBtn:hover {
+  background: var(--s2);
+  color: var(--t1);
+  border-color: var(--line2);
+}
+
+/* ── sidebar (collapsed rail) ── */
+.sbRailBtn:hover {
+  background: var(--s2);
+}
+.sbRailBtnMuted:hover {
+  background: var(--s2);
+  color: var(--t1);
+}
+.sbRailBtnMuted:active {
+  transform: scale(0.94);
+}
+.sbRailBtnPlain:active {
+  transform: scale(0.94);
+}
+
+/* ── home: floating nav ── */
+.navWordmark:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+}
+.navWordmark:active {
+  transform: translateY(0) scale(0.98);
+}
+.navLinkBtn:hover {
+  background: var(--s2);
+  color: var(--t1);
+}
+.navLinkBtn:active {
+  transform: scale(0.97);
+}
+.navRepoLink:hover {
+  background: var(--s2);
+}
+.navThemeBtn:hover {
+  background: var(--s2);
+  color: var(--t1);
+}
+.navLoginBtn:hover {
+  transform: translateY(-1px);
+}
+.navLoginBtn:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* ── primary inked button (Scan, etc.) ── */
+.inkBtn:hover {
+  transform: translateY(-1px);
+}
+.inkBtn:active {
+  transform: scale(0.96);
+}
+.inkBtnPress:active {
+  transform: scale(0.96);
+}
+
+/* ── suggestion chips ── */
+.chip:hover {
+  border-color: var(--line3);
+  color: var(--t1);
+  transform: translateY(-1px);
+}
+.chip:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* ── home: activity row ── */
+.activityRow:hover {
+  border-color: var(--line2);
+  transform: translateY(-2px);
+}
+
+/* ── home: danger-board "See full board" button ── */
+.boardCta:hover {
+  border-color: var(--line3);
+  background: var(--s3);
+  transform: translateY(-1px);
+}
+.boardCta:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* ── danger-board preview rows ── */
+.boardRow:hover {
+  background: var(--s2);
+}
+
+/* ── use-case cards ── */
+.useCard:hover {
+  border-color: var(--line2);
+  background: var(--s2);
+  transform: translateY(-3px);
+}
+
+/* ── footer: star CTA + link rows ── */
+.starCta:hover {
+  transform: translateY(-2px);
+}
+.starCta:active {
+  transform: translateY(0) scale(0.97);
+}
+.footerLink:hover {
+  color: var(--t1);
+  gap: 13px;
+}
+
+/* ── ad: skip button ── */
+.skipBtn:hover {
+  color: var(--t3);
+}
+
+/* ── processing: simulate-failure button ── */
+.simFailBtn:hover {
+  color: var(--t4);
+}
+
+/* ── report: back / export controls ── */
+.reportBack:hover {
+  color: var(--t1);
+  border-color: var(--line3);
+  transform: translateX(-2px);
+}
+.reportBack:active {
+  transform: scale(0.97);
+}
+.exportBtn:hover {
+  color: var(--t1);
+  border-color: var(--line3);
+}
+.copyBtn:active {
+  transform: scale(0.96);
+}
+.viewLogsBtn:hover {
+  border-color: var(--line3);
+  background: var(--s3);
+  transform: translateY(-1px);
+}
+.viewLogsBtn:active {
+  transform: scale(0.97);
+}
+
+/* ── logs overlay controls ── */
+.logsBack:hover {
+  border-color: var(--line3);
+  background: var(--s2);
+  transform: translateX(-1px);
+}
+.logsBack:active {
+  transform: scale(0.97);
+}
+.logsClose:hover {
+  color: var(--t1);
+  border-color: var(--line3);
+}
+
+/* ── leaderboard ── */
+.lbBack:hover {
+  border-color: var(--line3);
+  background: var(--s2);
+  transform: translateX(-1px);
+}
+.lbBack:active {
+  transform: scale(0.97);
+}
+.lbHero:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.lbRow:hover {
+  background: var(--s2);
+  padding-left: 30px;
+}
+
+/* ── login ── */
+.loginPrimary:hover {
+  transform: translateY(-1px);
+}
+.loginPrimary:active {
+  transform: scale(0.98);
+}
+.loginSecondary:hover {
+  border-color: var(--line3);
+  background: var(--s3);
+  transform: translateY(-1px);
+}
+.loginSecondary:active {
+  transform: scale(0.98);
+}
+.loginEmail:focus {
+  border-color: var(--line3);
+}
+.loginEmailBtn:hover {
+  border-color: var(--line3);
+  color: var(--t1);
+}
+.loginEmailBtn:active {
+  transform: scale(0.98);
+}
+
+/* ── dashboard ── */
+.dashRow:hover {
+  background: var(--s2);
+}
+
+/* ── profile ── */
+.profileEditBtn:hover {
+  color: var(--t1);
+  border-color: var(--line3);
+}
+.profileSaveBtn:active {
+  transform: scale(0.97);
+}
+.logoutBtn:hover {
+  background: oklch(0.645 0.205 23 / 0.08);
+  border-color: oklch(0.645 0.205 23 / 0.6);
+}
+.logoutBtn:active {
+  transform: scale(0.98);
+}
