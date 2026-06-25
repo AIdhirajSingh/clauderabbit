@@ -3,15 +3,21 @@
 /**
  * Login — faithful port of `design-source/Claude Rabbit.dc.html`
  * lines ~838–877: a clean, theme-aware sign-in with GitHub / Google / email
- * options. Every option calls `doLogin` (the demo's single sign-in path).
+ * options. Wired to real Supabase auth: Google → OAuth, email → magic-link/OTP.
+ * GitHub is not a configured provider in V1, so its button surfaces a clear
+ * note rather than a fake session (CLAUDE.md: no fake data in the real flow).
+ * The markup/styling is unchanged from the shipped design — only the handlers
+ * and a controlled email input are added.
  */
 
+import { useState } from "react";
 import { onActivate, useApp } from "../state";
 import styles from "../spa.module.css";
 import { GithubIcon, RabbitMark } from "../components/glyphs";
 
 export function LoginScreen() {
   const app = useApp();
+  const [email, setEmail] = useState("");
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative", animation: "screenIn .5s var(--ease) both" }}>
@@ -42,7 +48,7 @@ export function LoginScreen() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             <button
-              onClick={app.doLogin}
+              onClick={app.signInWithGitHub}
               className={styles.loginPrimary}
               style={{
                 display: "flex",
@@ -65,7 +71,7 @@ export function LoginScreen() {
               Continue with GitHub
             </button>
             <button
-              onClick={app.doLogin}
+              onClick={app.signInWithGoogle}
               className={styles.loginSecondary}
               style={{
                 display: "flex",
@@ -102,6 +108,12 @@ export function LoginScreen() {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <label style={{ fontSize: 12.5, color: "var(--t3)" }}>Email</label>
             <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") app.signInWithEmail(email);
+              }}
               placeholder="you@example.com"
               className={styles.loginEmail}
               style={{
@@ -116,7 +128,7 @@ export function LoginScreen() {
               }}
             />
             <button
-              onClick={app.doLogin}
+              onClick={() => app.signInWithEmail(email)}
               className={styles.loginEmailBtn}
               style={{
                 marginTop: 5,
