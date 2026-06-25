@@ -49,3 +49,7 @@ yarn-debug.log*
 yarn-error.log*
 .idea/
 .vscode/
+
+# design bundle (kept locally / out of the repo; design.md is the committed source)
+ClaudeRabbit Claude Design.zip
+*.zip
