@@ -234,13 +234,35 @@ interface VertexResponse {
   promptFeedback?: { blockReason?: string };
 }
 
+/**
+ * Resolve the Vertex location for model calls. This is DECOUPLED from the
+ * sandbox compute zone on purpose: `VERTEX_LOCATION` selects where Gemini is
+ * served (e.g. the `global` endpoint that fronts the GA 3.x models), while the
+ * sandbox stays on its own regional compute zone (`GCP_LOCATION`, us-central1).
+ * Falls back to `GCP_LOCATION` when `VERTEX_LOCATION` is unset so existing
+ * regional deployments keep working unchanged.
+ */
+function vertexLocation(): string {
+  const loc = (Deno.env.get("VERTEX_LOCATION") ?? Deno.env.get("GCP_LOCATION"))?.trim();
+  if (!loc) {
+    throw new Error("VERTEX_LOCATION or GCP_LOCATION is not configured");
+  }
+  return loc;
+}
+
 function buildEndpoint(model: string): string {
   const project = Deno.env.get("GCP_PROJECT_ID");
-  const location = Deno.env.get("GCP_LOCATION");
-  if (!project || !location) {
-    throw new Error("GCP_PROJECT_ID or GCP_LOCATION is not configured");
+  if (!project) {
+    throw new Error("GCP_PROJECT_ID is not configured");
   }
-  return `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
+  const location = vertexLocation();
+  // The `global` endpoint (which serves the GA 3.x models) uses the unprefixed
+  // host `aiplatform.googleapis.com` with `locations/global` in the path.
+  // Regional locations use the `{location}-aiplatform.googleapis.com` host.
+  const host = location === "global"
+    ? "aiplatform.googleapis.com"
+    : `${location}-aiplatform.googleapis.com`;
+  return `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
 }
 
 /**
