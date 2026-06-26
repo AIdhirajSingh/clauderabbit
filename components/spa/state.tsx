@@ -543,11 +543,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Whether a content view (report / leaderboard) was rehydrated from
   // sessionStorage on this mount. Used by the auth listener to decide whether a
-  // returning logged-in user with no meaningful restored view should land on
-  // the dashboard — but never to override a restored content screen, which must
-  // survive the tab return. Set synchronously in the rehydration effect below,
-  // which runs before the (later, network-driven) auth INITIAL_SESSION fires.
-  const restoredContentRef = useRef(false);
   // Guards the one-shot rehydration so a StrictMode double-mount cannot apply
   // the snapshot twice (the second pass would re-read it harmlessly, but this
   // keeps the restore strictly idempotent and intention-revealing).
@@ -633,9 +628,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     rehydratedRef.current = true;
     const snap = loadNavSnapshot();
     if (!snap) return;
-    if (snap.screen === "report" || snap.screen === "leaderboard") {
-      restoredContentRef.current = true;
-    }
     patch({
       screen: snap.screen,
       activeRepoId: snap.activeRepoId,
@@ -796,12 +788,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // First INITIAL_SESSION for an existing cookie session that did NOT come
         // from the auth-callback redirect (no ?auth=ok): a returning logged-in
         // user. Record the user so a later SIGNED_IN re-fire is a navigation
-        // no-op. If a meaningful content view was rehydrated (report /
-        // leaderboard), LEAVE IT — that is the whole point of the fix. Only when
-        // nothing meaningful was restored (initial screen is the default home)
-        // do we land them on the dashboard, silently (no "Signed in" toast).
+        // no-op. If a meaningful content view is persisted (report / leaderboard),
+        // LEAVE IT — that is the whole point of the fix. We read the snapshot
+        // DIRECTLY here (not a cross-effect ref) so the decision never depends on
+        // whether the rehydration effect has committed yet — it is idempotent and
+        // timing-independent (review HIGH-1). Land on dashboard only when nothing
+        // meaningful is persisted, silently (no "Signed in" toast).
         landedUserRef.current = nextUserId;
-        if (!restoredContentRef.current) {
+        const snap = loadNavSnapshot();
+        if (!snap || (snap.screen !== "report" && snap.screen !== "leaderboard")) {
           patch({ screen: "dashboard" });
         }
       }

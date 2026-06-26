@@ -93,7 +93,13 @@ function isReportRecord(value: unknown): value is Record<string, Report> {
       typeof rep.id === "string" &&
       typeof rep.owner === "string" &&
       typeof rep.name === "string" &&
-      typeof rep.score === "number"
+      typeof rep.score === "number" &&
+      typeof rep.verdict === "string" &&
+      // The report view maps over these, so a rehydrated report MUST carry them
+      // as arrays or rendering would throw (review MEDIUM-2).
+      Array.isArray(rep.logs) &&
+      Array.isArray(rep.risky) &&
+      Array.isArray(rep.packages)
     );
   });
 }
@@ -171,6 +177,32 @@ export function clearNavSnapshot(): void {
   }
 }
 
+/** Cap on cached reports persisted to sessionStorage. Reports can be large
+ * (logs + forensics), so a session that scans many repos would otherwise grow
+ * the snapshot unbounded (review MEDIUM-1). We keep the active report (so the
+ * current view rehydrates) plus the most-recently-added others, bounded. */
+const MAX_CACHED_REPORTS = 8;
+
+/** Bound the persisted report cache. Immutable — returns a new record of at most
+ * MAX_CACHED_REPORTS entries: the active report first, then the most recent
+ * others (object key order is insertion order). */
+function capReports(
+  reports: Record<string, Report>,
+  activeId: string | null,
+): Record<string, Report> {
+  const keys = Object.keys(reports);
+  if (keys.length <= MAX_CACHED_REPORTS) return reports;
+  const out: Record<string, Report> = {};
+  const activeReport = activeId ? reports[activeId] : undefined;
+  if (activeId && activeReport) out[activeId] = activeReport;
+  for (const k of keys.slice(-MAX_CACHED_REPORTS).reverse()) {
+    if (Object.keys(out).length >= MAX_CACHED_REPORTS) break;
+    const r = reports[k];
+    if (r && !(k in out)) out[k] = r;
+  }
+  return out;
+}
+
 /**
  * Build the snapshot to persist from the full reducer state's relevant fields.
  * Returns null when the current screen is not a persistable one (so callers
@@ -191,6 +223,6 @@ export function snapshotFrom(input: {
     screen,
     activeRepoId: input.activeRepoId,
     sourceScreen,
-    liveReports: input.liveReports,
+    liveReports: capReports(input.liveReports, input.activeRepoId),
   };
 }
