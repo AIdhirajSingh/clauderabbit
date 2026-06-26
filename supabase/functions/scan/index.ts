@@ -34,6 +34,11 @@ import {
   staticScan,
   type StaticScanResult,
 } from "../_shared/static-scan.ts";
+import {
+  computeScore,
+  type ScoreDelta,
+  type ScoringInputs,
+} from "../_shared/scoring.ts";
 import { generate } from "../_shared/vertex.ts";
 
 // --- Types mirroring lib/types.ts Report shape (what the UI expects) --------
@@ -76,7 +81,6 @@ interface ModelOutput {
 const CONFIDENCE_ESCALATION_THRESHOLD = 0.7;
 const NEW_OWNER_AGE_DAYS = 60;
 const READ_MAX_OUTPUT_TOKENS = 8192;
-const VERDICT_BARE_SAFE = "safe";
 
 /** Vertex responseSchema — restricted to the supported OpenAPI-3.0 subset
  * (type/properties/required/items/enum/nullable). Numeric ranges are enforced
@@ -328,20 +332,22 @@ function monthYear(iso: string | null): string {
  * RAIL ENFORCEMENT: never let a bare "Safe" verdict through, and ensure the
  * verdict matches the score band. Runs on BOTH fresh and cached reports.
  */
-function enforceVerdictRails(verdict: string, score: number): string {
-  const trimmed = (verdict || "").trim();
-  const isBareSafe = trimmed.toLowerCase() === VERDICT_BARE_SAFE;
-  // Map to the canonical band verdict whenever it's a bare "Safe" or empty.
-  if (!trimmed || isBareSafe) {
-    return score >= 90
-      ? "Trusted"
-      : score >= 80
-      ? "Likely safe"
-      : score >= 60
-      ? "Caution"
-      : "High risk";
-  }
-  return trimmed;
+function enforceVerdictRails(_verdict: string, score: number): string {
+  // The score is authoritative and code-computed (see _shared/scoring.ts), so the
+  // one-word verdict is derived PURELY from the computed score band — the two can
+  // never disagree, and the verdict can never be a bare "Safe". The model's own
+  // free-text verdict is intentionally NOT used as the source of truth (its band
+  // could contradict the formula's number). Dangerous band splits at 30 into
+  // "High risk" (30-59) and "Malicious" (<30), matching the read-model prompt.
+  return score >= 90
+    ? "Trusted"
+    : score >= 80
+    ? "Likely safe"
+    : score >= 60
+    ? "Caution"
+    : score >= 30
+    ? "High risk"
+    : "Malicious";
 }
 
 /** Validate + normalize the model's risky items so kinds stay in the enum. */
@@ -358,6 +364,33 @@ function normalizeRisky(
       kind: knd.has(r.kind) ? r.kind : "code",
       detail: String(r.detail ?? "").slice(0, 1000),
     }));
+}
+
+/** One chapter of the live scan log (mirrors lib/types.ts LogChapter). */
+interface LogChapter {
+  ch: string;
+  kind: LogKind;
+  lines: string[];
+}
+
+/**
+ * Render the computed-score breakdown as a "Score" log chapter so the existing
+ * report UI surfaces the citation trail with NO schema change. Each delta becomes
+ * one line; reputation deltas are visually marked to preserve the structural
+ * separation between code/behavior and reputation in the citation itself.
+ */
+function buildScoreChapter(score: number, breakdown: ScoreDelta[]): LogChapter {
+  const sign = (n: number): string => (n >= 0 ? `+${n}` : `${n}`);
+  const lines = [
+    `Score computed by formula: ${score}/100 (deterministic, code-driven)`,
+    ...breakdown.map((d) => {
+      const tag = d.group === "reputation" ? "reputation" : "code";
+      return `${sign(d.delta)} [${tag}] ${d.factor}: ${d.detail}`;
+    }),
+  ];
+  // A "bad" chapter when the score is in the dangerous band, else "warn"/"ok".
+  const kind: LogKind = score < 60 ? "bad" : score < 80 ? "warn" : "ok";
+  return { ch: "Score", kind, lines };
 }
 
 // --- Read-model prompt -------------------------------------------------------
@@ -454,23 +487,54 @@ function buildUserPrompt(
 
 // --- Escalation gate ---------------------------------------------------------
 
+/** The escalation decision plus a concise WRITTEN reason. When not escalating,
+ * `reason` is a one-line "cleared on static read: <why>" so the report can always
+ * state plainly why the deep path was or was not taken. */
+interface EscalationDecision {
+  escalate: boolean;
+  reason: string;
+}
+
 function decideEscalation(
   model: ModelOutput,
   scan: StaticScanResult,
   owner: OwnerSignal,
   confidence: number,
-): boolean {
-  if (model.escalate === true) return true;
-  if (confidence < CONFIDENCE_ESCALATION_THRESHOLD) return true;
-  // Severe code signals always escalate.
-  if (scan.signals.obfuscation || scan.signals.credAccess) return true;
-  if (scan.installTimeNetwork) return true;
-  // Brand-new owner combined with any code signal.
+): EscalationDecision {
+  // Code/behavior triggers first (heaviest), then reputation-driven, then the
+  // model's own request — each yields a specific written reason.
+  if (scan.signals.obfuscation) {
+    return { escalate: true, reason: "obfuscated/encoded payload detected on static read" };
+  }
+  if (scan.signals.credAccess) {
+    return { escalate: true, reason: "credential-access pattern detected on static read" };
+  }
+  if (scan.installTimeNetwork) {
+    return { escalate: true, reason: "install-time network/shell activity detected on static read" };
+  }
   const newOwner = owner.ageDays >= 0 && owner.ageDays < NEW_OWNER_AGE_DAYS;
   const anySignal = scan.signals.installHook || scan.signals.network ||
     scan.signals.embeddedSecret || scan.signals.typosquat;
-  if (newOwner && anySignal) return true;
-  return false;
+  if (newOwner && anySignal) {
+    return {
+      escalate: true,
+      reason: `new owner account (${owner.ageDays}d) combined with a code signal`,
+    };
+  }
+  if (confidence < CONFIDENCE_ESCALATION_THRESHOLD) {
+    return {
+      escalate: true,
+      reason: `low read confidence (${confidence.toFixed(2)} < ${CONFIDENCE_ESCALATION_THRESHOLD})`,
+    };
+  }
+  if (model.escalate === true) {
+    return { escalate: true, reason: "read model could not confidently clear the repo" };
+  }
+  // Not escalating — state plainly why it cleared on the static read.
+  const clearedWhy = scan.severityHint === "clean"
+    ? "no code signals flagged"
+    : `only low-severity signals (${scan.severityHint}) and confident read`;
+  return { escalate: false, reason: `cleared on static read: ${clearedWhy}` };
 }
 
 // --- Report reshape (cache hit) ---------------------------------------------
@@ -724,16 +788,42 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: "Analysis model call failed" }, 502);
   }
 
-  // 6. Validate + clamp model output.
-  const score = Math.round(clamp(model.score, 0, 100, 50));
+  // 6. Validate model output. The model's `score` is NOT used as the score — it
+  // is only kept as a sanity reference. The authoritative score is COMPUTED by
+  // the deterministic formula from the real signals (step 6b).
   const confidence = clamp(model.confidence, 0, 1, 0.5);
-  const verdict = enforceVerdictRails(model.verdict, score);
   const risky = normalizeRisky(model.risky);
 
-  // 7. Escalation gate (decision only — no sandbox run in this unit).
-  const escalate = decideEscalation(model, scan, owner, confidence);
+  // 7. Escalation gate (decision only — no sandbox run in this unit). Produces a
+  // concise written reason (escalating OR cleared-on-static-read) for the report.
+  const escalation = decideEscalation(model, scan, owner, confidence);
+  const escalate = escalation.escalate;
+  const escalationReason = escalation.reason;
   const scanPath = escalate ? "deep" : "fast";
   const deep = escalate;
+
+  // 6b. Compute the AUTHORITATIVE score from weighted, named signals. The model
+  // FED the signals (static flags, reputation facts, per-finding risky items,
+  // confidence); the SCORE and its cited breakdown are decided here by code. The
+  // dynamic-outcome inputs are omitted on the fast path (no sandbox run yet).
+  const scoringInputs: ScoringInputs = {
+    signals: scan.signals,
+    installTimeNetwork: scan.installTimeNetwork,
+    severityHint: scan.severityHint,
+    risky: risky.map((r) => ({ severity: r.severity, kind: r.kind })),
+    reputation: {
+      established: owner.established,
+      ageDays: owner.ageDays,
+      sentScore: Math.round(clamp(model.reputation?.sentScore, 0, 100, 0)),
+      stars: metadata.stars,
+    },
+    confidence,
+    escalated: escalate,
+  };
+  const scoreResult = computeScore(scoringInputs);
+  const score = scoreResult.score;
+  const scoreBreakdown = scoreResult.breakdown;
+  const verdict = enforceVerdictRails(model.verdict, score);
 
   // 7b. Daily limit — DYNAMIC gate. The stage-1 budget was already consumed at
   // step 2b. Only when the scan escalates to the deep (dynamic sandbox) path is
@@ -749,9 +839,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
   }
 
-  // Build logs from the model, then append/adjust the escalation decision so we
-  // never fabricate a dynamic run.
+  // Build logs from the model, then append the computed-score citation and the
+  // escalation decision. We never fabricate a dynamic run — an escalation only
+  // records that the deep path was QUEUED.
   const logs = Array.isArray(model.logs) ? model.logs : [];
+  // The cited score breakdown — the deltas that produced the number.
+  logs.push(buildScoreChapter(score, scoreBreakdown));
   if (escalate) {
     const hasEsc = logs.some((l) => /escalat/i.test(l.ch));
     if (!hasEsc) {
@@ -760,17 +853,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         kind: scan.severityHint === "high" ? "bad" : "warn",
         lines: [
           "Escalation gate tripped on the static read",
-          `Reason: ${
-            scan.signals.obfuscation
-              ? "obfuscated payload"
-              : scan.signals.credAccess
-              ? "credential-access pattern"
-              : scan.installTimeNetwork
-              ? "install-time network activity"
-              : confidence < CONFIDENCE_ESCALATION_THRESHOLD
-              ? `low read confidence (${confidence.toFixed(2)})`
-              : "new-owner anomaly"
-          }`,
+          `Reason: ${escalationReason}`,
           "Queued for dynamic sandbox run (not executed on this pass)",
         ],
       });
@@ -896,5 +979,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     scan_path: scanPath,
     confidence,
     escalate,
+    escalationReason,
+    scoreBreakdown,
   });
 });
