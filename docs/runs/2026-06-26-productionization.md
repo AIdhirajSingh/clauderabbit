@@ -39,7 +39,9 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - **Lead verification (ran MYSELF):** typecheck ✅ lint ✅ build ✅; grep → zero residual fabricated names; self-reviewed state.tsx diff = honest + consistent.
 - **Stub hunt (real gaps for later):** `state.tsx:1145` exportPDF is a toast-only stub (no real PDF); `AdScreen` ad slot is a placeholder (**ads OUT of scope this run — leave**). Decorative pre-existing cards `claude-rabbit/rabbit · 24.3k★ · 99` and `AdhirajSinghEntrepreneur/pockit · 88` are aspirational/owner cards — flag for polish review (not data).
 - **Pending:** independent zero-context review of the de-fake diff (spawned); address findings before main-merge.
-### U1 review — RUNNING (agentId acd31071bbd5b2ed8, read-only). On return: act on findings, re-verify, then U1 is mergeable.
+### U1 review — DONE → fixes applied → U1 CLOSED
+- Review verdict: APPROVE-WITH-FIXES 81/100 (0 crit/high; 2 med + 2 low). All addressed in commit `b22bc6f`: removed kind:'rep' endorsements from requests/mux risky[] (separation rail); trimmed REPOS to the 6 seeded repos (dropped sindresorhus/is + chalk/supports-color → were unseeded SSR-404 risk) + removed dead DEMO_ORDER; fixed stale r1–r6 comment. typecheck/lint green.
+- **U1 (Phase 1 de-fake) is fully closed & mergeable.** Commits: 3d6d5bf (de-fake) + b22bc6f (review fixes).
 
 ### U2 — Phase 4 code-computed scoring formula — RUNNING (agentId a62af1bc42b3dae9d)
 - Building `supabase/functions/_shared/scoring.ts` (pure deterministic weighted formula: code/behavior penalties heaviest, reputation separate+lighter, cited breakdown), rewiring `scan/index.ts:728` off `model.score`, adding escalation-reason surfacing + unit tests. Forbidden to commit or deploy.
