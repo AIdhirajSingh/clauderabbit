@@ -11,6 +11,11 @@
 import { onActivate, useApp } from "../state";
 import styles from "../spa.module.css";
 import { Chevron } from "../components/glyphs";
+import { OwnerAvatar } from "../components/github";
+
+/** Gradient for the history-row avatar fallback (matches the profile avatar hue). */
+const HISTORY_AVATAR_GRADIENT =
+  "linear-gradient(135deg, oklch(0.58 0.16 25), oklch(0.52 0.15 320))";
 
 export function DashboardScreen() {
   const app = useApp();
@@ -137,8 +142,17 @@ export function DashboardScreen() {
                 </span>
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, color: "var(--t1)", marginBottom: 2, fontWeight: 450 }}>
-                  {h.owner}/{h.name}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                  <OwnerAvatar
+                    owner={h.owner}
+                    initial={(h.owner || "?").slice(0, 1).toUpperCase()}
+                    size={18}
+                    fontSize={9}
+                    gradient={HISTORY_AVATAR_GRADIENT}
+                  />
+                  <span style={{ fontSize: 14, color: "var(--t1)", fontWeight: 450, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {h.owner}/{h.name}
+                  </span>
                 </div>
                 <div style={{ fontSize: 12, color: "var(--t4)" }}>{h.verdict}</div>
               </div>

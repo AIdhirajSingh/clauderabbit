@@ -39,6 +39,21 @@ import {
 } from "@/lib/report-view";
 import { parseRepoInput } from "@/lib/parse-repo";
 import { runScan } from "@/lib/scan";
+import {
+  EMPTY_BOARD_DATA,
+  fetchBoardData,
+  fetchBoardPage,
+  type BoardData,
+  type BoardDot,
+  type BoardStats,
+  type ScoreDistribution,
+} from "@/lib/board-data";
+import {
+  clearNavSnapshot,
+  loadNavSnapshot,
+  saveNavSnapshot,
+  snapshotFrom,
+} from "@/lib/spa-persist";
 import { createClient } from "@/lib/supabase/client";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -126,6 +141,19 @@ interface State {
    * report is shown when `runScan` resolves rather than on a fixed timer.
    */
   procLive: boolean;
+  /**
+   * The danger-board bundle (real DB data: ranked caught repos, map dots, live
+   * counts, score histogram). Lazily fetched on first board navigation — never
+   * on the homepage — so the marketing/SEO surface stays cheap. Starts empty
+   * (`loaded: false`) and is replaced once the fetch resolves.
+   */
+  board: BoardData;
+  /** True while the initial board bundle is being fetched (distinct from empty). */
+  boardLoading: boolean;
+  /** The highest list page already loaded (for infinite-scroll appends). */
+  boardPage: number;
+  /** True while a "load more" page request is in flight. */
+  boardMoreLoading: boolean;
 }
 
 const initialState: State = {
@@ -162,6 +190,10 @@ const initialState: State = {
   sidebarCollapsed: false,
   liveReports: {},
   procLive: false,
+  board: EMPTY_BOARD_DATA,
+  boardLoading: false,
+  boardPage: 0,
+  boardMoreLoading: false,
 };
 
 type Action = { type: "PATCH"; patch: Partial<State> };
@@ -174,6 +206,7 @@ function reducer(state: State, action: Action): State {
       return state;
   }
 }
+
 
 // ───────────────────────── derived view types ─────────────────────────
 // RiskyItemView / PackageScoreView / LogChapterView / RepoView are defined in
@@ -445,6 +478,22 @@ export interface AppApi {
   leaderTop: LeaderboardView[];
   leaderHero: LeaderboardView | undefined;
   leaderRest: LeaderboardView[];
+  /** Real board map dots, live counts, and score histogram (DB-sourced). */
+  boardDots: BoardDot[];
+  boardStats: BoardStats | null;
+  boardDistribution: ScoreDistribution;
+  /** True while the initial board bundle is loading (vs. genuinely empty). */
+  boardLoading: boolean;
+  /** True once the board fetch completed (so "empty" is honestly "nothing caught"). */
+  boardLoaded: boolean;
+  /** True when more list pages remain for infinite scroll. */
+  boardHasMore: boolean;
+  /** True while a "load more" page request is in flight. */
+  boardMoreLoading: boolean;
+  /** Append the next page of the ranked danger list (infinite scroll). */
+  loadMoreBoard: () => void;
+  /** Ensure the board bundle is loaded (idempotent) — for a rehydrated board screen. */
+  ensureBoardLoaded: () => void;
   activity: ActivityView[];
   useCases: UseCase[];
   history: HistoryItem[];
@@ -534,6 +583,19 @@ export function useApp(): AppApi {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
 
+  // Whether a content view (report / leaderboard) was rehydrated from
+  // sessionStorage on this mount. Used by the auth listener to decide whether a
+  // Guards the one-shot rehydration so a StrictMode double-mount cannot apply
+  // the snapshot twice (the second pass would re-read it harmlessly, but this
+  // keeps the restore strictly idempotent and intention-revealing).
+  const rehydratedRef = useRef(false);
+  // Skips the persistence effect's FIRST run (the initial mount commit, where
+  // `state` is still the pre-rehydration default). Without this, the mount's
+  // default `home` state would overwrite a stored `report` snapshot before the
+  // rehydration patch is applied on the next commit. After the skip, every real
+  // navigation persists normally.
+  const persistMountRef = useRef(true);
+
   // A live mirror of state for handlers that need the freshest value inside
   // setTimeout/setInterval callbacks (the prototype read `this.state` directly).
   // Synced in an effect (never written during render) so React's ref rules hold;
@@ -576,6 +638,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The freshest session, for the scan path's Authorization token. Updated by
   // the auth listener; read inside scan handlers (which run after commit).
   const sessionRef = useRef<Session | null>(null);
+  // The user id we have already "landed" (navigated to the dashboard for). Used
+  // to distinguish a GENUINE sign-in transition from a re-emitted SIGNED_IN that
+  // Supabase fires on tab refocus / session revalidation. Only a transition to a
+  // new user id lands; a re-fire for the same already-signed-in user must NOT
+  // navigate (that was the tab-switch-drops-the-report bug). `undefined` means
+  // "not yet initialized" so the very first INITIAL_SESSION is handled correctly.
+  const landedUserRef = useRef<string | undefined>(undefined);
 
   const patch = useCallback((p: Partial<State>) => dispatch({ type: "PATCH", patch: p }), []);
 
@@ -587,6 +656,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [patch],
   );
+
+  // ── rehydrate the durable navigation snapshot (mount, post-hydration) ──
+  // Runs in a mount effect (NOT during render) so server and client first-paint
+  // agree — avoiding a hydration mismatch — then restores the persisted screen
+  // and live-report cache. A restored content view (report / leaderboard) is
+  // flagged so the auth listener leaves it intact for a returning logged-in
+  // user. Declared before the auth effect so it commits first; the auth
+  // INITIAL_SESSION arrives asynchronously (well after these sync mount effects),
+  // so the flag is always set in time.
+  useEffect(() => {
+    if (rehydratedRef.current) return;
+    rehydratedRef.current = true;
+    const snap = loadNavSnapshot();
+    if (!snap) return;
+    patch({
+      screen: snap.screen,
+      activeRepoId: snap.activeRepoId,
+      sourceScreen: snap.sourceScreen,
+      liveReports: snap.liveReports,
+    });
+  }, [patch]);
 
   // ── star count-up rAF (mount, with cleanup) ──
   useEffect(() => {
@@ -725,15 +815,72 @@ export function AppProvider({ children }: { children: ReactNode }) {
           shouldLand = false;
         }
       }
-      if (shouldLand) landSignedIn();
+
+      // ROOT-CAUSE GUARD: Supabase re-emits SIGNED_IN on tab refocus / session
+      // revalidation. Landing on every SIGNED_IN bounced a user viewing their
+      // report back to the dashboard on tab switch-and-return. Only land on a
+      // GENUINE transition — when the session's user id differs from the one we
+      // already landed. A re-fire for the same already-signed-in user is a no-op
+      // for navigation, so the current screen (e.g. the report) survives.
+      const nextUserId = session?.user.id;
+      if (shouldLand && nextUserId && nextUserId !== landedUserRef.current) {
+        landedUserRef.current = nextUserId;
+        landSignedIn();
+      } else if (event === "INITIAL_SESSION" && nextUserId) {
+        // First INITIAL_SESSION for an existing cookie session that did NOT come
+        // from the auth-callback redirect (no ?auth=ok): a returning logged-in
+        // user. Record the user so a later SIGNED_IN re-fire is a navigation
+        // no-op. If a meaningful content view is persisted (report / leaderboard),
+        // LEAVE IT — that is the whole point of the fix. We read the snapshot
+        // DIRECTLY here (not a cross-effect ref) so the decision never depends on
+        // whether the rehydration effect has committed yet — it is idempotent and
+        // timing-independent (review HIGH-1). Land on dashboard only when nothing
+        // meaningful is persisted, silently (no "Signed in" toast).
+        landedUserRef.current = nextUserId;
+        const snap = loadNavSnapshot();
+        if (!snap || (snap.screen !== "report" && snap.screen !== "leaderboard")) {
+          patch({ screen: "dashboard" });
+        }
+      }
 
       if (event === "SIGNED_OUT") {
+        landedUserRef.current = undefined;
+        clearNavSnapshot();
         patch({ screen: "home", editName: false });
       }
     });
 
     return () => sub.subscription.unsubscribe();
   }, [getSupabase, patch, toast]);
+
+  // ── persist durable navigation state (screen + active/source report + live
+  // report cache) to sessionStorage so a tab switch-and-return or same-session
+  // remount restores the exact screen and re-serves cached reports instantly. ──
+  // Only content screens (home/report/leaderboard) are persisted; on any other
+  // screen (processing/ad/login/dashboard/profile) we clear the snapshot so a
+  // remount does not rehydrate a stale process screen.
+  useEffect(() => {
+    // Skip the initial mount commit: at that point `state` is still the
+    // pre-rehydration default, and saving it would clobber a stored snapshot
+    // before rehydration applies. The rehydration patch (or any real
+    // navigation) re-runs this effect on the next commit, where the state is
+    // authoritative.
+    if (persistMountRef.current) {
+      persistMountRef.current = false;
+      return;
+    }
+    const snap = snapshotFrom({
+      screen: state.screen,
+      activeRepoId: state.activeRepoId,
+      sourceScreen: state.sourceScreen,
+      liveReports: state.liveReports,
+    });
+    if (snap) {
+      saveNavSnapshot(snap);
+    } else {
+      clearNavSnapshot();
+    }
+  }, [state.screen, state.activeRepoId, state.sourceScreen, state.liveReports]);
 
   // ── one-shot cleanup for any timers still pending at unmount ──
   useEffect(() => {
@@ -1062,7 +1209,76 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const openLogs = useCallback(() => patch({ showLogs: true }), [patch]);
   const closeLogs = useCallback(() => patch({ showLogs: false }), [patch]);
-  const openLeaderboard = useCallback(() => patch({ lbReturn: stateRef.current.screen, screen: "leaderboard" }), [patch]);
+  /**
+   * Lazily fetch the danger-board bundle (ranked caught repos + map dots + live
+   * counts + score histogram) from the anon-readable DB views via the browser
+   * client. Called on first board navigation so the homepage never pays for it.
+   * Idempotent: a second call while already loaded (and not forced) is a no-op.
+   * On a missing/failed client the board stays its honest empty state; the
+   * `boardLoading` flag lets the UI distinguish "loading" from "nothing caught".
+   */
+  const loadBoard = useCallback(
+    (force = false) => {
+      const cur = stateRef.current;
+      if (cur.boardLoading) return;
+      if (!force && cur.board.loaded) return;
+      const supabase = getSupabase();
+      if (!supabase) {
+        // No client (env missing) — leave the honest empty board; do not fake.
+        patch({ boardLoading: false });
+        return;
+      }
+      patch({ boardLoading: true });
+      void fetchBoardData(supabase)
+        .then((data) => {
+          patch({ board: data, boardLoading: false, boardPage: 0 });
+        })
+        .catch(() => {
+          // fetchBoardData never rejects, but guard so a thrown error still
+          // clears the loading flag (UI then shows the could-not-load state).
+          patch({ boardLoading: false });
+        });
+    },
+    [getSupabase, patch],
+  );
+
+  /**
+   * Append the next page of the ranked list (infinite scroll). No-ops when a
+   * page is already in flight, the bundle has not loaded, or there are no more
+   * rows. New rows are concatenated immutably; `hasMore` follows the page query.
+   */
+  const loadMoreBoard = useCallback(() => {
+    const cur = stateRef.current;
+    if (cur.boardMoreLoading || !cur.board.loaded || !cur.board.hasMore) return;
+    const supabase = getSupabase();
+    if (!supabase) return;
+    const nextPage = cur.boardPage + 1;
+    patch({ boardMoreLoading: true });
+    void fetchBoardPage(supabase, nextPage)
+      .then((res) => {
+        const prev = stateRef.current;
+        if (!res.ok) {
+          patch({ boardMoreLoading: false });
+          return;
+        }
+        patch({
+          board: {
+            ...prev.board,
+            rows: [...prev.board.rows, ...res.rows],
+            hasMore: res.hasMore,
+          },
+          boardPage: nextPage,
+          boardMoreLoading: false,
+        });
+      })
+      .catch(() => patch({ boardMoreLoading: false }));
+  }, [getSupabase, patch]);
+
+  const openLeaderboard = useCallback(() => {
+    patch({ lbReturn: stateRef.current.screen, screen: "leaderboard" });
+    // Fetch real board data on first navigation (lazy — never on the homepage).
+    loadBoard();
+  }, [loadBoard, patch]);
   const backFromLeaderboard = useCallback(
     () => patch({ screen: stateRef.current.lbReturn || (stateRef.current.loggedIn ? "dashboard" : "home") }),
     [patch],
@@ -1319,21 +1535,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [pickSuggestion],
   );
 
-  const leaderboard = useMemo<LeaderboardView[]>(
-    () =>
-      LEADERBOARD.map((x, i) => ({
-        ...x,
-        rank: i + 1,
-        _color: bandColor(x.score),
-        _glow: bandGlow(x.score),
-        _tint: bandTint(x.score),
-        _band: bandLabel(x.score),
-        onOpen: x.id
-          ? () => openReport(x.id as string, "leaderboard")
-          : () => toast("That report is not in this demo set."),
-      })),
-    [openReport, toast],
-  );
+  // The ranked danger list is built from REAL caught repos in `state.board.rows`
+  // (the DB `v_leaderboard_full` view), enriched with rank + the fixed band
+  // colors. `LEADERBOARD` (an honest `[]`) is the empty fallback before the
+  // lazy board fetch lands or when nothing has been caught. No invented rows.
+  const leaderboard = useMemo<LeaderboardView[]>(() => {
+    const source: LeaderboardEntry[] =
+      state.board.rows.length > 0 ? state.board.rows : LEADERBOARD;
+    return source.map((x, i) => ({
+      ...x,
+      rank: i + 1,
+      _color: bandColor(x.score),
+      _glow: bandGlow(x.score),
+      _tint: bandTint(x.score),
+      _band: bandLabel(x.score),
+      onOpen: x.id
+        ? () => openReport(x.id as string, "leaderboard")
+        : () => toast("That report is not available yet."),
+    }));
+  }, [state.board.rows, openReport, toast]);
 
   const activity = useMemo<ActivityView[]>(
     () => ACTIVITY.map((a) => ({ ...a, _color: bandColor(a.score) })),
@@ -1397,6 +1617,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       leaderTop: leaderboard.slice(0, 5),
       leaderHero: leaderboard[0],
       leaderRest: leaderboard.slice(1),
+      boardDots: state.board.dots,
+      boardStats: state.board.stats,
+      boardDistribution: state.board.distribution,
+      boardLoading: state.boardLoading,
+      boardLoaded: state.board.loaded,
+      boardHasMore: state.board.hasMore,
+      boardMoreLoading: state.boardMoreLoading,
+      loadMoreBoard,
+      ensureBoardLoaded: loadBoard,
       activity,
       useCases,
       history,
@@ -1451,6 +1680,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       procPhase,
       suggestions,
       leaderboard,
+      loadMoreBoard,
+      loadBoard,
       activity,
       history,
       historyGroups,

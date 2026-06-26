@@ -12,6 +12,7 @@ import { onActivate, useApp } from "../state";
 import { FOOTER_COLS } from "../state";
 import styles from "../spa.module.css";
 import { Orbit } from "../components/Orbit";
+import { RepoLink } from "../components/github";
 import { Chevron, GithubIcon, RabbitMark, StarIcon, ThemeIcon } from "../components/glyphs";
 
 export function HomeScreen() {
@@ -184,7 +185,7 @@ export function HomeScreen() {
                 whiteSpace: "nowrap",
               }}
             >
-              Everyone reads the code · we run it
+              We read the code, then we run it
             </span>
           </div>
           <h1
@@ -345,9 +346,9 @@ export function HomeScreen() {
                 {a.score}
               </span>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <span style={{ fontSize: 12.5, color: "var(--t2)", fontWeight: 450 }}>
+                <RepoLink owner={a.owner} name={a.name} style={{ fontSize: 12.5, color: "var(--t2)", fontWeight: 450 }}>
                   {a.owner}/{a.name}
-                </span>
+                </RepoLink>
                 <span style={{ fontSize: 10.5, color: "var(--t5)" }}>{a.when}</span>
               </div>
             </div>
@@ -462,12 +463,12 @@ export function HomeScreen() {
       <div className="reveal" style={{ position: "relative", zIndex: 1, maxWidth: 1040, margin: "140px auto 0", padding: "0 24px" }}>
         <div style={{ maxWidth: 620, marginBottom: 48 }}>
           <h2 className="serif" style={{ fontSize: "clamp(32px,4.4vw,46px)", margin: "0 0 18px", color: "var(--t1)", lineHeight: 1.02, letterSpacing: "-0.01em" }}>
-            A scanner reads the code. We run it and watch.
+            We read the code, then we run it and watch.
           </h2>
           <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
-            Static tools guess at intent from source. We clone the repository into a disposable, isolated cloud sandbox,
-            actually execute it, and watch what it does. The sandbox holds no real credentials, locks down network
-            egress, and is reimaged to a clean state after every scan.
+            Reading source tells you what code is meant to do. Running it tells you what it actually does. We clone the
+            repository into a disposable, isolated cloud sandbox, execute it, and watch its real behavior. The sandbox
+            holds no real credentials, locks down network egress, and is reimaged to a clean state after every scan.
           </p>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 18 }}>
@@ -529,8 +530,8 @@ export function HomeScreen() {
               Star it. Know before you run.
             </h2>
             <p style={{ fontSize: 16, color: "var(--t3)", margin: "0 0 30px", maxWidth: 440, lineHeight: 1.62 }}>
-              Every scan you see here ran in a real sandbox. If Claude Rabbit ever stops you running the wrong thing, a
-              star is the only thanks we ask.
+              We are a free security tool for the open-source community. Every scan you see here ran in a real sandbox.
+              If Claude Rabbit ever stops you running the wrong thing, a star is the only thanks we ask.
             </p>
             <a
               href="#"
@@ -624,7 +625,7 @@ export function HomeScreen() {
               fontSize: 12.5,
             }}
           >
-            <span>© 2026 Claude Rabbit · Everyone reads the code, we run it.</span>
+            <span>© 2026 Claude Rabbit · We read the code, then we run it — malware protection for the open-source community.</span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)", boxShadow: "0 0 7px var(--green)" }} />
               All systems operational
