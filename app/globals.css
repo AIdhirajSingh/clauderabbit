@@ -86,3 +86,54 @@ input,button,textarea{ font-family:inherit; }
 @keyframes cardspin{ from{ transform:rotate(0deg);} to{ transform:rotate(-360deg);} }
 @keyframes orbCardFloat{ 0%,100%{ transform:translateY(0);} 50%{ transform:translateY(-6px);} }
 @media (prefers-reduced-motion:reduce){ .reveal{ transition:opacity .4s ease; transform:none; } *{ animation-duration:.001ms !important; } }
+
+/* ---------------------------------------------------------------------------
+ * PRINT — Save-as-PDF of a report (the report "PDF" button calls window.print).
+ * On-screen appearance is untouched; these rules apply ONLY when printing.
+ * The report body tags its root with data-print="report"; its interactive chrome
+ * (the action bar, the logs CTA) is tagged data-print="hide". We drop the SPA
+ * shell (decorative background, sidebar, toast, logs overlay), force the light
+ * theme on white paper for ink economy + legibility (the semantic score colours
+ * are kept), and flow the report full-width with clean page breaks.
+ * --------------------------------------------------------------------------- */
+@media print{
+  /* White paper; light theme even when the app is viewed in dark mode. Re-assert
+     the :root (light) neutrals for the dark theme so report text is dark ink on
+     white — score colours use the light-theme (ink-legible) variants, so the
+     green/blue/amber/red score-colour logic still reads correctly on paper. */
+  html,body{ background:#fff !important; }
+  [data-theme="dark"]{
+    --bg:#fff; --bg2:#fff; --paper:#fff;
+    --s1:rgba(40,34,24,0.028); --s2:rgba(40,34,24,0.055); --s3:rgba(40,34,24,0.085);
+    --glass:#fff; --glass2:#fff;
+    --line:rgba(40,34,24,0.10); --line2:rgba(40,34,24,0.16); --line3:rgba(40,34,24,0.28);
+    --t1:#221f1a; --t2:#403a32; --t3:#6d665b; --t4:#928a7d; --t5:#b0a797; --t6:#cdc5b6;
+    --ink:#221f1a; --ink-fg:#f7f5f0; --inkhi:rgba(255,255,255,0.16);
+    --green:oklch(0.56 0.13 154); --green-g:oklch(0.56 0.13 154 / 0.16); --green-t:oklch(0.56 0.13 154 / 0.085);
+    --blue:oklch(0.54 0.12 248); --blue-g:oklch(0.54 0.12 248 / 0.16); --blue-t:oklch(0.54 0.12 248 / 0.085);
+    --amber:oklch(0.66 0.13 62); --amber-g:oklch(0.66 0.13 62 / 0.18); --amber-t:oklch(0.66 0.13 62 / 0.10);
+    --red:oklch(0.55 0.19 27); --red-g:oklch(0.55 0.19 27 / 0.16); --red-t:oklch(0.55 0.19 27 / 0.085);
+    --gold:oklch(0.68 0.13 76);
+    --shadow-sm:none; --shadow:none; --shadow-lg:none; --grain-op:0;
+  }
+  /* Drop all SPA shell chrome — only the report subtree prints. CurrentScreen
+     renders the active screen as a direct child of .cr-root, so the report's
+     siblings here are the decorative Background, the Sidebar, the LogsOverlay
+     and the Toast. */
+  .cr-root[data-app]{ padding-left:0 !important; }
+  .cr-root > *:not([data-print="report"]){ display:none !important; }
+  /* Drop interactive chrome inside the report (action bar; logs CTA). */
+  [data-print="hide"]{ display:none !important; }
+  /* The report fills the page; resolve scroll-reveal + entrance animations so
+     nothing prints blank or blurred; keep cards from splitting across pages. */
+  [data-print="report"]{ width:100% !important; max-width:100% !important; margin:0 !important; min-height:0 !important; }
+  [data-print="report"], [data-print="report"] *{ animation:none !important; }
+  [data-print="report"] .reveal{ opacity:1 !important; transform:none !important; }
+  /* Keep each top-level report block (verdict hero, stat row, the two signal
+     panels, verdict + "what we could not verify") from splitting across pages.
+     ReportBody's blocks are the div children of its centred content column
+     (data-print="report" > content column > blocks); also cover semantic tags. */
+  [data-print="report"] > div > div,
+  [data-print="report"] section,
+  [data-print="report"] article{ break-inside:avoid; page-break-inside:avoid; }
+}
