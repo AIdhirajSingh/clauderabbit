@@ -757,5 +757,43 @@ class GrepReDoSTests(unittest.TestCase):
             self.assertIn("error", res[0])
 
 
+class RelayResilienceTests(unittest.TestCase):
+    """The agentic pass must NEVER crash on a relay failure (the never-blank rule).
+    This is the exact bug the first live run hit: gcloud is not directly
+    executable on the Windows controller, so ssh_exec raised FileNotFoundError and
+    the WHOLE pass died. A relay exception must be recorded as detonation_failed
+    and the loop must continue + persist findings, never fabricating a fact."""
+
+    def test_do_detonate_survives_relay_exception(self):
+        def raising_ssh(cmd):
+            raise FileNotFoundError("gcloud not found")  # the live failure shape
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, {"index.js": "console.log(1)"})
+            graph = make_graph(["index.js"], hotspots=["index.js"])
+            loop = make_loop(tmp, repo, graph, ssh=raising_ssh)
+            marker = loop._do_detonate("node", "index.js")  # must NOT raise
+            self.assertIn("detonation_failed", marker)
+            self.assertIn("index.js", loop.detonated_targets)
+
+    def test_loop_completes_and_persists_findings_when_relay_fails(self):
+        def raising_ssh(cmd):
+            raise OSError("ssh tunnel down")
+
+        model = ScriptedModel(
+            [[{"name": "detonate", "arguments": {"runtime": "node", "target": "index.js"}}]]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, {"index.js": "console.log(1)"})
+            graph = make_graph(["index.js"], hotspots=["index.js"], entry_points=["index.js"])
+            loop = make_loop(tmp, repo, graph, ssh=raising_ssh, model=model)
+            result = loop.run()  # must not crash
+            self.assertEqual(result.get("schema"), "claude-rabbit/agentic-findings@1")
+            self.assertIn("index.js", result.get("detonated_targets", []))
+            # C5: a relay that produced no observation yields NO fabricated fact.
+            for f in result.get("findings", []):
+                self.assertEqual(f.get("facts", []), [], "failed detonation must not invent a fact")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
