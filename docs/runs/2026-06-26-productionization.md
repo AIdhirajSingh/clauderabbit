@@ -81,6 +81,10 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - Files: detonator.py, agent_loop.py, vertex_client.py, test_agent_loop.py, run-harness.sh (run-target), orchestrate.sh (CR_AGENTIC=1 opt-in). C1 verified myself: run-target validates runtime allowlist + path (abs/../symlink/realpath under $WORK) + re-asserts containment (exit 3) + runs as `sudo -u runner` (non-root). 
 - **LIVE-PROOF PREPPED:** ADC OK, deno 2.8.3, fixtures built (exfil-c2/cred-stealer/miner/benign-deps .tar.gz), google-genai installing. Golden image + network + firewalls ready, no leftover VMs. On security-review clear: address findings → attempt ONE live agentic proof `CR_AGENTIC=1 bash sandbox/orchestrate.sh --zone us-central1-a --tarball sandbox/fixtures/exfil-c2.tar.gz --name agentic-exfil`. Flagged integration gaps to close first: dynamic_outcome→verdict/forensics wiring; ssh readback parse on noisy IAP.
 
+### U4b SECURITY: 2nd review (62/100) → ALL 9 findings fixed `4f8c410` (39 tests). HIGH-3 controller-injection + CRIT-1 path-bypass + MED-4 tool-call dispatch closed, re-reviewed by me. Two audit + two security rounds applied.
+### VERTEX PATH PROVEN LIVE: vertex_client smoke test → real Gemini 'PONG' + a real `detonate` tool_call normalized correctly (location=global). The riskiest untested piece works.
+### LIVE AGENTIC PROOF LAUNCHED (bg bdamrblzf): `CR_AGENTIC=1 CR_VERTEX_LOCATION=global orchestrate.sh ... exfil-c2`. Capstone integration of all proven components. Result pending; robust cleanup (dead-man's switch) = no orphan risk.
+
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
 - Vertex-direct explore/detonate loop with C1-C5 hard constraints + run-harness `run-target` extension + detonator.py + agent_loop.py + comprehensive unit tests (mocked model + mocked ssh). NO live GCP (lead runs the one proof).
