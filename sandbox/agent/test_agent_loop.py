@@ -795,5 +795,18 @@ class RelayResilienceTests(unittest.TestCase):
                 self.assertEqual(f.get("facts", []), [], "failed detonation must not invent a fact")
 
 
+class MethodologyTests(unittest.TestCase):
+    """The 2026 malware methodology must actually load into the system prompt — a
+    packaging regression (file not shipped) would silently degrade the analyst to
+    rules-only and pass the referential SYSTEM_PROMPT assertions (review Phase-3
+    MEDIUM-1). Assert the methodology content is present."""
+
+    def test_methodology_loaded_into_system_prompt(self):
+        # A heading unique to the methodology doc — present only when it loaded.
+        self.assertIn("Analyst mental model", agent_loop.SYSTEM_PROMPT)
+        # The C3 fixed operational rules are always present too.
+        self.assertIn("UNTRUSTED DATA", agent_loop.SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

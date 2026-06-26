@@ -25,6 +25,7 @@ import type {
 } from "@/lib/report-view";
 import { RING_CIRC } from "@/lib/report-view";
 import { StarIcon } from "./glyphs";
+import { OwnerAvatar, RepoLink } from "./github";
 
 interface ReportBodyProps {
   r: RepoView;
@@ -108,7 +109,9 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
               )}
             </div>
             <h1 className="serif" style={{ fontSize: 34, color: "var(--t1)", lineHeight: 1.04, margin: "0 0 14px", letterSpacing: "-0.01em" }}>
-              {r.owner}/{r.name}
+              <RepoLink owner={r.owner} name={r.name}>
+                {r.owner}/{r.name}
+              </RepoLink>
             </h1>
             <p style={{ fontSize: 16, color: "var(--t2)", lineHeight: 1.65, margin: 0, textWrap: "pretty" }}>{r.summary}</p>
           </div>
@@ -156,23 +159,13 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 13, marginBottom: 20 }}>
-              <div
-                style={{
-                  width: 42,
-                  height: 42,
-                  borderRadius: "50%",
-                  background: "linear-gradient(135deg, oklch(0.62 0.16 25), oklch(0.55 0.15 320))",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 17,
-                  fontWeight: 600,
-                  color: "#fff",
-                  flexShrink: 0,
-                }}
-              >
-                {r._ownerInitial}
-              </div>
+              <OwnerAvatar
+                owner={r.owner}
+                initial={r._ownerInitial}
+                size={42}
+                fontSize={17}
+                gradient="linear-gradient(135deg, oklch(0.62 0.16 25), oklch(0.55 0.15 320))"
+              />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14.5, color: "var(--t1)", marginBottom: 2, fontWeight: 450 }}>{r.ownerHistory.name}</div>
                 <div style={{ fontSize: 12, color: "var(--t4)" }}>@{r.ownerHistory.handle}</div>

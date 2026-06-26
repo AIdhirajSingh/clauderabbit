@@ -13,6 +13,48 @@
  *
  * SECURITY: the service-account JSON, the private key, and the minted token never
  * leave this module and are never logged or returned to a caller.
+ *
+ * PROMPT CACHING (the cost lever) — IMPLICIT, AUTOMATIC, NO EXPLICIT CACHE.
+ * Every scan re-sends the same large analyst methodology (the system prompt /
+ * report-design spec) and only the per-repo facts change. Vertex serves all
+ * supported Gemini 2.5+ / 3.x models with IMPLICIT context caching enabled by
+ * default: its infrastructure caches the KV state of a request's leading tokens
+ * and, on a prefix match within the cache window, bills the matched tokens at
+ * 10% of the normal input price — automatically, with NO code change and NO
+ * `cachedContent` object to manage. Explicit `CachedContent` is deliberately NOT
+ * used here: it is mutually exclusive with `systemInstruction` in the same
+ * `generateContent` call (the instruction would have to be baked into the cache),
+ * which would complicate the clean `generate()` seam for no gain over implicit
+ * caching at this prompt size.
+ *
+ * What we MUST do for implicit hits — and do — is keep the repeating content as a
+ * STABLE PREFIX and let only the variable content follow it (Google's stated best
+ * practice: "keep the content at the beginning of the request the same and add
+ * things like a user's question ... at the end"). Here the caller's `system`
+ * (the byte-stable methodology) is sent as `systemInstruction`, which the model
+ * processes before `contents`, so it is the leading prefix; the per-repo `prompt`
+ * (metadata + flagged regions) is the trailing variable part inside `contents`.
+ * `generationConfig` is request config, not content, so it does not perturb the
+ * cacheable prefix. Callers therefore get implicit caching for free as long as
+ * they pass a constant `system` string (see scan/index.ts `buildSystemPrompt`,
+ * which is a static template literal with no interpolation).
+ *
+ * Observability: `usage.cachedContentTokenCount` (surfaced below from Vertex's
+ * `usageMetadata`) is non-zero when a cache hit occurred, so cache effectiveness
+ * is measurable without changing the response shape any consumer reads.
+ *
+ * THRESHOLD CAVEAT (honest): implicit caching only fires above a minimum prefix
+ * size (~1k tokens). The fast-tier read prompt (`buildSystemPrompt`, ~430 tokens)
+ * is BELOW that, so implicit caching mostly benefits the DEEP/agent tier, whose
+ * system prefix carries the full 2026 malware-analysis methodology (well over the
+ * threshold). The fast path is already cheap (one short call); we do not pad it
+ * just to cross the threshold, so `cachedContentTokenCount` will read 0 there.
+ *
+ * NOTE for the sandbox/agent tier (sandbox/agent/vertex_client.py, off-limits to
+ * this module): the same implicit caching applies to its repeating agent system
+ * prompt for free, PROVIDED that client also sends its system instruction as a
+ * stable leading prefix. That client is owned by the sandbox lead — flagged here
+ * so the same prefix-stability guarantee is verified there.
  */
 
 /** Model tier → which secret holds the model id. */
@@ -49,6 +91,12 @@ export interface GenerateResult {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     totalTokenCount?: number;
+    /**
+     * Tokens served from the implicit context cache (billed at 10%). Non-zero
+     * means the stable system-prompt prefix hit the cache this call. Surfaced
+     * for cost observability; additive, so it never changes an existing shape.
+     */
+    cachedContentTokenCount?: number;
   };
 }
 
@@ -230,6 +278,8 @@ interface VertexResponse {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     totalTokenCount?: number;
+    /** Implicit-cache hit size (billed at 10%); present when the prefix cached. */
+    cachedContentTokenCount?: number;
   };
   promptFeedback?: { blockReason?: string };
 }
