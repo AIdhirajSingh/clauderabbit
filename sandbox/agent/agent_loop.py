@@ -480,6 +480,18 @@ class AgentLoop:
                 {"decision": "detonate_rejected", "target": target, "reason": str(e)}
             )
             return marker
+        except Exception as e:
+            # A relay/parse failure (SSH down, VM gone, unreadable observation)
+            # must NOT crash the agentic pass (never-blank rule). Record the
+            # target as processed-but-unexecuted and continue to the next one,
+            # so the pass always finishes and persists what it found.
+            marker = {"detonation_failed": str(e), "target": target, "aggregate_observations": {}}
+            self.advisor_capped_decisions.append(
+                {"decision": "detonate_failed", "target": target, "reason": str(e)}
+            )
+            self.detonated_targets.add(target)
+            self.checkpoint()
+            return marker
         self.detonated_targets.add(target)
         self.detonation_observations.append(observation)
         self.checkpoint()
@@ -866,6 +878,8 @@ def main(argv: list[str]) -> int:
     # tests). vertex_client imports the SDK lazily, inside the call.
     from vertex_client import make_vertex_model_call, LEAD_MODEL, ADVISOR_MODEL
     import subprocess
+    import shutil
+    import sys
 
     if not args.project or not args.location:
         print("error: --project and --location are required for a real run", flush=True)
@@ -874,16 +888,28 @@ def main(argv: list[str]) -> int:
     lead_call = make_vertex_model_call(project=args.project, location=args.location, model=LEAD_MODEL)
     advisor_call = make_vertex_model_call(project=args.project, location=args.location, model=ADVISOR_MODEL)
 
+    # Resolve gcloud via PATH so the relay works on the Linux controller AND a
+    # Windows dev/orchestrator host — where it is `gcloud.cmd`, which a bare
+    # subprocess argument cannot find (this was the live agentic-pass failure).
+    gcloud_bin = shutil.which("gcloud") or "gcloud"
+
     def ssh_exec(command: str) -> str:
         # The real relay: intra-VPC SSH into the sealed VM. Mirrors orchestrate's
         # ssh_det. Kept here (not in the loop) so the loop stays injectable.
-        proc = subprocess.run(
-            ["gcloud", "compute", "ssh", os.environ.get("CR_DET_VM", ""),
-             "--zone", os.environ.get("CR_ZONE", ""), "--tunnel-through-iap",
-             "--command", command],
-            capture_output=True, text=True,
-        )
-        return proc.stdout
+        # RESILIENT: a relay failure must NEVER crash the agentic pass (the
+        # never-blank rule) — it returns "" so the detonation records as
+        # unexecuted and the loop continues to the next target.
+        try:
+            proc = subprocess.run(
+                [gcloud_bin, "compute", "ssh", os.environ.get("CR_DET_VM", ""),
+                 "--zone", os.environ.get("CR_ZONE", ""), "--tunnel-through-iap",
+                 "--command", command],
+                capture_output=True, text=True, timeout=180,
+            )
+            return proc.stdout or ""
+        except Exception as e:  # boundary: never propagate into the loop
+            print(f"[agent] ssh_exec failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            return ""
 
     loop = AgentLoop(
         repo_dir=args.repo_dir, graph=graph, commit_sha=args.commit_sha,
@@ -892,7 +918,15 @@ def main(argv: list[str]) -> int:
         time_budget_s=args.time_budget_s, token_budget=args.token_budget,
         results_dir=args.results_dir, cage_duration_s=args.cage_duration_s,
     )
-    result = loop.run(resume=args.resume)
+    try:
+        result = loop.run(resume=args.resume)
+    except Exception as e:
+        # never-blank: even an unexpected crash persists an honest partial result
+        # built from whatever was checkpointed, with the error noted — a scan
+        # never produces nothing.
+        print(f"[agent] loop crashed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        result = loop.finalize()
+        result["crashed"] = f"{type(e).__name__}: {e}"
     out_path = args.out or os.path.join(args.results_dir, f"{args.name}-agentic-findings.json")
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2)
