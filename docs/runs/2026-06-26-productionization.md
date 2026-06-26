@@ -90,7 +90,15 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 ### FIX `e3ff7ff`: ssh_exec resolves gcloud via shutil.which + try/except→'' ; _do_detonate catches any relay failure→detonation_failed+continue; main wraps run()→finalize on crash (never-blank). +2 tests (41 pass). Proven offline: exits 0, writes findings, unbacked finding flagged not_verified (C5 safe). Vertex path proven live earlier (PONG + normalized detonate tool_call).
 ### LIVE PROOF #2 LAUNCHED (bp2v5b358) with the fix + agentic stderr captured to results/<name>-agentic.log. Expect the agentic pass to now relay run-target into the live VM end-to-end.
 
-### Convergence note (for the close): all run work is on branch claude/zen-merkle-43a854 (24+ commits); main==origin/main==baseline. Final convergence = merge branch→main + push (CI green incl gitleaks) so local main==origin/main.
+### 🎯 AGENTIC MOAT PROVEN LIVE END-TO-END (proof #4, bvjtdst44) — the heaviest unit DONE
+- 4 live cycles, each fixed a real bug found ONLY by running (mocked tests couldn't): #1 gcloud-on-Windows crash → resilience fix; #2 clean-but-0-facts; #3 instrumented → root cause `run-target` refused (CR_TRAP_IP stripped by sudo) + readback perms; #4 env-after-sudo + sudo-cat → SUCCESS.
+- **Proof #4 result:** agent explored (kg) → Vertex model chose detonate(node,index.js) → detonator relayed run-target into SEALED VM → flip-to-sinkhole + DETONATE as non-root runner → malware read **5 cred files + 3 outbound ALL sinkholed** → **4 CODE-VERIFIED facts** (source=observation, C5; finding NOT inference-only) → dynamic_outcome credentialReadObserved=True egressIntercepted=True → deterministic verdict red/Dangerous, egress_intercepted_count 4, attack_egress_intercepted true, **no real packet left** → both VMs DELETED, no orphans.
+- All invariants demonstrated intact live: hermetic (no IP/SA, deny-egress), monitored sinkhole (DNAT→trap), no-real-packet-leaves, reset-every-scan, runner-uid (C1), code-verified facts (C5), never-blank.
+- Moat fixes committed this segment: e3ff7ff (resilience), c2ab791 (sudo-cat+diagnostics), [env-after-sudo]. 41 agent tests pass. 2 security review rounds (architecture+impl) + live proof with containment intact = the gate.
+
+### Re-measured (live, honest small-sample): deterministic auto-build succeeded on exfil-c2 (node) every run; agentic detonation of index.js directly = no-build (autoBuildSucceeded False is correct — it ran the file, not npm install). Escalation rate = fast-path gate (code-driven decideEscalation); synthetic fixtures escalate, the real famous repos tested (cookie-parser/click/morgan) did NOT — needs a larger real sample for a precise %.
+
+### Convergence (for the close): all work on claude/zen-merkle-43a854 (~30 commits); main==origin/main==f349397. Converge = push branch + PR→main, CI green (gitleaks clean — verified no secret literals), merge, sync local main==origin/main.
 
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
