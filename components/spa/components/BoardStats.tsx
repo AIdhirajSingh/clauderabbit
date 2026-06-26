@@ -53,7 +53,7 @@ export function BoardStatsStrip({ stats, loading, loaded }: BoardStatsStripProps
   if (!stats) return null;
 
   const items: StatDef[] = [
-    { label: "Repos scanned", value: stats.distinctRepos, color: "var(--t1)" },
+    { label: "Repos with reports", value: stats.distinctRepos, color: "var(--t1)" },
     { label: "Distinct owners", value: stats.distinctOwners, color: "var(--t1)" },
     { label: "Dangerous found", value: stats.dangerousRepos, color: "var(--red)" },
     { label: "Deep sandbox runs", value: stats.deepRepos, color: "var(--blue)" },

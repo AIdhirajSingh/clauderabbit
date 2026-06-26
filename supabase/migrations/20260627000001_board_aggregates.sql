@@ -46,7 +46,12 @@ create or replace view public.v_leaderboard_full
     latest.deep,
     latest.commit_sha,
     latest.created_at,
-    latest.forensics_json
+    -- Defense-in-depth (review MEDIUM): the bulk paginated list does NOT need the
+    -- decoded-payload blob. Strip `payload_analysis` (decoded inert decoy bytes +
+    -- the AI summary) from this view — the board only derives a headline + the C2
+    -- geo marker, which come from `verdict` + `network_intent` (kept). The full
+    -- unredacted forensics is still served per-report by the /owner/repo page.
+    (latest.forensics_json - 'payload_analysis') as forensics_json
   from (
     select distinct on (r.owner_login, r.repo_name)
       r.owner_login,
