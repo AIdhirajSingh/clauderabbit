@@ -40,6 +40,15 @@ import {
 import { parseRepoInput } from "@/lib/parse-repo";
 import { runScan } from "@/lib/scan";
 import {
+  EMPTY_BOARD_DATA,
+  fetchBoardData,
+  fetchBoardPage,
+  type BoardData,
+  type BoardDot,
+  type BoardStats,
+  type ScoreDistribution,
+} from "@/lib/board-data";
+import {
   clearNavSnapshot,
   loadNavSnapshot,
   saveNavSnapshot,
@@ -132,6 +141,19 @@ interface State {
    * report is shown when `runScan` resolves rather than on a fixed timer.
    */
   procLive: boolean;
+  /**
+   * The danger-board bundle (real DB data: ranked caught repos, map dots, live
+   * counts, score histogram). Lazily fetched on first board navigation — never
+   * on the homepage — so the marketing/SEO surface stays cheap. Starts empty
+   * (`loaded: false`) and is replaced once the fetch resolves.
+   */
+  board: BoardData;
+  /** True while the initial board bundle is being fetched (distinct from empty). */
+  boardLoading: boolean;
+  /** The highest list page already loaded (for infinite-scroll appends). */
+  boardPage: number;
+  /** True while a "load more" page request is in flight. */
+  boardMoreLoading: boolean;
 }
 
 const initialState: State = {
@@ -168,6 +190,10 @@ const initialState: State = {
   sidebarCollapsed: false,
   liveReports: {},
   procLive: false,
+  board: EMPTY_BOARD_DATA,
+  boardLoading: false,
+  boardPage: 0,
+  boardMoreLoading: false,
 };
 
 type Action = { type: "PATCH"; patch: Partial<State> };
@@ -452,6 +478,22 @@ export interface AppApi {
   leaderTop: LeaderboardView[];
   leaderHero: LeaderboardView | undefined;
   leaderRest: LeaderboardView[];
+  /** Real board map dots, live counts, and score histogram (DB-sourced). */
+  boardDots: BoardDot[];
+  boardStats: BoardStats | null;
+  boardDistribution: ScoreDistribution;
+  /** True while the initial board bundle is loading (vs. genuinely empty). */
+  boardLoading: boolean;
+  /** True once the board fetch completed (so "empty" is honestly "nothing caught"). */
+  boardLoaded: boolean;
+  /** True when more list pages remain for infinite scroll. */
+  boardHasMore: boolean;
+  /** True while a "load more" page request is in flight. */
+  boardMoreLoading: boolean;
+  /** Append the next page of the ranked danger list (infinite scroll). */
+  loadMoreBoard: () => void;
+  /** Ensure the board bundle is loaded (idempotent) — for a rehydrated board screen. */
+  ensureBoardLoaded: () => void;
   activity: ActivityView[];
   useCases: UseCase[];
   history: HistoryItem[];
@@ -1167,7 +1209,76 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const openLogs = useCallback(() => patch({ showLogs: true }), [patch]);
   const closeLogs = useCallback(() => patch({ showLogs: false }), [patch]);
-  const openLeaderboard = useCallback(() => patch({ lbReturn: stateRef.current.screen, screen: "leaderboard" }), [patch]);
+  /**
+   * Lazily fetch the danger-board bundle (ranked caught repos + map dots + live
+   * counts + score histogram) from the anon-readable DB views via the browser
+   * client. Called on first board navigation so the homepage never pays for it.
+   * Idempotent: a second call while already loaded (and not forced) is a no-op.
+   * On a missing/failed client the board stays its honest empty state; the
+   * `boardLoading` flag lets the UI distinguish "loading" from "nothing caught".
+   */
+  const loadBoard = useCallback(
+    (force = false) => {
+      const cur = stateRef.current;
+      if (cur.boardLoading) return;
+      if (!force && cur.board.loaded) return;
+      const supabase = getSupabase();
+      if (!supabase) {
+        // No client (env missing) — leave the honest empty board; do not fake.
+        patch({ boardLoading: false });
+        return;
+      }
+      patch({ boardLoading: true });
+      void fetchBoardData(supabase)
+        .then((data) => {
+          patch({ board: data, boardLoading: false, boardPage: 0 });
+        })
+        .catch(() => {
+          // fetchBoardData never rejects, but guard so a thrown error still
+          // clears the loading flag (UI then shows the could-not-load state).
+          patch({ boardLoading: false });
+        });
+    },
+    [getSupabase, patch],
+  );
+
+  /**
+   * Append the next page of the ranked list (infinite scroll). No-ops when a
+   * page is already in flight, the bundle has not loaded, or there are no more
+   * rows. New rows are concatenated immutably; `hasMore` follows the page query.
+   */
+  const loadMoreBoard = useCallback(() => {
+    const cur = stateRef.current;
+    if (cur.boardMoreLoading || !cur.board.loaded || !cur.board.hasMore) return;
+    const supabase = getSupabase();
+    if (!supabase) return;
+    const nextPage = cur.boardPage + 1;
+    patch({ boardMoreLoading: true });
+    void fetchBoardPage(supabase, nextPage)
+      .then((res) => {
+        const prev = stateRef.current;
+        if (!res.ok) {
+          patch({ boardMoreLoading: false });
+          return;
+        }
+        patch({
+          board: {
+            ...prev.board,
+            rows: [...prev.board.rows, ...res.rows],
+            hasMore: res.hasMore,
+          },
+          boardPage: nextPage,
+          boardMoreLoading: false,
+        });
+      })
+      .catch(() => patch({ boardMoreLoading: false }));
+  }, [getSupabase, patch]);
+
+  const openLeaderboard = useCallback(() => {
+    patch({ lbReturn: stateRef.current.screen, screen: "leaderboard" });
+    // Fetch real board data on first navigation (lazy — never on the homepage).
+    loadBoard();
+  }, [loadBoard, patch]);
   const backFromLeaderboard = useCallback(
     () => patch({ screen: stateRef.current.lbReturn || (stateRef.current.loggedIn ? "dashboard" : "home") }),
     [patch],
@@ -1424,21 +1535,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [pickSuggestion],
   );
 
-  const leaderboard = useMemo<LeaderboardView[]>(
-    () =>
-      LEADERBOARD.map((x, i) => ({
-        ...x,
-        rank: i + 1,
-        _color: bandColor(x.score),
-        _glow: bandGlow(x.score),
-        _tint: bandTint(x.score),
-        _band: bandLabel(x.score),
-        onOpen: x.id
-          ? () => openReport(x.id as string, "leaderboard")
-          : () => toast("That report is not in this demo set."),
-      })),
-    [openReport, toast],
-  );
+  // The ranked danger list is built from REAL caught repos in `state.board.rows`
+  // (the DB `v_leaderboard_full` view), enriched with rank + the fixed band
+  // colors. `LEADERBOARD` (an honest `[]`) is the empty fallback before the
+  // lazy board fetch lands or when nothing has been caught. No invented rows.
+  const leaderboard = useMemo<LeaderboardView[]>(() => {
+    const source: LeaderboardEntry[] =
+      state.board.rows.length > 0 ? state.board.rows : LEADERBOARD;
+    return source.map((x, i) => ({
+      ...x,
+      rank: i + 1,
+      _color: bandColor(x.score),
+      _glow: bandGlow(x.score),
+      _tint: bandTint(x.score),
+      _band: bandLabel(x.score),
+      onOpen: x.id
+        ? () => openReport(x.id as string, "leaderboard")
+        : () => toast("That report is not available yet."),
+    }));
+  }, [state.board.rows, openReport, toast]);
 
   const activity = useMemo<ActivityView[]>(
     () => ACTIVITY.map((a) => ({ ...a, _color: bandColor(a.score) })),
@@ -1502,6 +1617,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       leaderTop: leaderboard.slice(0, 5),
       leaderHero: leaderboard[0],
       leaderRest: leaderboard.slice(1),
+      boardDots: state.board.dots,
+      boardStats: state.board.stats,
+      boardDistribution: state.board.distribution,
+      boardLoading: state.boardLoading,
+      boardLoaded: state.board.loaded,
+      boardHasMore: state.board.hasMore,
+      boardMoreLoading: state.boardMoreLoading,
+      loadMoreBoard,
+      ensureBoardLoaded: loadBoard,
       activity,
       useCases,
       history,
@@ -1556,6 +1680,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       procPhase,
       suggestions,
       leaderboard,
+      loadMoreBoard,
+      loadBoard,
       activity,
       history,
       historyGroups,
