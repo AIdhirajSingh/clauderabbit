@@ -98,7 +98,13 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 
 ### Re-measured (live, honest small-sample): deterministic auto-build succeeded on exfil-c2 (node) every run; agentic detonation of index.js directly = no-build (autoBuildSucceeded False is correct — it ran the file, not npm install). Escalation rate = fast-path gate (code-driven decideEscalation); synthetic fixtures escalate, the real famous repos tested (cookie-parser/click/morgan) did NOT — needs a larger real sample for a precise %.
 
-### Convergence (for the close): all work on claude/zen-merkle-43a854 (~30 commits); main==origin/main==f349397. Converge = push branch + PR→main, CI green (gitleaks clean — verified no secret literals), merge, sync local main==origin/main.
+### CONVERGED (Adhiraj's call: disable CI, gitleaks-local-gate, squash-merge).
+- CI Actions billing-blocked (jobs fail ~2s "payments failed/spending limit"). Disabled the workflow (`git mv ci.yml ci.yml.disabled`) — **RE-ENABLE when billing restored: `git mv .github/workflows/ci.yml.disabled .github/workflows/ci.yml`**.
+- gitleaks run LOCALLY over full history → 54 commits, no leaks (the secret-scan gate with CI off — never bypassed).
+- PR #1 SQUASH-MERGED → main. `local main == origin/main == 2b2f2e9` (clean linear history, both worktrees clean). The whole productionization run (de-fake + scoring + detection precision + the agentic moat proven live) is on main.
+- Continuing remaining phases on branch `claude/remaining-phases` off main; per push: run ALL gates incl gitleaks locally (CI is off).
+
+### REMAINING PHASES (driving to 100%): 3 security-skill · 5 danger-board/world-map/live-counts · 6 auth E2E (live) · 7 caching tab-switch+prompt-caching · 8 polish/copy/animation/icons/links/load · 9 cost writeup · 10 docs refresh · 11 Chrome+load testing (live).
 
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
