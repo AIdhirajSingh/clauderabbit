@@ -111,8 +111,12 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - ✅ **Phase 9 cost** `a87875e` — real per-scan/VM cost breakdown.
 - ⏳ **3+7 independent review** RUNNING (a26db7a89805663de) — the per-unit gate; address findings before main-merge.
 - ⏳ **Phase 5 danger-board/world-map/live-counts** BUILDING (a67a88a04b1be3fd3) — honest real-data board, fresh-context executor.
-- ⬜ **Phase 8** polish/copy-rewrite/animation/icons/GH-links + prompt-caching (both Gemini tiers vertex.ts+vertex_client.py). ⬜ **Phase 6** auth E2E (live: wipe test user, fresh Google sign-in). ⬜ **Phase 11** Chrome-as-user + load testing (live).
-- Per push: run ALL gates incl gitleaks LOCALLY (CI off). Branch merges to main per GitHub Flow when its units close.
+- ✅ **Phase 3 + 7 review fixes** `d37e014` — both CLOSED (3 approve-93; 7 approve-76→HIGH-1 timing-independent landing + bounded report cache + methodology test). 42+11 tests.
+- ✅ **Phase 5 danger-board** `664d870` — real-data list+chart+world-map+counts, 4 anon-safe views, honest empty states, 18 tests (29 total). Review RUNNING (ade8ebdfc3c4842c6).
+  - **WALL (external credential):** the board's 4 views need `supabase db push` to populate — `db push` requires the DB password (`--linked`/`--password`), which I don't have. **Manual step for Adhiraj:** `supabase link --project-ref mjvlczaytkhvsolnhhkz` (DB password) then `supabase db push`. Until then the board honestly shows "Board unavailable". Code is built+tested+committed.
+- ⏳ **Phase 8** polish BUILDING (a1458ef3f5b4f4d54) — prompt caching (vertex.ts; agent vertex_client.py = lead TODO), honest copy, seamless animation, GH avatars/links (public, no token).
+- ⬜ **Phase 6 auth E2E** — needs wiping the test user (service key / dashboard — credential wall, same as the migration) + a fresh Google sign-in via Chrome (live). ⬜ **Phase 11** Chrome-as-user + official load testing (live infra).
+- Per push: run ALL gates incl gitleaks LOCALLY (CI off). Branch merges to main per GitHub Flow when units close.
 
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
