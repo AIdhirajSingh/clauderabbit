@@ -77,6 +77,11 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 ### U4a knowledge graph — COMMITTED `9746d13` (verified myself: 22 tests pass; cred-stealer buried postinstall ranks #1). Explore half proven.
 ### U6 CI deno-gating — COMMITTED `1f2175a` (edge-tests job runs the 19 Deno tests; verified green).
 ### GCP prereqs CONFIRMED READY for live proof: golden image cr-sandbox-golden-20260625 exists; cr-sandbox-vpc + 5 firewall rules present; zero leftover VMs.
+### U4b agent-loop core — COMMITTED `fc4a0ec` (24 tests pass, C1 self-reviewed). SECURITY REVIEW running (agentId ab9be1ba9a1d51c4f) = the merge gate.
+- Files: detonator.py, agent_loop.py, vertex_client.py, test_agent_loop.py, run-harness.sh (run-target), orchestrate.sh (CR_AGENTIC=1 opt-in). C1 verified myself: run-target validates runtime allowlist + path (abs/../symlink/realpath under $WORK) + re-asserts containment (exit 3) + runs as `sudo -u runner` (non-root). 
+- **LIVE-PROOF PREPPED:** ADC OK, deno 2.8.3, fixtures built (exfil-c2/cred-stealer/miner/benign-deps .tar.gz), google-genai installing. Golden image + network + firewalls ready, no leftover VMs. On security-review clear: address findings → attempt ONE live agentic proof `CR_AGENTIC=1 bash sandbox/orchestrate.sh --zone us-central1-a --tarball sandbox/fixtures/exfil-c2.tar.gz --name agentic-exfil`. Flagged integration gaps to close first: dynamic_outcome→verdict/forensics wiring; ssh readback parse on noisy IAP.
+
+### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
 - Vertex-direct explore/detonate loop with C1-C5 hard constraints + run-harness `run-target` extension + detonator.py + agent_loop.py + comprehensive unit tests (mocked model + mocked ssh). NO live GCP (lead runs the one proof).
 - **On return (lead, security-critical):** verify tests MYSELF, INDEPENDENT SECURITY REVIEW (the gate that matters most — catch any C1-C5 violation), then attempt ONE live GCP proof on exfil-c2 (infra ready), then commit. Knowledge-graph review folded into this review.
