@@ -16,8 +16,11 @@ paste URL → API/edge fn → cache check (by commit SHA)
              the flagged regions → score + confidence
                 └─ confident clean → ship verdict
                 └─ suspicious / low-confidence → ESCALATE
-                      → DEEP PATH (~5%): throwaway GCP VM clones, builds, runs, and
-                        observes the repo (hermetic, egress-locked, reset every scan)
+                      → DEEP PATH (~5%): an AGENTIC analyzer on a throwaway GCP VM —
+                        Gemini agents (brain OUTSIDE the blast radius) explore the whole
+                        repo for what stage-1 missed, then DETONATE chosen files as a
+                        non-root user under a monitored sinkhole, recording CODE-VERIFIED
+                        facts (hermetic, egress-locked, no real packet leaves, reset every scan)
    → blend → 0–100 score → report generated from design.md → persist + public /owner/repo
 ```
 
@@ -31,21 +34,21 @@ credentials, locked egress, resource caps) and **reimaged/deleted after every sc
 |---|---|
 | Web | **Next.js 16 (App Router) + React 19 + TypeScript** — homepage SPA, SSR `/owner/repo` SEO pages, API |
 | DB / Auth / Edge | **Supabase** (Postgres + RLS, Google/GitHub/email auth, Deno edge functions) |
-| Fast-path model | **Gemini via Vertex AI** (placeholder behind a clean swap seam — see below) |
-| Sandbox | **Google Cloud Compute** — golden image + ephemeral VMs, egress-locked VPC (`sandbox/`) |
+| Models | **All-Gemini via Vertex AI** — fast `gemini-3.1-flash-lite`, deep/agent `gemini-3.5-flash` (swap seam intact for a future Kimi K2.7 deep-path swap) |
+| Scoring | **Code-computed** deterministic formula (`_shared/scoring.ts`) — the model feeds weighted signals; code decides the cited 0–100 |
+| Sandbox | **Agentic behavioral analyzer** on Google Cloud — knowledge-graph explore + sinkhole detonate, code-verified facts (`sandbox/`) |
 | Design | Faithful port of the shipped Claude Design spec (`design.md`) |
 
 ## The model swap seam
 
-Models are **placeholders** behind one seam. The fast/deep model IDs are read from the
-Supabase secrets `GEMINI_FAST_MODEL` / `GEMINI_DEEP_MODEL` and called through
-`supabase/functions/_shared/vertex.ts`. To swap in the real models (DeepSeek fast-path,
-Brave reputation, Kimi K2.7 + OpenCode in the sandbox), change those secrets / that one
-module — orchestration, scoring, and the escalation gate are real and unchanged.
-
-> Note: the documented `gemini-3.1-flash-lite` / `gemini-3.5-flash` strings 404 on the live
-> trial project; the working live equivalents `gemini-2.5-flash-lite` / `gemini-2.5-flash`
-> are used as defaults (configurable via the secrets above).
+**Gemini-via-Vertex is the production model layer** (all-Gemini). The fast/deep model IDs
+are read from the Supabase secrets `GEMINI_FAST_MODEL` / `GEMINI_DEEP_MODEL` and called
+through `supabase/functions/_shared/vertex.ts`; the agentic sandbox tier
+(`sandbox/agent/vertex_client.py`) runs `gemini-3.1-flash-lite` (explore) + `gemini-3.5-flash`
+(advisor/analysis), proven live via the `global` Vertex location (decoupled through
+`VERTEX_LOCATION`). The seam stays intact for a future **Kimi K2.7 Code** deep-path swap —
+change the secret / that one module; orchestration, the code-computed scoring, and the
+escalation gate are real and unchanged.
 
 ## Local development
 

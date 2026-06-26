@@ -7,11 +7,15 @@
  * the one shared band logic.
  */
 
+import { useEffect, useRef } from "react";
 import { onActivate, useApp } from "../state";
 import { buildForensicsView } from "@/lib/report-view";
 import type { Forensics } from "@/lib/types";
 import styles from "../spa.module.css";
 import { Chevron } from "../components/glyphs";
+import { BoardStatsStrip } from "../components/BoardStats";
+import { ScoreChart } from "../components/ScoreChart";
+import { WorldMap } from "../components/WorldMap";
 
 /**
  * Concise board marker for a caught repo, derived from its forensic record:
@@ -26,6 +30,14 @@ function boardMarker(forensics: Forensics | undefined): string | null {
 export function LeaderboardScreen() {
   const app = useApp();
   const hero = app.leaderHero;
+
+  // Ensure the real board data is loaded whenever this screen mounts — covers a
+  // tab-restore / rehydration where the screen reappears without going through
+  // `openLeaderboard`. Idempotent: a no-op when already loaded or loading.
+  const { ensureBoardLoaded } = app;
+  useEffect(() => {
+    ensureBoardLoaded();
+  }, [ensureBoardLoaded]);
 
   return (
     <div style={{ minHeight: "100vh", position: "relative", animation: "screenIn .5s var(--ease) both" }}>
@@ -99,6 +111,20 @@ export function LeaderboardScreen() {
           </p>
         </div>
 
+        <BoardStatsStrip stats={app.boardStats} loading={app.boardLoading} loaded={app.boardLoaded} />
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+            gap: 16,
+            marginBottom: 34,
+          }}
+        >
+          <ScoreChart distribution={app.boardDistribution} loaded={app.boardLoaded} />
+          <WorldMap dots={app.boardDots} loaded={app.boardLoaded} />
+        </div>
+
         {hero && (
           <div
             {...onActivate(hero.onOpen)}
@@ -156,13 +182,36 @@ export function LeaderboardScreen() {
               textAlign: "center",
             }}
           >
-            <div className="serif" style={{ fontSize: 22, color: "var(--t2)", marginBottom: 10 }}>
-              Nothing caught yet.
-            </div>
-            <p style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, margin: "0 auto", maxWidth: 460 }}>
-              The board only lists repositories the sandbox has actually run and caught scoring low. As
-              real low-scoring scans land, the worst offenders show up here, named and ranked.
-            </p>
+            {app.boardLoading ? (
+              <>
+                <div className="serif" style={{ fontSize: 22, color: "var(--t2)", marginBottom: 10 }}>
+                  Loading the board…
+                </div>
+                <p style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, margin: "0 auto", maxWidth: 460 }}>
+                  Reading the latest caught repositories from the live database.
+                </p>
+              </>
+            ) : !app.boardLoaded ? (
+              <>
+                <div className="serif" style={{ fontSize: 22, color: "var(--t2)", marginBottom: 10 }}>
+                  Board unavailable.
+                </div>
+                <p style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, margin: "0 auto", maxWidth: 460 }}>
+                  We could not reach the database to load the board right now. This is a
+                  connection problem, not an all-clear — please try again shortly.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="serif" style={{ fontSize: 22, color: "var(--t2)", marginBottom: 10 }}>
+                  Nothing caught yet.
+                </div>
+                <p style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, margin: "0 auto", maxWidth: 460 }}>
+                  The board only lists repositories the sandbox has actually run and caught scoring low. As
+                  real low-scoring scans land, the worst offenders show up here, named and ranked.
+                </p>
+              </>
+            )}
           </div>
         )}
 
@@ -224,6 +273,14 @@ export function LeaderboardScreen() {
         </div>
         )}
 
+        {app.leaderRest.length > 0 && (
+          <BoardLoadMore
+            hasMore={app.boardHasMore}
+            loading={app.boardMoreLoading}
+            onLoadMore={app.loadMoreBoard}
+          />
+        )}
+
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 22, marginTop: 32, flexWrap: "wrap" }}>
           <LegendDot color="var(--green)" label="90+ secure" />
           <LegendDot color="var(--blue)" label="80–89 likely safe" />
@@ -231,6 +288,72 @@ export function LeaderboardScreen() {
           <LegendDot color="var(--red)" label="under 60 dangerous" />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Infinite-scroll driver for the ranked list. An IntersectionObserver watches a
+ * sentinel just past the last row and fires `onLoadMore` when it scrolls into
+ * view, so paging is automatic; a visible button is the accessible / IO-less
+ * fallback and a manual control. When there are no more pages it shows a quiet
+ * end-of-list line. All rows come from the real DB — paging never fabricates.
+ */
+function BoardLoadMore({
+  hasMore,
+  loading,
+  onLoadMore,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  onLoadMore: () => void;
+}) {
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const first = entries[0];
+        if (first && first.isIntersecting) onLoadMore();
+      },
+      { rootMargin: "200px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, onLoadMore]);
+
+  if (!hasMore) {
+    return (
+      <div style={{ textAlign: "center", marginTop: 22, fontSize: 12.5, color: "var(--t5)" }}>
+        End of the board — every caught repository on record is shown.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginTop: 22 }}>
+      <div ref={sentinelRef} aria-hidden="true" style={{ height: 1, width: "100%" }} />
+      <button
+        type="button"
+        onClick={onLoadMore}
+        disabled={loading}
+        className={styles.lbBack}
+        style={{
+          background: "var(--s1)",
+          border: "1px solid var(--line2)",
+          color: "var(--t2)",
+          fontSize: 13,
+          padding: "10px 18px",
+          borderRadius: 11,
+          cursor: loading ? "default" : "pointer",
+          opacity: loading ? 0.6 : 1,
+        }}
+      >
+        {loading ? "Loading…" : "Load more"}
+      </button>
     </div>
   );
 }

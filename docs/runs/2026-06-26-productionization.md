@@ -98,7 +98,25 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 
 ### Re-measured (live, honest small-sample): deterministic auto-build succeeded on exfil-c2 (node) every run; agentic detonation of index.js directly = no-build (autoBuildSucceeded False is correct — it ran the file, not npm install). Escalation rate = fast-path gate (code-driven decideEscalation); synthetic fixtures escalate, the real famous repos tested (cookie-parser/click/morgan) did NOT — needs a larger real sample for a precise %.
 
-### Convergence (for the close): all work on claude/zen-merkle-43a854 (~30 commits); main==origin/main==f349397. Converge = push branch + PR→main, CI green (gitleaks clean — verified no secret literals), merge, sync local main==origin/main.
+### CONVERGED (Adhiraj's call: disable CI, gitleaks-local-gate, squash-merge).
+- CI Actions billing-blocked (jobs fail ~2s "payments failed/spending limit"). Disabled the workflow (`git mv ci.yml ci.yml.disabled`) — **RE-ENABLE when billing restored: `git mv .github/workflows/ci.yml.disabled .github/workflows/ci.yml`**.
+- gitleaks run LOCALLY over full history → 54 commits, no leaks (the secret-scan gate with CI off — never bypassed).
+- PR #1 SQUASH-MERGED → main. `local main == origin/main == 2b2f2e9` (clean linear history, both worktrees clean). The whole productionization run (de-fake + scoring + detection precision + the agentic moat proven live) is on main.
+- Continuing remaining phases on branch `claude/remaining-phases` off main; per push: run ALL gates incl gitleaks locally (CI is off).
+
+### REMAINING PHASES — progress (on branch claude/remaining-phases, off main 2b2f2e9):
+- ✅ **Phase 10 docs** `dc7c98b` — README refreshed (all-Gemini-for-prod, code-computed scoring, agentic sandbox; stale model-string note corrected).
+- ✅ **Phase 3 security-skill** `0e28aa7` — real 2026 malware methodology doc, prompt-cached into agent SYSTEM_PROMPT (C3-safe, fallback). 41 tests.
+- ✅ **Phase 7 caching** `bbb32b6` — tab-switch root cause (Supabase re-emits SIGNED_IN → unconditional dashboard land) FIXED + lib/spa-persist.ts report cache. 11 tests. (tsconfig: allowImportingTsExtensions for node --test .ts).
+- ✅ **Phase 9 cost** `a87875e` — real per-scan/VM cost breakdown.
+- ⏳ **3+7 independent review** RUNNING (a26db7a89805663de) — the per-unit gate; address findings before main-merge.
+- ⏳ **Phase 5 danger-board/world-map/live-counts** BUILDING (a67a88a04b1be3fd3) — honest real-data board, fresh-context executor.
+- ✅ **Phase 3 + 7 review fixes** `d37e014` — both CLOSED (3 approve-93; 7 approve-76→HIGH-1 timing-independent landing + bounded report cache + methodology test). 42+11 tests.
+- ✅ **Phase 5 danger-board** `664d870` — real-data list+chart+world-map+counts, 4 anon-safe views, honest empty states, 18 tests (29 total). Review RUNNING (ade8ebdfc3c4842c6).
+  - **WALL (external credential):** the board's 4 views need `supabase db push` to populate — `db push` requires the DB password (`--linked`/`--password`), which I don't have. **Manual step for Adhiraj:** `supabase link --project-ref mjvlczaytkhvsolnhhkz` (DB password) then `supabase db push`. Until then the board honestly shows "Board unavailable". Code is built+tested+committed.
+- ⏳ **Phase 8** polish BUILDING (a1458ef3f5b4f4d54) — prompt caching (vertex.ts; agent vertex_client.py = lead TODO), honest copy, seamless animation, GH avatars/links (public, no token).
+- ⬜ **Phase 6 auth E2E** — needs wiping the test user (service key / dashboard — credential wall, same as the migration) + a fresh Google sign-in via Chrome (live). ⬜ **Phase 11** Chrome-as-user + official load testing (live infra).
+- Per push: run ALL gates incl gitleaks LOCALLY (CI off). Branch merges to main per GitHub Flow when units close.
 
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)

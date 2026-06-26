@@ -66,6 +66,20 @@ export interface OrbitProps {
   scale?: number;
 }
 
+/**
+ * Vertical gap between conveyor cards. The marquee loops by translating the
+ * doubled track `translateY(-50%)`. For the wrap to be SEAMLESS (the first card
+ * of copy 2 landing exactly where the first card of copy 1 began), every card —
+ * including the last of each copy — must contribute one trailing gap. CSS flex
+ * `gap` omits the trailing gap after the final child, which leaves the track
+ * height at `2×copy − 1×gap`; `-50%` then undershoots the true copy height by
+ * half a gap and the loop visibly jumps. So each card owns its gap via
+ * `marginBottom` instead, making the track height an exact `2×copy` and the
+ * `-50%` wrap pixel-perfect. The extra trailing margin sits below the fold,
+ * hidden by the column's `overflow:hidden` + edge mask.
+ */
+const CARD_GAP = 20;
+
 export function Orbit({ dur = "26s", durB = "32s", scale = 1 }: OrbitProps) {
   const a = norm(COL_A);
   const b = norm(COL_B);
@@ -102,13 +116,12 @@ export function Orbit({ dur = "26s", durB = "32s", scale = 1 }: OrbitProps) {
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: 20,
                 animation: `${col.anim} ${col.dur} linear infinite`,
                 willChange: "transform",
               }}
             >
               {col.cards.map((c, i) => (
-                <div key={i} style={{ flexShrink: 0, animation: `orbCardFloat ${c.float} ease-in-out infinite` }}>
+                <div key={i} style={{ flexShrink: 0, marginBottom: CARD_GAP, animation: `orbCardFloat ${c.float} ease-in-out infinite` }}>
                   <Snap
                     kind={c.kind}
                     title={c.title}

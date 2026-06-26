@@ -149,6 +149,16 @@
   color: var(--t4);
 }
 
+/* ── external GitHub repo link (report header, activity strip) ── */
+.repoExtLink {
+  transition: color 0.16s var(--ease);
+}
+.repoExtLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
 /* ── report: back / export controls ── */
 .reportBack:hover {
   color: var(--t1);
