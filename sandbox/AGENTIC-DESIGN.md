@@ -5,6 +5,72 @@ behavioral analyzer** that both **explores** the whole repo (finding dangerous c
 stage-1 flagged-region scan missed) and **detonates** it under the existing hermetic
 sinkhole. This doc is the plan; it is cold-audited before any build.
 
+---
+
+## ⚠ COLD-AUDIT REVISIONS (binding — supersede anything below that conflicts)
+
+The cold audit (58/100) found real flaws. These corrections are BINDING and the V1 build
+follows them. The single riskiest assumption it named: *"outside the VM" ≠ "safe"* — the
+brain has Vertex credentials + real egress the sealed VM never had, and it ingests hostile
+repo content. Every constraint below flows from closing that.
+
+**SECURITY CONSTRAINTS (non-negotiable):**
+- **C1 — `detonate()` is NOT free-form SSH.** Untrusted code runs ONLY through
+  `run-harness.sh run` as the non-root **`runner`** uid (the sinkhole DNAT exempts uid 0,
+  so root traffic would BYPASS the sink — an egress leak). `detonate()` is a fixed-grammar
+  tool that invokes the harness run path, and re-runs `sinkhole-flip.sh assert` immediately
+  before each detonation, refusing if the assert fails. No arbitrary/root command relay.
+- **C2 — detonation state machine.** Build phase closes after the first flip-to-RUN and
+  cannot be re-entered on the same VM (no re-opened squid proxy on a dirty VM). The agent
+  may only request RUN-phase detonations after flip. A fresh build = a fresh VM. Scan still
+  ends in VM deletion.
+- **C3 — repo content is untrusted DATA, never instructions.** All repo bytes and all
+  VM-authored output (`cr-report.json` etc.) are wrapped in delimited, escaped context and
+  never placed in a system/instruction position. The controller's own egress is locked to
+  the Google/Vertex API endpoints only. `detonate`'s fixed grammar means an injected "run
+  this" cannot become arbitrary execution.
+- **C4 — AI budget < cage, fixed.** The hard cage is the VM `--max-run-duration … DELETE`.
+  The AI working budget is a FIXED fraction (≤60% of the cage) with a reserved finalize/
+  persist/delete margin, and is NEVER adjustable up toward the cage. "Extension" = spend
+  remaining pre-budgeted time, never raise the ceiling. Cage and AI budget are two distinct
+  numbers, AI provably strictly less. A hard per-scan TOKEN budget rides alongside.
+- **C5 — FACT is code-verified, the deterministic verdict stays authoritative.** A finding's
+  `fact` field is populated ONLY from non-model evidence (trap `capture.jsonl` line, strace
+  event from `observe.py`, resolved-IP record) and validated by code. The model may write
+  only the `inference` field (hedged). The score still comes from deterministic
+  `scoring.ts`/`verdict.py` over observed evidence — **the agent narrates, never scores**;
+  on disagreement the deterministic verdict wins and the disagreement is logged.
+- **H2/H3 — Vertex-direct is PRIMARY (drop OpenCode from V1).** An auditable, fixed
+  tool-grammar loop we fully control beats an opaque third-party headless runner for the
+  most safety-critical component. Trap capture (external, tamper-proof) is the source of
+  truth for network facts, never the VM-authored report.
+
+**V1 PROVABLE CORE (build this; defer the rest):**
+1. `agent/knowledge_graph.py` — pure Python over the off-VM clone, no execution: file index
+   + import edges + suspicion pre-rank. Reuses the static-scan pattern SET (shared, not
+   forked — M3). Unit-tested. Proves "explore finds what the flagged-region scan missed."
+2. `agent/explore_detonate.py` — Vertex-direct lead (+ ≤1 parallelizer) loop: repo content
+   as untrusted data; fixed-grammar `detonate()` → `run-harness.sh run` as `runner` with
+   pre-assert; time budget < cage + token budget; findings split `fact`(code-verified) vs
+   `inference`(model). Unit-tested with a mocked model + mocked detonate.
+3. Wire into `orchestrate.sh` between staging and RUN; map outcomes onto the existing
+   `ScoringDynamicOutcome` → `scoring.ts`/`verdict.py` (deterministic stays authoritative).
+4. Progressive checkpoint keyed by commit SHA (banked cost) + honest budget-exhausted
+   fallback ("complex repo, here's everything found, flagged for review").
+5. Survivable-watchdog enhancement (detect inside-death, finalize early) — strengthens
+   isolation, kept in core.
+
+**DEFERRED (real value, but each weakens isolation / adds surface / adds cost — not needed
+to prove the moat):** OpenCode (H3), baked deps (H1), warm pool (M4), the continuous
+external-monitor model (H5), continuous parallel static rescans for the whole VM lifetime
+(L3), and the full A2A lead/peer quorum (M1 — keep peer review for PRIORITIZATION only, not
+for promoting a finding to FACT). These are documented as roadmap, not V1.
+
+The sections below are the original (pre-audit) fuller vision; read them through the lens of
+the binding revisions above.
+
+---
+
 ## The load-bearing constraint (why the brain is OUTSIDE)
 
 The detonation VM has **no external IP, no service account, deny-all egress** — it can
