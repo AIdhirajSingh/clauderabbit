@@ -221,7 +221,7 @@ class RelayCommandTests(unittest.TestCase):
         relayed, readback = ssh.commands
         # 1) the detonation relay carries the controller-chosen CR_RUN_N.
         expected_core = (
-            "CR_TRAP_IP=10.200.0.5 CR_RUN_N=tok123 sudo bash /opt/cr/run-harness.sh "
+            "sudo CR_TRAP_IP=10.200.0.5 CR_RUN_N=tok123 bash /opt/cr/run-harness.sh "
             "run-target node scripts/postinstall.js"
         )
         self.assertEqual(relayed, expected_core)
