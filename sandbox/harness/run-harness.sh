@@ -29,6 +29,17 @@
 #     CR_PROXY=http://10.200.0.x:3128 sudo run-harness.sh build   # install via proxy
 #     CR_TRAP_IP=10.200.0.x          sudo run-harness.sh run      # run under sinkhole
 #     sudo run-harness.sh merge /path/to/out-report.json   # combine
+#
+#   Agentic detonation (Phase 2 — the agent brain's ONLY execution path):
+#     run-target detonates ONE specific repo file the off-VM agent chose, under
+#     the SAME sinkhole + observer + non-root runner as the RUN phase. It is the
+#     fixed-grammar tool the agent's detonator.py relays into (audit C1/C2): the
+#     agent never gets a free-form/root shell. Containment is RE-ASSERTED before
+#     every detonation; uid-0 traffic bypasses the DNAT sink, so the target runs
+#     as the unprivileged `runner` — running it as root would be an egress leak.
+#     CR_TRAP_IP=10.200.0.x sudo run-harness.sh run-target <runtime> <repo-rel-path>
+#       runtime  : one of node | python3 | sh  (fixed allowlist)
+#       path     : a repo-relative file UNDER $WORK (no .., no absolute, no symlink)
 set -uo pipefail   # NOTE: not -e; we WANT to continue past a failing build/run.
 
 RUNNER_USER="runner"
@@ -50,7 +61,7 @@ log() { echo "[harness] $*" >&2; }
 # Dispatch: if $1 is a subcommand, run split-phase; else single-shot legacy.
 SUBCMD="${1:-}"
 case "$SUBCMD" in
-  prepare|build|run|merge) ;;   # split-phase
+  prepare|build|run|merge|run-target) ;;   # split-phase + agentic detonation
   *)
     # legacy single-shot: $1=tarball $2=out — run all phases locked, then merge.
     TARBALL="${1:?usage: run-harness.sh <target.tar.gz> <out.json>}"
@@ -191,6 +202,80 @@ sudo -u "$RUNNER_USER" -H python3 "$OBS" \
   --out "$RUN_OUT" --phase run --timeout "$RUN_TIMEOUT" --cpu-seconds 50 \
   --workdir "$WORK" -- bash -lc "$RUN_CMD" >/dev/null 2>&1 || true
 log "run phase complete -> $RUN_OUT"
+exit 0
+fi
+
+# ====================== RUN-TARGET (agentic detonation) ====================
+# Detonate ONE agent-chosen repo file under the sinkhole + observer, as the
+# non-root `runner`. This is the fixed-grammar execution path the off-VM agent's
+# detonator.py relays into (audit C1/C2). The agent NEVER gets a free-form or
+# root shell: runtime is allowlisted, the path is validated to live under $WORK
+# (no traversal, no absolute, no symlink escape), and containment is re-asserted
+# before the target runs. uid-0 traffic bypasses the DNAT sink, so the target is
+# launched as `runner` — running it as root would be an egress leak (audit C1).
+if [ "$SUBCMD" = "run-target" ]; then
+RT_RUNTIME="${2:-}"
+RT_PATH="${3:-}"
+[ -n "$RT_RUNTIME" ] && [ -n "$RT_PATH" ] \
+  || { log "usage: run-harness.sh run-target <node|python3|sh> <repo-relative-path>"; exit 2; }
+
+# --- 1. fixed runtime grammar (allowlist) -----------------------------------
+case "$RT_RUNTIME" in
+  node|python3|sh) ;;
+  *) log "FATAL: invalid runtime '$RT_RUNTIME' (allowed: node, python3, sh)"; exit 3 ;;
+esac
+
+# --- 2. path validation: must be a real file UNDER $WORK --------------------
+# Reject absolute paths, parent-dir traversal, and anything that resolves
+# outside $WORK (a symlink escape). We compare REALPATHs so a symlink that
+# points out of the repo is caught. Untrusted repo bytes never reach a shell.
+case "$RT_PATH" in
+  /*)  log "FATAL: target path must be repo-relative, not absolute: '$RT_PATH'"; exit 3 ;;
+  *..*) log "FATAL: target path must not contain '..': '$RT_PATH'"; exit 3 ;;
+esac
+WORK_REAL="$(realpath -m "$WORK" 2>/dev/null || echo "$WORK")"
+TARGET_ABS="$WORK/$RT_PATH"
+TARGET_REAL="$(realpath -m "$TARGET_ABS" 2>/dev/null || echo "$TARGET_ABS")"
+case "$TARGET_REAL" in
+  "$WORK_REAL"/*) ;;   # good: strictly under the work dir
+  *) log "FATAL: target escapes the work dir: '$RT_PATH' -> '$TARGET_REAL'"; exit 3 ;;
+esac
+# Refuse a symlink itself (could point outside even if realpath -m didn't flag),
+# and require the resolved file to actually exist as a regular file.
+if [ -L "$TARGET_ABS" ]; then
+  log "FATAL: target is a symlink (refused): '$RT_PATH'"; exit 3
+fi
+[ -f "$TARGET_REAL" ] || { log "FATAL: target is not a regular file: '$RT_PATH'"; exit 3; }
+
+# --- 3. re-assert containment FIRST — refuse if the sink is not in place -----
+# NEVER run a target without a passing containment assert. If the VM was already
+# flipped to the sinkhole, `assert` re-verifies it; if not, `run` applies+asserts.
+# Either way a non-zero return aborts BEFORE any untrusted code executes (exit 3).
+if [ -x "$FLIP" ]; then
+  if bash "$FLIP" assert "$CR_TRAP_IP" 2>/dev/null; then
+    log "containment re-asserted (already flipped to sinkhole)."
+  elif [ -n "$CR_TRAP_IP" ]; then
+    log "not yet flipped; applying sinkhole + asserting (trap $CR_TRAP_IP)"
+    bash "$FLIP" run "$CR_TRAP_IP" \
+      || { log "FATAL: sinkhole flip/assert failed — refusing to detonate"; exit 3; }
+  else
+    log "FATAL: containment not in place and no CR_TRAP_IP to flip — refusing to detonate"; exit 3
+  fi
+else
+  log "FATAL: sinkhole-flip script missing — refusing to detonate without containment"; exit 3
+fi
+
+# --- 4. detonate as the NON-ROOT runner, under the observer ------------------
+# A per-target observation JSON so concurrent/sequential detonations never clash.
+RT_N="${CR_RUN_N:-$$}"
+RT_OUT="/tmp/cr-run-${RT_N}.json"
+log "=== DETONATE (run-target): $RT_RUNTIME $RT_PATH as runner, sinkhole active ==="
+sudo -u "$RUNNER_USER" -H python3 "$OBS" \
+  --out "$RT_OUT" --phase run --timeout "$RUN_TIMEOUT" --cpu-seconds 50 \
+  --workdir "$WORK" -- "$RT_RUNTIME" "$TARGET_REAL" >/dev/null 2>&1 || true
+log "run-target complete -> $RT_OUT"
+# Print the path of the per-target observation JSON (the agent collects this).
+echo "$RT_OUT"
 exit 0
 fi
 

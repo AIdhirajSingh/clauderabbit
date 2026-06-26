@@ -52,6 +52,12 @@ FLIP="$HERE/harness/sinkhole-flip.sh"
 FORENSICS="$HERE/harness/forensics.py"
 VERDICT="$HERE/verdict.py"
 RUN_ANALYSIS="$HERE/analysis/run-analysis.sh"
+# Phase 2 — agentic sandbox brain (runs OFF-VM on the controller). Opt-in via
+# CR_AGENTIC=1 so the deterministic pipeline is the default; the agent layer sits
+# on top and feeds the SAME deterministic verdict (it narrates, never scores).
+KNOWLEDGE_GRAPH="$HERE/agent/knowledge_graph.py"
+AGENT_LOOP="$HERE/agent/agent_loop.py"
+CR_AGENTIC="${CR_AGENTIC:-0}"
 
 ZONE=""
 TARBALL=""
@@ -159,9 +165,12 @@ log "ensuring hermetic network + sinkhole rules in $REGION"
 bash "$NET" create "$REGION" || die "network setup failed"
 
 # ---- prepare the target tarball --------------------------------------------
+# CLONE_DIR is the OFF-VM clone the agentic brain explores (read-only). It is
+# always populated below so the agent has a local tree to graph + read, whether
+# the input was --github or --tarball.
+CLONE_DIR="$STAGE/repo"
 if [ -n "$GITHUB" ]; then
   log "cloning public repo $GITHUB locally (off-VM)"
-  CLONE_DIR="$STAGE/repo"
   git clone --depth 1 "https://github.com/${GITHUB}.git" "$CLONE_DIR" >/dev/null 2>&1 \
     || die "git clone failed for $GITHUB"
   TARBALL="$STAGE/target.tar.gz"
@@ -169,6 +178,11 @@ if [ -n "$GITHUB" ]; then
 elif [ -n "$TARBALL" ]; then
   [ -f "$TARBALL" ] || die "tarball not found: $TARBALL"
   log "using target tarball: $TARBALL"
+  # Unpack a local read-only copy for the agentic brain (no execution).
+  mkdir -p "$CLONE_DIR"
+  tar -xzf "$TARBALL" -C "$CLONE_DIR" --strip-components=1 2>/dev/null \
+    || tar -xzf "$TARBALL" -C "$CLONE_DIR" 2>/dev/null \
+    || log "WARNING: could not unpack tarball for off-VM agentic exploration"
 else
   die "provide --tarball <path> or --github <owner/repo>"
 fi
@@ -295,6 +309,44 @@ if printf '%s' "$PROBE" | grep -qE '^200'; then
   die "CONTAINMENT VIOLATION: pre-RUN control probe reached the real internet (https://example.com returned HTTP 200). Refusing to detonate — aborting before the RUN phase."
 fi
 log "containment confirmed: control probe did NOT reach the real internet — proceeding to RUN."
+
+# ---- 6b. AGENTIC explore/detonate (Phase 2 — opt-in via CR_AGENTIC=1) -------
+# The brain runs OFF-VM here on the controller: it builds the knowledge graph
+# over the local clone (no execution), then explores + detonates chosen files
+# through the SAME sinkhole via run-harness.sh run-target as the non-root runner
+# (its detonator re-asserts containment before each detonation). It NARRATES and
+# emits a ScoringDynamicOutcome map; the deterministic verdict stays authoritative.
+# Defaults OFF so the proven deterministic pipeline is unchanged.
+LOCAL_AGENTIC="$RESULTS_DIR/${NAME}-agentic-findings.json"
+if [ "$CR_AGENTIC" = "1" ]; then
+  if [ ! -d "$CLONE_DIR" ]; then
+    log "WARNING: no off-VM clone available — skipping agentic pass"
+  elif ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
+    log "WARNING: Vertex ADC unavailable — skipping agentic pass (deterministic RUN proceeds)"
+  else
+    log "=== AGENTIC pass (explore off-VM clone; detonate via run-target under sinkhole) ==="
+    GRAPH_JSON="$RESULTS_DIR/${NAME}-knowledge-graph.json"
+    python3 "$KNOWLEDGE_GRAPH" "$CLONE_DIR" --out "$GRAPH_JSON" 2>/dev/null \
+      || log "WARNING: knowledge-graph build returned non-zero"
+    COMMIT_SHA="$(git -C "$CLONE_DIR" rev-parse HEAD 2>/dev/null || echo "unknown-${TS}")"
+    # AI time budget is a FIXED fraction (<=60%) of the VM --max-run-duration cage
+    # (audit C4). MAX_RUN is like "30m"; take its minutes, *60*0.5 seconds.
+    CAGE_MIN="${MAX_RUN%m}"; case "$CAGE_MIN" in ''|*[!0-9]*) CAGE_MIN=30;; esac
+    AI_BUDGET_S=$(( CAGE_MIN * 60 / 2 ))   # 50% of cage, under the 60% ceiling
+    # The loop's ssh_exec uses these to SSH into the sealed detonation VM.
+    CR_DET_VM="$DET_VM" CR_ZONE="$ZONE" \
+      python3 "$AGENT_LOOP" \
+        --repo-dir "$CLONE_DIR" --graph "$GRAPH_JSON" \
+        --commit-sha "$COMMIT_SHA" --name "$NAME" --trap-ip "$TRAP_IP" \
+        --results-dir "$RESULTS_DIR" \
+        --time-budget-s "$AI_BUDGET_S" --token-budget 200000 \
+        --project "$(gcloud config get-value project 2>/dev/null)" \
+        --location "${CR_VERTEX_LOCATION:-us-central1}" \
+        --out "$LOCAL_AGENTIC" >/dev/null 2>&1 \
+      || log "WARNING: agentic pass returned non-zero (deterministic RUN still proceeds)"
+    [ -f "$LOCAL_AGENTIC" ] && log "agentic findings: $LOCAL_AGENTIC"
+  fi
+fi
 
 # ---- 7. RUN under the sinkhole ---------------------------------------------
 log "=== RUN phase (SINKHOLE: DNS+DNAT -> trap $TRAP_IP) ==="
