@@ -43,9 +43,13 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - Review verdict: APPROVE-WITH-FIXES 81/100 (0 crit/high; 2 med + 2 low). All addressed in commit `b22bc6f`: removed kind:'rep' endorsements from requests/mux risky[] (separation rail); trimmed REPOS to the 6 seeded repos (dropped sindresorhus/is + chalk/supports-color → were unseeded SSR-404 risk) + removed dead DEMO_ORDER; fixed stale r1–r6 comment. typecheck/lint green.
 - **U1 (Phase 1 de-fake) is fully closed & mergeable.** Commits: 3d6d5bf (de-fake) + b22bc6f (review fixes).
 
-### U2 — Phase 4 code-computed scoring formula — RUNNING (agentId a62af1bc42b3dae9d)
-- Building `supabase/functions/_shared/scoring.ts` (pure deterministic weighted formula: code/behavior penalties heaviest, reputation separate+lighter, cited breakdown), rewiring `scan/index.ts:728` off `model.score`, adding escalation-reason surfacing + unit tests. Forbidden to commit or deploy.
-- **On return (lead):** review diff, run typecheck/lint/build + the scoring tests MYSELF, then **deploy the updated scan fn live (`supabase functions deploy scan`) and re-curl** to prove the computed score end-to-end, spawn independent review, commit.
+### U2 — Phase 4 code-computed scoring formula — COMMITTED `ca49051`; independent review running (agentId a8d3fdee6a25cdf5f)
+- `_shared/scoring.ts` pure `computeScore` (baseline 82; code penalties dominate — obfuscation −42, credAccess −40, install-time-net −40…; reputation SEPARATE bounded [−18,+14]; cited breakdown sums exactly via `reputation_cap`; dynamic inputs ready for deep path). 7 Deno tests pass.
+- `scan/index.ts`: model FEEDS signals, code DECIDES score; verdict now derives from computed band (5-level, never bare Safe, fixed an 87→"Trusted" band mismatch I caught live); `decideEscalation`→{escalate,reason}; response carries escalationReason+scoreBreakdown; "Score" log chapter.
+- **VERIFIED BY ME (ran):** typecheck/lint/build green, deno tests 7/7, deno check green. **Deployed live** to `mjvlczaytkhvsolnhhkz` and **proven end-to-end**: fresh cookie-parser → 87/Likely safe (breakdown 82−6−3+8+6+4−4=87, exact); fresh morgan → 41/High risk; cached path verdict snaps to band too.
+- **REAL FINDING (separate follow-up unit — static-scan precision):** `expressjs/morgan` (clean famous Express logger) scores 41/High risk because the static `obfuscation` signal fires on its legitimate `new Function()` log-format compiler → escalates → −42. Scoring formula is CORRECT; the upstream obfuscation detector in `_shared/static-scan.ts` is too broad (flags dynamic-code-eval as obfuscation) → false-HIGH-danger on clean repos. Needs detector precision tuning. **Important for credibility.**
+- **CI note:** `.github/workflows/ci.yml` runs lint/typecheck/build+gitleaks but NOT tests → the new Deno scoring tests don't gate in CI. Add a `setup-deno` + `npm run test:functions` step (Phase 8/CI hardening).
+- **On review return (lead):** address findings, re-verify (+redeploy if function changed), U2 closes.
 
 ### Remaining units (dependency order)
 - U3 Phase 7 caching: tab-switch-loses-report-view bug (React state persistence) + multi-level data cache + prompt caching on both Gemini tiers (`_shared/vertex.ts`).
