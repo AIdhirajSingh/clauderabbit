@@ -85,6 +85,13 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 ### VERTEX PATH PROVEN LIVE: vertex_client smoke test → real Gemini 'PONG' + a real `detonate` tool_call normalized correctly (location=global). The riskiest untested piece works.
 ### LIVE AGENTIC PROOF LAUNCHED (bg bdamrblzf): `CR_AGENTIC=1 CR_VERTEX_LOCATION=global orchestrate.sh ... exfil-c2`. Capstone integration of all proven components. Result pending; robust cleanup (dead-man's switch) = no orphan risk.
 
+### RESUMED after external billing/access pause (was mid-resilience-fix). Reconciled: branch 23+ commits ahead of origin/main (none merged to main yet — baseline f349397); 1 uncommitted file (agent_loop.py resilience fix) was clean, not half-applied.
+### LIVE PROOF #1 result (bdamrblzf): deterministic sinkhole CAUGHT exfil-c2 (red/Dangerous, exfil.evil-c2.example captured inert, no packet left, VMs deleted) — but the AGENTIC pass CRASHED: ssh_exec ran ['gcloud',...] → FileNotFoundError on the Windows controller (gcloud=gcloud.cmd), and _do_detonate only caught DetonationRejected → whole pass died. Found by RUNNING (mocked tests couldn't catch the real-boundary failure).
+### FIX `e3ff7ff`: ssh_exec resolves gcloud via shutil.which + try/except→'' ; _do_detonate catches any relay failure→detonation_failed+continue; main wraps run()→finalize on crash (never-blank). +2 tests (41 pass). Proven offline: exits 0, writes findings, unbacked finding flagged not_verified (C5 safe). Vertex path proven live earlier (PONG + normalized detonate tool_call).
+### LIVE PROOF #2 LAUNCHED (bp2v5b358) with the fix + agentic stderr captured to results/<name>-agentic.log. Expect the agentic pass to now relay run-target into the live VM end-to-end.
+
+### Convergence note (for the close): all run work is on branch claude/zen-merkle-43a854 (24+ commits); main==origin/main==baseline. Final convergence = merge branch→main + push (CI green incl gitleaks) so local main==origin/main.
+
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
 - Vertex-direct explore/detonate loop with C1-C5 hard constraints + run-harness `run-target` extension + detonator.py + agent_loop.py + comprehensive unit tests (mocked model + mocked ssh). NO live GCP (lead runs the one proof).
