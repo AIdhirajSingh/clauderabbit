@@ -43,6 +43,13 @@
  * `usageMetadata`) is non-zero when a cache hit occurred, so cache effectiveness
  * is measurable without changing the response shape any consumer reads.
  *
+ * THRESHOLD CAVEAT (honest): implicit caching only fires above a minimum prefix
+ * size (~1k tokens). The fast-tier read prompt (`buildSystemPrompt`, ~430 tokens)
+ * is BELOW that, so implicit caching mostly benefits the DEEP/agent tier, whose
+ * system prefix carries the full 2026 malware-analysis methodology (well over the
+ * threshold). The fast path is already cheap (one short call); we do not pad it
+ * just to cross the threshold, so `cachedContentTokenCount` will read 0 there.
+ *
  * NOTE for the sandbox/agent tier (sandbox/agent/vertex_client.py, off-limits to
  * this module): the same implicit caching applies to its repeating agent system
  * prompt for free, PROVIDED that client also sends its system instruction as a

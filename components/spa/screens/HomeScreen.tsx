@@ -185,7 +185,7 @@ export function HomeScreen() {
                 whiteSpace: "nowrap",
               }}
             >
-              Malware protection for open source
+              We read the code, then we run it
             </span>
           </div>
           <h1
@@ -625,7 +625,7 @@ export function HomeScreen() {
               fontSize: 12.5,
             }}
           >
-            <span>© 2026 Claude Rabbit · Malware protection for the open-source community.</span>
+            <span>© 2026 Claude Rabbit · We read the code, then we run it — malware protection for the open-source community.</span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)", boxShadow: "0 0 7px var(--green)" }} />
               All systems operational
