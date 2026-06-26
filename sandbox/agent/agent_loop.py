@@ -647,7 +647,8 @@ class AgentLoop:
                 "runtime": runtime,
                 "target": target,
                 "rejected": observation.get("rejected"),
-                "detonated": "rejected" not in observation,
+                "detonated": "rejected" not in observation
+                and "detonation_failed" not in observation,
             }
         if name == "read_file":
             path = args.get("path")
@@ -910,7 +911,7 @@ def main(argv: list[str]) -> int:
             # is forwarded here by gcloud ssh — log it for diagnostics so a
             # detonation that yields no observation is debuggable.
             if proc.stderr and proc.stderr.strip():
-                print(f"[agent] ssh stderr: {proc.stderr.strip()[:1500]}", file=sys.stderr, flush=True)
+                print(f"[agent] ssh stderr: {proc.stderr.strip()[:1500]!r}", file=sys.stderr, flush=True)
             return proc.stdout or ""
         except Exception as e:  # boundary: never propagate into the loop
             print(f"[agent] ssh_exec failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
