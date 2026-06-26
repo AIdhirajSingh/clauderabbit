@@ -74,6 +74,13 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - **Live scan fn redeployed** several times this run (current = with computed scoring + obfuscation precision). Proven repos: cookie-parser 87, click 96, morgan 93 (was 41).
 - Deno test suites: 11 scoring + 8 static-scan = 19, all pass (`npm run test:functions`). CI still doesn't run them (add setup-deno step — tracked).
 
+### U4a knowledge graph — COMMITTED `9746d13` (verified myself: 22 tests pass; cred-stealer buried postinstall ranks #1). Explore half proven.
+### U6 CI deno-gating — COMMITTED `1f2175a` (edge-tests job runs the 19 Deno tests; verified green).
+### GCP prereqs CONFIRMED READY for live proof: golden image cr-sandbox-golden-20260625 exists; cr-sandbox-vpc + 5 firewall rules present; zero leftover VMs.
+### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
+- Vertex-direct explore/detonate loop with C1-C5 hard constraints + run-harness `run-target` extension + detonator.py + agent_loop.py + comprehensive unit tests (mocked model + mocked ssh). NO live GCP (lead runs the one proof).
+- **On return (lead, security-critical):** verify tests MYSELF, INDEPENDENT SECURITY REVIEW (the gate that matters most — catch any C1-C5 violation), then attempt ONE live GCP proof on exfil-c2 (infra ready), then commit. Knowledge-graph review folded into this review.
+
 ### Remaining units (dependency order)
 - U3 Phase 7 caching: tab-switch-loses-report-view bug (React state persistence) + multi-level data cache + prompt caching on both Gemini tiers (`_shared/vertex.ts`).
 - U4 Phase 2 sandbox (HEAVIEST): install/vendor OpenCode FIRST; 3 Gemini Flash-Lite agents (lead+2) + sparing 3.5-Flash advisor (hand-built pattern, cap ~3); A2A pre-tool hook cross-validation; inner=consensus/outer=~15min hard ceiling; no-early-exit; never-blank report (checkpoint+resume); survivable watchdog; warm pool; right-sized VM; knowledge graph; continuous static scan. Re-measure auto-build + escalation rates.
