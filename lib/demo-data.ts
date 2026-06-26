@@ -190,13 +190,6 @@ export const REPOS: Record<string, Report> = {
         detail:
           "Test suite contains references to 127.0.0.1:10000 for local adapter verification; this is expected behavior for testing network libraries.",
       },
-      {
-        title: "High-reputation organization",
-        severity: "low",
-        kind: "rep",
-        detail:
-          "Maintained by the Python Software Foundation, a highly established and trusted entity.",
-      },
     ],
     logs: [
       {
@@ -382,13 +375,6 @@ export const REPOS: Record<string, Report> = {
         detail:
           "Examples in README.md and doc.go contain hardcoded local addresses (127.0.0.1:8000, 0.0.0.0:8080) for demonstration purposes.",
       },
-      {
-        title: "Established Organization",
-        severity: "low",
-        kind: "rep",
-        detail:
-          "The repository is maintained by the Gorilla web toolkit organization, which has a 15-year history and high community trust.",
-      },
     ],
     logs: [
       {
@@ -418,123 +404,6 @@ export const REPOS: Record<string, Report> = {
         lines: [
           "Identified hardcoded IP/port snippets in documentation files (README.md, doc.go).",
           "Confirmed these are standard example configurations for local server binding.",
-        ],
-      },
-    ],
-  },
-
-  "sindresorhus/is": {
-    id: "sindresorhus/is",
-    owner: "sindresorhus",
-    name: "is",
-    score: 98,
-    verdict: "Trusted",
-    cached: true,
-    deep: false,
-    summary:
-      "The repository 'sindresorhus/is' is a highly reputable utility library for type checking. Static analysis revealed no suspicious patterns, obfuscation, or unauthorized network activity. While no malicious behavior was observed in our static read, full runtime behavior was not executed in a sandbox on this pass.",
-    ownerHistory: {
-      handle: "sindresorhus",
-      name: "Sindre Sorhus",
-      age: "16 yr 6 mo",
-      established: true,
-      repos: 1134,
-      note: "Highly prolific and trusted maintainer in the open-source ecosystem.",
-    },
-    reputation: {
-      stars: "1784",
-      forks: "129",
-      sentiment: "Excellent",
-      sentScore: 100,
-    },
-    stats: { loc: "1238 KB", packages: 0, stars: "1784", created: "16 yr 6 mo ago" },
-    packages: [],
-    risky: [],
-    logs: [
-      {
-        ch: "Clone",
-        kind: "ok",
-        lines: ["Cloned repository sindresorhus/is at commit 7821031c66cdeb7256a0feb2d506535f9e84fcaf"],
-      },
-      {
-        ch: "Static scan",
-        kind: "ok",
-        lines: [
-          "No flagged regions identified in the codebase.",
-          "No install hooks or network-related code detected.",
-        ],
-      },
-      {
-        ch: "Reputation",
-        kind: "ok",
-        lines: ["Owner is a long-standing, established contributor with over 1000 public repositories."],
-      },
-      {
-        ch: "Read",
-        kind: "ok",
-        lines: [
-          "Codebase appears to be a standard TypeScript utility library.",
-          "No malicious behavior observed in our static read; full runtime behavior was not executed in a sandbox on this pass.",
-        ],
-      },
-    ],
-  },
-
-  "chalk/supports-color": {
-    id: "chalk/supports-color",
-    owner: "chalk",
-    name: "supports-color",
-    score: 98,
-    verdict: "Trusted",
-    cached: true,
-    deep: false,
-    summary:
-      "The repository 'chalk/supports-color' is a well-established, widely used utility with no malicious indicators found in the static analysis. While no malicious behavior was observed in our static read, full runtime behavior was not executed in a sandbox on this pass.",
-    ownerHistory: {
-      handle: "chalk",
-      name: "chalk",
-      age: "10 yr 12 mo",
-      established: true,
-      repos: 16,
-      note: "Highly established organization with a long-standing history in the JavaScript ecosystem.",
-    },
-    reputation: {
-      stars: "370",
-      forks: "92",
-      sentiment: "Positive",
-      sentScore: 95,
-    },
-    stats: { loc: "132 KB", packages: 0, stars: "370", created: "10 yr 12 mo" },
-    packages: [],
-    risky: [],
-    logs: [
-      {
-        ch: "Clone",
-        kind: "ok",
-        lines: ["Cloned repository chalk/supports-color at commit 47d3c56c15368ca0d892fb0e5ebed68afcc08e35"],
-      },
-      {
-        ch: "Static scan",
-        kind: "ok",
-        lines: [
-          "No flagged regions detected in 8 files scanned.",
-          "No obfuscation, network calls, or credential access patterns identified.",
-        ],
-      },
-      {
-        ch: "Reputation",
-        kind: "ok",
-        lines: [
-          "Owner 'chalk' is an established organization with 10+ years of history.",
-          "High community trust and consistent maintenance.",
-        ],
-      },
-      {
-        ch: "Read",
-        kind: "ok",
-        lines: [
-          "Code review confirms standard terminal detection logic.",
-          "No install-time scripts or suspicious lifecycle hooks found.",
         ],
       },
     ],
@@ -585,15 +454,4 @@ export const SUGGESTION_IDS: string[] = [
   "pallets/flask",
   "chalk/chalk",
   "gorilla/mux",
-];
-
-/**
- * Order the dashboard / showcase cycles through. Real cached repos across
- * multiple owners and ecosystems.
- */
-export const DEMO_ORDER: string[] = [
-  "psf/requests",
-  "tj/commander.js",
-  "sindresorhus/is",
-  "chalk/supports-color",
 ];
