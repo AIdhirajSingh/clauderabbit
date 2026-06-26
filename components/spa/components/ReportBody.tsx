@@ -41,7 +41,9 @@ interface ReportBodyProps {
 
 export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyProps) {
   return (
-    <div style={{ minHeight: "100vh", animation: "screenIn .5s var(--ease) both" }}>
+    // `data-print="report"` marks the print target: the print stylesheet in
+    // globals.css hides everything else and lays this out cleanly for Save-as-PDF.
+    <div data-print="report" style={{ minHeight: "100vh", animation: "screenIn .5s var(--ease) both" }}>
       {controls}
 
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "52px 24px 130px" }}>
