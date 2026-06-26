@@ -39,4 +39,14 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - **Lead verification (ran MYSELF):** typecheck ✅ lint ✅ build ✅; grep → zero residual fabricated names; self-reviewed state.tsx diff = honest + consistent.
 - **Stub hunt (real gaps for later):** `state.tsx:1145` exportPDF is a toast-only stub (no real PDF); `AdScreen` ad slot is a placeholder (**ads OUT of scope this run — leave**). Decorative pre-existing cards `claude-rabbit/rabbit · 24.3k★ · 99` and `AdhirajSinghEntrepreneur/pockit · 88` are aspirational/owner cards — flag for polish review (not data).
 - **Pending:** independent zero-context review of the de-fake diff (spawned); address findings before main-merge.
-- **Next units:** U2 Phase 4 code-computed scoring formula (new `lib/scoring.ts` + wire `supabase/functions/scan/index.ts:728`, unit-tested); U3 Phase 7 caching tab-switch bug; U4 Phase 2 sandbox (install OpenCode first); U5 Phase 8 polish. Dependency order.
+### U1 review — RUNNING (agentId acd31071bbd5b2ed8, read-only). On return: act on findings, re-verify, then U1 is mergeable.
+
+### U2 — Phase 4 code-computed scoring formula — RUNNING (agentId a62af1bc42b3dae9d)
+- Building `supabase/functions/_shared/scoring.ts` (pure deterministic weighted formula: code/behavior penalties heaviest, reputation separate+lighter, cited breakdown), rewiring `scan/index.ts:728` off `model.score`, adding escalation-reason surfacing + unit tests. Forbidden to commit or deploy.
+- **On return (lead):** review diff, run typecheck/lint/build + the scoring tests MYSELF, then **deploy the updated scan fn live (`supabase functions deploy scan`) and re-curl** to prove the computed score end-to-end, spawn independent review, commit.
+
+### Remaining units (dependency order)
+- U3 Phase 7 caching: tab-switch-loses-report-view bug (React state persistence) + multi-level data cache + prompt caching on both Gemini tiers (`_shared/vertex.ts`).
+- U4 Phase 2 sandbox (HEAVIEST): install/vendor OpenCode FIRST; 3 Gemini Flash-Lite agents (lead+2) + sparing 3.5-Flash advisor (hand-built pattern, cap ~3); A2A pre-tool hook cross-validation; inner=consensus/outer=~15min hard ceiling; no-early-exit; never-blank report (checkpoint+resume); survivable watchdog; warm pool; right-sized VM; knowledge graph; continuous static scan. Re-measure auto-build + escalation rates.
+- U5 Phase 3 security skill (prompt-cached methodology). U6 Phase 5 reports/danger-board/world-map/live-counts. U7 Phase 6 auth (wipe Adhiraj data, fresh fake-email Google sign-in). U8 Phase 8 polish (watermark, turbopack.root, copy rewrite, animation loop, profile icons, GH linking, native Gemini web search, skeletons). U9 Phase 9 cost measurement (no caps). U10 Phase 10 docs. U11 Phase 11 user testing via Claude-in-Chrome + load testing.
+- Known stub to fix: `state.tsx:1145` exportPDF (toast-only). Ads placeholder: LEAVE (out of scope).
