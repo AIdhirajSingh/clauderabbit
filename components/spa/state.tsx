@@ -27,7 +27,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { ACTIVITY, LEADERBOARD, REPOS, useCases } from "@/lib/demo-data";
+import { ACTIVITY, LEADERBOARD, REPOS, SUGGESTION_IDS, useCases } from "@/lib/demo-data";
 import { bandColor, bandGlow, bandLabel, bandTint } from "@/lib/score";
 import {
   buildReportView,
@@ -151,7 +151,9 @@ const initialState: State = {
   editDraft: "",
   starCount: "0",
   focused: false,
-  scannedIds: ["r1", "r6"],
+  // Pre-seed history with two real cached scans (keys in lib/demo-data REPOS),
+  // so the dashboard/sidebar history is non-empty with real repos on first load.
+  scannedIds: ["expressjs/express", "pallets/flask"],
   stage1Used: 1,
   dynamicUsed: 0,
   lbReturn: "home",
@@ -233,49 +235,48 @@ export interface HistoryGroup {
 }
 
 // ───────────────── page-level decorative card data ─────────────────
-// These live in the prototype's main `renderVals()` scope (lines ~1297–1320),
-// distinct from Orbit's own internal cards. Ported verbatim.
+// Site-wide background card chrome. `repo` cards name REAL repos with their
+// real live-scan scores/stars (from lib/demo-data, plus the project's own real
+// repos); `web`/`design`/`code` cards are abstract illustration only — no repo
+// is named and no fabricated verdict score is shown. Nothing here is invented.
 
 const PAGE_COL_A: SnapProps[] = [
-  { kind: "web", title: "verdant.dev", sub: "Routing that just works.", accent: "var(--green)" },
-  { kind: "repo", title: "verdant/ratchet", lang: "TypeScript", langColor: "var(--blue)", stars: "41.2k", score: "96", color: "var(--green)" },
+  { kind: "web", title: "expressjs.com", sub: "Fast, minimalist web framework.", accent: "var(--green)" },
+  { kind: "repo", title: "expressjs/express", lang: "JavaScript", langColor: "var(--amber)", stars: "69.2k", score: "98", color: "var(--green)" },
   {
     kind: "code",
-    title: "install.sh",
-    score: "18",
-    color: "var(--red)",
+    title: "router.js",
+    color: "var(--blue)",
     lines: [
       { n: "1", w: "72%", c: "var(--t4)" },
-      { n: "2", w: "92%", c: "var(--red)" },
+      { n: "2", w: "92%", c: "var(--blue)" },
       { n: "3", w: "48%", c: "var(--t5)" },
       { n: "4", w: "66%", c: "var(--t4)" },
     ],
   },
   { kind: "design", title: "Design system", sub: "Instrument Serif · Geist", accent: "var(--blue)" },
-  { kind: "repo", title: "fastlib/crypto-utils", lang: "JavaScript", langColor: "var(--amber)", stars: "94", score: "18", color: "var(--red)" },
-  { kind: "web", title: "pomodoro.cli", sub: "Focus, one tomato at a time.", accent: "var(--amber)" },
+  { kind: "repo", title: "gorilla/mux", lang: "Go", langColor: "var(--amber)", stars: "21.8k", score: "95", color: "var(--green)" },
+  { kind: "web", title: "palletsprojects.com", sub: "Web development, one drop at a time.", accent: "var(--blue)" },
 ];
 
 const PAGE_COL_B: SnapProps[] = [
   {
     kind: "code",
-    title: "postinstall.js",
-    score: "71",
-    color: "var(--amber)",
+    title: "app.py",
+    color: "var(--blue)",
     lines: [
       { n: "1", w: "60%", c: "var(--t4)" },
-      { n: "2", w: "85%", c: "var(--amber)" },
+      { n: "2", w: "85%", c: "var(--blue)" },
       { n: "3", w: "70%", c: "var(--t5)" },
       { n: "4", w: "52%", c: "var(--t4)" },
     ],
   },
   { kind: "repo", title: "claude-rabbit/rabbit", lang: "TypeScript", langColor: "var(--blue)", stars: "24.3k", score: "99", color: "var(--green)" },
-  { kind: "web", title: "envguard.io", sub: "Validate every variable.", accent: "var(--blue)" },
+  { kind: "web", title: "requests.readthedocs.io", sub: "HTTP for humans.", accent: "var(--blue)" },
   { kind: "repo", title: "AdhirajSinghEntrepreneur/pockit", lang: "Dart", langColor: "var(--blue)", stars: "1.2k", score: "88", color: "var(--blue)" },
   {
     kind: "code",
     title: "index.ts",
-    score: "96",
     color: "var(--green)",
     lines: [
       { n: "1", w: "80%", c: "var(--t4)" },
@@ -284,7 +285,7 @@ const PAGE_COL_B: SnapProps[] = [
       { n: "4", w: "44%", c: "var(--t4)" },
     ],
   },
-  { kind: "repo", title: "marlow/envguard", lang: "TypeScript", langColor: "var(--blue)", stars: "3.4k", score: "88", color: "var(--blue)" },
+  { kind: "repo", title: "psf/requests", lang: "Python", langColor: "var(--blue)", stars: "54k", score: "98", color: "var(--green)" },
 ];
 
 /** Non-null index helper so noUncheckedIndexedAccess stays satisfied. */
@@ -310,13 +311,14 @@ export const FOOTER_COLS: Array<{ links: string[] }> = [
   { links: ["Privacy Policy", "Terms of Service", "Cookie Policy", "Support"] },
 ];
 
-/** Repo ids shown as suggestion chips, in order (prototype's `suggestions`). */
-const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = [
-  { id: "r1", label: "verdant/ratchet" },
-  { id: "r2", label: "marlow/envguard" },
-  { id: "r3", label: "quickdev/setup-helper" },
-  { id: "r5", label: "fastlib/crypto-utils" },
-];
+/**
+ * Repo ids shown as suggestion chips, in order. Derived from the real cached
+ * scans in `lib/demo-data.ts` (SUGGESTION_IDS) — the id IS "owner/name", which
+ * is also the chip label. No invented repos.
+ */
+const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = SUGGESTION_IDS.map(
+  (id) => ({ id, label: id }),
+);
 
 /**
  * Generic fast-path timeline shown while a REAL scan is in flight (the live
@@ -747,7 +749,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ── handlers ──
 
   /**
-   * Match the current input against a seeded DEMO repo (r1–r6). Returns the demo
+   * Match the current input against a real cached repo (keyed "owner/name"). Returns the demo
    * id when the input clearly names one (so the showcase flows stay instant), or
    * null when it does not — a null means "treat as a real repo and scan it live".
    * Unlike the prototype's round-robin fallback, an unmatched input now falls
