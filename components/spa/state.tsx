@@ -39,6 +39,12 @@ import {
 } from "@/lib/report-view";
 import { parseRepoInput } from "@/lib/parse-repo";
 import { runScan } from "@/lib/scan";
+import {
+  clearNavSnapshot,
+  loadNavSnapshot,
+  saveNavSnapshot,
+  snapshotFrom,
+} from "@/lib/spa-persist";
 import { createClient } from "@/lib/supabase/client";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -174,6 +180,7 @@ function reducer(state: State, action: Action): State {
       return state;
   }
 }
+
 
 // ───────────────────────── derived view types ─────────────────────────
 // RiskyItemView / PackageScoreView / LogChapterView / RepoView are defined in
@@ -534,6 +541,24 @@ export function useApp(): AppApi {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
 
+  // Whether a content view (report / leaderboard) was rehydrated from
+  // sessionStorage on this mount. Used by the auth listener to decide whether a
+  // returning logged-in user with no meaningful restored view should land on
+  // the dashboard — but never to override a restored content screen, which must
+  // survive the tab return. Set synchronously in the rehydration effect below,
+  // which runs before the (later, network-driven) auth INITIAL_SESSION fires.
+  const restoredContentRef = useRef(false);
+  // Guards the one-shot rehydration so a StrictMode double-mount cannot apply
+  // the snapshot twice (the second pass would re-read it harmlessly, but this
+  // keeps the restore strictly idempotent and intention-revealing).
+  const rehydratedRef = useRef(false);
+  // Skips the persistence effect's FIRST run (the initial mount commit, where
+  // `state` is still the pre-rehydration default). Without this, the mount's
+  // default `home` state would overwrite a stored `report` snapshot before the
+  // rehydration patch is applied on the next commit. After the skip, every real
+  // navigation persists normally.
+  const persistMountRef = useRef(true);
+
   // A live mirror of state for handlers that need the freshest value inside
   // setTimeout/setInterval callbacks (the prototype read `this.state` directly).
   // Synced in an effect (never written during render) so React's ref rules hold;
@@ -576,6 +601,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The freshest session, for the scan path's Authorization token. Updated by
   // the auth listener; read inside scan handlers (which run after commit).
   const sessionRef = useRef<Session | null>(null);
+  // The user id we have already "landed" (navigated to the dashboard for). Used
+  // to distinguish a GENUINE sign-in transition from a re-emitted SIGNED_IN that
+  // Supabase fires on tab refocus / session revalidation. Only a transition to a
+  // new user id lands; a re-fire for the same already-signed-in user must NOT
+  // navigate (that was the tab-switch-drops-the-report bug). `undefined` means
+  // "not yet initialized" so the very first INITIAL_SESSION is handled correctly.
+  const landedUserRef = useRef<string | undefined>(undefined);
 
   const patch = useCallback((p: Partial<State>) => dispatch({ type: "PATCH", patch: p }), []);
 
@@ -587,6 +619,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [patch],
   );
+
+  // ── rehydrate the durable navigation snapshot (mount, post-hydration) ──
+  // Runs in a mount effect (NOT during render) so server and client first-paint
+  // agree — avoiding a hydration mismatch — then restores the persisted screen
+  // and live-report cache. A restored content view (report / leaderboard) is
+  // flagged so the auth listener leaves it intact for a returning logged-in
+  // user. Declared before the auth effect so it commits first; the auth
+  // INITIAL_SESSION arrives asynchronously (well after these sync mount effects),
+  // so the flag is always set in time.
+  useEffect(() => {
+    if (rehydratedRef.current) return;
+    rehydratedRef.current = true;
+    const snap = loadNavSnapshot();
+    if (!snap) return;
+    if (snap.screen === "report" || snap.screen === "leaderboard") {
+      restoredContentRef.current = true;
+    }
+    patch({
+      screen: snap.screen,
+      activeRepoId: snap.activeRepoId,
+      sourceScreen: snap.sourceScreen,
+      liveReports: snap.liveReports,
+    });
+  }, [patch]);
 
   // ── star count-up rAF (mount, with cleanup) ──
   useEffect(() => {
@@ -725,15 +781,69 @@ export function AppProvider({ children }: { children: ReactNode }) {
           shouldLand = false;
         }
       }
-      if (shouldLand) landSignedIn();
+
+      // ROOT-CAUSE GUARD: Supabase re-emits SIGNED_IN on tab refocus / session
+      // revalidation. Landing on every SIGNED_IN bounced a user viewing their
+      // report back to the dashboard on tab switch-and-return. Only land on a
+      // GENUINE transition — when the session's user id differs from the one we
+      // already landed. A re-fire for the same already-signed-in user is a no-op
+      // for navigation, so the current screen (e.g. the report) survives.
+      const nextUserId = session?.user.id;
+      if (shouldLand && nextUserId && nextUserId !== landedUserRef.current) {
+        landedUserRef.current = nextUserId;
+        landSignedIn();
+      } else if (event === "INITIAL_SESSION" && nextUserId) {
+        // First INITIAL_SESSION for an existing cookie session that did NOT come
+        // from the auth-callback redirect (no ?auth=ok): a returning logged-in
+        // user. Record the user so a later SIGNED_IN re-fire is a navigation
+        // no-op. If a meaningful content view was rehydrated (report /
+        // leaderboard), LEAVE IT — that is the whole point of the fix. Only when
+        // nothing meaningful was restored (initial screen is the default home)
+        // do we land them on the dashboard, silently (no "Signed in" toast).
+        landedUserRef.current = nextUserId;
+        if (!restoredContentRef.current) {
+          patch({ screen: "dashboard" });
+        }
+      }
 
       if (event === "SIGNED_OUT") {
+        landedUserRef.current = undefined;
+        clearNavSnapshot();
         patch({ screen: "home", editName: false });
       }
     });
 
     return () => sub.subscription.unsubscribe();
   }, [getSupabase, patch, toast]);
+
+  // ── persist durable navigation state (screen + active/source report + live
+  // report cache) to sessionStorage so a tab switch-and-return or same-session
+  // remount restores the exact screen and re-serves cached reports instantly. ──
+  // Only content screens (home/report/leaderboard) are persisted; on any other
+  // screen (processing/ad/login/dashboard/profile) we clear the snapshot so a
+  // remount does not rehydrate a stale process screen.
+  useEffect(() => {
+    // Skip the initial mount commit: at that point `state` is still the
+    // pre-rehydration default, and saving it would clobber a stored snapshot
+    // before rehydration applies. The rehydration patch (or any real
+    // navigation) re-runs this effect on the next commit, where the state is
+    // authoritative.
+    if (persistMountRef.current) {
+      persistMountRef.current = false;
+      return;
+    }
+    const snap = snapshotFrom({
+      screen: state.screen,
+      activeRepoId: state.activeRepoId,
+      sourceScreen: state.sourceScreen,
+      liveReports: state.liveReports,
+    });
+    if (snap) {
+      saveNavSnapshot(snap);
+    } else {
+      clearNavSnapshot();
+    }
+  }, [state.screen, state.activeRepoId, state.sourceScreen, state.liveReports]);
 
   // ── one-shot cleanup for any timers still pending at unmount ──
   useEffect(() => {
