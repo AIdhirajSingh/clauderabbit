@@ -9,7 +9,8 @@
     "start": "next start -p 2311",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test \"tests/**/*.test.ts\" \"app/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\"",
+    "test:functions": "deno test supabase/functions/"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",

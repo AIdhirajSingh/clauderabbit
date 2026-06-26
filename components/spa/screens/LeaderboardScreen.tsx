@@ -145,6 +145,28 @@ export function LeaderboardScreen() {
           </div>
         )}
 
+        {!hero && app.leaderRest.length === 0 && (
+          <div
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 20,
+              background: "var(--s1)",
+              boxShadow: "var(--shadow-lg)",
+              padding: "56px 32px",
+              textAlign: "center",
+            }}
+          >
+            <div className="serif" style={{ fontSize: 22, color: "var(--t2)", marginBottom: 10 }}>
+              Nothing caught yet.
+            </div>
+            <p style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, margin: "0 auto", maxWidth: 460 }}>
+              The board only lists repositories the sandbox has actually run and caught scoring low. As
+              real low-scoring scans land, the worst offenders show up here, named and ranked.
+            </p>
+          </div>
+        )}
+
+        {app.leaderRest.length > 0 && (
         <div style={{ border: "1px solid var(--line)", borderRadius: 20, overflow: "hidden", background: "var(--s1)", boxShadow: "var(--shadow-lg)" }}>
           {app.leaderRest.map((r) => {
             const marker = boardMarker(r.forensics);
@@ -200,6 +222,7 @@ export function LeaderboardScreen() {
             );
           })}
         </div>
+        )}
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 22, marginTop: 32, flexWrap: "wrap" }}>
           <LegendDot color="var(--green)" label="90+ secure" />
