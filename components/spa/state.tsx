@@ -1360,7 +1360,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (supabase) void supabase.auth.signOut();
   }, [getSupabase, patch, toast]);
 
-  const exportPDF = useCallback(() => toast("PDF report generated.", "var(--green)"), [toast]);
+  const exportPDF = useCallback(() => {
+    // Honest export: open the browser's print dialog, where the user can
+    // "Save as PDF". This product never claims a success it did not perform —
+    // the old handler toasted "PDF report generated" while generating nothing.
+    if (typeof window === "undefined" || typeof window.print !== "function") {
+      toast("Saving to PDF isn't available in this browser.", "var(--amber)");
+      return;
+    }
+    window.print();
+  }, [toast]);
   const copyLink = useCallback(() => {
     const cur = stateRef.current;
     const r = reportById(cur.activeRepoId, cur.liveReports);
