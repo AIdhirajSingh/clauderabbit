@@ -231,7 +231,7 @@ class RelayCommandTests(unittest.TestCase):
         self.assertNotIn("&&", relayed)
         # 2) the readback is EXACTLY `cat <controller-validated-path>` — no pipe,
         #    no tail, no xargs, no VM-printed path.
-        self.assertEqual(readback, "cat /tmp/cr-run-tok123.json")
+        self.assertEqual(readback, "sudo cat /tmp/cr-run-tok123.json")
         self.assertNotIn("tail", readback)
         self.assertNotIn("xargs", readback)
         self.assertNotIn("|", readback)
@@ -258,7 +258,7 @@ class RelayCommandTests(unittest.TestCase):
         self.assertEqual(len(ssh.commands), 2)
         # The readback is the fixed cat of the CONTROLLER path — the hostile tail
         # is never interpolated, piped, or word-split into any command.
-        self.assertEqual(ssh.commands[1], "cat /tmp/cr-run-tok123.json")
+        self.assertEqual(ssh.commands[1], "sudo cat /tmp/cr-run-tok123.json")
         self.assertNotIn("curl", ssh.commands[1])
         self.assertNotIn("evil", ssh.commands[1])
         self.assertNotIn("rm -rf", ssh.commands[1])

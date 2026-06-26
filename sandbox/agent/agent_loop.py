@@ -906,6 +906,11 @@ def main(argv: list[str]) -> int:
                  "--command", command],
                 capture_output=True, text=True, timeout=180,
             )
+            # The remote command's stderr (e.g. run-harness `log()` lines, errors)
+            # is forwarded here by gcloud ssh — log it for diagnostics so a
+            # detonation that yields no observation is debuggable.
+            if proc.stderr and proc.stderr.strip():
+                print(f"[agent] ssh stderr: {proc.stderr.strip()[:1500]}", file=sys.stderr, flush=True)
             return proc.stdout or ""
         except Exception as e:  # boundary: never propagate into the loop
             print(f"[agent] ssh_exec failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)

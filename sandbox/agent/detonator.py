@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import sys
 from typing import Callable, Optional
 
 # --- Fixed grammar (audit C1) -----------------------------------------------
@@ -318,15 +319,21 @@ def detonate(
     command = build_detonate_command(runtime, target, trap_ip, run_token)
     output_path = _run_output_path(run_token)  # validated /tmp/cr-run-<token>.json
 
-    # Step 1: relay EXACTLY the fixed detonation command. We deliberately discard
-    # its stdout for control-flow purposes (the harness ALSO echoes the path on
-    # its last line, but we never trust or parse VM-printed paths).
-    ssh_exec(command)
+    # Step 1: relay EXACTLY the fixed detonation command. We never trust or parse
+    # VM-printed paths (HIGH-3); the relay output is logged ONLY for diagnostics,
+    # never word-split into a command.
+    out1 = ssh_exec(command)
+    print(f"[detonator] run-target relay output: {(out1 or '')[:400]!r}", file=sys.stderr, flush=True)
 
-    # Step 2: read the observation JSON back with a SEPARATE, fixed `cat` of the
-    # controller-computed path. output_path matches RUN_OUTPUT_PATH_RE, so it is
-    # a flat /tmp/cr-run-<safe-token>.json with no shell metacharacters at all.
-    raw = ssh_exec(f"cat {output_path}")
+    # Step 2: read the observation JSON back with a SEPARATE, fixed `sudo cat` of
+    # the controller-computed path. output_path matches RUN_OUTPUT_PATH_RE (a flat
+    # /tmp/cr-run-<safe-token>.json — no shell metacharacters), so `sudo cat` of it
+    # is safe; sudo makes the read robust to the obs file being written by the
+    # unprivileged `runner` (the cat runs as the SSH login user). The CONTENT is
+    # still validated by _parse_observation (MED-2 schema marker).
+    raw = ssh_exec(f"sudo cat {output_path}")
+    if not (raw or "").strip():
+        print(f"[detonator] readback EMPTY for {output_path}", file=sys.stderr, flush=True)
     facts = _parse_observation(raw)
     facts["_detonated"] = {"runtime": runtime, "target": target, "run_token": run_token}
     return facts
