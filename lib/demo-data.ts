@@ -1,11 +1,21 @@
 /**
- * Demo / seed fixture data — ported verbatim from the Claude Design prototype
- * (`design-source/Claude Rabbit.dc.html`, REPOS / LEADERBOARD / ACTIVITY /
- * useCases / suggestions / DEMO_ORDER, lines ~1009–1112 and ~1280–1290).
+ * Cached real-repo scans — the homepage / dashboard showcase set.
  *
- * The strings are copied exactly — scores, the honest verdict phrasings, and
- * the risky-item details are content decided by the design and are not to be
- * invented or "improved" here.
+ * Every report below is a REAL response from the live `scan` edge function
+ * (POST /functions/v1/scan), captured verbatim from a famous public GitHub
+ * repository across multiple owners (chalk, expressjs, pallets, psf, tj,
+ * gorilla, sindresorhus). Scores, summaries, owner history, reputation, risky
+ * findings, and scan logs are exactly what the scanner returned — nothing here
+ * is invented, personas-as-data, or hand-authored fixtures.
+ *
+ * Per CLAUDE.md these stand in for the live DB cache until the public report
+ * surface reads from Supabase directly: the SPA falls back to these by id when
+ * a report is not in its in-session live cache, so the showcase reflects real
+ * verdicts on real, recognizable code rather than fabricated examples.
+ *
+ * The `LEADERBOARD` (dangerous-repos board) is intentionally EMPTY: famous
+ * repos all score safe, and we will not invent malware personas to fill it. It
+ * populates from real low-scoring scans in the live DB over time.
  */
 
 import type {
@@ -15,542 +25,550 @@ import type {
   UseCase,
 } from "./types";
 
-/** All demo reports, keyed by id (mirrors the prototype's REPOS object). */
+/**
+ * Cached real-repo reports, keyed by "owner/name" id (the same id the live
+ * scan path uses, so the SPA's live cache and this set share a keyspace).
+ * Each entry is a verbatim live-scan result.
+ */
 export const REPOS: Record<string, Report> = {
-  r1: {
-    id: "r1",
-    owner: "verdant",
-    name: "ratchet",
-    score: 96,
+  "expressjs/express": {
+    id: "expressjs/express",
+    owner: "expressjs",
+    name: "express",
+    score: 98,
     verdict: "Trusted",
     cached: true,
     deep: false,
     summary:
-      "A mature HTTP router for Node. Built and ran cleanly in our static pass; no install hooks, no network calls at install, no credential access. Maintained by an established author with a long track record.",
+      "Express.js is a foundational, industry-standard web framework for Node.js. The static analysis of the provided files revealed no malicious patterns, obfuscation, or suspicious network activity. While this repository is highly trusted, please note that this assessment is based on a static read of the provided files; full runtime behavior was not executed in a sandbox on this pass.",
     ownerHistory: {
-      handle: "soren-vestergaard",
-      name: "Søren Vestergaard",
-      age: "8 yr 2 mo",
+      handle: "expressjs",
+      name: "Express.js Organization",
+      age: "12 yr 8 mo",
       established: true,
-      repos: 64,
-      note: "Long-standing maintainer; consistent commit history across years.",
+      repos: 49,
+      note: "Highly established organization with a long history of maintaining critical infrastructure.",
     },
     reputation: {
-      stars: "41.2k",
-      forks: "2.7k",
-      sentiment: "Widely trusted, referenced across tutorials and production stacks.",
-      sentScore: 96,
+      stars: "69242",
+      forks: "23860",
+      sentiment: "Extremely positive, industry standard",
+      sentScore: 100,
     },
-    stats: { loc: "14,820", packages: 7, stars: "41.2k", created: "Mar 2018" },
-    packages: [
-      { name: "@verdant/ratchet", score: 96, note: "Core package. No suspicious calls." },
-      { name: "path-to-regexp", score: 94, note: "Well-known, actively maintained." },
-      { name: "negotiator", score: 92, note: "Stable dependency." },
-    ],
+    stats: { loc: "9880 KB", packages: 0, stars: "69242", created: "12 yr 8 mo ago" },
+    packages: [],
     risky: [],
     logs: [
       {
         ch: "Clone",
         kind: "ok",
-        lines: [
-          "Resolved verdant/ratchet@a91f3c to commit SHA",
-          "Shallow clone complete · 14,820 lines across 96 files",
-        ],
+        lines: ["Cloned repository expressjs/express at commit 18e5985b8a9d5e8423db0a9121f22bdaecd5b120"],
       },
       {
         ch: "Static scan",
         kind: "ok",
-        lines: [
-          "ClamAV signatures: 0 hits",
-          "Semgrep patterns: 0 findings",
-          "YARA rules: 0 matches",
-          "No install hooks detected in package.json",
-        ],
+        lines: ["Scanned 15 files for malicious patterns", "No flagged regions or suspicious code found"],
       },
       {
         ch: "Reputation",
         kind: "ok",
         lines: [
-          "Owner account age: 8 yr 2 mo",
-          "Brave search: 41.2k stars, strong community sentiment",
-          "Owner cache hit, skipped redundant lookup",
+          "Owner expressjs is a well-established organization",
+          "Repository has significant community backing (69k+ stars)",
         ],
       },
       {
         ch: "Read",
         kind: "ok",
         lines: [
-          "Read model flagged regions: none",
-          "Confidence: 0.97 clean, no escalation",
-          "Verdict blended to 96 / 100",
+          "Code structure consistent with standard Express.js framework patterns",
+          "No obfuscation or hidden network calls detected",
         ],
       },
     ],
   },
 
-  r6: {
-    id: "r6",
-    owner: "ana-mirza",
-    name: "pomodoro-cli",
-    score: 94,
+  "pallets/flask": {
+    id: "pallets/flask",
+    owner: "pallets",
+    name: "flask",
+    score: 98,
     verdict: "Trusted",
     cached: true,
     deep: false,
     summary:
-      "A small personal Pomodoro timer for the terminal. Single dependency, no network activity, no install scripts. Clean, simple, and safe to run.",
+      "Flask is a highly established, industry-standard Python web framework maintained by the Pallets organization. The static scan identified hardcoded local loopback addresses (127.0.0.1) in documentation examples, which are standard for local development instructions and pose no security risk. No malicious behavior was observed in our static read; full runtime behavior was not executed in a sandbox on this pass.",
     ownerHistory: {
-      handle: "ana-mirza",
-      name: "Ana Mirza",
-      age: "3 yr 7 mo",
+      handle: "pallets",
+      name: "Pallets",
+      age: "10 yr 5 mo",
       established: true,
-      repos: 21,
-      note: "Active personal account with steady contribution history.",
+      repos: 17,
+      note: "Highly established organization with a long history of maintaining critical open-source infrastructure.",
     },
     reputation: {
-      stars: "312",
-      forks: "18",
-      sentiment: "Small but clean personal project; no red flags found.",
-      sentScore: 90,
+      stars: "71734",
+      forks: "16876",
+      sentiment: "Excellent",
+      sentScore: 100,
     },
-    stats: { loc: "840", packages: 2, stars: "312", created: "Sep 2023" },
-    packages: [
-      { name: "pomodoro-cli", score: 95, note: "No network, no secrets access." },
-      { name: "chalk", score: 93, note: "Popular terminal color library." },
-    ],
-    risky: [],
-    logs: [
-      {
-        ch: "Clone",
-        kind: "ok",
-        lines: [
-          "Resolved ana-mirza/pomodoro-cli@7d22b1",
-          "Clone complete · 840 lines across 11 files",
-        ],
-      },
-      {
-        ch: "Static scan",
-        kind: "ok",
-        lines: ["ClamAV: 0 · Semgrep: 0 · YARA: 0", "No postinstall scripts"],
-      },
-      {
-        ch: "Reputation",
-        kind: "ok",
-        lines: ["Account age 3 yr 7 mo · 21 repos", "Low star count, but clean signal"],
-      },
-      {
-        ch: "Read",
-        kind: "ok",
-        lines: ["No flagged regions", "Confidence 0.95 clean, shipped to 94 / 100"],
-      },
-    ],
-  },
-
-  r2: {
-    id: "r2",
-    owner: "marlow",
-    name: "envguard",
-    score: 88,
-    verdict: "Likely safe",
-    cached: false,
-    deep: false,
-    summary:
-      "A configuration and environment-variable validator. Code read cleanly and reputation is solid, but the owner account is younger and one dependency is lightly maintained. No malicious behavior observed in our tests.",
-    ownerHistory: {
-      handle: "marlow-dev",
-      name: "Marlow Okonkwo",
-      age: "1 yr 4 mo",
-      established: true,
-      repos: 9,
-      note: "Reasonable history; not yet long-established.",
-    },
-    reputation: {
-      stars: "3.4k",
-      forks: "190",
-      sentiment: "Positive, growing adoption; no complaints surfaced.",
-      sentScore: 85,
-    },
-    stats: { loc: "3,210", packages: 5, stars: "3.4k", created: "Feb 2025" },
-    packages: [
-      { name: "@marlow/envguard", score: 90, note: "Clean. Reads process.env only, no exfil." },
-      { name: "dotenv", score: 92, note: "Ubiquitous, trusted." },
-      { name: "fast-deep-equal", score: 88, note: "Stable." },
-      { name: "tiny-glob", score: 74, note: "Lightly maintained, last release 14 mo ago." },
-    ],
+    stats: { loc: "12008 KB", packages: 0, stars: "71734", created: "10 yr 5 mo" },
+    packages: [],
     risky: [
       {
-        title: "Lightly maintained dependency",
+        title: "Hardcoded local loopback address in documentation",
         severity: "low",
         kind: "code",
         detail:
-          "tiny-glob has had no release in 14 months. Not malicious, but unmaintained code is a standing risk.",
+          "Documentation examples reference 127.0.0.1:5000 for local development testing, which is standard practice and not a security vulnerability.",
       },
     ],
     logs: [
       {
         ch: "Clone",
         kind: "ok",
-        lines: [
-          "Resolved marlow/envguard@c4e8a0",
-          "Clone complete · 3,210 lines across 38 files",
-        ],
-      },
-      {
-        ch: "Static scan",
-        kind: "warn",
-        lines: [
-          "ClamAV: 0 · YARA: 0",
-          "Semgrep: 1 low-severity note (unmaintained dep)",
-          "No install hooks",
-        ],
+        lines: ["Cloned repository pallets/flask at commit 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81"],
       },
       {
         ch: "Reputation",
         kind: "ok",
         lines: [
-          "Account age 1 yr 4 mo · 3.4k stars",
-          "Brave search: positive sentiment, no incidents",
+          "Owner 'pallets' is a well-known, established entity in the Python ecosystem.",
+          "High star count and long account history indicate high trust.",
+        ],
+      },
+      {
+        ch: "Static scan",
+        kind: "ok",
+        lines: [
+          "No malicious patterns, obfuscation, or unauthorized network calls detected.",
+          "Flagged regions identified as standard documentation for local development.",
         ],
       },
       {
         ch: "Read",
         kind: "ok",
         lines: [
-          "Read flagged region (tiny-glob usage)",
-          "No exfil path · confidence 0.88 clean",
-          "No escalation, 88 / 100",
+          "Analyzed 15 files including READMEs and examples.",
+          "All flagged items are benign references to localhost.",
         ],
       },
     ],
   },
 
-  r3: {
-    id: "r3",
-    owner: "quickdev",
-    name: "setup-helper",
-    score: 71,
-    verdict: "Caution",
-    cached: false,
-    deep: true,
+  "psf/requests": {
+    id: "psf/requests",
+    owner: "psf",
+    name: "requests",
+    score: 98,
+    verdict: "Trusted",
+    cached: true,
+    deep: false,
     summary:
-      "A one-command project bootstrapper with a large postinstall script. We escalated to a sandbox run. The install script contacts a telemetry endpoint and writes outside the project directory. No credential theft observed, but the install-time behavior is more than this tool needs.",
+      "The repository is a highly reputable, industry-standard Python library maintained by the Python Software Foundation. Static analysis identified hardcoded local loopback addresses (127.0.0.1) within test files, which are standard practice for verifying network adapter behavior in isolation. No malicious behavior was observed in our static read; full runtime behavior was not executed in a sandbox on this pass.",
     ownerHistory: {
-      handle: "quickdev-tools",
-      name: "quickdev",
-      age: "3 days",
-      established: false,
-      repos: 1,
-      note: "Account created 3 days ago with a single, polished repo. Classic new-owner pattern.",
+      handle: "psf",
+      name: "Python Software Foundation",
+      age: "7 yr 1 mo",
+      established: true,
+      repos: 42,
+      note: "Extremely high trust level as the official organization for Python.",
     },
     reputation: {
-      stars: "1.1k",
-      forks: "40",
-      sentiment: "Sudden star spike inconsistent with account age; possible inflation.",
-      sentScore: 48,
+      stars: "54070",
+      forks: "9988",
+      sentiment: "Excellent",
+      sentScore: 100,
     },
-    stats: { loc: "2,640", packages: 6, stars: "1.1k", created: "3 days ago" },
-    packages: [
-      { name: "setup-helper", score: 62, note: "Postinstall script writes to ~/.config and phones home." },
-      { name: "node-fetch", score: 90, note: "Legit, but used by the install hook." },
-      { name: "shelljs", score: 70, note: "Used to run shell commands during install." },
-    ],
+    stats: { loc: "13555 KB", packages: 0, stars: "54070", created: "2599 days ago" },
+    packages: [],
     risky: [
       {
-        title: "Postinstall network call",
-        severity: "med",
-        kind: "behavior",
-        detail:
-          "During the sandbox run, the postinstall script sent a POST to telemetry.quickdev-cdn[.]net carrying machine hostname and npm config. Not credential theft, but undisclosed and unnecessary.",
-      },
-      {
-        title: "Writes outside project root",
-        severity: "med",
-        kind: "behavior",
-        detail:
-          "Install wrote a launch agent to ~/.config/quickdev. Persistence behavior a bootstrapper does not need.",
-      },
-      {
-        title: "Three-day-old owner",
-        severity: "med",
-        kind: "rep",
-        detail: "Single polished repo on a brand-new account with an unnatural star spike.",
-      },
-    ],
-    logs: [
-      {
-        ch: "Clone",
-        kind: "ok",
-        lines: [
-          "Resolved quickdev/setup-helper@f0192a",
-          "Clone complete · 2,640 lines across 27 files",
-        ],
-      },
-      {
-        ch: "Static scan",
-        kind: "warn",
-        lines: [
-          "Semgrep: postinstall executes network + shell",
-          "Secret scan: 0 embedded secrets",
-          "Flagged: package.json scripts.postinstall",
-        ],
-      },
-      {
-        ch: "Reputation",
-        kind: "warn",
-        lines: [
-          "Account age: 3 days",
-          "Star spike vs age inconsistent, possible inflation",
-          "Confidence to ship: 0.41, escalate",
-        ],
-      },
-      {
-        ch: "Escalation",
-        kind: "warn",
-        lines: [
-          "Suspicion gate tripped: install-time network + new owner",
-          "Provisioning sandbox VM from pool",
-        ],
-      },
-      {
-        ch: "Dynamic run",
-        kind: "warn",
-        lines: [
-          "Agent ran npm install in isolated VM",
-          "Observed POST to telemetry.quickdev-cdn[.]net",
-          "Observed write to ~/.config/quickdev (launch agent)",
-          "No credential or SSH key access observed",
-          "VM reimaged to a clean state",
-          "Blended to 71 / 100",
-        ],
-      },
-    ],
-  },
-
-  r4: {
-    id: "r4",
-    owner: "corewallet",
-    name: "keystore-tools",
-    score: 44,
-    verdict: "High risk",
-    cached: false,
-    deep: true,
-    summary:
-      "Marketed as a wallet keystore utility. In the sandbox it actively read SSH keys and shell history on first run. We could not verify any legitimate function that requires that access. Do not run this outside a throwaway environment.",
-    ownerHistory: {
-      handle: "corewallet-io",
-      name: "corewallet",
-      age: "11 days",
-      established: false,
-      repos: 2,
-      note: "New account, two repos, both wallet-adjacent.",
-    },
-    reputation: {
-      stars: "680",
-      forks: "31",
-      sentiment: "A handful of issues report unexpected files and outbound traffic.",
-      sentScore: 30,
-    },
-    stats: { loc: "4,910", packages: 9, stars: "680", created: "12 days ago" },
-    packages: [
-      { name: "keystore-tools", score: 30, note: "Reads ~/.ssh and shell history on import." },
-      { name: "keytar", score: 55, note: "Legit credential lib, used here to enumerate stored secrets." },
-      { name: "systeminformation", score: 60, note: "Used to fingerprint the host." },
-    ],
-    risky: [
-      {
-        title: "Reads SSH keys on run",
-        severity: "high",
-        kind: "behavior",
-        detail:
-          "Sandbox observed reads of ~/.ssh/id_ed25519 and ~/.ssh/known_hosts within 400ms of first execution. No feature here justifies that.",
-      },
-      {
-        title: "Reads shell history",
-        severity: "high",
-        kind: "behavior",
-        detail:
-          "Accessed ~/.zsh_history and ~/.bash_history, a common credential-harvesting source.",
-      },
-      {
-        title: "Host fingerprinting",
-        severity: "med",
-        kind: "behavior",
-        detail:
-          "Collected hostname, OS, and network interfaces via systeminformation, staged for an outbound call that the locked egress blocked.",
-      },
-    ],
-    logs: [
-      {
-        ch: "Clone",
-        kind: "ok",
-        lines: [
-          "Resolved corewallet/keystore-tools@2bd7e1",
-          "Clone complete · 4,910 lines across 52 files",
-        ],
-      },
-      {
-        ch: "Static scan",
-        kind: "warn",
-        lines: [
-          "Semgrep: filesystem reads of ~/.ssh path literals",
-          "YARA: matched credential-access heuristic",
-          "Confidence to ship: 0.22, escalate",
-        ],
-      },
-      {
-        ch: "Reputation",
-        kind: "warn",
-        lines: ["Account age 11 days · wallet-adjacent repos", "Issues mention unexpected files"],
-      },
-      {
-        ch: "Escalation",
-        kind: "bad",
-        lines: ["Gate tripped: credential-access pattern", "Sandbox VM provisioned"],
-      },
-      {
-        ch: "Dynamic run",
-        kind: "bad",
-        lines: [
-          "Observed read of ~/.ssh/id_ed25519",
-          "Observed read of ~/.zsh_history",
-          "Host fingerprint staged · outbound blocked by egress filter",
-          "VM reimaged to a clean state",
-          "Blended to 44 / 100",
-        ],
-      },
-    ],
-  },
-
-  r5: {
-    id: "r5",
-    owner: "fastlib",
-    name: "crypto-utils",
-    score: 18,
-    verdict: "Malicious",
-    cached: false,
-    deep: true,
-    summary:
-      "Presented as a cryptography helper. The code is heavily obfuscated and on execution it began mining and attempted to reach a hardcoded command-and-control host. This is active install-time malware. Do not run.",
-    ownerHistory: {
-      handle: "fastlib-pkg",
-      name: "fastlib",
-      age: "2 days",
-      established: false,
-      repos: 1,
-      note: "Brand-new throwaway account, single obfuscated repo.",
-    },
-    reputation: {
-      stars: "94",
-      forks: "3",
-      sentiment: "No legitimate references; name typosquats a popular package.",
-      sentScore: 8,
-    },
-    stats: { loc: "1,180", packages: 4, stars: "94", created: "2 days ago" },
-    packages: [
-      { name: "crypto-utils", score: 8, note: "Obfuscated payload, base64 + eval. Miner + C2." },
-      { name: "node-fetch", score: 88, note: "Legit lib weaponized for C2 beacon." },
-      { name: "worker-farm", score: 40, note: "Spawns workers used for mining." },
-    ],
-    risky: [
-      {
-        title: "Obfuscated eval payload",
-        severity: "high",
+        title: "Hardcoded loopback address in tests",
+        severity: "low",
         kind: "code",
         detail:
-          "Core module is a single base64 blob passed to eval(). Decoding revealed a miner and a beacon, a hallmark of install-time malware.",
+          "Test suite contains references to 127.0.0.1:10000 for local adapter verification; this is expected behavior for testing network libraries.",
       },
       {
-        title: "Crypto-mining on run",
-        severity: "high",
-        kind: "behavior",
-        detail:
-          "Sandbox CPU pinned to 100% across worker-farm processes within seconds of execution.",
-      },
-      {
-        title: "C2 beacon attempt",
-        severity: "high",
-        kind: "behavior",
-        detail:
-          "Repeated outbound to 185.x.x.x:8443 (hardcoded). Egress filter blocked it; the attempt is the detection.",
-      },
-      {
-        title: "Typosquat name",
-        severity: "high",
+        title: "High-reputation organization",
+        severity: "low",
         kind: "rep",
-        detail: "Name closely shadows a popular crypto package to catch fat-finger installs.",
+        detail:
+          "Maintained by the Python Software Foundation, a highly established and trusted entity.",
       },
     ],
     logs: [
       {
         ch: "Clone",
         kind: "ok",
+        lines: ["Cloned repository psf/requests at commit 4ed3d1b3204caa6806a36125a39589044a02e807"],
+      },
+      {
+        ch: "Static scan",
+        kind: "ok",
+        lines: ["Scanning 15 files for malicious patterns", "No obfuscation or embedded secrets detected"],
+      },
+      {
+        ch: "Reputation",
+        kind: "ok",
         lines: [
-          "Resolved fastlib/crypto-utils@9ee0a2",
-          "Clone complete · 1,180 lines across 6 files",
+          "Owner verified as Python Software Foundation",
+          "High star count and long account history confirmed",
+        ],
+      },
+      {
+        ch: "Read",
+        kind: "warn",
+        lines: [
+          "Identified hardcoded 127.0.0.1 addresses in tests/test_adapters.py",
+          "Verified these are used for local test assertions",
+        ],
+      },
+    ],
+  },
+
+  "chalk/chalk": {
+    id: "chalk/chalk",
+    owner: "chalk",
+    name: "chalk",
+    score: 98,
+    verdict: "Trusted",
+    cached: true,
+    deep: false,
+    summary:
+      "The repository is a highly established, widely used utility with no suspicious code patterns detected. While no malicious behavior was observed in our static read, full runtime behavior was not executed in a sandbox on this pass.",
+    ownerHistory: {
+      handle: "chalk",
+      name: "chalk",
+      age: "10 yr 12 mo",
+      established: true,
+      repos: 16,
+      note: "Highly established organization with a long history of maintaining popular open-source tooling.",
+    },
+    reputation: {
+      stars: "23262",
+      forks: "1002",
+      sentiment: "Extremely positive community standing",
+      sentScore: 100,
+    },
+    stats: { loc: "1067 KB", packages: 0, stars: "23262", created: "10 yr 12 mo" },
+    packages: [],
+    risky: [],
+    logs: [
+      {
+        ch: "Clone",
+        kind: "ok",
+        lines: [
+          "Repository chalk/chalk cloned successfully.",
+          "Commit hash verified: aa06bb5ac3f14df9fda8cfb54274dfc165ddfdef.",
         ],
       },
       {
         ch: "Static scan",
-        kind: "bad",
+        kind: "ok",
+        lines: ["No suspicious patterns, obfuscation, or network calls detected in the 15 files scanned."],
+      },
+      {
+        ch: "Reputation",
+        kind: "ok",
         lines: [
-          "YARA: obfuscation + eval(base64) match",
-          "ClamAV: heuristic miner signature",
-          "Confidence to ship: 0.04, escalate",
+          "Owner is an established organization with 10+ years of history.",
+          "High star count and community adoption indicate a trusted source.",
+        ],
+      },
+      {
+        ch: "Read",
+        kind: "ok",
+        lines: ["Code structure is clean and consistent with terminal styling utilities."],
+      },
+    ],
+  },
+
+  "tj/commander.js": {
+    id: "tj/commander.js",
+    owner: "tj",
+    name: "commander.js",
+    score: 98,
+    verdict: "Trusted",
+    cached: true,
+    deep: false,
+    summary:
+      "Commander.js is a widely used, highly established library for building CLI tools in Node.js. The static analysis of the codebase revealed no suspicious patterns, obfuscation, or unauthorized network activity. While this scan confirms the absence of malicious static indicators, it does not constitute a full runtime execution or sandbox analysis of the library's behavior in a production environment.",
+    ownerHistory: {
+      handle: "tj",
+      name: "TJ",
+      age: "17 yr 9 mo",
+      established: true,
+      repos: 296,
+      note: "The owner is a highly reputable and long-standing member of the Node.js ecosystem.",
+    },
+    reputation: {
+      stars: "28288",
+      forks: "1757",
+      sentiment: "Extremely positive",
+      sentScore: 100,
+    },
+    stats: { loc: "3875 KB", packages: 0, stars: "28288", created: "17 yr 9 mo" },
+    packages: [],
+    risky: [],
+    logs: [
+      {
+        ch: "Clone",
+        kind: "ok",
+        lines: ["Cloned repository tj/commander.js at commit ba6d13d", "Repository metadata verified"],
+      },
+      {
+        ch: "Static scan",
+        kind: "ok",
+        lines: ["No flagged regions detected", "No install hooks or obfuscated code found"],
+      },
+      {
+        ch: "Reputation",
+        kind: "ok",
+        lines: [
+          "Owner 'tj' is highly established with 17+ years of history",
+          "High community trust and significant star count",
+        ],
+      },
+      {
+        ch: "Read",
+        kind: "ok",
+        lines: [
+          "Codebase structure is consistent with standard Node.js library practices",
+          "No malicious behavior observed in our static read; full runtime behavior was not executed in a sandbox on this pass",
+        ],
+      },
+    ],
+  },
+
+  "gorilla/mux": {
+    id: "gorilla/mux",
+    owner: "gorilla",
+    name: "mux",
+    score: 95,
+    verdict: "Trusted",
+    cached: true,
+    deep: false,
+    summary:
+      "gorilla/mux is a widely recognized, long-standing Go routing library. The static analysis identified hardcoded IP/port combinations in documentation and examples, which are standard for demonstrating server setup and do not represent malicious behavior. No malicious behavior was observed in our static read; full runtime behavior was not executed in a sandbox on this pass.",
+    ownerHistory: {
+      handle: "gorilla",
+      name: "Gorilla web toolkit",
+      age: "15 yr 7 mo",
+      established: true,
+      repos: 19,
+      note: "Highly reputable organization in the Go ecosystem.",
+    },
+    reputation: {
+      stars: "21839",
+      forks: "1884",
+      sentiment: "Excellent",
+      sentScore: 100,
+    },
+    stats: { loc: "543 KB", packages: 1, stars: "21839", created: "15 yr 7 mo" },
+    packages: [
+      {
+        name: "gorilla/mux",
+        score: 95,
+        note: "Standard HTTP router for Go; highly established and widely used.",
+      },
+    ],
+    risky: [
+      {
+        title: "Hardcoded IP/Port in documentation",
+        severity: "low",
+        kind: "code",
+        detail:
+          "Examples in README.md and doc.go contain hardcoded local addresses (127.0.0.1:8000, 0.0.0.0:8080) for demonstration purposes.",
+      },
+      {
+        title: "Established Organization",
+        severity: "low",
+        kind: "rep",
+        detail:
+          "The repository is maintained by the Gorilla web toolkit organization, which has a 15-year history and high community trust.",
+      },
+    ],
+    logs: [
+      {
+        ch: "Clone",
+        kind: "ok",
+        lines: ["Cloned repository gorilla/mux at commit db9d1d0073d27a0a2d9a8c1bc52aa0af4374d265"],
+      },
+      {
+        ch: "Static scan",
+        kind: "ok",
+        lines: [
+          "Scanned 15 files for malicious patterns.",
+          "No obfuscation, credential access, or install-time network activity detected.",
         ],
       },
       {
         ch: "Reputation",
-        kind: "bad",
+        kind: "ok",
         lines: [
-          "Account age 2 days · typosquat detected",
-          "No legitimate community references",
+          "Owner 'gorilla' is a well-established organization with 15+ years of history.",
+          "High star count (21839) indicates significant community adoption.",
         ],
       },
       {
-        ch: "Escalation",
-        kind: "bad",
+        ch: "Read",
+        kind: "warn",
         lines: [
-          "Gate tripped: obfuscated payload + miner signature",
-          "Sandbox VM provisioned",
+          "Identified hardcoded IP/port snippets in documentation files (README.md, doc.go).",
+          "Confirmed these are standard example configurations for local server binding.",
+        ],
+      },
+    ],
+  },
+
+  "sindresorhus/is": {
+    id: "sindresorhus/is",
+    owner: "sindresorhus",
+    name: "is",
+    score: 98,
+    verdict: "Trusted",
+    cached: true,
+    deep: false,
+    summary:
+      "The repository 'sindresorhus/is' is a highly reputable utility library for type checking. Static analysis revealed no suspicious patterns, obfuscation, or unauthorized network activity. While no malicious behavior was observed in our static read, full runtime behavior was not executed in a sandbox on this pass.",
+    ownerHistory: {
+      handle: "sindresorhus",
+      name: "Sindre Sorhus",
+      age: "16 yr 6 mo",
+      established: true,
+      repos: 1134,
+      note: "Highly prolific and trusted maintainer in the open-source ecosystem.",
+    },
+    reputation: {
+      stars: "1784",
+      forks: "129",
+      sentiment: "Excellent",
+      sentScore: 100,
+    },
+    stats: { loc: "1238 KB", packages: 0, stars: "1784", created: "16 yr 6 mo ago" },
+    packages: [],
+    risky: [],
+    logs: [
+      {
+        ch: "Clone",
+        kind: "ok",
+        lines: ["Cloned repository sindresorhus/is at commit 7821031c66cdeb7256a0feb2d506535f9e84fcaf"],
+      },
+      {
+        ch: "Static scan",
+        kind: "ok",
+        lines: [
+          "No flagged regions identified in the codebase.",
+          "No install hooks or network-related code detected.",
         ],
       },
       {
-        ch: "Dynamic run",
-        kind: "bad",
+        ch: "Reputation",
+        kind: "ok",
+        lines: ["Owner is a long-standing, established contributor with over 1000 public repositories."],
+      },
+      {
+        ch: "Read",
+        kind: "ok",
         lines: [
-          "eval() decoded to a miner + beacon",
-          "CPU 100% across worker-farm",
-          "Outbound to 185.x.x.x:8443 blocked",
-          "Repo attacked the sandbox, the attempt is the signal",
-          "VM reimaged to a clean state",
-          "Blended to 18 / 100",
+          "Codebase appears to be a standard TypeScript utility library.",
+          "No malicious behavior observed in our static read; full runtime behavior was not executed in a sandbox on this pass.",
+        ],
+      },
+    ],
+  },
+
+  "chalk/supports-color": {
+    id: "chalk/supports-color",
+    owner: "chalk",
+    name: "supports-color",
+    score: 98,
+    verdict: "Trusted",
+    cached: true,
+    deep: false,
+    summary:
+      "The repository 'chalk/supports-color' is a well-established, widely used utility with no malicious indicators found in the static analysis. While no malicious behavior was observed in our static read, full runtime behavior was not executed in a sandbox on this pass.",
+    ownerHistory: {
+      handle: "chalk",
+      name: "chalk",
+      age: "10 yr 12 mo",
+      established: true,
+      repos: 16,
+      note: "Highly established organization with a long-standing history in the JavaScript ecosystem.",
+    },
+    reputation: {
+      stars: "370",
+      forks: "92",
+      sentiment: "Positive",
+      sentScore: 95,
+    },
+    stats: { loc: "132 KB", packages: 0, stars: "370", created: "10 yr 12 mo" },
+    packages: [],
+    risky: [],
+    logs: [
+      {
+        ch: "Clone",
+        kind: "ok",
+        lines: ["Cloned repository chalk/supports-color at commit 47d3c56c15368ca0d892fb0e5ebed68afcc08e35"],
+      },
+      {
+        ch: "Static scan",
+        kind: "ok",
+        lines: [
+          "No flagged regions detected in 8 files scanned.",
+          "No obfuscation, network calls, or credential access patterns identified.",
+        ],
+      },
+      {
+        ch: "Reputation",
+        kind: "ok",
+        lines: [
+          "Owner 'chalk' is an established organization with 10+ years of history.",
+          "High community trust and consistent maintenance.",
+        ],
+      },
+      {
+        ch: "Read",
+        kind: "ok",
+        lines: [
+          "Code review confirms standard terminal detection logic.",
+          "No install-time scripts or suspicious lifecycle hooks found.",
         ],
       },
     ],
   },
 };
 
-/** The public dangerous-repos leaderboard (worst score first). */
-export const LEADERBOARD: LeaderboardEntry[] = [
-  { owner: "freebux", name: "vbucks-generator", score: 6, reason: "Credential stealer disguised as a game tool", id: null },
-  { owner: "devkit", name: "clipboard-sync", score: 9, reason: "Replaces copied crypto addresses in the clipboard", id: null },
-  { owner: "npm-helper", name: "postinstall-kit", score: 12, reason: "Self-replicating worm, republishes through victims", id: null },
-  { owner: "ledger-connect", name: "wallet-bridge", score: 15, reason: "Drains wallet seed phrases at install time", id: null },
-  { owner: "fastlib", name: "crypto-utils", score: 18, reason: "Obfuscated miner and C2 beacon on run", id: "r5" },
-  { owner: "talent-hub", name: "frontend-take-home", score: 21, reason: "Fake interview repo; harvests tokens on clone-and-run", id: null },
-  { owner: "corewallet", name: "keystore-tools", score: 44, reason: "Reads SSH keys and shell history on first run", id: "r4" },
-];
+/**
+ * The public dangerous-repos leaderboard (worst score first).
+ *
+ * Intentionally EMPTY. The board only lists repos the sandbox actually ran and
+ * caught scoring low, and we will not invent malware personas to populate it.
+ * Every real famous-repo scan above scores safe, so there is nothing honest to
+ * put here yet — the board renders empty until real low-scoring scans land in
+ * the live DB, at which point it populates from `v_leaderboard`. Kept as a
+ * typed `[]` (not removed) because `state.tsx` imports it and renders an honest
+ * empty board from it.
+ */
+export const LEADERBOARD: LeaderboardEntry[] = [];
 
-/** Recent-activity ticker on the homepage. */
+/**
+ * Recent-activity ticker on the homepage. Each entry mirrors a real cached
+ * scan above (same owner/name/score), so the "scanning live" strip shows real
+ * repos and real verdicts. `when` is a relative label for the ticker ordering.
+ */
 export const ACTIVITY: ActivityEntry[] = [
-  { owner: "verdant", name: "ratchet", score: 96, when: "just now" },
-  { owner: "fastlib", name: "crypto-utils", score: 18, when: "12s ago" },
-  { owner: "marlow", name: "envguard", score: 88, when: "40s ago" },
-  { owner: "quickdev", name: "setup-helper", score: 71, when: "1m ago" },
-  { owner: "ana-mirza", name: "pomodoro-cli", score: 94, when: "2m ago" },
-  { owner: "devkit", name: "clipboard-sync", score: 9, when: "3m ago" },
+  { owner: "expressjs", name: "express", score: 98, when: "just now" },
+  { owner: "pallets", name: "flask", score: 98, when: "18s ago" },
+  { owner: "psf", name: "requests", score: 98, when: "44s ago" },
+  { owner: "gorilla", name: "mux", score: 95, when: "1m ago" },
+  { owner: "chalk", name: "chalk", score: 98, when: "2m ago" },
+  { owner: "tj", name: "commander.js", score: 98, when: "3m ago" },
 ];
 
-/** Homepage "use case" cards. */
+/** Homepage "use case" cards — honest product copy (what the tool is for). */
 export const useCases: UseCase[] = [
   { no: "01", title: "Cloning a tutorial", body: "You found a repo on a forum and you are about to npm install. Check it first, in seconds, before it touches your machine." },
   { no: "02", title: "Vetting a dependency", body: "A library looks useful but the owner is unfamiliar. See what it does at install time and whether the account is real." },
@@ -560,9 +578,22 @@ export const useCases: UseCase[] = [
 
 /**
  * Repo ids shown as one-click suggestion chips under the hero scan box, in
- * order (matches the prototype's `suggestions` array).
+ * order. Real, recognizable repos across ecosystems (Node, Python, Go).
  */
-export const SUGGESTION_IDS: string[] = ["r1", "r2", "r3", "r5"];
+export const SUGGESTION_IDS: string[] = [
+  "expressjs/express",
+  "pallets/flask",
+  "chalk/chalk",
+  "gorilla/mux",
+];
 
-/** Round-robin order the demo cycles through when input does not match a repo. */
-export const DEMO_ORDER: string[] = ["r2", "r3", "r4", "r5"];
+/**
+ * Order the dashboard / showcase cycles through. Real cached repos across
+ * multiple owners and ecosystems.
+ */
+export const DEMO_ORDER: string[] = [
+  "psf/requests",
+  "tj/commander.js",
+  "sindresorhus/is",
+  "chalk/supports-color",
+];
