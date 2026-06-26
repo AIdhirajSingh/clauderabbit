@@ -25,6 +25,7 @@ export function ReportScreen() {
 
   const controls = (
     <div
+      data-print="hide"
       style={{
         position: "sticky",
         top: 0,
@@ -112,6 +113,7 @@ export function ReportScreen() {
 
   const logsCta = (
     <div
+      data-print="hide"
       style={{
         border: "1px solid var(--line)",
         borderRadius: 20,
