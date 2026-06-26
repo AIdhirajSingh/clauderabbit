@@ -127,7 +127,33 @@ not a credential/third-party blocker.
 ---
 
 ## Convergence & deploy
-- Convergence: branch → PR → `main` (CI: lint/typecheck/build + Deno tests + gitleaks), merge,
-  `local main == origin/main`. (Finalized at close.)
-- Vercel deploy is Adhiraj's trigger (secrets are server-side in Supabase; the client holds only the
-  publishable key). The app is build-green and deployable; `vercel --prod` from the linked project.
+
+**The ONE genuine external wall: GitHub Actions billing.** The branch is pushed and PR
+[#1](https://github.com/AIdhirajSingh/clauderabbit/pull/1) is open with the full summary, but the
+CI jobs cannot start — every job failed in ~2s with *"The job was not started because recent
+account payments have failed or your spending limit needs to be increased"* (the same external
+billing pause that interrupted the earlier sessions). This is a third-party/account wall I cannot
+resolve; it is NOT a code failure.
+
+**I ran every CI gate locally instead (not bypassed — actually executed):**
+- `npm run lint` ✅ · `npm run typecheck` ✅ · `npm run build` ✅
+- `deno test supabase/functions/` → 19 ✅ · `python test_agent_loop.py` → 41 ✅ ·
+  `test_knowledge_graph.py` → 22 ✅ · `test_run_harness_paths.sh` → 5 ✅
+- **`gitleaks detect` over the full history → 53 commits scanned, NO leaks found (exit 0)** —
+  gitleaks ran and passed; it was not bypassed.
+
+So the code is fully green; only GitHub's runner is blocked. I deliberately did NOT force-merge
+PR #1 over the red (billing) CI — that would undercut the "main always green / gitleaks-never-
+bypassed" gates in spirit. `local main == origin/main == f349397` (clean), the worktree is clean,
+and the work is durable + ready on the branch + PR.
+
+**Exact manual step to converge (Adhiraj):**
+1. GitHub → Settings → **Billing & plans** → resolve the failed payment / raise the spending limit
+   so Actions can run.
+2. Re-run CI on PR #1 (it will pass — every gate is locally green) and **merge PR #1** → `main`
+   converges; or fast-forward locally: `git checkout main && git merge --ff-only
+   claude/zen-merkle-43a854 && git push origin main`.
+
+**Vercel deploy** is Adhiraj's trigger (secrets are server-side in Supabase; the client holds only
+the publishable key). The app is build-green and deployable: `vercel --prod` from the linked
+project once PR #1 is merged.
