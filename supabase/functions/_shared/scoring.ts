@@ -52,7 +52,9 @@ export interface ScoringReputation {
   established: boolean;
   /** Owner account age in days; -1 when unknown. */
   ageDays: number;
-  /** Community sentiment score 0-100 (the model's read of stars/issues/etc). */
+  /** Community sentiment score 0-100, or -1 when UNKNOWN (model returned none).
+   * The sentinel keeps "no signal" (-1 → no delta) distinct from a genuinely
+   * negative read (0 → bad-sentiment penalty), mirroring `ageDays = -1`. */
   sentScore: number;
   /** Repository star count. */
   stars: number;
@@ -384,7 +386,13 @@ function codeDeltas(inputs: ScoringInputs): ScoreDelta[] {
         group: "code",
       });
     }
-    if (d.autoBuildSucceeded) {
+    // Credit a clean unattended build ONLY when nothing malicious was observed —
+    // crediting a repo that read credentials or attempted egress for "building
+    // cleanly" would be an absurd line in the citation ("+4 built fine, also
+    // exfiltrated your SSH key").
+    if (
+      d.autoBuildSucceeded && !d.credentialReadObserved && !d.egressIntercepted
+    ) {
       deltas.push({
         factor: "dynamic_autobuild_ok",
         delta: W_DYN_AUTOBUILD_OK,
@@ -454,7 +462,7 @@ function reputationDeltas(rep: ScoringReputation): ScoreDelta[] {
       detail: `Positive community sentiment (${rep.sentScore}/100).`,
       group: "reputation",
     });
-  } else if (rep.sentScore > 0 && rep.sentScore <= SENT_NEGATIVE) {
+  } else if (rep.sentScore >= 0 && rep.sentScore <= SENT_NEGATIVE) {
     raw.push({
       factor: "bad_sentiment",
       delta: W_REP_BAD_SENTIMENT,
@@ -498,10 +506,22 @@ export function computeScore(inputs: ScoringInputs): ScoreResult {
   const reputation = reputationDeltas(inputs.reputation);
   const breakdown: ScoreDelta[] = [...code, ...reputation];
 
-  const raw = breakdown.reduce((acc, d) => acc + d.delta, BASELINE);
-  return {
-    score: clampScore(raw),
-    baseline: BASELINE,
-    breakdown,
-  };
+  const rawSum = breakdown.reduce((acc, d) => acc + d.delta, BASELINE);
+  const score = clampScore(rawSum);
+  // Keep the citation trail EXACT: if the 0-100 clamp moved the number, record the
+  // adjustment as its own delta so `baseline + Σ(breakdown deltas) === score`
+  // holds unconditionally (same technique as `reputation_cap`). Deltas are all
+  // integers, so rawSum is already integral; rounding is belt-and-suspenders.
+  const rounded = Math.round(rawSum);
+  if (score !== rounded) {
+    breakdown.push({
+      factor: score <= 0 ? "clamp_floor" : "clamp_ceiling",
+      delta: score - rounded,
+      detail: `Raw score ${rounded} clamped to the ${
+        score <= 0 ? "0" : "100"
+      } bound (a safety score is always 0-100).`,
+      group: "code",
+    });
+  }
+  return { score, baseline: BASELINE, breakdown };
 }

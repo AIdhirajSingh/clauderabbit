@@ -40,7 +40,7 @@ const ESTABLISHED_REP: ScoringReputation = {
 const UNKNOWN_REP: ScoringReputation = {
   established: false,
   ageDays: -1,
-  sentScore: 0,
+  sentScore: -1,
   stars: 0,
 };
 
@@ -59,9 +59,11 @@ function baseInputs(over: Partial<ScoringInputs> = {}): ScoringInputs {
 
 /** The breakdown is the citation trail: baseline + sum(deltas), clamped, == score. */
 function assertBreakdownConsistent(result: ReturnType<typeof computeScore>): void {
+  // STRICT: with the clamp_floor/ceiling delta, the citation trail is now EXACT —
+  // baseline + Σ(deltas) must equal score with NO re-clamp here (re-clamping would
+  // mask the very clamp-boundary inconsistency this guard exists to catch).
   const sum = result.breakdown.reduce((acc, d) => acc + d.delta, result.baseline);
-  const clamped = Math.min(100, Math.max(0, Math.round(sum)));
-  assertEquals(result.score, clamped, "score must equal clamped(baseline + Σdeltas)");
+  assertEquals(result.score, sum, "score must equal baseline + Σdeltas exactly");
 }
 
 // --- Tests -------------------------------------------------------------------
@@ -241,4 +243,111 @@ Deno.test("computeScore is deterministic for identical inputs", () => {
   // Assert
   assertEquals(a.score, b.score);
   assertEquals(a.breakdown.length, b.breakdown.length);
+});
+
+Deno.test("score clamps to 0 and the breakdown stays EXACT (clamp_floor delta)", () => {
+  // Arrange — stack every heavy penalty so the raw sum falls well below 0.
+  const inputs = baseInputs({
+    signals: {
+      installHook: true,
+      obfuscation: true,
+      credAccess: true,
+      network: true,
+      embeddedSecret: true,
+      typosquat: true,
+    },
+    installTimeNetwork: true,
+    severityHint: "high",
+    confidence: 0.2,
+    escalated: true,
+    reputation: { established: false, ageDays: 1, sentScore: 0, stars: 0 },
+    risky: [
+      { severity: "high", kind: "code" },
+      { severity: "high", kind: "behavior" },
+      { severity: "high", kind: "code" },
+    ],
+    dynamic: {
+      credentialReadObserved: true,
+      egressIntercepted: true,
+      autoBuildSucceeded: true,
+    },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — clamped to 0, a clamp_floor delta records the adjustment, trail exact.
+  assertEquals(result.score, 0);
+  assert(
+    result.breakdown.find((d) => d.factor === "clamp_floor"),
+    "a clamp_floor delta must record the clamp adjustment",
+  );
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("a non-new, non-established owner yields no owner-standing delta", () => {
+  // Arrange — a 200-day-old account not flagged established.
+  const inputs = baseInputs({
+    reputation: { established: false, ageDays: 200, sentScore: -1, stars: 0 },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — none of the three owner-standing deltas fired.
+  const ownerFactors = ["new_owner", "established_owner", "owner_age_unknown"];
+  const fired = result.breakdown.filter((d) => ownerFactors.includes(d.factor));
+  assertEquals(fired.length, 0, "no owner-standing delta for a mid-age unestablished owner");
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("auto-build bonus is suppressed when malicious runtime behavior was observed", () => {
+  // Arrange — built cleanly BUT read a credential at runtime.
+  const inputs = baseInputs({
+    reputation: { ...ESTABLISHED_REP },
+    escalated: true,
+    dynamic: {
+      credentialReadObserved: true,
+      egressIntercepted: false,
+      autoBuildSucceeded: true,
+    },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — the +4 line must NOT appear next to an observed credential read.
+  assertEquals(
+    result.breakdown.find((d) => d.factor === "dynamic_autobuild_ok"),
+    undefined,
+    "auto-build bonus must be suppressed alongside an observed credential read",
+  );
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("unknown sentiment (-1) yields no delta, but 0 is a genuine negative read", () => {
+  // Arrange — identical except sentScore.
+  const unknown = baseInputs({
+    reputation: { established: true, ageDays: 1000, sentScore: -1, stars: 0 },
+  });
+  const negative = baseInputs({
+    reputation: { established: true, ageDays: 1000, sentScore: 0, stars: 0 },
+  });
+
+  // Act
+  const u = computeScore(unknown);
+  const n = computeScore(negative);
+
+  // Assert — the sentinel distinguishes "no signal" from "bad signal".
+  assertEquals(
+    u.breakdown.find((d) => d.factor === "bad_sentiment"),
+    undefined,
+    "-1 sentiment is unknown → no sentiment delta",
+  );
+  assert(
+    n.breakdown.find((d) => d.factor === "bad_sentiment"),
+    "sentScore 0 is a genuine negative read → bad_sentiment delta",
+  );
+  assertBreakdownConsistent(u);
+  assertBreakdownConsistent(n);
 });

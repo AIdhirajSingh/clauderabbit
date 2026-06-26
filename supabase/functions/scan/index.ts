@@ -589,6 +589,15 @@ function reshapeCached(row: ReportRow, ownerRow: OwnerRow | null): unknown {
     commit_sha: row.commit_sha,
     scan_path: "cache",
     confidence: row.confidence,
+    // Shape parity with the fresh-scan response so a consumer never hits an
+    // undefined field on a cache hit. The cited score breakdown for a cached
+    // report is preserved inside `logs_json` (the "Score" chapter) for scans run
+    // after the formula landed; the escalation reason is reconstructed from the
+    // stored `deep` flag.
+    escalationReason: row.deep
+      ? "escalated to the dynamic sandbox on the original scan"
+      : "cleared on the original static read",
+    scoreBreakdown: [],
   };
 }
 
@@ -814,7 +823,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     reputation: {
       established: owner.established,
       ageDays: owner.ageDays,
-      sentScore: Math.round(clamp(model.reputation?.sentScore, 0, 100, 0)),
+      // -1 = unknown (model returned no sentiment); 0 = a genuine negative read.
+      // The sentinel keeps the two distinct in the score (see scoring.ts).
+      sentScore: typeof model.reputation?.sentScore === "number"
+        ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
+        : -1,
       stars: metadata.stars,
     },
     confidence,
