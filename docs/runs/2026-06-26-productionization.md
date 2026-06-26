@@ -49,7 +49,14 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - **VERIFIED BY ME (ran):** typecheck/lint/build green, deno tests 7/7, deno check green. **Deployed live** to `mjvlczaytkhvsolnhhkz` and **proven end-to-end**: fresh cookie-parser → 87/Likely safe (breakdown 82−6−3+8+6+4−4=87, exact); fresh morgan → 41/High risk; cached path verdict snaps to band too.
 - **REAL FINDING (separate follow-up unit — static-scan precision):** `expressjs/morgan` (clean famous Express logger) scores 41/High risk because the static `obfuscation` signal fires on its legitimate `new Function()` log-format compiler → escalates → −42. Scoring formula is CORRECT; the upstream obfuscation detector in `_shared/static-scan.ts` is too broad (flags dynamic-code-eval as obfuscation) → false-HIGH-danger on clean repos. Needs detector precision tuning. **Important for credibility.**
 - **CI note:** `.github/workflows/ci.yml` runs lint/typecheck/build+gitleaks but NOT tests → the new Deno scoring tests don't gate in CI. Add a `setup-deno` + `npm run test:functions` step (Phase 8/CI hardening).
-- **On review return (lead):** address findings, re-verify (+redeploy if function changed), U2 closes.
+- **U2 review: DONE → fixes applied → U2 CLOSED.** Verdict APPROVE-WITH-FIXES 78/100 (0 crit/high; 3 med + 2 low). All addressed in `ac29119`: clamp_floor/ceiling delta keeps citation trail EXACT (MED-1) + strict test (LOW-3); sentScore −1 unknown sentinel vs 0 negative (MED-2); auto-build +4 suppressed alongside observed malice (LOW-2); reshapeCached emits escalationReason+scoreBreakdown (MED-3); +4 tests → 11/11. Re-deployed + re-proven live (click 96/Trusted, sum exact). Commits: ca49051 + ac29119.
+
+### U3 — static-scan precision (morgan false-positive) — COMMITTED `8a93f19`; security review running (a3349bfd287550918)
+- Demoted bare `new Function('…')` from the binary `obfuscation` signal to a REGION-ONLY flag (model still inspects; no auto-escalate / −42). Real obfuscation (eval-of-decoded, 120+ base64, atob+eval, hex blobs) unchanged. +5 Deno tests (16/16 pass). **Proven live:** morgan@1.9.1 41/High-risk/escalated → 93/Trusted/cleared.
+- On review return: address findings, U3 closes. (Security reviewer asked specifically whether this opens a `new Function` bypass.)
+
+### U4 — Phase 2 agentic OpenCode sandbox (THE MOAT, heaviest) — RESEARCH started
+- Reading existing `sandbox/` harness (observer/sinkhole form) to ground the agentic-upgrade plan before building. Plan will be cold-audited before any build.
 
 ### Remaining units (dependency order)
 - U3 Phase 7 caching: tab-switch-loses-report-view bug (React state persistence) + multi-level data cache + prompt caching on both Gemini tiers (`_shared/vertex.ts`).
