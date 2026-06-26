@@ -60,7 +60,17 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 ### U4 — Phase 2 agentic OpenCode sandbox (THE MOAT, heaviest) — RESEARCH/PLAN
 - Existing sandbox (3210 LoC, live-proven): golden image, deny-all VPC, trap host (dnsmasq+sinkd+squid+tcpdump), in-VM strace observer, off-VM Gemini payload analysis, verdict.py, forensics.py, orchestrate.sh, dead-man's-switch cleanup. Form = monitored-sinkhole observer.
 - **KEY ARCHITECTURE INSIGHT:** detonation VM has NO external IP / NO SA / deny-all egress → Gemini-driven agents CANNOT run inside it without breaking "no real packet leaves". Correct design: **AI brain OUTSIDE the blast radius** (controller/trap with egress) driving OpenCode that reaches INTO the sealed VM via intra-VPC SSH to explore+detonate. This also IS the prompt's "external monitor sees the blast without being blasted" + survivable inside/outside split.
-- Researching current OpenCode (install, Gemini-via-Vertex provider config, headless/programmatic run, custom exec) before writing the plan → cold-audit → build → one live GCP proof on a synthetic fixture.
+- Researched OpenCode (verified live facts): headless `opencode run`, Vertex provider via `@ai-sdk/google-vertex` (project/location/googleAuthOptions), models list. Vertex-direct fallback via existing `_shared/vertex.ts` if OpenCode headless is brittle.
+- **Design doc written + committed** (`sandbox/AGENTIC-DESIGN.md`): brain-outside/hands-inside (invariant-preserving), knowledge graph, 3-agent team + sparing 3.5-Flash advisor (cap 3), A2A pre-tool hook cross-validation, inner=consensus/outer=15min cage, no-early-exit, never-blank (checkpoint+resume), survivable watchdog, external monitor, continuous static, warm pool, baked deps. Build order: knowledge-graph → agent loop → wire → watchdog/monitor → warm pool → ONE live GCP proof.
+- **Cold-audit RUNNING** (agentId a82a6ba5f31df0a1f) — will return the recommended minimal-provable core; build scope set from it (plan-then-audit gate). NOT building until it returns.
+
+### U5 — Phase 8 polish (watermark + turbopack root) — COMMITTED `bb66ac9`
+- `next.config.ts`: `devIndicators:false` (hide dev watermark) + `turbopack.root=__dirname` (silence multi-lockfile warning). Build/typecheck/lint green; warning gone. Verified Next 16.2.9 API via docs.
+
+### Progress tally (all committed, main-green, proven)
+- U0 baseline · U1 de-fake (CLOSED, reviewed) · U2 scoring formula (CLOSED, reviewed, LIVE-proven) · U3 static-scan precision (CLOSED, security-reviewed, LIVE-proven) · U5 polish. Commits: 2f8b5fd→bb66ac9.
+- **Live scan fn redeployed** several times this run (current = with computed scoring + obfuscation precision). Proven repos: cookie-parser 87, click 96, morgan 93 (was 41).
+- Deno test suites: 11 scoring + 8 static-scan = 19, all pass (`npm run test:functions`). CI still doesn't run them (add setup-deno step — tracked).
 
 ### Remaining units (dependency order)
 - U3 Phase 7 caching: tab-switch-loses-report-view bug (React state persistence) + multi-level data cache + prompt caching on both Gemini tiers (`_shared/vertex.ts`).
