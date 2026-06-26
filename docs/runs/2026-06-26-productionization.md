@@ -104,7 +104,15 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - PR #1 SQUASH-MERGED → main. `local main == origin/main == 2b2f2e9` (clean linear history, both worktrees clean). The whole productionization run (de-fake + scoring + detection precision + the agentic moat proven live) is on main.
 - Continuing remaining phases on branch `claude/remaining-phases` off main; per push: run ALL gates incl gitleaks locally (CI is off).
 
-### REMAINING PHASES (driving to 100%): 3 security-skill · 5 danger-board/world-map/live-counts · 6 auth E2E (live) · 7 caching tab-switch+prompt-caching · 8 polish/copy/animation/icons/links/load · 9 cost writeup · 10 docs refresh · 11 Chrome+load testing (live).
+### REMAINING PHASES — progress (on branch claude/remaining-phases, off main 2b2f2e9):
+- ✅ **Phase 10 docs** `dc7c98b` — README refreshed (all-Gemini-for-prod, code-computed scoring, agentic sandbox; stale model-string note corrected).
+- ✅ **Phase 3 security-skill** `0e28aa7` — real 2026 malware methodology doc, prompt-cached into agent SYSTEM_PROMPT (C3-safe, fallback). 41 tests.
+- ✅ **Phase 7 caching** `bbb32b6` — tab-switch root cause (Supabase re-emits SIGNED_IN → unconditional dashboard land) FIXED + lib/spa-persist.ts report cache. 11 tests. (tsconfig: allowImportingTsExtensions for node --test .ts).
+- ✅ **Phase 9 cost** `a87875e` — real per-scan/VM cost breakdown.
+- ⏳ **3+7 independent review** RUNNING (a26db7a89805663de) — the per-unit gate; address findings before main-merge.
+- ⏳ **Phase 5 danger-board/world-map/live-counts** BUILDING (a67a88a04b1be3fd3) — honest real-data board, fresh-context executor.
+- ⬜ **Phase 8** polish/copy-rewrite/animation/icons/GH-links + prompt-caching (both Gemini tiers vertex.ts+vertex_client.py). ⬜ **Phase 6** auth E2E (live: wipe test user, fresh Google sign-in). ⬜ **Phase 11** Chrome-as-user + load testing (live).
+- Per push: run ALL gates incl gitleaks LOCALLY (CI off). Branch merges to main per GitHub Flow when its units close.
 
 ### (build-detail note moved up; original below)
 ### U4b agent-loop core — executor BUILDING (agentId ab3c3426305ccf775)
