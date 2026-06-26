@@ -19,6 +19,16 @@ const COLUMNS: Array<{ cards: SnapProps[]; anim: string }> = [
   { cards: BG_COL_C_DBL, anim: "marqueeUp 72s linear infinite" },
 ];
 
+/**
+ * Vertical gap between the background cards. Applied as a per-card
+ * `marginBottom` rather than the flex container `gap` so the doubled marquee
+ * track is an exact `2×copy` height and the `translateY(-50%)` loop wraps
+ * seamlessly. Flex `gap` drops the trailing gap after the last child, which
+ * leaves `-50%` half a gap short and makes the loop jump. See Orbit.tsx for the
+ * full rationale; this column shares the same marqueeUp/Down keyframes.
+ */
+const BG_CARD_GAP = 26;
+
 export function Background() {
   const { bgOpacity } = useApp();
   return (
@@ -67,12 +77,11 @@ export function Background() {
                 maxWidth: 300,
                 display: "flex",
                 flexDirection: "column",
-                gap: 26,
                 animation: col.anim,
               }}
             >
               {col.cards.map((c, i) => (
-                <div key={i} style={{ flexShrink: 0 }}>
+                <div key={i} style={{ flexShrink: 0, marginBottom: BG_CARD_GAP }}>
                   <Snap
                     kind={c.kind}
                     title={c.title}
