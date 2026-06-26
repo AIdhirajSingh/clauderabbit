@@ -97,3 +97,44 @@ Deno.test("credential-path access is still detected (regression guard)", () => {
   assertEquals(result.signals.credAccess, true, "SSH key path access must still flag");
   assertEquals(result.severityHint, "high");
 });
+
+Deno.test("new Function of a 60+ char encoded LITERAL trips obfuscation (H1 regression fix)", () => {
+  // Arrange — an 80-char base64 literal handed to new Function (sub-120, the gap
+  // the prior threshold left open). Pure base64 charset, no spaces.
+  const blob = "QWxhZGRpbjpvcGVuc2VzYW1lQWxhZGRpbjpvcGVuc2VzYW1lQWxhZGRpbjpvcGVuc2VzYW1l"; // 72 chars
+  const evil = file("p.js", `const f = new Function('${blob}'); f();`);
+
+  // Act
+  const result = staticScan([evil]);
+
+  // Assert — now a HARD signal again (was only a soft region before the fix).
+  assertEquals(result.signals.obfuscation, true, "60+ char encoded literal in new Function must trip obfuscation");
+  assertEquals(result.severityHint, "high");
+});
+
+Deno.test("new Function(atob(...)) — decoded payload into Function — trips obfuscation (H2 hard)", () => {
+  // Arrange
+  const evil = file("p.js", "const f = new Function(atob('cmV0dXJuIDE=')); f();");
+
+  // Act
+  const result = staticScan([evil]);
+
+  // Assert
+  assertEquals(result.signals.obfuscation, true, "Function(atob(...)) must trip obfuscation");
+});
+
+Deno.test("new Function(variable) is flagged as a REGION (no false signal) — H2 soft", () => {
+  // Arrange — a computed argument (payload could be decoded into the var at run
+  // time). Region-only so the model sees it; NOT a hard signal on its own.
+  const code = file("p.js", "const payload = decode(x);\nconst f = new Function(payload);");
+
+  // Act
+  const result = staticScan([code]);
+
+  // Assert
+  assertEquals(result.signals.obfuscation, false, "a bare computed-arg new Function is not itself obfuscation");
+  assert(
+    result.flaggedRegions.some((r) => /computed argument/.test(r.reason)),
+    "new Function(variable) must still be surfaced as a region for the model",
+  );
+});

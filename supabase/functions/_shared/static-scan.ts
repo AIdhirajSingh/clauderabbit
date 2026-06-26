@@ -107,7 +107,14 @@ const SECRET_PATTERNS: Array<{ re: RegExp; label: string }> = [
 // `obfuscation` signal (which auto-escalates and weighs −42 in the score).
 const OBFUSCATION_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\beval\s*\(\s*(atob|Buffer\.from|decodeURIComponent)/g, label: "eval of decoded payload" },
-  { re: /\b(eval|Function)\s*\(\s*['"`][A-Za-z0-9+/=]{120,}/g, label: "eval/Function of long base64 blob" },
+  // `new Function(atob(...))` / `Function(decode(...))` — the Function-constructor
+  // twin of eval-of-decoded; a payload decoded straight into a code-exec call.
+  { re: /\bFunction\s*\(\s*(atob|Buffer\.from|decodeURIComponent)/g, label: "Function() of a decoded payload" },
+  // eval/Function of an encoded LITERAL. Threshold 60 base64 chars (~45 decoded
+  // bytes — ample for a real reverse-shell/exfil one-liner). A legit short format
+  // string (e.g. morgan's "tokens, req, res") has spaces/commas, so it never
+  // reaches 60 *contiguous* base64-charset chars and is not matched here.
+  { re: /\b(eval|Function)\s*\(\s*['"`][A-Za-z0-9+/=]{60,}/g, label: "eval/Function of long base64 blob" },
   { re: /atob\s*\([\s\S]{0,40}\)[\s\S]{0,20}eval/g, label: "atob + eval chain" },
   { re: /(\\x[0-9a-fA-F]{2}){12,}/g, label: "long hex-escaped string" },
 ];
@@ -121,6 +128,10 @@ const OBFUSCATION_PATTERNS: Array<{ re: RegExp; label: string }> = [
 // genuinely obfuscated `Function("<120+ base64>")` is still caught above.
 const DYNAMIC_CODE_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bnew Function\s*\(\s*['"`]/g, label: "dynamic Function constructor (review: metaprogramming vs. hidden payload)" },
+  // `new Function(someVar)` — a COMPUTED argument (the payload could have been
+  // decoded into the variable at runtime). Region-only so the read model always
+  // sees it; the dangerous decoded-inline form is already a HARD signal above.
+  { re: /\bnew Function\s*\(\s*[A-Za-z_$]/g, label: "dynamic Function constructor with a computed argument (review: decoded payload?)" },
 ];
 
 const NETWORK_TOKENS = /\b(fetch|axios|http\.request|https\.request|net\.connect|child_process|execSync|exec\(|spawn\()/;
