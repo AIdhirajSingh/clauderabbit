@@ -332,14 +332,18 @@ if [ "$CR_AGENTIC" = "1" ]; then
     # AI time budget is a FIXED fraction (<=60%) of the VM --max-run-duration cage
     # (audit C4). MAX_RUN is like "30m"; take its minutes, *60*0.5 seconds.
     CAGE_MIN="${MAX_RUN%m}"; case "$CAGE_MIN" in ''|*[!0-9]*) CAGE_MIN=30;; esac
-    AI_BUDGET_S=$(( CAGE_MIN * 60 / 2 ))   # 50% of cage, under the 60% ceiling
+    CAGE_S=$(( CAGE_MIN * 60 ))             # full VM cage in seconds
+    AI_BUDGET_S=$(( CAGE_S / 2 ))           # 50% of cage, under the 60% ceiling
     # The loop's ssh_exec uses these to SSH into the sealed detonation VM.
+    # --cage-duration-s makes the loop ENFORCE time_budget_s <= 60% of the cage at
+    # construction (audit C4 / MED-3); a misconfigured budget aborts the pass.
     CR_DET_VM="$DET_VM" CR_ZONE="$ZONE" \
       python3 "$AGENT_LOOP" \
         --repo-dir "$CLONE_DIR" --graph "$GRAPH_JSON" \
         --commit-sha "$COMMIT_SHA" --name "$NAME" --trap-ip "$TRAP_IP" \
         --results-dir "$RESULTS_DIR" \
         --time-budget-s "$AI_BUDGET_S" --token-budget 200000 \
+        --cage-duration-s "$CAGE_S" \
         --project "$(gcloud config get-value project 2>/dev/null)" \
         --location "${CR_VERTEX_LOCATION:-us-central1}" \
         --out "$LOCAL_AGENTIC" >/dev/null 2>&1 \
