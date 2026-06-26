@@ -34,4 +34,9 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - **Phase 2 (sandbox):** current form = observer/sinkhole (`sandbox/harness/*`, `sandbox/net/*`). OpenCode agentic layer not built; opencode binary not installed.
 - Multi-lockfile Next warning (worktree + main both have package-lock.json) → Phase 8 `turbopack.root`.
 
-### U1 — Phase 1 de-fake (in progress)
+### U1 — Phase 1 de-fake (COMMITTED on branch; independent review pending before main-merge)
+- Executor (agentId a8ce50f5c89de6983) scanned 6+ REAL famous repos across multiple owners (expressjs, pallets, psf, chalk, tj, gorilla, sindresorhus) via the live fn; raw JSON proved real (real commit SHAs + star counts). Rewrote `lib/demo-data.ts` (REPOS keyed `owner/name` from real scans; ACTIVITY/SUGGESTION_IDS/DEMO_ORDER derived; **LEADERBOARD → `[]`** honest-empty — inventing malware forbidden), `supabase/seed.sql` (6 real rows), neutralized the reseed migration to no-op, de-faked decorative cards in `state.tsx`/`Orbit.tsx`, added honest empty-states to Leaderboard/Home screens.
+- **Lead verification (ran MYSELF):** typecheck ✅ lint ✅ build ✅; grep → zero residual fabricated names; self-reviewed state.tsx diff = honest + consistent.
+- **Stub hunt (real gaps for later):** `state.tsx:1145` exportPDF is a toast-only stub (no real PDF); `AdScreen` ad slot is a placeholder (**ads OUT of scope this run — leave**). Decorative pre-existing cards `claude-rabbit/rabbit · 24.3k★ · 99` and `AdhirajSinghEntrepreneur/pockit · 88` are aspirational/owner cards — flag for polish review (not data).
+- **Pending:** independent zero-context review of the de-fake diff (spawned); address findings before main-merge.
+- **Next units:** U2 Phase 4 code-computed scoring formula (new `lib/scoring.ts` + wire `supabase/functions/scan/index.ts:728`, unit-tested); U3 Phase 7 caching tab-switch bug; U4 Phase 2 sandbox (install OpenCode first); U5 Phase 8 polish. Dependency order.
