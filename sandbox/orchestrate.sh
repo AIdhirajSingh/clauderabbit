@@ -346,8 +346,8 @@ if [ "$CR_AGENTIC" = "1" ]; then
         --cage-duration-s "$CAGE_S" \
         --project "$(gcloud config get-value project 2>/dev/null)" \
         --location "${CR_VERTEX_LOCATION:-us-central1}" \
-        --out "$LOCAL_AGENTIC" >/dev/null 2>&1 \
-      || log "WARNING: agentic pass returned non-zero (deterministic RUN still proceeds)"
+        --out "$LOCAL_AGENTIC" > "$RESULTS_DIR/${NAME}-agentic.log" 2>&1 \
+      || log "WARNING: agentic pass returned non-zero (see ${NAME}-agentic.log; deterministic RUN still proceeds)"
     [ -f "$LOCAL_AGENTIC" ] && log "agentic findings: $LOCAL_AGENTIC"
   fi
 fi
