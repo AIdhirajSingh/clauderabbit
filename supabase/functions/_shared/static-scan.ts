@@ -102,12 +102,25 @@ const SECRET_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, label: "Slack token" },
 ];
 
+// HARD obfuscation: an encoded/decoded payload handed to a code-exec primitive,
+// or a long escaped blob. These are strong malware tells, so they set the binary
+// `obfuscation` signal (which auto-escalates and weighs −42 in the score).
 const OBFUSCATION_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\beval\s*\(\s*(atob|Buffer\.from|decodeURIComponent)/g, label: "eval of decoded payload" },
   { re: /\b(eval|Function)\s*\(\s*['"`][A-Za-z0-9+/=]{120,}/g, label: "eval/Function of long base64 blob" },
   { re: /atob\s*\([\s\S]{0,40}\)[\s\S]{0,20}eval/g, label: "atob + eval chain" },
   { re: /(\\x[0-9a-fA-F]{2}){12,}/g, label: "long hex-escaped string" },
-  { re: /\bnew Function\s*\(\s*['"`]/g, label: "dynamic Function constructor" },
+];
+
+// SOFT dynamic-code: a bare `new Function('…')`. Legitimate libraries (format/
+// template compilers such as morgan, lodash, pug) use this constructor heavily,
+// so on its own it is NOT obfuscation and must NOT auto-escalate or tank the
+// score — that produced false-HIGH-danger verdicts on clean famous repos. We
+// still flag the REGION so the read model inspects it in context and can judge
+// "metaprogramming vs. hidden payload"; it just sets no binary signal. A
+// genuinely obfuscated `Function("<120+ base64>")` is still caught above.
+const DYNAMIC_CODE_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /\bnew Function\s*\(\s*['"`]/g, label: "dynamic Function constructor (review: metaprogramming vs. hidden payload)" },
 ];
 
 const NETWORK_TOKENS = /\b(fetch|axios|http\.request|https\.request|net\.connect|child_process|execSync|exec\(|spawn\()/;
@@ -258,6 +271,10 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     if (scanText(f.path, f.content, OBFUSCATION_PATTERNS, regions)) {
       signals.obfuscation = true;
     }
+    // Region-only: surface dynamic-code use for the read model to judge in
+    // context, but set NO binary signal (no auto-escalation, no score penalty on
+    // its own). Legitimate metaprogramming must not read as malware.
+    scanText(f.path, f.content, DYNAMIC_CODE_PATTERNS, regions);
     if (scanText(f.path, f.content, CRED_PATH_PATTERNS, regions)) {
       signals.credAccess = true;
     }
