@@ -749,7 +749,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ── handlers ──
 
   /**
-   * Match the current input against a seeded DEMO repo (r1–r6). Returns the demo
+   * Match the current input against a real cached repo (keyed "owner/name"). Returns the demo
    * id when the input clearly names one (so the showcase flows stay instant), or
    * null when it does not — a null means "treat as a real repo and scan it live".
    * Unlike the prototype's round-robin fallback, an unmatched input now falls
