@@ -13,7 +13,6 @@ import { Snap, type SnapProps } from "./Snap";
 const G = "var(--green)";
 const B = "var(--blue)";
 const A = "var(--amber)";
-const R = "var(--red)";
 
 /** Builds the four faux source lines for a `code` snapshot, exactly as DC's `code(a,b,c)`. */
 function code(a: string, b: string, c?: string): SnapProps["lines"] {
@@ -25,18 +24,22 @@ function code(a: string, b: string, c?: string): SnapProps["lines"] {
   ];
 }
 
+// Decorative conveyor cards. Repo cards name REAL repos with their real live-scan
+// scores/stars (from lib/demo-data); the web/design/code cards are abstract
+// illustration only (no repo named, no fabricated verdict score). Colored code
+// lines keep the marquee's visual variety without asserting a fake result.
 const COL_A: SnapProps[] = [
-  { kind: "web", title: "verdant.dev", sub: "Routing that just works.", accent: G },
-  { kind: "code", title: "install.sh", score: "18", color: R, lines: code(R, "var(--t5)", "var(--t5)") },
+  { kind: "web", title: "expressjs.com", sub: "Fast, minimalist web framework.", accent: G },
+  { kind: "code", title: "router.js", color: B, lines: code(B, "var(--t5)", "var(--t5)") },
   { kind: "design", title: "Design system", sub: "Instrument Serif · Geist" },
-  { kind: "repo", title: "marlow/envguard", score: "88", color: B, lang: "TypeScript", langColor: B, stars: "3.4k" },
+  { kind: "repo", title: "pallets/flask", score: "98", color: G, lang: "Python", langColor: B, stars: "71.7k" },
 ];
 
 const COL_B: SnapProps[] = [
   { kind: "repo", title: "claude-rabbit/rabbit", score: "99", color: G, lang: "TypeScript", langColor: B, stars: "24.3k" },
-  { kind: "repo", title: "fastlib/crypto-utils", score: "18", color: R, lang: "JavaScript", langColor: A, stars: "94" },
-  { kind: "code", title: "index.ts", score: "96", color: G, lines: code(G, "var(--t5)", "var(--blue)") },
-  { kind: "web", title: "envguard.io", sub: "Validate every variable.", accent: B },
+  { kind: "repo", title: "gorilla/mux", score: "95", color: G, lang: "Go", langColor: A, stars: "21.8k" },
+  { kind: "code", title: "index.ts", color: G, lines: code(G, "var(--t5)", "var(--blue)") },
+  { kind: "web", title: "flask.palletsprojects.com", sub: "Web development, one drop at a time.", accent: B },
 ];
 
 const FLOATS = ["5.5s", "6.4s", "5.1s", "6.8s"];

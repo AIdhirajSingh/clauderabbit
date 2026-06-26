@@ -1,10 +1,13 @@
--- Re-seed demo reports.owner_login to the repo URL namespace (was the maintainer
--- handle). Idempotent: each UPDATE is guarded by the old value so re-runs are no-ops.
--- (The demo forensic record for fastlib/crypto-utils is loaded as one-time live demo
--- data, not embedded here — its inert captured decoy payload contains key-shaped bytes
--- that the repo's secret scanner would flag; real scans populate forensics_json in prod.)
-update public.reports set owner_login = 'verdant'    where repo_name = 'ratchet'        and owner_login = 'soren-vestergaard';
-update public.reports set owner_login = 'marlow'     where repo_name = 'envguard'       and owner_login = 'marlow-dev';
-update public.reports set owner_login = 'quickdev'   where repo_name = 'setup-helper'   and owner_login = 'quickdev-tools';
-update public.reports set owner_login = 'corewallet' where repo_name = 'keystore-tools' and owner_login = 'corewallet-io';
-update public.reports set owner_login = 'fastlib'    where repo_name = 'crypto-utils'   and owner_login = 'fastlib-pkg';
+-- Historical no-op migration.
+--
+-- This migration originally re-pointed seeded demo reports' owner_login from a
+-- maintainer handle to the repo URL namespace. Those fabricated demo rows have
+-- been removed: the seed (supabase/seed.sql) now inserts only REAL famous-repo
+-- scans whose owner_login already equals the GitHub owner, so no re-pointing is
+-- needed. The original UPDATEs were guarded by the old fake handles, making them
+-- no-ops once the fake rows are gone.
+--
+-- Kept as an empty, valid migration so the migration history is not rewritten
+-- (already-applied environments stay consistent). New environments seed the
+-- correct owner_login directly.
+select 1;

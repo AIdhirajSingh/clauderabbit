@@ -398,6 +398,16 @@ export function HomeScreen() {
           </button>
         </div>
         <div style={{ border: "1px solid var(--line)", borderRadius: 20, overflow: "hidden", background: "var(--s1)", boxShadow: "var(--shadow-lg)" }}>
+          {app.leaderTop.length === 0 && (
+            <div style={{ padding: "44px 26px", textAlign: "center" }}>
+              <div style={{ fontSize: 15, color: "var(--t2)", marginBottom: 8, fontWeight: 450 }}>
+                Nothing caught yet.
+              </div>
+              <div style={{ fontSize: 13, color: "var(--t4)", lineHeight: 1.55, maxWidth: 420, margin: "0 auto" }}>
+                The board lists only repos the sandbox has run and caught scoring low. Real catches appear here as they land.
+              </div>
+            </div>
+          )}
           {app.leaderTop.map((r) => (
             <div
               key={r.rank}
