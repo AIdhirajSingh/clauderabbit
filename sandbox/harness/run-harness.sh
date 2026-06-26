@@ -43,10 +43,20 @@
 set -uo pipefail   # NOTE: not -e; we WANT to continue past a failing build/run.
 
 RUNNER_USER="runner"
-WORK="/home/${RUNNER_USER}/target"
+# WORK / OBS / FLIP / PLAN_DIR default to the on-VM production paths. They are
+# env-overridable ONLY so the path-validation + plan-source security logic can
+# be exercised by the regression harness without root; the production
+# orchestrator never sets these, so the defaults always hold in the real run.
+WORK="${CR_WORK_DIR:-/home/${RUNNER_USER}/target}"
 OBS="/opt/cr/observe.py"
-FLIP="/opt/cr/sinkhole-flip.sh"
-PLAN="/tmp/cr-plan.env"
+FLIP="${CR_FLIP_SCRIPT:-/opt/cr/sinkhole-flip.sh}"
+# HIGH-1: the PLAN env file is `source`d by root in build/run/merge. A
+# world-writable /tmp path let the unprivileged `runner` (or any other local
+# user) pre-create or rewrite it and inject arbitrary code into root's shell.
+# It now lives in a root-owned dir and is written mode-600 root:root; before
+# EVERY source we re-verify ownership + perms and refuse otherwise.
+PLAN_DIR="${CR_PLAN_DIR:-/opt/cr}"
+PLAN="${PLAN_DIR}/plan.env"
 BUILD_OUT="/tmp/cr-build.json"
 RUN_OUT="/tmp/cr-run.json"
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-240}"
@@ -57,6 +67,35 @@ CR_PROXY="${CR_PROXY:-}"
 CR_TRAP_IP="${CR_TRAP_IP:-}"
 
 log() { echo "[harness] $*" >&2; }
+
+# HIGH-1: source the PLAN file ONLY after proving it is root-owned and not
+# writable by group/other. A non-zero return ABORTS the phase rather than
+# sourcing attacker-controlled shell into the root context.
+source_plan() {
+  [ -f "$PLAN" ] || { log "no plan; run prepare first"; exit 2; }
+  if [ -L "$PLAN" ]; then
+    log "FATAL: plan file is a symlink (refused): $PLAN"; exit 3
+  fi
+  # stat the owner uid and the octal mode; require uid 0 and no g/o write bits.
+  local owner mode
+  owner="$(stat -c '%u' "$PLAN" 2>/dev/null)" \
+    || { log "FATAL: cannot stat plan file: $PLAN"; exit 3; }
+  mode="$(stat -c '%a' "$PLAN" 2>/dev/null)" \
+    || { log "FATAL: cannot stat plan file mode: $PLAN"; exit 3; }
+  if [ "$owner" != "0" ]; then
+    log "FATAL: plan file is not root-owned (uid=$owner) — refusing to source: $PLAN"; exit 3
+  fi
+  # mode is 1-4 octal digits; the last digit is "other", the middle is "group".
+  # Reject if either the group-write (2) or other-write (2) bit is set.
+  local g_bits o_bits
+  o_bits="${mode: -1}"
+  g_bits="${mode: -2:1}"
+  [ -n "$g_bits" ] || g_bits=0
+  case "$o_bits" in 2|3|6|7) log "FATAL: plan file is other-writable (mode=$mode) — refusing to source: $PLAN"; exit 3 ;; esac
+  case "$g_bits" in 2|3|6|7) log "FATAL: plan file is group-writable (mode=$mode) — refusing to source: $PLAN"; exit 3 ;; esac
+  # shellcheck disable=SC1090
+  source "$PLAN"
+}
 
 # Dispatch: if $1 is a subcommand, run split-phase; else single-shot legacy.
 SUBCMD="${1:-}"
@@ -139,12 +178,24 @@ log "detected project type: $PTYPE"
 log "install: $INSTALL_CMD"
 log "run:     $RUN_CMD"
 
-# persist the plan so build/run sub-invocations reuse the same detection
+# persist the plan so build/run sub-invocations reuse the same detection.
+# HIGH-1: write it to a root-owned dir, mode 600 root:root, so the unprivileged
+# runner can never tamper with the shell that root later sources.
+mkdir -p "$PLAN_DIR"
+chown root:root "$PLAN_DIR" 2>/dev/null || true
+# Truncate via a fresh root-owned file, then lock down before writing content.
+: > "$PLAN"
+chown root:root "$PLAN" 2>/dev/null || true
+chmod 600 "$PLAN"
 {
   echo "PTYPE=$(printf '%q' "$PTYPE")"
   echo "INSTALL_CMD=$(printf '%q' "$INSTALL_CMD")"
   echo "RUN_CMD=$(printf '%q' "$RUN_CMD")"
 } > "$PLAN"
+# Re-assert ownership + perms after the content write (the redirect preserves
+# them, but be explicit so a wrong umask can never widen the file).
+chown root:root "$PLAN" 2>/dev/null || true
+chmod 600 "$PLAN"
 chown -R "$RUNNER_USER":"$RUNNER_USER" "/home/${RUNNER_USER}"
 log "prepare complete; plan at $PLAN"
 exit 0
@@ -152,9 +203,7 @@ fi
 
 # ============================ BUILD ========================================
 if [ "$SUBCMD" = "build" ]; then
-[ -f "$PLAN" ] || { log "no plan; run prepare first"; exit 2; }
-# shellcheck disable=SC1090
-source "$PLAN"
+source_plan
 log "=== BUILD phase (registry-allowlist proxy; observing) ==="
 
 # Point the package managers at the trap's allowlist proxy so they can fetch
@@ -182,9 +231,7 @@ fi
 
 # ============================ RUN ==========================================
 if [ "$SUBCMD" = "run" ]; then
-[ -f "$PLAN" ] || { log "no plan; run prepare first"; exit 2; }
-# shellcheck disable=SC1090
-source "$PLAN"
+source_plan
 
 # FLIP to the full sinkhole BEFORE any run-phase untrusted code executes:
 # DNS -> trap, iptables DNAT all outbound -> trap. This is containment layer 2
@@ -227,21 +274,59 @@ esac
 
 # --- 2. path validation: must be a real file UNDER $WORK --------------------
 # Reject absolute paths, parent-dir traversal, and anything that resolves
-# outside $WORK (a symlink escape). We compare REALPATHs so a symlink that
+# outside $WORK (a symlink escape). We use STRICT realpath (no -m): it requires
+# the path to exist and resolves ALL components' symlinks, so a symlink that
 # points out of the repo is caught. Untrusted repo bytes never reach a shell.
+#
+# CRIT-1 hardening:
+#   - `realpath` is MANDATORY. If it is unavailable we FAIL HARD (exit 3) and
+#     NEVER fall back to the raw, unresolved string (which would defeat the
+#     symlink/escape check entirely).
+#   - We reject if ANY path component between $WORK and the target is a symlink
+#     (an intermediate-dir symlink escape, e.g. `lib` -> /etc, target
+#     `lib/passwd`). Comparing only the final realpath to WORK_REAL would still
+#     pass such an escape if the resolved real path happens to land back under
+#     a same-named tree; walking the components closes that hole.
 case "$RT_PATH" in
   /*)  log "FATAL: target path must be repo-relative, not absolute: '$RT_PATH'"; exit 3 ;;
   *..*) log "FATAL: target path must not contain '..': '$RT_PATH'"; exit 3 ;;
 esac
-WORK_REAL="$(realpath -m "$WORK" 2>/dev/null || echo "$WORK")"
+command -v realpath >/dev/null 2>&1 \
+  || { log "FATAL: realpath unavailable — refusing to validate target path without symlink resolution"; exit 3; }
+# STRICT realpath (no -m): requires existence + resolves every symlink component.
+WORK_REAL="$(realpath "$WORK" 2>/dev/null)" \
+  || { log "FATAL: cannot resolve work dir '$WORK'"; exit 3; }
 TARGET_ABS="$WORK/$RT_PATH"
-TARGET_REAL="$(realpath -m "$TARGET_ABS" 2>/dev/null || echo "$TARGET_ABS")"
+# Walk each intermediate path component and refuse if ANY of them is a symlink
+# (not just the final element). This catches an intermediate-dir symlink escape
+# such as `lib` -> /etc with target `lib/passwd`, before we ever resolve/run it.
+_walk="$WORK"
+_IFS_SAVE="$IFS"; IFS='/'
+for _comp in $RT_PATH; do
+  IFS="$_IFS_SAVE"
+  [ -z "$_comp" ] && { _walk="$WORK"; continue; }
+  _walk="$_walk/$_comp"
+  if [ -L "$_walk" ]; then
+    log "FATAL: target path component is a symlink (refused): '$RT_PATH' (at '$_walk')"; exit 3
+  fi
+  IFS='/'
+done
+IFS="$_IFS_SAVE"
+# Defense in depth: also resolve the PARENT strictly and re-compare, so even a
+# symlink we somehow missed cannot leave the resolved parent outside $WORK.
+TARGET_PARENT="$(realpath "$(dirname "$TARGET_ABS")" 2>/dev/null)" \
+  || { log "FATAL: cannot resolve target parent dir for '$RT_PATH'"; exit 3; }
+case "$TARGET_PARENT" in
+  "$WORK_REAL"|"$WORK_REAL"/*) ;;   # good: parent is the work dir or strictly under it
+  *) log "FATAL: target parent escapes the work dir: '$RT_PATH' -> '$TARGET_PARENT'"; exit 3 ;;
+esac
+TARGET_REAL="$(realpath "$TARGET_ABS" 2>/dev/null)" \
+  || { log "FATAL: target does not exist or cannot be resolved: '$RT_PATH'"; exit 3; }
 case "$TARGET_REAL" in
   "$WORK_REAL"/*) ;;   # good: strictly under the work dir
   *) log "FATAL: target escapes the work dir: '$RT_PATH' -> '$TARGET_REAL'"; exit 3 ;;
 esac
-# Refuse a symlink itself (could point outside even if realpath -m didn't flag),
-# and require the resolved file to actually exist as a regular file.
+# Refuse a symlink as the final element too, and require a regular file.
 if [ -L "$TARGET_ABS" ]; then
   log "FATAL: target is a symlink (refused): '$RT_PATH'"; exit 3
 fi
@@ -267,7 +352,14 @@ fi
 
 # --- 4. detonate as the NON-ROOT runner, under the observer ------------------
 # A per-target observation JSON so concurrent/sequential detonations never clash.
+# HIGH-3: the controller chooses CR_RUN_N and reads back the EXACT path
+# /tmp/cr-run-<token>.json with a fixed `cat`. Validate the token here too
+# (defense in depth) so the on-disk path always matches [A-Za-z0-9_-]+ and can
+# never carry a metacharacter, regardless of how the harness is invoked.
 RT_N="${CR_RUN_N:-$$}"
+case "$RT_N" in
+  *[!A-Za-z0-9_-]*) log "FATAL: CR_RUN_N has disallowed characters: '$RT_N'"; exit 3 ;;
+esac
 RT_OUT="/tmp/cr-run-${RT_N}.json"
 log "=== DETONATE (run-target): $RT_RUNTIME $RT_PATH as runner, sinkhole active ==="
 sudo -u "$RUNNER_USER" -H python3 "$OBS" \
@@ -282,9 +374,7 @@ fi
 # ============================ MERGE ========================================
 if [ "$SUBCMD" = "merge" ]; then
 OUT="${2:?usage: run-harness.sh merge <out.json>}"
-[ -f "$PLAN" ] || { log "no plan; run prepare first"; exit 2; }
-# shellcheck disable=SC1090
-source "$PLAN"
+source_plan
 log "merging phase reports -> $OUT"
 python3 - "$BUILD_OUT" "$RUN_OUT" "$OUT" "$PTYPE" "$INSTALL_CMD" "$RUN_CMD" <<'PY'
 import json, sys

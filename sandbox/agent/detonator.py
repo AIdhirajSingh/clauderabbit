@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Callable
+import secrets
+from typing import Callable, Optional
 
 # --- Fixed grammar (audit C1) -----------------------------------------------
 
@@ -57,11 +58,37 @@ TRAP_IP_RE = re.compile(r"^10\.200\.\d{1,3}\.\d{1,3}$")
 # allowed characters, not a blacklist of bad ones.
 SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./\-]+$")
 
+# HIGH-3: the per-target observation file is named by the CONTROLLER, not the VM.
+# The controller passes a unique run token (CR_RUN_N) drawn from this tiny safe
+# grammar; the harness writes /tmp/cr-run-<token>.json; the controller then reads
+# back THAT exact, controller-computed path with a separate fixed `cat`. We never
+# pipe VM stdout into a shell that word-splits, so a hostile "last line" such as
+# `;curl evil` or a path with spaces can never become a command on the controller.
+RUN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# The full readback path the harness writes and we `cat`. Re-validated as a whole
+# before it is ever placed in a command, so nothing but this exact shape is read.
+RUN_OUTPUT_PATH_RE = re.compile(r"^/tmp/cr-run-[A-Za-z0-9_-]+\.json$")
+
 
 class DetonationRejected(ValueError):
     """Raised when a detonate request violates the fixed grammar. The agent loop
     catches this and records a `not_verified` outcome — it NEVER relays an
     invalid target."""
+
+
+def _run_output_path(run_token: str) -> str:
+    """Compute the controller-determined observation path for a run token.
+    The token is validated against RUN_TOKEN_RE first; the assembled path is then
+    re-validated against RUN_OUTPUT_PATH_RE as belt-and-suspenders before use."""
+    if not isinstance(run_token, str) or not RUN_TOKEN_RE.match(run_token):
+        raise DetonationRejected(
+            f"run token has disallowed characters (expected [A-Za-z0-9_-]+): {run_token!r}"
+        )
+    path = f"/tmp/cr-run-{run_token}.json"
+    if not RUN_OUTPUT_PATH_RE.match(path):
+        # Unreachable given the token check, but never emit an unvalidated path.
+        raise DetonationRejected(f"computed run-output path is not well-formed: {path!r}")
+    return path
 
 
 def _validate_runtime(runtime: str) -> None:
@@ -92,38 +119,90 @@ def _validate_target(target: str, allowed_targets: set[str]) -> None:
         )
 
 
-def build_detonate_command(runtime: str, target: str, trap_ip: str) -> str:
+def build_detonate_command(runtime: str, target: str, trap_ip: str, run_token: str) -> str:
     """Build the EXACT fixed-grammar relay command. Separated out so tests can
-    assert the precise string. Inputs are assumed already validated; trap_ip is
-    re-checked here as defense in depth before it touches the command string."""
+    assert the precise string. Inputs are assumed already validated; trap_ip and
+    run_token are re-checked here as defense in depth before they touch the
+    command string.
+
+    HIGH-3: the run_token (CR_RUN_N) is supplied by the CONTROLLER and makes the
+    harness write its observation JSON to a controller-determined path
+    (/tmp/cr-run-<token>.json). The controller reads that exact path back with a
+    SEPARATE fixed `cat` — never by piping the harness's stdout into a shell."""
     if not TRAP_IP_RE.match(trap_ip or ""):
         raise DetonationRejected(f"trap_ip is not a valid 10.200.x address: {trap_ip!r}")
-    # NOTE: this is the ONLY command shape this module ever emits. runtime and
-    # target are constrained to a tiny safe-character grammar above, so no
-    # quoting tricks are possible; we still keep the form rigid and flat.
+    if not isinstance(run_token, str) or not RUN_TOKEN_RE.match(run_token):
+        raise DetonationRejected(
+            f"run token has disallowed characters (expected [A-Za-z0-9_-]+): {run_token!r}"
+        )
+    # NOTE: this is the ONLY command shape this module ever emits. runtime,
+    # target, and run_token are constrained to a tiny safe-character grammar
+    # above, so no quoting tricks are possible; we still keep the form rigid+flat.
     return (
-        f"CR_TRAP_IP={trap_ip} sudo bash {REMOTE_HARNESS} "
+        f"CR_TRAP_IP={trap_ip} CR_RUN_N={run_token} sudo bash {REMOTE_HARNESS} "
         f"run-target {runtime} {target}"
     )
+
+
+# MED-2: an observation object is only ACCEPTED if it carries a recognizable
+# observation schema. A hostile VM can append a tiny zeroed object (e.g.
+# {"high_value_cred_read_succeeded": 0}) AFTER the real report to make the LAST
+# JSON object look "clean" and suppress findings. We therefore require one of
+# these markers and scan for the LAST object that actually validates.
+_SCHEMA_MARKER_FIELDS = ("schema", "aggregate_observations", "observations")
+# Known aggregate keys: if a bare aggregate dict (no wrapper) is surfaced, it
+# must look like a real aggregate_observations record, not an arbitrary object.
+# These mirror the fields the observer/harness merge emits.
+_KNOWN_AGGREGATE_KEYS = frozenset({
+    "high_value_cred_read_succeeded", "high_value_cred_read_count",
+    "run_sinkholed_attempt_count", "sinkholed_attempt_count", "high_cpu",
+    "files_dropped_count", "exec_count",
+    "network_attempt_count", "internet_attempt_count", "network_blocked_count",
+    "credential_read_count", "outbound_internet_attempted",
+})
+
+
+def _is_valid_observation(obj: dict) -> bool:
+    """True iff `obj` looks like a genuine harness/observer observation report.
+
+    Accepts an object that carries an explicit schema marker
+    (`schema` / `aggregate_observations` / `observations`), OR a bare aggregate
+    dict that contains at least one KNOWN aggregate key. A crafted zeroed object
+    like {"high_value_cred_read_succeeded": 0} alone would pass the bare-aggregate
+    gate (it is a known key) — but it can only ever DOWNGRADE nothing: it has no
+    truthy facts, and because we scan for the last object that ALSO carries a
+    schema marker first, the real wrapped report (which always has `schema` and
+    `aggregate_observations`) is preferred over a bare zeroed tail object."""
+    if not isinstance(obj, dict):
+        return False
+    if any(k in obj for k in _SCHEMA_MARKER_FIELDS):
+        return True
+    return bool(_KNOWN_AGGREGATE_KEYS & set(obj.keys()))
+
+
+def _has_schema_marker(obj: dict) -> bool:
+    """Stricter check: the object carries an EXPLICIT report wrapper marker."""
+    return isinstance(obj, dict) and any(k in obj for k in _SCHEMA_MARKER_FIELDS)
 
 
 def _parse_observation(raw: str) -> dict:
     """Parse the harness output into the per-target observation facts.
 
-    The harness prints the path of the per-target JSON as its LAST stdout line;
-    when run over SSH the caller typically `cat`s that file so the JSON itself is
-    in the output. We accept either: a JSON document anywhere in the text, else
-    fall back to recording the raw tail so a parse failure is never silent.
-    Returns a dict that always carries `aggregate_observations`.
+    The controller reads back a fixed `cat <validated-path>`, so `raw` is the
+    observation JSON file content. We accept the LAST JSON object that passes
+    schema validation (MED-2) — never just the last balanced object, so a hostile
+    VM cannot append a zeroed "clean" object to suppress real findings. If nothing
+    validates, we record a non-silent parse error (treated as not-verified, never
+    clean). Returns a dict that always carries `aggregate_observations`.
     """
     text = raw or ""
-    # Find the last JSON object in the output (the observation report).
+    # Find the last SCHEMA-VALID JSON object in the output (the real report).
     obj = _extract_last_json_object(text)
     if obj is None:
-        # No JSON surfaced — record an honest, non-silent failure marker. The
+        # No valid observation surfaced — honest, non-silent failure marker. The
         # agent treats a missing observation as "not verified", never as clean.
         return {
-            "parse_error": "no JSON observation found in harness output",
+            "parse_error": "no schema-valid JSON observation found in harness output",
             "raw_tail": text[-500:],
             "aggregate_observations": {},
         }
@@ -139,10 +218,21 @@ def _parse_observation(raw: str) -> dict:
 
 
 def _extract_last_json_object(text: str) -> dict | None:
-    """Best-effort: return the LAST balanced top-level JSON object in `text`.
-    Pure string scanning — never evaluates anything. Returns None if none parse.
+    """Return the LAST balanced top-level JSON object in `text` that passes
+    observation schema validation (MED-2). Pure string scanning — never evaluates
+    anything.
+
+    Two-tier preference (closes the suppression hole):
+      1. Prefer the last object that carries an EXPLICIT report wrapper marker
+         (`schema` / `aggregate_observations` / `observations`). The genuine
+         merged report always has these, so a bare zeroed tail object cannot
+         displace it.
+      2. If none carry a wrapper marker, fall back to the last object that is at
+         least a recognizable bare aggregate (a known aggregate key present).
+    Returns None if no candidate validates at either tier.
     """
-    candidates: list[dict] = []
+    schema_marked: list[dict] = []
+    bare_valid: list[dict] = []
     depth = 0
     start = -1
     in_str = False
@@ -169,12 +259,17 @@ def _extract_last_json_object(text: str) -> dict | None:
                     chunk = text[start : i + 1]
                     try:
                         parsed = json.loads(chunk)
-                        if isinstance(parsed, dict):
-                            candidates.append(parsed)
                     except ValueError:
-                        pass
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        if _has_schema_marker(parsed):
+                            schema_marked.append(parsed)
+                        elif _is_valid_observation(parsed):
+                            bare_valid.append(parsed)
                     start = -1
-    return candidates[-1] if candidates else None
+    if schema_marked:
+        return schema_marked[-1]
+    return bare_valid[-1] if bare_valid else None
 
 
 def detonate(
@@ -184,6 +279,7 @@ def detonate(
     ssh_exec: Callable[[str], str],
     trap_ip: str,
     allowed_targets: set[str],
+    run_token: Optional[str] = None,
 ) -> dict:
     """Detonate ONE repo file via the fixed-grammar harness relay.
 
@@ -196,22 +292,41 @@ def detonate(
       trap_ip: the sinkhole trap private IP (10.200.x.y), validated.
       allowed_targets: the set of repo-relative paths the knowledge graph
         indexed — the agent may detonate ONLY these.
+      run_token: a unique CONTROLLER-chosen token (CR_RUN_N) that names the
+        observation file. If None, a fresh random token is generated here so the
+        output path is ALWAYS controller-determined, never VM-determined.
 
     Returns:
       The per-target observation dict, always carrying `aggregate_observations`.
 
     Raises:
-      DetonationRejected: if runtime/target/trap_ip violate the fixed grammar.
-        The relay is NEVER invoked on a rejected request.
+      DetonationRejected: if runtime/target/trap_ip/run_token violate the fixed
+        grammar. The relay is NEVER invoked on a rejected request.
+
+    HIGH-3 — the readback is a SEPARATE fixed `cat <controller-validated-path>`.
+    We do NOT pipe the harness's stdout into any shell (no `tail`/`xargs`), so a
+    hostile harness "last line" (`;curl evil`, spaces, metacharacters) can never
+    word-split into a command on the controller. The path we `cat` is computed
+    HERE from our own run_token and re-validated against RUN_OUTPUT_PATH_RE; we
+    ignore whatever path the VM prints.
     """
     _validate_runtime(runtime)
     _validate_target(target, allowed_targets)
-    command = build_detonate_command(runtime, target, trap_ip)
-    # Relay EXACTLY the fixed command. To get the observation JSON back over SSH
-    # we append a read of the per-target file the harness names on its last line;
-    # the read is a flat `cat` of a fixed-prefix path, no untrusted interpolation.
-    relay = f"{command} | tail -1 | xargs -r cat"
-    raw = ssh_exec(relay)
+    # Controller-chosen, validated run token => controller-determined output path.
+    if run_token is None:
+        run_token = secrets.token_hex(16)
+    command = build_detonate_command(runtime, target, trap_ip, run_token)
+    output_path = _run_output_path(run_token)  # validated /tmp/cr-run-<token>.json
+
+    # Step 1: relay EXACTLY the fixed detonation command. We deliberately discard
+    # its stdout for control-flow purposes (the harness ALSO echoes the path on
+    # its last line, but we never trust or parse VM-printed paths).
+    ssh_exec(command)
+
+    # Step 2: read the observation JSON back with a SEPARATE, fixed `cat` of the
+    # controller-computed path. output_path matches RUN_OUTPUT_PATH_RE, so it is
+    # a flat /tmp/cr-run-<safe-token>.json with no shell metacharacters at all.
+    raw = ssh_exec(f"cat {output_path}")
     facts = _parse_observation(raw)
-    facts["_detonated"] = {"runtime": runtime, "target": target}
+    facts["_detonated"] = {"runtime": runtime, "target": target, "run_token": run_token}
     return facts
