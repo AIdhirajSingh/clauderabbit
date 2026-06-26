@@ -55,8 +55,12 @@ Foundation -> structure. De-fake first (Phase 1) so polish isn't wasted; then th
 - Demoted bare `new Function('…')` from the binary `obfuscation` signal to a REGION-ONLY flag (model still inspects; no auto-escalate / −42). Real obfuscation (eval-of-decoded, 120+ base64, atob+eval, hex blobs) unchanged. +5 Deno tests (16/16 pass). **Proven live:** morgan@1.9.1 41/High-risk/escalated → 93/Trusted/cleared.
 - On review return: address findings, U3 closes. (Security reviewer asked specifically whether this opens a `new Function` bypass.)
 
-### U4 — Phase 2 agentic OpenCode sandbox (THE MOAT, heaviest) — RESEARCH started
-- Reading existing `sandbox/` harness (observer/sinkhole form) to ground the agentic-upgrade plan before building. Plan will be cold-audited before any build.
+### U3 review — DONE → fixes `664d643` → U3 CLOSED. Security review 68/100 (0 crit/high; 2 high + 2 med). H1 (real regression: obfuscated 60-119 char literal lost hard signal) + H2 (Function(atob)/var-arg gaps) closed: added Function-of-decoded hard pattern, lowered base64 threshold 120→60, added var-arg soft region. 19/19 tests. morgan@1.10.0 re-proven 93/Trusted live.
+
+### U4 — Phase 2 agentic OpenCode sandbox (THE MOAT, heaviest) — RESEARCH/PLAN
+- Existing sandbox (3210 LoC, live-proven): golden image, deny-all VPC, trap host (dnsmasq+sinkd+squid+tcpdump), in-VM strace observer, off-VM Gemini payload analysis, verdict.py, forensics.py, orchestrate.sh, dead-man's-switch cleanup. Form = monitored-sinkhole observer.
+- **KEY ARCHITECTURE INSIGHT:** detonation VM has NO external IP / NO SA / deny-all egress → Gemini-driven agents CANNOT run inside it without breaking "no real packet leaves". Correct design: **AI brain OUTSIDE the blast radius** (controller/trap with egress) driving OpenCode that reaches INTO the sealed VM via intra-VPC SSH to explore+detonate. This also IS the prompt's "external monitor sees the blast without being blasted" + survivable inside/outside split.
+- Researching current OpenCode (install, Gemini-via-Vertex provider config, headless/programmatic run, custom exec) before writing the plan → cold-audit → build → one live GCP proof on a synthetic fixture.
 
 ### Remaining units (dependency order)
 - U3 Phase 7 caching: tab-switch-loses-report-view bug (React state persistence) + multi-level data cache + prompt caching on both Gemini tiers (`_shared/vertex.ts`).
