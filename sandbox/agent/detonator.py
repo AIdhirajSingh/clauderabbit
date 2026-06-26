@@ -139,8 +139,13 @@ def build_detonate_command(runtime: str, target: str, trap_ip: str, run_token: s
     # NOTE: this is the ONLY command shape this module ever emits. runtime,
     # target, and run_token are constrained to a tiny safe-character grammar
     # above, so no quoting tricks are possible; we still keep the form rigid+flat.
+    # The env vars go AFTER `sudo` (sudo passes VAR=val args into the command's
+    # environment but STRIPS a caller-set environment) — a `CR_TRAP_IP=x sudo …`
+    # prefix is dropped by sudo, which made run-target refuse for lack of a trap IP
+    # (the live proof-3 failure). This mirrors orchestrate's working `sudo
+    # CR_TRAP_IP=$TRAP_IP bash run-harness.sh run`.
     return (
-        f"CR_TRAP_IP={trap_ip} CR_RUN_N={run_token} sudo bash {REMOTE_HARNESS} "
+        f"sudo CR_TRAP_IP={trap_ip} CR_RUN_N={run_token} bash {REMOTE_HARNESS} "
         f"run-target {runtime} {target}"
     )
 
