@@ -43,7 +43,7 @@ export function LoginScreen() {
             Keep scanning.
           </h1>
           <p style={{ fontSize: 15, color: "var(--t3)", margin: "0 0 36px", textAlign: "center", lineHeight: 1.55 }}>
-            Your first scan was free. Sign in to continue, keep your history, and raise your daily limits.
+            Your first scan was free. Sign in to keep your scan history and help grow the public database of vetted repositories.
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
@@ -148,7 +148,7 @@ export function LoginScreen() {
           </div>
 
           <p style={{ fontSize: 11.5, color: "var(--t5)", textAlign: "center", margin: "26px 0 0", lineHeight: 1.55 }}>
-            Sign-in tracks daily limits only: 3 standard scans and 1 sandbox run per day.
+            Free and open source. Every scan you run grows a public, permanent database of vetted repositories.
           </p>
         </div>
       </div>

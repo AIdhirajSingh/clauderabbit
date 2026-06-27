@@ -273,36 +273,6 @@ async function verifiedUserId(req: Request): Promise<string | null> {
   }
 }
 
-/**
- * Enforce the daily scan limit atomically via the SECURITY DEFINER RPC. Keys on
- * the user id when signed in, else the (hashed) device id. Returns true when the
- * scan is allowed (and the counter was incremented), false when the limit is
- * reached. With neither identity present (no token, no device id) there is
- * nothing to meter, so it allows.
- */
-async function enforceDailyLimit(
-  db: SupabaseClient,
-  userId: string | null,
-  deviceId: string | null,
-  scanType: "stage1" | "dynamic",
-): Promise<boolean> {
-  if (!userId && !deviceId) return true;
-  const { data, error } = await db.rpc("check_and_increment_scan_limit", {
-    p_user_id: userId,
-    p_device_id: deviceId,
-    p_scan_type: scanType,
-  });
-  if (error) {
-    console.error("limit check failed:", error.message);
-    // Fail OPEN on an unexpected RPC error: a metering outage must not take the
-    // whole scanner down. The next successful call re-enforces the limit.
-    return true;
-  }
-  // The RPC returns a single row { allowed, remaining }.
-  const row = Array.isArray(data) ? data[0] : data;
-  return (row as { allowed?: boolean } | null)?.allowed === true;
-}
-
 // --- Helpers -----------------------------------------------------------------
 
 function clamp(n: unknown, min: number, max: number, fallback: number): number {
@@ -744,19 +714,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Non-fatal: fall through to a fresh scan.
   }
 
-  // 2b. Daily limit — STAGE-1 gate, BEFORE any model spend. Every fresh scan
-  // begins on the fast (stage-1) path, so the stage-1 budget (3/day) is checked
-  // here, before the expensive read-model call, so a limit-reached caller cannot
-  // burn model budget. The cache path returned above and never reaches this, so
-  // a cached view consumes no limit. A scan that later escalates is additionally
-  // metered against the dynamic budget at step 7b.
-  const stage1Allowed = await enforceDailyLimit(db, userId, deviceId, "stage1");
-  if (!stage1Allowed) {
-    return jsonResponse(
-      { error: "Daily limit reached: 3 standard scans per day. Try again tomorrow." },
-      429,
-    );
-  }
+  // 2b. Scans are UNLIMITED (BUG-9, settled): no daily cap, no gating, of any
+  // type — the GCP credit covers it and the accumulating vetted-repo database is
+  // the point. The previous stage-1/dynamic daily limits are removed; a scan is
+  // never blocked by a quota.
 
   // 3. Static scan → flagged regions (code signals only).
   const scan = staticScan(files);
@@ -838,19 +799,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const scoreBreakdown = scoreResult.breakdown;
   const verdict = enforceVerdictRails(model.verdict, score);
 
-  // 7b. Daily limit — DYNAMIC gate. The stage-1 budget was already consumed at
-  // step 2b. Only when the scan escalates to the deep (dynamic sandbox) path is
-  // the separate dynamic budget (1/day) additionally metered, before the deep
-  // result is persisted. A non-escalating fast scan never reaches this check.
-  if (deep) {
-    const dynamicAllowed = await enforceDailyLimit(db, userId, deviceId, "dynamic");
-    if (!dynamicAllowed) {
-      return jsonResponse(
-        { error: "Daily limit reached: 1 sandbox (dynamic) scan per day. Try again tomorrow." },
-        429,
-      );
-    }
-  }
+  // 7b. (Dynamic daily limit removed — scans are unlimited; see step 2b.)
 
   // Build logs from the model, then append the computed-score citation and the
   // escalation decision. We never fabricate a dynamic run — an escalation only
