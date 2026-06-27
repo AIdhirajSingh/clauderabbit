@@ -39,6 +39,7 @@ import {
 } from "@/lib/report-view";
 import { parseRepoInput } from "@/lib/parse-repo";
 import { runScan } from "@/lib/scan";
+import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
   fetchBoardData,
@@ -90,6 +91,11 @@ const SUGGESTION_PICK_MS = 140;
  * restore it so the user lands ready to scan what they came for.
  */
 const PENDING_REPO_KEY = "cr-pending-repo";
+
+// Public Supabase config (inlined by Next at build). Used for the anonymous
+// on-demand report read (reports are public; see fetchLatestReportRest).
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 export type Screen =
   | "home"
@@ -154,6 +160,19 @@ interface State {
   boardPage: number;
   /** True while a "load more" page request is in flight. */
   boardMoreLoading: boolean;
+  /**
+   * The report id (owner/repo) currently being fetched on demand because the
+   * report screen was opened for a repo not yet in `liveReports` (e.g. a
+   * danger-board click, a deep-link, or a rehydrated session). Drives the
+   * report-screen loading state so it NEVER renders blank.
+   */
+  reportLoadingId: string | null;
+  /**
+   * A report id whose on-demand fetch failed (no row, or client unavailable).
+   * Acts as a negative cache so the screen shows a graceful "couldn't load"
+   * card instead of blanking, and does not auto-retry on every effect run.
+   */
+  reportErrorId: string | null;
 }
 
 const initialState: State = {
@@ -194,6 +213,8 @@ const initialState: State = {
   boardLoading: false,
   boardPage: 0,
   boardMoreLoading: false,
+  reportLoadingId: null,
+  reportErrorId: null,
 };
 
 type Action = { type: "PATCH"; patch: Partial<State> };
@@ -470,6 +491,10 @@ export interface AppApi {
   // Selectors (computed view values, mirroring renderVals()).
   activeRepo: RepoView | null;
   activeRepoClean: boolean;
+  /** True while the active report is being fetched on demand (loading state). */
+  activeReportLoading: boolean;
+  /** True when the active report could not be loaded (graceful error state). */
+  activeReportError: boolean;
   procChapters: ProcChapterView[];
   procName: string;
   procPhase: string;
@@ -518,6 +543,8 @@ export interface AppApi {
   failProcessing: () => void;
   retryScan: () => void;
   openReport: (id: string, from?: Screen) => void;
+  /** Load the active report on demand when it isn't in the store (never blank). */
+  ensureActiveReport: (id: string | null) => void;
   backFromReport: () => void;
   openLogs: () => void;
   closeLogs: () => void;
@@ -617,6 +644,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const liveScanToken = useRef(0);
   // The pending live-scan target (owner/repo + ref) for retry.
   const liveScanTarget = useRef<{ owner: string; repo: string; ref?: string } | null>(null);
+  // The report id whose on-demand fetch is in flight. A ref (set synchronously
+  // before the await) dedupes concurrent ensureActiveReport calls — including a
+  // React StrictMode double-mount — without waiting for an async reducer commit.
+  const reportFetchRef = useRef<string | null>(null);
 
   // The browser Supabase client — a stable single instance (useRef, NOT useMemo)
   // so we never spawn multiple GoTrueClient instances fighting over the auth
@@ -1196,15 +1227,98 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const openReport = useCallback(
     (id: string, from?: Screen) => {
-      patch({ activeRepoId: id, sourceScreen: from ?? stateRef.current.screen, screen: "report", showLogs: false });
+      // Clear any stale on-demand fetch flags from a previous report so a new
+      // open starts clean (never inherit another id's loading/error state).
+      // ensureActiveReport (called by ReportScreen) loads the report when it
+      // isn't already in liveReports.
+      patch({
+        activeRepoId: id,
+        sourceScreen: from ?? stateRef.current.screen,
+        screen: "report",
+        showLogs: false,
+        reportLoadingId: null,
+        reportErrorId: null,
+      });
     },
     [patch],
   );
 
+  /**
+   * Make sure the active report screen has a report to render — the guard that
+   * makes the report screen NEVER blank. When `screen === "report"` for an id
+   * not already in `liveReports`/REPOS (a danger-board click, a deep-link, or a
+   * rehydrated session), fetch the latest report for that owner/repo and store
+   * it. ReportScreen shows a loading state meanwhile and a graceful "couldn't
+   * load" card on failure — it never returns null. Decision logic is the pure,
+   * unit-tested `decideReportFetch`; the in-flight ref dedupes concurrent calls
+   * (StrictMode-safe) and the resolve is guarded by the live activeRepoId so a
+   * stale fetch for a since-navigated id is ignored.
+   */
+  const ensureActiveReport = useCallback((idArg: string | null) => {
+    const cur = stateRef.current;
+    // Use the id passed by the caller (ReportScreen), NOT stateRef: stateRef is
+    // synced in an effect, so on the report screen's own mount effect (which runs
+    // child-before-parent) it can still hold the PREVIOUS activeRepoId. Reading a
+    // stale id here made the fetch never fire → the screen stuck on "Loading".
+    const id = idArg;
+    const decision = decideReportFetch(
+      id,
+      !!reportById(id, cur.liveReports),
+      reportFetchRef.current,
+      cur.reportErrorId,
+    );
+    switch (decision.kind) {
+      case "loaded":
+      case "in-flight":
+      case "cached-error":
+        return;
+      case "bad-id":
+        if (id) patch({ reportErrorId: id, reportLoadingId: null });
+        return;
+      case "fetch": {
+        const fetchId = id as string;
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          // Public env missing — graceful error, never a stuck spinner.
+          patch({ reportErrorId: fetchId, reportLoadingId: null });
+          return;
+        }
+        reportFetchRef.current = fetchId;
+        patch({ reportLoadingId: fetchId, reportErrorId: null });
+        void fetchLatestReportRest(SUPABASE_URL, SUPABASE_ANON_KEY, decision.owner, decision.repo)
+          .then((report) => {
+            if (reportFetchRef.current === fetchId) reportFetchRef.current = null;
+            // Ignore a resolve for a report the user has navigated away from.
+            if (stateRef.current.activeRepoId !== fetchId) return;
+            if (report) {
+              patch({
+                liveReports: { ...stateRef.current.liveReports, [fetchId]: report },
+                reportLoadingId: null,
+                reportErrorId: null,
+              });
+            } else {
+              patch({ reportLoadingId: null, reportErrorId: fetchId });
+            }
+          })
+          .catch(() => {
+            if (reportFetchRef.current === fetchId) reportFetchRef.current = null;
+            if (stateRef.current.activeRepoId !== fetchId) return;
+            patch({ reportLoadingId: null, reportErrorId: fetchId });
+          });
+        return;
+      }
+    }
+  }, [patch]);
+
   const goHome = useCallback(() => patch({ screen: "home", showLogs: false }), [patch]);
   const goLogin = useCallback(() => patch({ screen: "login" }), [patch]);
   const backFromReport = useCallback(
-    () => patch({ screen: stateRef.current.sourceScreen || "home", showLogs: false }),
+    () =>
+      patch({
+        screen: stateRef.current.sourceScreen || "home",
+        showLogs: false,
+        reportLoadingId: null,
+        reportErrorId: null,
+      }),
     [patch],
   );
   const openLogs = useCallback(() => patch({ showLogs: true }), [patch]);
@@ -1618,6 +1732,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       state,
       activeRepo: active,
       activeRepoClean,
+      activeReportLoading:
+        !!state.activeRepoId && state.reportLoadingId === state.activeRepoId,
+      activeReportError:
+        !!state.activeRepoId && state.reportErrorId === state.activeRepoId,
       procChapters,
       procName,
       procPhase,
@@ -1658,6 +1776,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       failProcessing,
       retryScan,
       openReport,
+      ensureActiveReport,
       backFromReport,
       openLogs,
       closeLogs,
@@ -1713,6 +1832,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       failProcessing,
       retryScan,
       openReport,
+      ensureActiveReport,
       backFromReport,
       openLogs,
       closeLogs,
