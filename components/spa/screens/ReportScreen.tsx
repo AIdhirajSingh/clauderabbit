@@ -13,15 +13,35 @@
  * that separation lives in `ReportBody`.
  */
 
+import { useEffect, type ReactNode } from "react";
 import { useApp } from "../state";
 import styles from "../spa.module.css";
-import { BackChevron } from "../components/glyphs";
+import { BackChevron, RabbitMark } from "../components/glyphs";
 import { ReportBody } from "../components/ReportBody";
 
 export function ReportScreen() {
   const app = useApp();
   const r = app.activeRepo;
-  if (!r) return null;
+  const { ensureActiveReport } = app;
+  const activeId = app.state.activeRepoId;
+
+  // The guard that makes this screen NEVER blank: when there is no report to
+  // show (a danger-board click, a deep-link, or a rehydrated session for a repo
+  // not yet in the store), load it on demand. The fresh `activeId` is passed
+  // explicitly — `ensureActiveReport` must not read it from the (effect-synced,
+  // possibly-stale-on-mount) state ref. Skips once a report is present.
+  useEffect(() => {
+    if (!r) void ensureActiveReport(activeId);
+  }, [ensureActiveReport, activeId, r]);
+
+  // No report resolved yet: render a real loading or graceful error state —
+  // never `return null` (which would blank the whole app, BUG-16).
+  if (!r) {
+    if (app.activeReportError) {
+      return <ReportUnavailable slug={activeId} onBack={app.backFromReport} />;
+    }
+    return <ReportLoading slug={activeId} />;
+  }
 
   const controls = (
     <div
@@ -170,5 +190,114 @@ export function ReportScreen() {
       logsCta={logsCta}
       footer={footer}
     />
+  );
+}
+
+/** Shared centered shell for the on-demand loading / error states. */
+function CenteredState({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        position: "relative",
+        animation: "screenIn .5s var(--ease) both",
+      }}
+    >
+      <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", maxWidth: 480 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Loading state shown while a report opened by id (danger-board click, deep-link,
+ * rehydrated session) is fetched on demand. Replaces the old `return null`, so
+ * the report screen is never blank.
+ */
+function ReportLoading({ slug }: { slug: string | null }) {
+  return (
+    <CenteredState>
+      <div style={{ animation: "spinSlow 1.4s linear infinite", lineHeight: 0 }}>
+        <RabbitMark size={34} stroke="1.6" />
+      </div>
+      <h1 className="serif" style={{ fontSize: 26, color: "var(--t1)", margin: "20px 0 8px", letterSpacing: "-0.01em" }}>
+        Loading this report…
+      </h1>
+      {slug && (
+        <p className="tnum" style={{ fontSize: 14, color: "var(--t4)", margin: 0 }}>
+          {slug}
+        </p>
+      )}
+    </CenteredState>
+  );
+}
+
+/**
+ * Graceful "couldn't load" state — a temporary connection issue, never a
+ * verdict. Offers a way back and a link to the public report page. Never blank.
+ */
+function ReportUnavailable({ slug, onBack }: { slug: string | null; onBack: () => void }) {
+  return (
+    <CenteredState>
+      <RabbitMark size={32} stroke="1.6" />
+      <h1 className="serif" style={{ fontSize: 28, color: "var(--t1)", margin: "20px 0 10px", letterSpacing: "-0.01em" }}>
+        We couldn&rsquo;t load this report
+      </h1>
+      {slug && (
+        <p className="tnum" style={{ fontSize: 14, color: "var(--t3)", margin: "0 0 12px" }}>
+          {slug}
+        </p>
+      )}
+      <p style={{ fontSize: 15, color: "var(--t4)", lineHeight: 1.6, margin: "0 0 26px", maxWidth: 420 }}>
+        This is usually a temporary connection problem, not a verdict on the
+        repository. Go back and try again.
+      </p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+        <button
+          onClick={onBack}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            background: "var(--ink)",
+            color: "var(--ink-fg)",
+            border: "none",
+            fontSize: 14,
+            fontWeight: 600,
+            padding: "12px 22px",
+            borderRadius: 12,
+            cursor: "pointer",
+            boxShadow: "inset 0 1px 0 var(--inkhi)",
+          }}
+        >
+          Go back
+        </button>
+        {slug && (
+          <a
+            href={`/${slug}`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              background: "var(--s2)",
+              color: "var(--t1)",
+              border: "1px solid var(--line2)",
+              fontSize: 14,
+              fontWeight: 500,
+              padding: "12px 22px",
+              borderRadius: 12,
+              textDecoration: "none",
+            }}
+          >
+            Open report page →
+          </a>
+        )}
+      </div>
+    </CenteredState>
   );
 }
