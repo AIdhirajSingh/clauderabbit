@@ -159,7 +159,10 @@ function finalNote(score: number, ranSandbox: boolean): string {
 function notVerified(ranSandbox: boolean): string[] {
   const base = [
     "Every conditional and time-triggered branch",
-    "Behavior under real credentials (none were present in the sandbox)",
+    // Don't imply a sandbox existed when none ran (review MEDIUM).
+    ranSandbox
+      ? "Behavior under real credentials (none were present in the sandbox)"
+      : "Behavior under real credentials (no sandbox was run on this pass)",
   ];
   if (!ranSandbox) {
     base.unshift(

@@ -61,3 +61,21 @@ test("a safe static scan reads as a static-read clearance, not an executed clean
   assert.equal(v._ranSandbox, false);
   assert.ok(/static read|not executed in a sandbox/i.test(v._finalNote), v._finalNote);
 });
+
+test("a report WITH a forensic record → _ranSandbox true, runtime language allowed", () => {
+  // A present forensic record is the honest 'the sandbox ran' signal.
+  const v = buildReportView(
+    makeReport({
+      score: 25,
+      deep: true,
+      forensics_json: { schema: "claude-rabbit/forensic-record@1" },
+    }),
+  );
+  assert.equal(v._ranSandbox, true, "a forensic record means it ran");
+  assert.ok(/when we ran it/i.test(v._finalNote), "real run earns runtime language: " + v._finalNote);
+  // And the 'not executed in a sandbox' caveat must NOT be added when it ran.
+  assert.ok(
+    !v._notVerified.some((s) => /not executed in a sandbox|no sandbox was run/i.test(s)),
+    "a real run must not claim it wasn't run: " + JSON.stringify(v._notVerified),
+  );
+});
