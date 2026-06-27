@@ -104,9 +104,17 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
                   Cached · instant
                 </span>
               )}
-              {r.deep && (
+              {/* The scan-path badge is keyed on whether the sandbox ACTUALLY ran
+                  (a forensic record exists), never the bare `deep` flag — so a
+                  queued-but-not-executed escalation never wears a "Sandbox run"
+                  badge it didn't earn (BUG-2, the canary). */}
+              {r._ranSandbox ? (
                 <span style={{ fontSize: 11.5, color: "var(--t2)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
                   Sandbox run
+                </span>
+              ) : (
+                <span style={{ fontSize: 11.5, color: "var(--t4)", padding: "5px 11px", border: "1px solid var(--line2)", borderRadius: 100 }}>
+                  Static read
                 </span>
               )}
             </div>

@@ -120,28 +120,50 @@ export interface RepoView extends Omit<Report, "packages" | "risky" | "logs"> {
   logs: LogChapterView[];
   /** The enriched forensic record, present only for escalated/deep repos. */
   _forensics?: ForensicsView;
+  /**
+   * The HONEST "the sandbox actually ran" signal — true ONLY when a forensic
+   * record is present. Drives the runtime-vs-static verdict language and the
+   * Sandbox-run-vs-Static-read badge. Never the bare `deep`/`scan_path` flag,
+   * which only records that escalation was DECIDED, not that it executed.
+   */
+  _ranSandbox: boolean;
 }
 
 // ───────────── pure derivation helpers (ported from the prototype) ─────────────
 
-function finalNote(score: number): string {
+/**
+ * The final-verdict note. `ranSandbox` is the HONEST signal — true ONLY when the
+ * sandbox actually ran and produced a forensic record. When it is false the note
+ * speaks strictly in static terms: it never claims "we observed [runtime]" or
+ * "blocked outbound attempts" for a scan that was never executed (BUG-2, the
+ * canary). The runtime-claim language is reserved for scans that genuinely ran.
+ */
+function finalNote(score: number, ranSandbox: boolean): string {
   if (score >= 90)
-    return "No malicious behavior observed in our tests. The code read clean and reputation is strong. We did not exhaustively execute every branch, and a clean read is not a guarantee.";
+    return ranSandbox
+      ? "No malicious behavior observed when we ran it, and the code read clean with strong reputation. We did not exhaustively execute every branch, and a clean run is not a guarantee."
+      : "No malicious behavior in our static read, and reputation is strong. Runtime was not executed in a sandbox on this pass, so this is a static-read clearance, not a guarantee.";
   if (score >= 80)
-    return "No malicious behavior observed in our tests. The caveats above are worth noting, and the owner is not yet long-established, but nothing here points to harm.";
+    return ranSandbox
+      ? "No malicious behavior observed when we ran it. The caveats above are worth noting and the owner is not yet long-established, but nothing here points to harm."
+      : "No malicious behavior in our static read. The caveats above are worth noting and the owner is not yet long-established. Runtime was not executed in a sandbox on this pass.";
   if (score >= 60)
-    return "We observed undisclosed install-time behavior. This is not confirmed malicious, but it is more than this tool needs. Run it only inside a sandbox or throwaway environment.";
-  return "We observed active credential access or network behavior consistent with malware. Do not run this outside a fully disposable environment. The blocked outbound attempts are themselves the detection signal.";
+    return ranSandbox
+      ? "We observed undisclosed install-time behavior when we ran it. This is not confirmed malicious, but it is more than this tool needs. Run it only inside a sandbox or throwaway environment."
+      : "Static analysis flagged undisclosed install-time behavior. This is not confirmed malicious, but it is more than this tool needs, and runtime was not executed in a sandbox on this pass. Run it only inside a sandbox or throwaway environment.";
+  return ranSandbox
+    ? "We observed active credential access or network behavior consistent with malware when we ran it. Do not run this outside a fully disposable environment — the blocked outbound attempts are themselves the detection signal."
+    : "Static analysis flagged behavior consistent with malware — install-time network/shell execution, credential access, or obfuscation. Runtime was not executed in a sandbox on this pass, so this is a static-read warning, not an observed detonation. Treat it as dangerous and run it only inside a fully disposable environment.";
 }
 
-function notVerified(r: Pick<Report, "deep">): string[] {
+function notVerified(ranSandbox: boolean): string[] {
   const base = [
     "Every conditional and time-triggered branch",
     "Behavior under real credentials (none were present in the sandbox)",
   ];
-  if (!r.deep) {
+  if (!ranSandbox) {
     base.unshift(
-      "Full runtime behavior (this repo did not escalate to a sandbox run)",
+      "Full runtime behavior (this repo was not executed in a sandbox on this pass)",
     );
   }
   return base;
@@ -367,18 +389,22 @@ export function enforceVerdict(verdict: string, score: number): string {
 export function buildReportView(r: Report): RepoView {
   const verdict = enforceVerdict(r.verdict, r.score);
   const forensicsView = buildForensicsView(r.forensics);
+  // The honest signal: the sandbox ran iff it produced a forensic record. The
+  // `deep`/`scan_path` flags only record that escalation was decided.
+  const ranSandbox = !!forensicsView;
   return {
     ...r,
     verdict,
     ...(forensicsView ? { _forensics: forensicsView } : {}),
+    _ranSandbox: ranSandbox,
     _color: bandColor(r.score),
     _glow: bandGlow(r.score),
     _tint: bandTint(r.score),
     _band: bandLabel(r.score),
     _ring: RING_CIRC * (1 - r.score / 100),
     _hasRisky: r.risky.length > 0,
-    _finalNote: finalNote(r.score),
-    _notVerified: notVerified(r),
+    _finalNote: finalNote(r.score, ranSandbox),
+    _notVerified: notVerified(ranSandbox),
     _repBar: r.reputation.sentScore,
     _ownerInitial: (r.ownerHistory.name || "?").slice(0, 1).toUpperCase(),
     _ageColor: r.ownerHistory.established ? "var(--t1)" : "var(--amber)",
