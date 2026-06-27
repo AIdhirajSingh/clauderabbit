@@ -96,6 +96,19 @@ export async function fetchLatestReportRest(
   }
 }
 
+/**
+ * True when `id` is a clean two-segment "owner/repo" slug (both parts non-empty,
+ * exactly one "/"). The single source of truth for "is this a safe report id" —
+ * used to gate both the on-demand fetch and any place the id is interpolated
+ * into a URL (so a malformed id like "//evil.com/x" can never become a
+ * protocol-relative link).
+ */
+export function isValidSlug(id: string | null): id is string {
+  if (!id) return false;
+  const parts = id.split("/");
+  return parts.length === 2 && !!parts[0] && !!parts[1];
+}
+
 /** What `ensureActiveReport` should do for a given report id (pure decision). */
 export type ReportFetchDecision =
   | { kind: "loaded" } // already in the store — render it
@@ -122,6 +135,7 @@ export function decideReportFetch(
   if (inFlightId === id) return { kind: "in-flight" };
   if (erroredId === id) return { kind: "cached-error" };
   const parts = id.split("/");
+  // Same rule as isValidSlug; inline so TypeScript narrows owner/repo to string.
   if (parts.length !== 2 || !parts[0] || !parts[1]) return { kind: "bad-id" };
   return { kind: "fetch", owner: parts[0], repo: parts[1] };
 }

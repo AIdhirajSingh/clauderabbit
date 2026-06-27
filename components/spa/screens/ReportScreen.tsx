@@ -14,6 +14,7 @@
  */
 
 import { useEffect, type ReactNode } from "react";
+import { isValidSlug } from "@/lib/report-fetch";
 import { useApp } from "../state";
 import styles from "../spa.module.css";
 import { BackChevron, RabbitMark } from "../components/glyphs";
@@ -277,7 +278,7 @@ function ReportUnavailable({ slug, onBack }: { slug: string | null; onBack: () =
         >
           Go back
         </button>
-        {slug && (
+        {isValidSlug(slug) && (
           <a
             href={`/${slug}`}
             style={{

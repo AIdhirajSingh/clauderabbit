@@ -5,7 +5,23 @@ import {
   decideReportFetch,
   fetchLatestReport,
   fetchLatestReportRest,
+  isValidSlug,
 } from "../lib/report-fetch.ts";
+
+// ── isValidSlug — the single guard for "safe owner/repo id" (URL safety) ──
+
+test("isValidSlug: accepts clean two-segment slugs, rejects everything else", () => {
+  assert.equal(isValidSlug("AmrDab/clawdcursor"), true);
+  assert.equal(isValidSlug("sindre.sorhus/p-map_v2"), true);
+  assert.equal(isValidSlug(null), false);
+  assert.equal(isValidSlug(""), false);
+  assert.equal(isValidSlug("noslash"), false);
+  assert.equal(isValidSlug("a/"), false);
+  assert.equal(isValidSlug("/b"), false);
+  assert.equal(isValidSlug("a/b/c"), false);
+  // the open-redirect-class value the review flagged: must be rejected
+  assert.equal(isValidSlug("//evil.com/malware"), false);
+});
 
 // ── decideReportFetch — the pure fetch-or-not decision (BUG-16 never-blank) ──
 
