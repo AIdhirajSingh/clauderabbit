@@ -135,18 +135,18 @@ export function ProfileScreen() {
 
       <div style={{ border: "1px solid var(--line)", borderRadius: 18, padding: "20px 22px", marginBottom: 30, background: "var(--s1)" }}>
         <div style={{ fontSize: 11.5, color: "var(--t4)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 16 }}>
-          Today&apos;s limits
+          Your scans
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <span style={{ fontSize: 13.5, color: "var(--t2)" }}>Standard scans</span>
+          <span style={{ fontSize: 13.5, color: "var(--t2)" }}>Static scans</span>
           <span className="tnum" style={{ fontSize: 13.5, color: "var(--t1)", fontWeight: 500 }}>
-            {state.stage1Used} / 3
+            {state.stage1Used}
           </span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 13.5, color: "var(--t2)" }}>Sandbox runs</span>
           <span className="tnum" style={{ fontSize: 13.5, color: "var(--t1)", fontWeight: 500 }}>
-            {state.dynamicUsed} / 1
+            {state.dynamicUsed}
           </span>
         </div>
       </div>
