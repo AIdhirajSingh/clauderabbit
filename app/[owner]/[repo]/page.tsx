@@ -20,7 +20,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { buildReportView, logColor } from "@/lib/report-view";
-import { reportRowToReport, type ReportRow } from "@/lib/report-row";
+import { fetchLatestReport } from "@/lib/report-fetch";
 import { ReportBody } from "@/components/spa/components/ReportBody";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import type { Report } from "@/lib/types";
@@ -29,21 +29,19 @@ import type { Report } from "@/lib/types";
 export const revalidate = 600;
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
-const REPORT_SELECT =
-  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,forensics_json,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score)";
 
 interface RouteParams {
   params: Promise<{ owner: string; repo: string }>;
 }
 
 /**
- * Fetch the latest report for (owner, repo) — newest by created_at. Joins the
- * owners reputation row. Returns null when no report exists or the read errors.
- *
- * Wrapped in React's `cache` so `generateMetadata` and the page component share
- * a single DB round-trip within the same request instead of querying twice.
+ * Latest report for (owner, repo), wrapped in React's `cache` so
+ * `generateMetadata` and the page component share a single DB round-trip per
+ * request. `cache` wraps a (owner, repo)-only function with the client created
+ * INSIDE it; the fetch + reshape is the shared `fetchLatestReport`, byte-identical
+ * to the SPA's path (no SSR-vs-client drift). Returns null on miss/error.
  */
-const fetchLatestReport = cache(async function fetchLatestReport(
+const getLatestReport = cache(async function getLatestReport(
   owner: string,
   repo: string,
 ): Promise<Report | null> {
@@ -53,28 +51,13 @@ const fetchLatestReport = cache(async function fetchLatestReport(
   } catch {
     return null;
   }
-
-  const { data, error } = await supabase
-    .from("reports")
-    .select(REPORT_SELECT)
-    .eq("owner_login", owner)
-    .eq("repo_name", repo)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error || !data) return null;
-  // The joined `owners` arrives as an array or object depending on the client;
-  // normalize to a single owner row for the reshape.
-  const row = data as unknown as ReportRow & { owners?: unknown };
-  const owners = Array.isArray(row.owners) ? (row.owners[0] ?? null) : (row.owners ?? null);
-  return reportRowToReport({ ...row, owners });
+  return fetchLatestReport(supabase, owner, repo);
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {
   const { owner, repo } = await params;
   const slug = `${owner}/${repo}`;
-  const report = await fetchLatestReport(owner, repo);
+  const report = await getLatestReport(owner, repo);
 
   const title = `${slug} — Claude Rabbit safety report`;
   const description = report?.summary
@@ -103,7 +86,7 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
 
 export default async function ReportPage({ params }: RouteParams) {
   const { owner, repo } = await params;
-  const report = await fetchLatestReport(owner, repo);
+  const report = await getLatestReport(owner, repo);
 
   if (!report) {
     return <NotScanned owner={owner} repo={repo} />;
