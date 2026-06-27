@@ -12,7 +12,6 @@ import { onActivate, useApp } from "../state";
 import { FOOTER_COLS } from "../state";
 import styles from "../spa.module.css";
 import { Orbit } from "../components/Orbit";
-import { RepoLink } from "../components/github";
 import { Chevron, GithubIcon, RabbitMark, StarIcon, ThemeIcon } from "../components/glyphs";
 
 export function HomeScreen() {
@@ -92,8 +91,9 @@ export function HomeScreen() {
             Danger board
           </button>
           <a
-            href="#"
-            onClick={app.noop}
+            href="https://github.com/AIdhirajSingh/clauderabbit"
+            target="_blank"
+            rel="noopener noreferrer"
             className={styles.navRepoLink}
             style={{
               display: "flex",
@@ -106,13 +106,7 @@ export function HomeScreen() {
             }}
           >
             <GithubIcon size={14} fill="var(--t2)" />
-            <span style={{ color: "var(--t2)", fontWeight: 500, fontSize: 13 }}>claude-rabbit/rabbit</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 5, paddingLeft: 9, borderLeft: "1px solid var(--line2)" }}>
-              <StarIcon size={12} />
-              <span className="tnum" style={{ fontSize: 12.5, color: "var(--t2)", fontWeight: 500 }}>
-                {state.starCount || "0"}
-              </span>
-            </span>
+            <span style={{ color: "var(--t2)", fontWeight: 500, fontSize: 13 }}>AIdhirajSingh/clauderabbit</span>
           </a>
           <button
             onClick={app.toggleTheme}
@@ -315,47 +309,6 @@ export function HomeScreen() {
         </div>
       </div>
 
-      {/* live activity strip */}
-      <div className="reveal" style={{ position: "relative", zIndex: 1, maxWidth: 1040, margin: "90px auto 0", padding: "0 24px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center", marginBottom: 22 }}>
-          <span style={{ position: "relative", width: 7, height: 7 }}>
-            <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "var(--green)" }} />
-            <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "var(--green)", animation: "pulseRing 2s ease-out infinite" }} />
-          </span>
-          <span style={{ fontSize: 11, color: "var(--t4)", letterSpacing: "0.16em", textTransform: "uppercase" }}>
-            Scanning live, right now
-          </span>
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-          {app.activity.map((a) => (
-            <div
-              key={`${a.owner}/${a.name}`}
-              className={styles.activityRow}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 11,
-                background: "var(--s1)",
-                border: "1px solid var(--line)",
-                borderRadius: 12,
-                padding: "10px 14px",
-                transition: "border-color .2s var(--ease), transform .2s var(--ease)",
-              }}
-            >
-              <span className="serif tnum" style={{ fontSize: 21, color: a._color, lineHeight: 1 }}>
-                {a.score}
-              </span>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <RepoLink owner={a.owner} name={a.name} style={{ fontSize: 12.5, color: "var(--t2)", fontWeight: 450 }}>
-                  {a.owner}/{a.name}
-                </RepoLink>
-                <span style={{ fontSize: 10.5, color: "var(--t5)" }}>{a.when}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* danger board preview */}
       <div className="reveal" style={{ position: "relative", zIndex: 1, maxWidth: 1040, margin: "130px auto 0", padding: "0 24px" }}>
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 26, gap: 20, flexWrap: "wrap" }}>
@@ -530,12 +483,13 @@ export function HomeScreen() {
               Star it. Know before you run.
             </h2>
             <p style={{ fontSize: 16, color: "var(--t3)", margin: "0 0 30px", maxWidth: 440, lineHeight: 1.62 }}>
-              We are a free security tool for the open-source community. Every scan you see here ran in a real sandbox.
-              If Claude Rabbit ever stops you running the wrong thing, a star is the only thanks we ask.
+              We are a free security tool for the open-source community. We read every repo&rsquo;s code and escalate the
+              riskiest to a real sandbox. If Claude Rabbit ever stops you running the wrong thing, a star is the only thanks we ask.
             </p>
             <a
-              href="#"
-              onClick={app.noop}
+              href="https://github.com/AIdhirajSingh/clauderabbit"
+              target="_blank"
+              rel="noopener noreferrer"
               className={styles.starCta}
               style={{
                 display: "inline-flex",
@@ -554,9 +508,6 @@ export function HomeScreen() {
             >
               <StarIcon size={17} />
               Star on GitHub
-              <span className="tnum" style={{ fontSize: 13.5, paddingLeft: 11, borderLeft: "1px solid currentColor", color: "var(--ink-fg)", opacity: 0.5 }}>
-                {state.starCount || "0"}
-              </span>
             </a>
           </div>
           <div style={{ position: "relative", height: 520 }}>

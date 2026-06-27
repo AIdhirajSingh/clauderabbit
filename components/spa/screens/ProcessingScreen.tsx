@@ -174,23 +174,6 @@ export function ProcessingScreen() {
                 </div>
               ))}
             </div>
-
-            <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
-              <button
-                onClick={app.failProcessing}
-                className={styles.simFailBtn}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--t6)",
-                  fontSize: 11.5,
-                  cursor: "pointer",
-                  transition: "color .16s var(--ease)",
-                }}
-              >
-                Simulate failure (demo)
-              </button>
-            </div>
           </>
         )}
       </div>

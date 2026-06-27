@@ -71,8 +71,6 @@ export type { LogChapterView, PackageScoreView, RepoView, RiskyItemView };
 // ───────────────────────────── constants ─────────────────────────────
 
 /** Star count-up target and duration, from the prototype's componentDidMount. */
-const STAR_TARGET = 24318;
-const STAR_DUR = 1200;
 /** Per-step processing interval (ms): deep scans tick slower. */
 const PROC_STEP_MS = 740;
 const PROC_STEP_DEEP_MS = 880;
@@ -130,7 +128,6 @@ interface State {
   profileEmail: string;
   editName: boolean;
   editDraft: string;
-  starCount: string;
   focused: boolean;
   scannedIds: string[];
   stage1Used: number;
@@ -196,7 +193,6 @@ const initialState: State = {
   profileEmail: "",
   editName: false,
   editDraft: "",
-  starCount: "0",
   focused: false,
   // Pre-seed history with two real cached scans (keys in lib/demo-data REPOS),
   // so the dashboard/sidebar history is non-empty with real repos on first load.
@@ -325,7 +321,7 @@ const PAGE_COL_B: SnapProps[] = [
       { n: "4", w: "52%", c: "var(--t4)" },
     ],
   },
-  { kind: "repo", title: "claude-rabbit/rabbit", lang: "TypeScript", langColor: "var(--blue)", stars: "24.3k", score: "99", color: "var(--green)" },
+  { kind: "web", title: "Claude Rabbit", sub: "Free open-source malware scanning.", accent: "var(--green)" },
   { kind: "web", title: "requests.readthedocs.io", sub: "HTTP for humans.", accent: "var(--blue)" },
   { kind: "repo", title: "AdhirajSinghEntrepreneur/pockit", lang: "Dart", langColor: "var(--blue)", stars: "1.2k", score: "88", color: "var(--blue)" },
   {
@@ -707,20 +703,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sourceScreen: snap.sourceScreen,
       liveReports: snap.liveReports,
     });
-  }, [patch]);
-
-  // ── star count-up rAF (mount, with cleanup) ──
-  useEffect(() => {
-    const start = performance.now();
-    let raf = 0;
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / STAR_DUR);
-      const e = 1 - Math.pow(1 - t, 3);
-      patch({ starCount: Math.round(STAR_TARGET * e).toLocaleString() });
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
   }, [patch]);
 
   // ── theme init + OS preference live listener (mount, with cleanup) ──
@@ -1714,12 +1696,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return groups;
   }, [history]);
 
-  const scannedCount = state.scannedIds.length + 5;
-  const protectedCount =
-    state.scannedIds.filter((id) => {
-      const r = reportById(id, state.liveReports);
-      return r ? r.score < 60 : false;
-    }).length + 2;
+  // Real counts only — the user's actual scanned ids and how many scored
+  // dangerous. No invented padding (BUG: was `+ 5` / `+ 2`).
+  const scannedCount = state.scannedIds.length;
+  const protectedCount = state.scannedIds.filter((id) => {
+    const r = reportById(id, state.liveReports);
+    return r ? r.score < 60 : false;
+  }).length;
 
   const isDark = state.theme === "dark";
   const appState: "out" | "exp" | "col" = !state.loggedIn ? "out" : state.sidebarCollapsed ? "col" : "exp";
