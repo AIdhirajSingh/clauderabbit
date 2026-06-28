@@ -109,6 +109,32 @@ test("dotFromGeoRow returns null when the country is unknown or missing (no fake
   assert.equal(dotFromGeoRow(makeDotRow({ country: "   " })), null);
 });
 
+test("dotFromGeoRow plots the phone-home fixture's REAL resolved geo (BUG-18)", () => {
+  // Reshaper test using the REAL geolocation shape a live phone-home detonation
+  // produced (analyze-payload.py resolves the intended host OFF-VM, then no-key
+  // IP->geo): www.example.com -> United States / California / San Francisco /
+  // Cloudflare. This is the shape the v_board_dots view feeds the map; it locks
+  // the geo -> dot render (the live lookup itself is exercised in the sandbox).
+  const dot = dotFromGeoRow(
+    makeDotRow({
+      owner_login: "synthetic",
+      repo_name: "phone-home",
+      score: 60,
+      country: "United States",
+      region: "California",
+      city: "San Francisco",
+      org: "Cloudflare, Inc.",
+      host: "www.example.com",
+    }),
+  );
+  assert.ok(dot, "a real resolved country must produce a map dot");
+  assert.equal(dot.country, "United States");
+  assert.equal(dot.host, "www.example.com");
+  assert.equal(dot.place, "San Francisco, California, United States");
+  assert.equal(dot.band, "yellow"); // score 60 → Caution band
+  assert.ok(Number.isFinite(dot.point.x) && Number.isFinite(dot.point.y));
+});
+
 test("statsFromRow coerces bigint/string counts and never invents", () => {
   assert.equal(statsFromRow(null), null);
   const s = statsFromRow({

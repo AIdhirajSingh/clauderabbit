@@ -1,0 +1,10 @@
+{
+  "name": "phone-home-beacon",
+  "version": "1.0.0",
+  "description": "SYNTHETIC phone-home beacon (Claude Rabbit world-map geo proof — NOT real malware, do NOT publish).",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "MIT"
+}
