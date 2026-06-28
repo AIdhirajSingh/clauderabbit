@@ -492,6 +492,25 @@ function reputationDeltas(rep: ScoringReputation): ScoreDelta[] {
 // --- Public API --------------------------------------------------------------
 
 /**
+ * The one-word verdict for a score band — the SINGLE source of truth for the
+ * score->verdict map, used by both the fast path and the escalation/attach path.
+ * Derived PURELY from the computed score so the verdict can never be a bare "Safe"
+ * and can never disagree with the band. Dangerous band splits at 30 into "High
+ * risk" (30-59) and "Malicious" (<30), matching the read-model prompt + design.md.
+ */
+export function verdictForScore(score: number): string {
+  return score >= 90
+    ? "Trusted"
+    : score >= 80
+      ? "Likely safe"
+      : score >= 60
+        ? "Caution"
+        : score >= 30
+          ? "High risk"
+          : "Malicious";
+}
+
+/**
  * Compute the authoritative safety score from weighted, named signals.
  *
  * The model FEEDS the signals; this function DECIDES the number. Code/behavior

@@ -20,6 +20,15 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import {
+  computeEscalatedScore,
+  type ScoreDelta,
+  type ScoringReputation,
+  type ScoringRiskKind,
+  type ScoringRiskyItem,
+  type ScoringSeverity,
+  verdictForScore,
+} from "../_shared/scoring.ts";
 
 /** Max bytes we will read for a forensic record before rejecting (DoS guard). */
 const MAX_BODY_BYTES = 512 * 1024;
@@ -99,6 +108,229 @@ function looksLikeForensicRecord(f: unknown): f is Record<string, unknown> {
   return hasSchema || hasSection;
 }
 
+// ───────────────────── escalation blend (U1: escalation owns the report) ──────
+// When a real sandbox run attaches forensics, the ESCALATION owns the report: a
+// fresh runtime-primary score (scoring.ts computeEscalatedScore), a runtime-first
+// HEDGE-FREE summary, and rewritten Score/Sandbox-run log chapters — all persisted
+// at attach so a fresh deep run and a later cached view of the same commit agree.
+
+type LogKind = "ok" | "warn" | "bad";
+interface LogChapter {
+  ch: string;
+  kind: LogKind;
+  lines: string[];
+}
+
+function asNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+function asObj(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+function asArr(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+
+/** Runtime primitives extracted from the forensic record for the blend + summary. */
+interface RuntimeFacts {
+  dynamicScore: number;
+  exercised: boolean; // built AND ran without crashing
+  builtOk: boolean;
+  ranOk: boolean;
+  caughtAttack: boolean;
+  credReads: number;
+  capturedHost: string | null;
+  projectType: string | null;
+}
+
+function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
+  const verdict = asObj(forensics.verdict);
+  const ran = asObj(forensics.what_it_ran);
+  const inVm = asObj(forensics.in_vm_behavior);
+  const net = asObj(forensics.network_intent);
+  const builtOk = ran.auto_build_succeeded === true;
+  const ranOk = ran.ran_without_crash === true;
+  const credReads = asNum(inVm.high_value_credential_reads);
+  const capturedIntent = asArr(verdict.captured_network_intent)
+    .map((h) => (typeof h === "string" ? h.trim() : ""))
+    .filter((h) => h.length > 0);
+  const destHosts = asArr(net.intended_destinations)
+    .map((d) => {
+      const h = asObj(d).host;
+      return typeof h === "string" ? h.trim() : "";
+    })
+    .filter((h) => h.length > 0);
+  const caughtAttack =
+    verdict.attack_egress_intercepted === true ||
+    credReads > 0 ||
+    capturedIntent.length > 0 ||
+    destHosts.length > 0;
+  const projectType =
+    typeof ran.project_type === "string" && ran.project_type.trim()
+      ? ran.project_type.trim()
+      : null;
+  return {
+    dynamicScore: asNum(verdict.dynamic_score),
+    exercised: builtOk && ranOk,
+    builtOk,
+    ranOk,
+    caughtAttack,
+    credReads,
+    capturedHost: capturedIntent[0] ?? destHosts[0] ?? null,
+    projectType,
+  };
+}
+
+/** The stage-1 code/behavior findings (residual static concern for the blend). */
+function riskyFromRow(riskyJson: unknown): ScoringRiskyItem[] {
+  const out: ScoringRiskyItem[] = [];
+  for (const r of asArr(riskyJson)) {
+    const o = asObj(r);
+    const sev = o.severity;
+    const kind = o.kind;
+    if (sev !== "high" && sev !== "med" && sev !== "low") continue;
+    if (kind !== "code" && kind !== "behavior" && kind !== "rep") continue;
+    out.push({ severity: sev as ScoringSeverity, kind: kind as ScoringRiskKind });
+  }
+  return out;
+}
+
+/** One representative code concern title from the stage-1 findings, for the summary. */
+function topConcern(riskyJson: unknown): string | null {
+  const order = { high: 0, med: 1, low: 2 } as Record<string, number>;
+  let best: { title: string; rank: number } | null = null;
+  for (const r of asArr(riskyJson)) {
+    const o = asObj(r);
+    if (o.kind !== "code" && o.kind !== "behavior") continue;
+    const title = typeof o.title === "string" ? o.title.trim() : "";
+    const rank = order[o.severity as string] ?? 3;
+    if (title && (!best || rank < best.rank)) best = { title, rank };
+  }
+  return best?.title ?? null;
+}
+
+/** Reputation facts from the owners row (ageDays computed from created_at_github). */
+function repFromOwner(ownerRow: Record<string, unknown> | null): ScoringReputation {
+  if (!ownerRow) return { established: false, ageDays: -1, sentScore: -1, stars: 0 };
+  let ageDays = -1;
+  const created = ownerRow.created_at_github;
+  if (typeof created === "string" && created) {
+    const t = Date.parse(created);
+    if (Number.isFinite(t)) ageDays = Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
+  }
+  return {
+    established: ownerRow.established === true,
+    ageDays,
+    sentScore: typeof ownerRow.sentiment_score === "number" ? ownerRow.sentiment_score : -1,
+    stars: typeof ownerRow.stars_total === "number" ? ownerRow.stars_total : 0,
+  };
+}
+
+/**
+ * The runtime-first, HEDGE-FREE summary. States what running it showed with
+ * confidence — NEVER "not executed / unverified / largely unverified / could not
+ * verify / a clean run is not a guarantee". A crash is stated as a concrete finding,
+ * not a hedge. Rails kept: never a bare "Safe" (the verdict carries evidence), and
+ * this is code/runtime content (reputation stays in its own panel).
+ */
+function buildRuntimeSummary(
+  owner: string,
+  repo: string,
+  rt: RuntimeFacts,
+  rep: ScoringReputation,
+  concern: string | null,
+): string {
+  const target = `${owner}/${repo}`;
+  const kind = rt.projectType ? `${rt.projectType} ` : "";
+  let ranClause: string;
+  if (rt.exercised) {
+    ranClause = `It built and ran cleanly in an isolated sandbox`;
+  } else if (rt.builtOk) {
+    ranClause = `It built and started in an isolated sandbox, then exited with an error on startup`;
+  } else {
+    ranClause = `It was detonated in an isolated sandbox; the project did not build to a runnable state`;
+  }
+
+  let behaviorClause: string;
+  if (rt.caughtAttack) {
+    const what = rt.credReads > 0 && rt.capturedHost
+      ? `reading high-value credentials and attempting to reach ${rt.capturedHost}`
+      : rt.credReads > 0
+        ? `reading high-value credential files`
+        : rt.capturedHost
+          ? `attempting to reach ${rt.capturedHost}`
+          : `attempting outbound exfiltration`;
+    behaviorClause = `and we caught it ${what} — every outbound attempt was intercepted by the sandbox sinkhole and never reached its destination`;
+  } else {
+    behaviorClause = `with no malicious behavior, credential access, or outbound exfiltration observed`;
+  }
+
+  const concerns: string[] = [];
+  if (concern) concerns.push(concern.toLowerCase());
+  if (rep.ageDays >= 0 && rep.ageDays < 60) concerns.push("a new owner account");
+  const tail = concerns.length
+    ? ` Its score is held down by ${concerns.join(" and ")}.`
+    : "";
+
+  return `We ran ${target}, a ${kind}project, in an isolated sandbox. ${ranClause} ${behaviorClause}.${tail}`.replace(
+    /\s+/g,
+    " ",
+  ).trim();
+}
+
+/** The fresh Score chapter (mirrors the fast path's format, from the blend breakdown). */
+function buildScoreChapter(score: number, breakdown: ScoreDelta[]): LogChapter {
+  const sign = (n: number): string => (n >= 0 ? `+${n}` : `${n}`);
+  return {
+    ch: "Score",
+    kind: score < 60 ? "bad" : score < 80 ? "warn" : "ok",
+    lines: [
+      `Score computed from the sandbox run: ${score}/100 (runtime-primary, deterministic)`,
+      ...breakdown.map((d) => `${sign(d.delta)} [${d.group === "reputation" ? "reputation" : "code"}] ${d.factor}: ${d.detail}`),
+    ],
+  };
+}
+
+/**
+ * Rewrite the persisted log chapters for an escalated report: DROP the stale
+ * stage-1 "Score" + "Escalation" chapters (which carry the old number and the
+ * "Queued… not executed on this pass" line), keep the rest, and append a
+ * "Sandbox run" chapter + the fresh blended "Score" chapter.
+ */
+function rewriteEscalatedLogs(
+  existing: unknown,
+  score: number,
+  breakdown: ScoreDelta[],
+  rt: RuntimeFacts,
+): LogChapter[] {
+  const kept: LogChapter[] = [];
+  for (const c of asArr(existing)) {
+    const o = asObj(c);
+    const ch = typeof o.ch === "string" ? o.ch : "";
+    if (/^score$/i.test(ch) || /escalat/i.test(ch)) continue; // drop stale chapters
+    const kind = o.kind === "bad" || o.kind === "warn" ? o.kind : "ok";
+    const lines = asArr(o.lines).filter((l): l is string => typeof l === "string");
+    kept.push({ ch: ch || "Log", kind, lines });
+  }
+  const runLines = [
+    rt.exercised
+      ? "Built and ran cleanly under the sinkhole; no malicious behavior observed."
+      : rt.builtOk
+        ? "Built and started, then exited with an error on startup; no malicious behavior observed before exit."
+        : "Detonated under the sinkhole; the project did not build to a runnable state.",
+  ];
+  if (rt.caughtAttack) {
+    runLines.push(
+      rt.capturedHost
+        ? `Caught attempting to reach ${rt.capturedHost}; intercepted by the sandbox (no real packet left the VM).`
+        : "Caught attempting credential access / outbound exfiltration; intercepted by the sandbox.",
+    );
+  }
+  kept.push({ ch: "Sandbox run", kind: rt.caughtAttack ? "bad" : "ok", lines: runLines });
+  kept.push(buildScoreChapter(score, breakdown));
+  return kept;
+}
+
 export async function handler(req: Request): Promise<Response> {
   // No browser caller — refuse the preflight and any non-POST method.
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -161,11 +393,49 @@ export async function handler(req: Request): Promise<Response> {
     return jsonResponse({ error: "Server not configured" }, 500);
   }
 
+  // Read the EXACT-MATCH target row for the stage-1 findings + logs + owner, so the
+  // escalation can BLEND its fresh score (runtime + static + reputation) and rewrite
+  // the report narrative. If the read degrades, fall back to a runtime-only blend;
+  // the RPC still RAISES "Report not found" when no row matches owner/repo/sha.
+  const { data: rowData } = await db
+    .from("reports")
+    .select(
+      "risky_json,logs_json,owner_id,owners(created_at_github,established,stars_total,sentiment_score)",
+    )
+    .eq("owner_login", owner)
+    .eq("repo_name", repo)
+    .eq("commit_sha", sha)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const row = asObj(rowData);
+  const ownerRow = Array.isArray(row.owners)
+    ? asObj(row.owners[0])
+    : asObj(row.owners);
+
+  const rt = extractRuntime(forensics as Record<string, unknown>);
+  const rep = repFromOwner(Object.keys(ownerRow).length ? ownerRow : null);
+  const { score, breakdown } = computeEscalatedScore({
+    dynamicScore: rt.dynamicScore,
+    exercised: rt.exercised,
+    caughtAttack: rt.caughtAttack,
+    codeRisky: riskyFromRow(row.risky_json),
+    reputation: rep,
+  });
+  const verdict = verdictForScore(score);
+  const summary = buildRuntimeSummary(owner, repo, rt, rep, topConcern(row.risky_json));
+  const logs = rewriteEscalatedLogs(row.logs_json, score, breakdown, rt);
+
   const { data, error } = await db.rpc("attach_forensics", {
     p_owner_login: owner,
     p_repo_name: repo,
     p_commit_sha: sha,
     p_forensics: forensics,
+    p_score: score,
+    p_verdict: verdict,
+    p_summary: summary,
+    p_logs: logs,
   });
 
   if (error) {
