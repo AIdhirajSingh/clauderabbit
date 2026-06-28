@@ -126,6 +126,9 @@ cat > /usr/local/bin/containerd-shim-kata-fc-v2 <<'SHIM'
 KATA_CONF_FILE=/opt/kata/share/defaults/kata-containers/configuration-fc.toml exec /opt/kata/bin/containerd-shim-kata-v2 "$@"
 SHIM
 chmod +x /usr/local/bin/containerd-shim-kata-fc-v2
+# Kata-FC networking: tcfilter (the default) — Kata turns the run netns's veth eth0 into
+# the microVM's tap itself; the forge attaches via a cross-netns veth (see forge/forge-up.sh).
+sed -i 's/^internetworking_model = .*/internetworking_model = "tcfilter"/' "$FC_CFG" 2>/dev/null || true
 systemctl restart containerd; sleep 2
 fact DEVMAPPER_PLUGIN "$(ctr plugins ls 2>/dev/null | awk '/devmapper/{print $1, $4}')"
 mark KATAFC ok

