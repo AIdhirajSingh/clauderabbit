@@ -550,9 +550,10 @@ export function HomeScreen() {
               <div key={ci} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 {col.links.map((lnk) => (
                   <a
-                    key={lnk}
-                    href="#"
-                    onClick={app.noop}
+                    key={lnk.label}
+                    href={lnk.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className={styles.footerLink}
                     style={{
                       display: "flex",
@@ -567,7 +568,7 @@ export function HomeScreen() {
                     <span style={{ flexShrink: 0, color: "var(--t5)" }}>
                       <Chevron size={12} stroke="1.6" />
                     </span>
-                    {lnk}
+                    {lnk.label}
                   </a>
                 ))}
               </div>
