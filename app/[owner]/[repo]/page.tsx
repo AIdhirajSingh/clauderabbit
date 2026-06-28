@@ -58,10 +58,14 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
   const { owner, repo } = await params;
   const slug = `${owner}/${repo}`;
   const report = await getLatestReport(owner, repo);
+  // Derive the view so the meta uses the SAME reconciled summary + enforced
+  // verdict the page renders — a sandbox-run report never advertises "not executed
+  // in a sandbox" in search results (honesty rail), matching the on-page prose.
+  const view = report ? buildReportView(report) : null;
 
   const title = `${slug} — Claude Rabbit safety report`;
-  const description = report?.summary
-    ? `${report.verdict} · ${report.score}/100. ${report.summary}`.slice(0, 300)
+  const description = view
+    ? `${view.verdict} · ${view.score}/100. ${view.summary}`.slice(0, 300)
     : `Safety report for ${slug}. Claude Rabbit reads the code and runs unknown repos in an isolated sandbox to return an honest 0–100 safety score.`;
   const url = `${SITE_URL}/${slug}`;
 

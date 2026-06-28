@@ -62,6 +62,7 @@ CR_AGENTIC="${CR_AGENTIC:-0}"
 ZONE=""
 TARBALL=""
 GITHUB=""
+REF=""                      # optional commit SHA / ref to PIN the detonation to
 NAME="scan"
 RESULTS_DIR="$HERE/results"
 TAG="cr-sandbox"
@@ -82,6 +83,7 @@ while [ $# -gt 0 ]; do
     --zone) ZONE="$2"; shift 2;;
     --tarball) TARBALL="$2"; shift 2;;
     --github) GITHUB="$2"; shift 2;;
+    --ref) REF="$2"; shift 2;;
     --name) NAME="$2"; shift 2;;
     --machine) MACHINE="$2"; shift 2;;
     *) die "unknown arg: $1";;
@@ -97,6 +99,13 @@ done
 if [ -n "$GITHUB" ]; then
   printf '%s' "$GITHUB" | grep -Eq '^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$' \
     || die "invalid --github (want owner/repo using [A-Za-z0-9._-]): $GITHUB"
+fi
+# --ref (a commit SHA / branch / tag) flows into `git fetch origin <ref>`; bound it.
+# The FIRST char must be alphanumeric so the ref can never be read as a git option
+# (a leading "-" would smuggle a flag into `git fetch`); a real sha/branch/tag is.
+if [ -n "$REF" ]; then
+  printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' \
+    || die "invalid --ref (want [A-Za-z0-9._/-] starting alnum, <=200 chars): $REF"
 fi
 # NAME becomes part of gcloud VM names (cr-sbx-<NAME>-<ts>); keep it a strict slug.
 printf '%s' "$NAME" | grep -Eq '^[A-Za-z0-9-]{1,40}$' \
@@ -191,9 +200,21 @@ bash "$NET" create "$REGION" || die "network setup failed"
 # the input was --github or --tarball.
 CLONE_DIR="$STAGE/repo"
 if [ -n "$GITHUB" ]; then
-  log "cloning public repo $GITHUB locally (off-VM)"
+  log "cloning public repo $GITHUB locally (off-VM)${REF:+ @ $REF}"
   git clone --depth 1 "https://github.com/${GITHUB}.git" "$CLONE_DIR" >/dev/null 2>&1 \
     || die "git clone failed for $GITHUB"
+  if [ -n "$REF" ]; then
+    # Pin the detonation to the EXACT commit the fast-path report row was written
+    # for, so the captured forensics attach to the right row. GitHub permits
+    # fetching a reachable commit SHA directly. A pin FAILURE is fatal, never a
+    # silent fall-back to a different commit: attaching forensics for a commit we
+    # did not actually run would misrepresent what the sandbox observed (the moat's
+    # honesty rail). If we cannot run the requested commit, we do not run at all.
+    git -C "$CLONE_DIR" fetch --depth 1 origin "$REF" >/dev/null 2>&1 \
+      && git -C "$CLONE_DIR" checkout --quiet FETCH_HEAD 2>/dev/null \
+      || die "could not pin detonation target to $REF (commit unreachable) — refusing to detonate a different commit"
+    log "pinned detonation target to $REF"
+  fi
   TARBALL="$STAGE/target.tar.gz"
   tar -czf "$TARBALL" -C "$CLONE_DIR" .
 elif [ -n "$TARBALL" ]; then

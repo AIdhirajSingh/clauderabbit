@@ -523,6 +523,7 @@ interface ReportRow {
   packages_json: unknown;
   risky_json: unknown;
   logs_json: unknown;
+  forensics_json: unknown;
   owner_id: number | null;
 }
 
@@ -582,6 +583,13 @@ function reshapeCached(row: ReportRow, ownerRow: OwnerRow | null): unknown {
     packages: row.packages_json ?? [],
     risky: row.risky_json ?? [],
     logs: row.logs_json ?? [],
+    // Carry the deep-run forensics on a cache hit. Without this an already-run
+    // deep repo would come back deep=true with NO forensics, and the client would
+    // see (deep && !forensics) and RE-DETONATE the sandbox on every cached view —
+    // the unmetered deep scan V1 forbids. With it, a cached view of a sandbox-run
+    // repo renders the same "Sandbox run" report instantly, no VM. Only present
+    // when the row actually has a record (null/absent → omitted, like a fresh scan).
+    ...(row.forensics_json ? { forensics: row.forensics_json } : {}),
     commit_sha: row.commit_sha,
     scan_path: "cache",
     confidence: row.confidence,

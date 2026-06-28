@@ -408,6 +408,9 @@ export function normalizeReport(raw: unknown): Report {
     risky: normalizeRisky(r.risky),
     logs: normalizeLogs(r.logs),
     ...(forensics ? { forensics } : {}),
+    // Carry the resolved commit SHA so the inline deep run can pin its detonation
+    // to (and attach forensics onto) this exact report row.
+    ...(typeof r.commit_sha === "string" && r.commit_sha ? { commit_sha: r.commit_sha } : {}),
   };
 }
 
@@ -516,22 +519,22 @@ export async function runScan(args: ScanArgs): Promise<ScanResult> {
   }
 }
 
+/** A parsed NDJSON event from a scan / deep-run stream. */
+type StreamEvent = Record<string, unknown>;
+
 /**
- * Consume the NDJSON scan stream: surface each `stage` via `onStage`, capture the
- * final `report`, and map an in-band `error` event to a failed result. Buffers
- * partial lines across chunks (a JSON object can be split across two reads) and
- * skips any unparseable line rather than aborting the whole scan.
+ * Read an NDJSON ReadableStream line by line, invoking `onEvent` for each parsed
+ * object. Buffers partial lines across chunks (a JSON object can split across two
+ * reads) and skips any unparseable line rather than aborting. Shared by the
+ * fast-path scan stream and the inline deep-run stream.
  */
-async function consumeScanStream(
+async function readNdjsonStream(
   body: ReadableStream<Uint8Array>,
-  onStage?: (stage: ScanStage) => void,
-): Promise<ScanResult> {
+  onEvent: (e: StreamEvent) => void,
+): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let report: Report | null = null;
-  let error: string | null = null;
-
   const handle = (line: string): void => {
     let ev: unknown;
     try {
@@ -539,24 +542,8 @@ async function consumeScanStream(
     } catch {
       return; // stray/blank/partial line — skip, never abort the stream
     }
-    if (!ev || typeof ev !== "object") return;
-    const e = ev as Record<string, unknown>;
-    if (e.t === "stage" && typeof e.ch === "string" && (e.status === "active" || e.status === "done")) {
-      onStage?.({
-        ch: e.ch,
-        status: e.status,
-        ...(typeof e.kind === "string" ? { kind: e.kind } : {}),
-        ...(Array.isArray(e.lines)
-          ? { lines: e.lines.filter((l): l is string => typeof l === "string") }
-          : {}),
-      });
-    } else if (e.t === "result") {
-      report = normalizeReport(e.report);
-    } else if (e.t === "error") {
-      error = typeof e.error === "string" && e.error ? e.error : "The scan failed.";
-    }
+    if (ev && typeof ev === "object") onEvent(ev as StreamEvent);
   };
-
   try {
     for (;;) {
       const { value, done } = await reader.read();
@@ -564,7 +551,6 @@ async function consumeScanStream(
       const split = splitNdjson(buffer, decoder.decode(value, { stream: true }));
       buffer = split.rest;
       for (const line of split.lines) handle(line);
-      if (error) break; // an in-band error ends the stream early
     }
     const tail = buffer.trim();
     if (tail) handle(tail);
@@ -575,8 +561,118 @@ async function consumeScanStream(
       // reader already released
     }
   }
+}
 
+/** Map a wire `stage` event to a `ScanStage`, or null when it is not one. */
+function toScanStage(e: StreamEvent): ScanStage | null {
+  if (e.t !== "stage" || typeof e.ch !== "string" || (e.status !== "active" && e.status !== "done")) {
+    return null;
+  }
+  return {
+    ch: e.ch,
+    status: e.status,
+    ...(typeof e.kind === "string" ? { kind: e.kind } : {}),
+    ...(Array.isArray(e.lines)
+      ? { lines: (e.lines as unknown[]).filter((l): l is string => typeof l === "string") }
+      : {}),
+  };
+}
+
+/**
+ * Consume the NDJSON scan stream: surface each `stage` via `onStage`, capture the
+ * final `report`, and map an in-band `error` event to a failed result.
+ */
+async function consumeScanStream(
+  body: ReadableStream<Uint8Array>,
+  onStage?: (stage: ScanStage) => void,
+): Promise<ScanResult> {
+  let report: Report | null = null;
+  let error: string | null = null;
+  await readNdjsonStream(body, (e) => {
+    const stage = toScanStage(e);
+    if (stage) {
+      onStage?.(stage);
+    } else if (e.t === "result") {
+      report = normalizeReport(e.report);
+    } else if (e.t === "error") {
+      error = typeof e.error === "string" && e.error ? e.error : "The scan failed.";
+    }
+  });
   if (error) return { ok: false, error };
   if (report) return { ok: true, report };
   return { ok: false, error: "The scan ended without a result. Please retry." };
+}
+
+/** Hard ceiling for an inline deep run (the sandbox dead-man's-switch caps the VM at 30m). */
+const DEEP_SCAN_TIMEOUT_MS = 20 * 60 * 1000;
+
+/** Arguments for an inline deep (dynamic sandbox) run. */
+export interface DeepScanArgs {
+  owner: string;
+  repo: string;
+  /** The fast-path resolved commit SHA — pins the detonation + the forensics attach. */
+  sha: string;
+  onStage?: (stage: ScanStage) => void;
+}
+
+/** Result of an inline deep run. `persisted` = forensics attached to the report row. */
+export type DeepScanResult =
+  | { ok: true; persisted: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Run the dynamic sandbox INLINE via the local deep-scan controller route
+ * (`/api/deep`), streaming its real progress. The route spawns the GCP detonation
+ * directly (no queue), captures forensics, tears the VM down, and persists the
+ * forensics onto this report row — after which the report renders "Sandbox run".
+ * Never throws; always resolves to a `DeepScanResult`.
+ */
+export async function runDeepScan(args: DeepScanArgs): Promise<DeepScanResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEEP_SCAN_TIMEOUT_MS);
+  try {
+    let res: Response;
+    try {
+      res = await fetch("/api/deep", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: args.owner, repo: args.repo, sha: args.sha }),
+        signal: controller.signal,
+      });
+    } catch {
+      if (controller.signal.aborted) return { ok: false, error: "The sandbox run timed out." };
+      return { ok: false, error: "Could not reach the sandbox controller." };
+    }
+    if (!res.ok || !res.body) {
+      let msg = "The sandbox run could not start.";
+      try {
+        const b = (await res.json()) as { error?: string };
+        if (typeof b.error === "string" && b.error) msg = b.error;
+      } catch {
+        // non-JSON body — keep the default message
+      }
+      return { ok: false, error: msg };
+    }
+    let persisted = false;
+    let error: string | null = null;
+    try {
+      await readNdjsonStream(res.body, (e) => {
+        const stage = toScanStage(e);
+        if (stage) {
+          args.onStage?.(stage);
+        } else if (e.t === "result") {
+          persisted = e.persisted === true;
+        } else if (e.t === "error") {
+          error = typeof e.error === "string" && e.error ? e.error : "The sandbox run failed.";
+        }
+      });
+    } catch {
+      if (controller.signal.aborted) return { ok: false, error: "The sandbox run timed out." };
+      return { ok: false, error: "The sandbox stream was unreadable." };
+    }
+    if (error) return { ok: false, error };
+    return { ok: true, persisted };
+  } finally {
+    clearTimeout(timeout);
+  }
 }

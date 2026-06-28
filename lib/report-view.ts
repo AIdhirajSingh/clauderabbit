@@ -138,22 +138,62 @@ export interface RepoView extends Omit<Report, "packages" | "risky" | "logs"> {
  * "blocked outbound attempts" for a scan that was never executed (BUG-2, the
  * canary). The runtime-claim language is reserved for scans that genuinely ran.
  */
-function finalNote(score: number, ranSandbox: boolean): string {
-  if (score >= 90)
-    return ranSandbox
-      ? "No malicious behavior observed when we ran it, and the code read clean with strong reputation. We did not exhaustively execute every branch, and a clean run is not a guarantee."
-      : "No malicious behavior in our static read, and reputation is strong. Runtime was not executed in a sandbox on this pass, so this is a static-read clearance, not a guarantee.";
+function finalNote(score: number, forensics: ForensicsView | undefined): string {
+  // STATIC path (no forensic record): speak strictly in static terms. Never claim
+  // "we observed [runtime]" or "blocked outbound attempts" for a scan that was
+  // never executed (BUG-2, the canary). Keyed on the score band.
+  if (!forensics) {
+    if (score >= 90)
+      return "No malicious behavior in our static read, and reputation is strong. Runtime was not executed in a sandbox on this pass, so this is a static-read clearance, not a guarantee.";
+    if (score >= 80)
+      return "No malicious behavior in our static read. The caveats above are worth noting and the owner is not yet long-established. Runtime was not executed in a sandbox on this pass.";
+    if (score >= 60)
+      return "Static analysis flagged undisclosed install-time behavior. This is not confirmed malicious, but it is more than this tool needs, and runtime was not executed in a sandbox on this pass. Run it only inside a sandbox or throwaway environment.";
+    return "Static analysis flagged behavior consistent with malware — install-time network/shell execution, credential access, or obfuscation. Runtime was not executed in a sandbox on this pass, so this is a static-read warning, not an observed detonation. Treat it as dangerous and run it only inside a fully disposable environment.";
+  }
+
+  // RAN in the sandbox: the runtime narrative must reflect what the run ACTUALLY
+  // found — NOT the blended score (which can be low from static + reputation while
+  // the run itself caught nothing). Asserting "we observed credential access" for a
+  // run that observed none is the inverse of a bare "Safe", and just as dishonest.
+  if (forensics._caughtAttack) {
+    return "We observed network or credential-access behavior consistent with malware when we ran it — the blocked outbound attempts are themselves the detection signal. Do not run this outside a fully disposable environment.";
+  }
+  // Ran, but caught nothing malicious. Say exactly that; never invent a runtime
+  // detonation. When the score is low it comes from the static + reputation
+  // signals, which we surface as the reason rather than a fabricated observation.
   if (score >= 80)
-    return ranSandbox
-      ? "No malicious behavior observed when we ran it. The caveats above are worth noting and the owner is not yet long-established, but nothing here points to harm."
-      : "No malicious behavior in our static read. The caveats above are worth noting and the owner is not yet long-established. Runtime was not executed in a sandbox on this pass.";
+    return "We ran it in the sandbox and observed no malicious behavior. We did not exhaustively exercise every branch, and a clean run is not a guarantee.";
   if (score >= 60)
-    return ranSandbox
-      ? "We observed undisclosed install-time behavior when we ran it. This is not confirmed malicious, but it is more than this tool needs. Run it only inside a sandbox or throwaway environment."
-      : "Static analysis flagged undisclosed install-time behavior. This is not confirmed malicious, but it is more than this tool needs, and runtime was not executed in a sandbox on this pass. Run it only inside a sandbox or throwaway environment.";
-  return ranSandbox
-    ? "We observed active credential access or network behavior consistent with malware when we ran it. Do not run this outside a fully disposable environment — the blocked outbound attempts are themselves the detection signal."
-    : "Static analysis flagged behavior consistent with malware — install-time network/shell execution, credential access, or obfuscation. Runtime was not executed in a sandbox on this pass, so this is a static-read warning, not an observed detonation. Treat it as dangerous and run it only inside a fully disposable environment.";
+    return "We ran it in the sandbox and observed no malicious behavior in that run, though it was only partially exercised. Treat a clean run as evidence, not a guarantee.";
+  return "We ran it in the sandbox and did not observe malicious behavior in that run — but the run was limited (a clean run is not a guarantee), and this score is driven by the static-read and reputation signals above, which flagged real concerns. Run it only inside a sandbox or throwaway environment.";
+}
+
+/**
+ * The hero summary, reconciled with whether the sandbox actually ran. The stored
+ * `summary` is written by the FAST PATH and closes with a "full runtime behavior
+ * was not executed in a sandbox on this pass" clause (the model is instructed to
+ * use exactly that framing). Once a deep run has attached forensics that clause is
+ * FALSE, and leaving it would make the report both show a "Sandbox run" badge AND
+ * claim it never ran — the contradiction this strips. We drop the stale clause and
+ * lead the reader into what the run actually found (the dynamic verdict headline),
+ * so badge, summary, and forensic sections all agree. When the sandbox did not run
+ * (`ranSandbox` false) the stored summary is correct and returned unchanged.
+ */
+function summaryForView(
+  staticSummary: string,
+  ranSandbox: boolean,
+  headline: string | undefined,
+): string {
+  if (!ranSandbox) return staticSummary;
+  const stripped = (staticSummary || "")
+    .replace(/[\s;,.]*\bfull runtime behavior was not executed in a sandbox on this pass\b\.?/i, "")
+    .replace(/[\s;,.]*\bruntime was not executed in a sandbox on this pass\b[^.]*\.?/i, "")
+    .trim();
+  const base = stripped ? (/[.!?]$/.test(stripped) ? stripped : `${stripped}.`) : "";
+  const head = (headline || "").trim();
+  if (head && base) return `${base} ${head}`;
+  return head || base || staticSummary;
 }
 
 function notVerified(ranSandbox: boolean): string[] {
@@ -398,6 +438,10 @@ export function buildReportView(r: Report): RepoView {
   return {
     ...r,
     verdict,
+    // Reconcile the hero summary with the run: once forensics exist, drop the
+    // stale "not executed in a sandbox" clause so the prose can't contradict the
+    // "Sandbox run" badge (honesty rail).
+    summary: summaryForView(r.summary, ranSandbox, forensicsView?._headline),
     ...(forensicsView ? { _forensics: forensicsView } : {}),
     _ranSandbox: ranSandbox,
     _color: bandColor(r.score),
@@ -406,7 +450,7 @@ export function buildReportView(r: Report): RepoView {
     _band: bandLabel(r.score),
     _ring: RING_CIRC * (1 - r.score / 100),
     _hasRisky: r.risky.length > 0,
-    _finalNote: finalNote(r.score, ranSandbox),
+    _finalNote: finalNote(r.score, forensicsView),
     _notVerified: notVerified(ranSandbox),
     _repBar: r.reputation.sentScore,
     _ownerInitial: (r.ownerHistory.name || "?").slice(0, 1).toUpperCase(),
