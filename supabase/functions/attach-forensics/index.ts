@@ -262,7 +262,7 @@ function buildRuntimeSummary(
         : rt.capturedHost
           ? `attempting to reach ${rt.capturedHost}`
           : `attempting outbound exfiltration`;
-    behaviorSentence = `We caught it ${what} — every outbound attempt was intercepted by the sandbox and never reached its destination.`;
+    behaviorSentence = `We caught it ${what}. Every outbound attempt was intercepted by the sandbox and never reached its destination.`;
   } else {
     behaviorSentence = "We observed no malicious behavior, credential access, or outbound exfiltration.";
   }

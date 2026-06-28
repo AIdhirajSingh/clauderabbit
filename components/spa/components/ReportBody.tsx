@@ -282,6 +282,10 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
           </div>
         </div>
 
+        {/* What running it revealed — the runtime evidence, woven in first-class
+            right after the summary signals (U2). Only for repos the sandbox ran. */}
+        {r._forensics && <ForensicSection f={r._forensics} />}
+
         {/* per-package */}
         <div style={{ border: "1px solid var(--line)", borderRadius: 20, overflow: "hidden", marginBottom: 18, background: "var(--s1)" }}>
           <div style={{ padding: "18px 26px", borderBottom: "1px solid var(--line)" }}>
@@ -315,9 +319,6 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
             </div>
           ))}
         </div>
-
-        {/* forensic record — only for repos that escalated to a sandbox run */}
-        {r._forensics && <ForensicSection f={r._forensics} />}
 
         {/* final verdict */}
         <div
@@ -415,65 +416,25 @@ function ForensicSection({ f }: { f: ForensicsView }) {
   const cont = f.raw.containment;
 
   return (
-    <section
-      aria-label="Sandbox forensic record"
-      style={{
-        position: "relative",
-        border: `1px solid ${f._verdictColor}`,
-        borderRadius: 22,
-        padding: 30,
-        background: f._verdictTint,
-        marginBottom: 18,
-        overflow: "hidden",
-        animation: "riseIn .6s var(--ease) both",
-      }}
-    >
-      {/* header: caught/dormant verdict, kept to code & behavior */}
-      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 14, flexWrap: "wrap" }}>
-        <span
-          style={{ position: "relative", width: 8, height: 8 }}
-          aria-hidden="true"
-        >
-          <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: f._verdictColor }} />
+    // U2: the runtime evidence is woven in as a FIRST-CLASS report section — a
+    // deeper member of the same family as a stage-1 report, NOT a tinted panel
+    // glued on. No verdict-color tint wrapper (the verdict + summary already live
+    // in the hero: one report, one verdict). The section title uses the same eyebrow
+    // treatment as "Reputation signals" / "Per-package scoring"; the caught-attack
+    // pulse rides the section dot. Each block below is a first-class hairline --s1
+    // card in the one shared design language.
+    <section aria-label="What running it revealed" style={{ marginBottom: 18, animation: "riseIn .6s var(--ease) both" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <span style={{ position: "relative", width: 8, height: 8 }} aria-hidden="true">
+          <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: f._verdictColor, boxShadow: `0 0 8px ${f._verdictColor}` }} />
           {f._caughtAttack && (
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                borderRadius: "50%",
-                background: f._verdictColor,
-                animation: "pulseRing 2s ease-out infinite",
-              }}
-            />
+            <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: f._verdictColor, animation: "pulseRing 2s ease-out infinite" }} />
           )}
         </span>
-        <Eyebrow>Sandbox forensic record</Eyebrow>
-        <span style={{ fontSize: 11.5, color: "var(--t2)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
-          We ran it
+        <span style={{ fontSize: 11.5, color: "var(--t3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+          What running it revealed
         </span>
       </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 12, flexWrap: "wrap" }}>
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "6px 14px",
-            borderRadius: 100,
-            border: `1px solid ${f._verdictColor}`,
-            background: "var(--s1)",
-          }}
-        >
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: f._verdictColor, boxShadow: `0 0 8px ${f._verdictColor}` }} />
-          <span style={{ fontSize: 13.5, fontWeight: 600, color: f._verdictColor }}>{f._verdictWord}</span>
-        </span>
-        <span style={{ fontSize: 13, color: "var(--t4)" }}>{f._verdictBand}</span>
-      </div>
-
-      <p style={{ fontSize: 16, color: "var(--t1)", lineHeight: 1.6, margin: "0 0 24px", textWrap: "pretty" }}>
-        {f._headline}
-      </p>
 
       {/* what it ran — the runtime story */}
       <div style={{ marginBottom: 18 }}>
