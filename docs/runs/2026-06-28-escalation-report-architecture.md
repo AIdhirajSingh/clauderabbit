@@ -84,7 +84,22 @@ re-test -> close). One-unit git, main green, gitleaks never bypassed, prove in t
 
 ## Unit log
 
-### U1 — Escalation owns a fresh complete report — CODE DONE + DEPLOYED, browser proof next (branch claude/escalation-owns-report off main)
+### U1 — Escalation owns a fresh complete report — DONE + PROVEN IN BROWSER + reviewed SHIP (branch claude/escalation-owns-report off main)
+**PROVEN:** re-detonated clawdcursor through the real /api/deep route; attach computed the fresh blend +
+persisted it; the browser report (localhost:2311/AmrDab/clawdcursor) re-rendered fully coherent:
+score **28 -> 49 "High risk"** (the escalation's blended score, NOT stage-1's 28), runtime-first
+HEDGE-FREE summary ("We ran AmrDab/clawdcursor, a node project, in an isolated sandbox. It built and
+started, then exited with an error on startup. We observed no malicious behavior, credential access, or
+outbound exfiltration. Its score is held down by post-install script execution."), **NO** "what we could
+not verify" list, **NO** hedge anywhere (logs rewritten — the stale "Queued… not executed" chapter gone),
+ONE coherent verdict (card==hero). Zero orphan VMs. Independent review SHIP. Gates: tsc/61 node/17 deno/
+18 verdict/lint/gitleaks all green. Commits 3c59ce5,2ae6fb2,b7fc34d,8518f3d,d59dfa8,b541bcb,a0c0d5a,d7d66a4.
+Follow-ups (non-blocking, deferred): M1 non-atomic SELECT-then-UPDATE; L1 log degraded read; L2 unused
+_possiblyDormant/_notVerified fields; L3 clawdcursor's persisted summary keeps minor wording (fixed at
+source for future runs). NEXT: PR -> merge -> U5a (kill any residual stale lines) / U2 (design.md render).
+
+(superseded status line below)
+### U1 (was) — CODE DONE + DEPLOYED, browser proof next (branch claude/escalation-owns-report off main)
 **Status:** all code landed + committed (3c59ce5 score, 2ae6fb2 attach+blend, b7fc34d frontend hedge-free,
 8518f3d verdict.py, d59dfa8 direct-update). attach-forensics DEPLOYED with the blend. Gates: tsc clean,
 node tests 61/61, deno scoring 17/17, verdict.py 18/18. NOTE: dropped the RPC migration — the edge fn
