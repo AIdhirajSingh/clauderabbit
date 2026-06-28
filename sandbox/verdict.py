@@ -222,10 +222,22 @@ def build_verdict(report):
     score = max(0, min(100, score))
 
     # --- honesty: always state what was NOT verified ------------------------
-    if not report.get("auto_build_succeeded"):
+    # Whether the code was actually EXERCISED gates how confidently we may read
+    # an absence of malice. Built AND ran-without-crash = exercised; anything
+    # less means the runtime was barely touched and a clean read is unverified.
+    built = bool(report.get("auto_build_succeeded"))
+    ran = bool(report.get("ran_without_crash"))
+    run_exercised = built and ran
+    if not built:
         not_verified.append(
             "The project did not build/install cleanly unattended, so its full "
             "runtime behavior could not be exercised in this run."
+        )
+    elif not ran:
+        not_verified.append(
+            "The project built but exited with an error shortly after starting "
+            "(it crashed on startup), so its runtime behavior was only minimally "
+            "exercised in this run."
         )
     if report.get("run_phase", {}).get("strace_available") is False:
         not_verified.append(
@@ -241,12 +253,21 @@ def build_verdict(report):
     color, label = band(score)
 
     # --- the verdict line — NEVER a bare "Safe" -----------------------------
-    if not findings:
+    if not findings and not run_exercised:
+        # We observed no malice, but we never actually exercised the code (build
+        # failed, or it crashed on startup). Rail #1: that is INCONCLUSIVE, never
+        # a confident green "Clean run". Keep it out of the clean bands and say so.
+        label = "Inconclusive"
+        color = "yellow"
+        if score > 64:
+            score = 64
         headline = (
-            "No malicious behavior observed in our sandbox run."
-            if report.get("auto_build_succeeded")
-            else "No malicious behavior observed, but the project did not run to completion."
+            "No malicious behavior observed, but the project did not run to "
+            "completion in our sandbox, so its runtime behavior is largely "
+            "unverified."
         )
+    elif not findings:
+        headline = "No malicious behavior observed in our sandbox run."
     else:
         crit = sum(1 for f in findings if f["severity"] == "critical")
         if attack_sinkholed:
@@ -256,9 +277,19 @@ def build_verdict(report):
                 "nothing delivered."
             )
         elif crit:
-            headline = "Malicious behavior observed when we ran this code."
+            headline = (
+                "Malicious behavior observed during build/install, before the "
+                "project finished starting."
+                if not run_exercised
+                else "Malicious behavior observed when we ran this code."
+            )
         else:
-            headline = "Suspicious behavior observed when we ran this code."
+            headline = (
+                "Suspicious behavior observed during build/install, before the "
+                "project finished starting."
+                if not run_exercised
+                else "Suspicious behavior observed when we ran this code."
+            )
 
     verdict = {
         "schema": "claude-rabbit/dynamic-verdict@1",
