@@ -191,12 +191,13 @@ function milestone(rawLine: string): Stage | null {
   return null;
 }
 
-/** POST the captured forensic record to the deployed attach-forensics endpoint. */
+/** POST the captured forensic record + the real run timeline to attach-forensics. */
 async function attachForensics(args: {
   owner: string;
   repo: string;
   sha: string;
   forensics: unknown;
+  timeline: Stage[];
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!SUPABASE_URL) return { ok: false, error: "NEXT_PUBLIC_SUPABASE_URL not configured" };
   const url = `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1/attach-forensics`;
@@ -215,6 +216,10 @@ async function attachForensics(args: {
         repo: args.repo,
         sha: args.sha,
         forensics: args.forensics,
+        // The REAL streamed run timeline (provision -> build -> run -> capture ->
+        // reset). attach-forensics validates + persists it so the cached report's
+        // "view logs" shows the complete record, not a 2-line stub.
+        timeline: args.timeline,
       }),
     });
     if (!res.ok) {
@@ -304,6 +309,10 @@ export async function POST(req: Request): Promise<Response> {
 
   const enc = new TextEncoder();
   let child: ChildProcess | null = null;
+  // The REAL run timeline, accumulated as it streams, so the captured record can be
+  // persisted with the report (not just shown live then lost). Only genuine run
+  // milestones are recorded — the "Persist" bookkeeping stage is excluded below.
+  const timeline: Stage[] = [];
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -315,6 +324,11 @@ export async function POST(req: Request): Promise<Response> {
         } catch {
           /* consumer gone; ignore */
         }
+      };
+      // Stream a run stage to the client AND record it for persistence.
+      const recordStage = (st: Stage) => {
+        timeline.push(st);
+        emit({ t: "stage", ...st });
       };
       const finish = () => {
         if (closed) return;
@@ -335,8 +349,7 @@ export async function POST(req: Request): Promise<Response> {
       };
 
       // M4: flush an initial stage immediately so the client sees life at once.
-      emit({
-        t: "stage",
+      recordStage({
         ch: "Escalate",
         status: "active",
         lines: ["Gate tripped — spawning a fresh sealed sandbox VM"],
@@ -368,7 +381,7 @@ export async function POST(req: Request): Promise<Response> {
           const line = errBuf.slice(0, nl);
           errBuf = errBuf.slice(nl + 1);
           const st = milestone(line);
-          if (st) emit({ t: "stage", ...st });
+          if (st) recordStage(st);
         }
       });
 
@@ -402,7 +415,7 @@ export async function POST(req: Request): Promise<Response> {
           status: "active",
           lines: ["Attaching the forensic record to the report row"],
         });
-        const attached = await attachForensics({ owner, repo, sha, forensics });
+        const attached = await attachForensics({ owner, repo, sha, forensics, timeline });
         if (attached.ok) {
           emit({
             t: "stage",
