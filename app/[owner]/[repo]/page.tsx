@@ -225,7 +225,7 @@ function ServerFooter() {
         color: "var(--t5)",
       }}
     >
-      Claude Rabbit — everyone reads the code. We run it.
+      Claude Rabbit — a free, open-source security product, protecting the open-source community from malware.
     </footer>
   );
 }
