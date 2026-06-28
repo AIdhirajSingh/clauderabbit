@@ -72,7 +72,12 @@
 ## Unit plan (dependency order) + status
 
 - **U1 — Escalation owns a fresh complete report** — ✅ DONE + MERGED (PR #18), proven in browser (clawdcursor 28->49 "High risk", hedge-free, coherent), reviewed SHIP.
-- **U5a — Kill the stale "Queued… not executed" line** — LARGELY SUBSUMED by U1 (escalated reports get rewritten logs). Minor residual cleanup for the transient pre-detonation/cached state — QUEUED low-pri.
+- **U5a — Kill the stale "Queued… not executed" line** — ✅ DONE (branch claude/real-logs): the stage-1
+  escalation chapter line "Queued for dynamic sandbox run (not executed on this pass)" — a FORBIDDEN hedge
+  ("not executed") on an escalated repo, and false under the inline moat — is replaced by the hedge-free
+  "Flagged for a live sandbox detonation" (scan/index.ts). Repo-wide sweep confirmed no other forbidden
+  hedge leaks onto an escalated path (remaining matches are static-read disclosures, tests, comments, or
+  the backend UNVERIFIED state — all correct).
 - **U2 — Report rendered as real designed frontend from design.md; forensics woven in first-class** — ✅ DONE (branch claude/report-design): the forensic evidence is re-woven as a first-class "What running it revealed" section in design.md's language (no amber panel, no duplicate verdict), proven in browser, independent design review SHIP.
 - **U3 — Sandbox speed** — ✅ DONE (branch claude/sandbox-speed): PARALLEL trap+detonation VM boot
   (background+wait, max not sum) + 5s SSH polling + ASYNC detonation-VM teardown (overlaps analysis/
@@ -85,7 +90,19 @@
   larger infra): golden TRAP image (bake squid/sinkd to remove the ~40s trap provision), warm VM pool
   (boot in seconds), faster machine for heavy builds, real parallel OpenCode (currently OFF in the inline
   path — CR_AGENTIC unset — so not in the critical path). Commits b36f258 (parallel boot) + f5a08ee (async teardown).
-- **U5b — Real OpenCode/AI stream surfaced live + full log persisted** — QUEUED (pairs with U3).
+- **U5b — Real run stream surfaced live + full log persisted** — ✅ DONE (branch claude/real-logs):
+  the /api/deep route already streams the REAL orchestrate milestones live (provision -> build -> run ->
+  capture -> reset — verified streaming on a live clawdcursor detonation: Escalate / Seal the network /
+  Clone + pin / Provision trap host / Provision detonation VM / Build under containment / Run under the
+  sinkhole / Capture + reset / Compute verdict). U5b makes that record PERSIST: the route accumulates the
+  streamed timeline and POSTs it to attach-forensics, which validates + collapses it (new pure leaf
+  _shared/run-timeline.ts, 8 Deno tests) into one chapter per real step in logs_json — so a cached report's
+  "view logs" shows the COMPLETE record, not the old 2-line stub. ALSO fixed a pre-existing bug found while
+  proving it: a re-attach DUPLICATED the "Sandbox run" chapter (rewriteEscalatedLogs only dropped
+  Score/Escalation); now it drops prior deep-run chapters (isDeepRunChapter) so a re-detonation REPLACES
+  the run section. OpenCode/agentic live-thinking is the documented swap (CR_AGENTIC off by default per
+  CLAUDE.md's placeholder seam + U3 speed); when it runs, its narration flows through the same timeline.
+  Independent security review: no CRITICAL/HIGH. Determinism + containment + honesty rails intact.
 - **U4 — World map: a dot per repo by origin, click->report, pulse new** — ✅ DONE (branch claude/world-map-origin):
   scan edge fn fetches the owner's GitHub `location` -> reputation_json (no migration); client resolves it
   (new resolveLocation: ~80 cities + US states + country fallback) to an ORIGIN dot per repo; egress geo

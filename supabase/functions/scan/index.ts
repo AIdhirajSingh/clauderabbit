@@ -821,6 +821,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           ageDays: -1,
           publicRepos: 0,
           established: false,
+          location: null,
         };
       }
       await emit({
@@ -916,8 +917,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
       });
 
       // Build logs from the model, then append the computed-score citation and the
-      // escalation decision. We never fabricate a dynamic run — an escalation only
-      // records that the deep path was QUEUED.
+      // escalation decision. This is the STAGE-1 record: it states the static read
+      // flagged the repo for a live detonation. It makes NO runtime claim and uses
+      // NO hedge ("not executed"/"unverified" are forbidden on an escalated repo) —
+      // when the inline moat detonates, attach-forensics REPLACES this chapter with
+      // the real "Sandbox run" timeline + the blended score.
       const logs = Array.isArray(model.logs) ? model.logs : [];
       logs.push(buildScoreChapter(score, scoreBreakdown));
       if (escalate) {
@@ -929,7 +933,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
             lines: [
               "Escalation gate tripped on the static read",
               `Reason: ${escalationReason}`,
-              "Queued for dynamic sandbox run (not executed on this pass)",
+              "Flagged for a live sandbox detonation",
             ],
           });
         }
