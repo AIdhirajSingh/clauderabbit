@@ -361,10 +361,32 @@ export const BG_COL_A_DBL = [...BG_COL_A, ...BG_COL_A];
 export const BG_COL_B_DBL = [...BG_COL_B, ...BG_COL_B];
 export const BG_COL_C_DBL = [...BG_COL_C, ...BG_COL_C];
 
-export const FOOTER_COLS: Array<{ links: string[] }> = [
-  { links: ["How it works", "Features", "FAQ", "Pricing"] },
-  { links: ["X (Twitter)", "LinkedIn", "Instagram", "GitHub"] },
-  { links: ["Privacy Policy", "Terms of Service", "Cookie Policy", "Support"] },
+// Footer links are REAL destinations on the open-source repository — no dead
+// `#` links, and nothing implying a feature that does not exist (e.g. no
+// "Pricing": the product is free). Everything points where it says it does.
+const REPO_URL = "https://github.com/AIdhirajSingh/clauderabbit";
+export const FOOTER_COLS: Array<{ links: Array<{ label: string; href: string }> }> = [
+  {
+    links: [
+      { label: "How it works", href: `${REPO_URL}#readme` },
+      { label: "Source code", href: REPO_URL },
+      { label: "Report an issue", href: `${REPO_URL}/issues` },
+    ],
+  },
+  {
+    links: [
+      { label: "Star the project", href: `${REPO_URL}/stargazers` },
+      { label: "Fork it", href: `${REPO_URL}/fork` },
+      { label: "Pull requests", href: `${REPO_URL}/pulls` },
+    ],
+  },
+  {
+    links: [
+      { label: "GitHub", href: REPO_URL },
+      { label: "Commit history", href: `${REPO_URL}/commits` },
+      { label: "Free & open source", href: `${REPO_URL}#readme` },
+    ],
+  },
 ];
 
 /**
