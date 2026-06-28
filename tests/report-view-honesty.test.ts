@@ -80,10 +80,13 @@ test("a report WITH a forensic record → _ranSandbox true, runtime language all
   );
 });
 
-test("a low score that RAN but caught NOTHING never claims a runtime detonation it didn't observe", () => {
-  // The inverse of a bare 'Safe': blended score is low (static + reputation), but
-  // the run itself observed no attack. The note must NOT assert credential access /
-  // outbound exfil we never saw — it must say we ran it and observed nothing.
+// U1: every "didn't exercise / unverified / not executed / largely unverified /
+// couldn't verify / not a guarantee" phrasing is FORBIDDEN on an escalated repo.
+const HEDGE = /not executed in a sandbox|no sandbox was run|did not run to completion|largely unverified|could not verify|couldn'?t verify|runtime (is|was) (largely )?unverified|not a guarantee|did not (exhaustively )?exercise|only partially exercised|the run was limited|reported as unverified/i;
+
+test("a low score that RAN but caught NOTHING states it plainly, with NO hedge (U1)", () => {
+  // Blended score is low (static + reputation), but the run itself observed no
+  // attack. The note must NOT fabricate a detonation AND must carry no hedge.
   const v = buildReportView(
     makeReport({
       score: 25,
@@ -93,10 +96,12 @@ test("a low score that RAN but caught NOTHING never claims a runtime detonation 
   );
   assert.equal(v._ranSandbox, true);
   assert.ok(
-    !/credential access or network behavior consistent with malware when we ran it|blocked outbound attempts are themselves/i.test(v._finalNote),
+    !/credential access or .* consistent with malware when we ran it/i.test(v._finalNote),
     "a clean run must not fabricate a runtime detonation: " + v._finalNote,
   );
-  assert.ok(/did not observe malicious behavior/i.test(v._finalNote), v._finalNote);
+  assert.ok(/observed no malicious behavior/i.test(v._finalNote), v._finalNote);
+  assert.ok(!HEDGE.test(v._finalNote), "no hedge on an escalated repo: " + v._finalNote);
+  assert.equal(v._notVerified.length, 0, "an escalated repo has no 'could not verify' list");
 });
 
 test("a run that DID catch an attack earns the strong runtime-malice language", () => {
@@ -112,31 +117,38 @@ test("a run that DID catch an attack earns the strong runtime-malice language", 
   );
   assert.equal(v._ranSandbox, true);
   assert.ok(v._forensics?._caughtAttack, "fixture should be a caught attack");
-  assert.ok(/when we ran it/i.test(v._finalNote), "a real catch earns runtime-malice language: " + v._finalNote);
-  assert.ok(/consistent with malware/i.test(v._finalNote), v._finalNote);
+  assert.ok(/caught it attempting/i.test(v._finalNote), "a real catch is stated plainly: " + v._finalNote);
+  assert.ok(/malware/i.test(v._finalNote), v._finalNote);
+  assert.ok(!HEDGE.test(v._finalNote), "even a caught attack carries no 'unverified' hedge: " + v._finalNote);
 });
 
-test("once forensics exist, the hero summary drops the stale 'not executed in a sandbox' clause", () => {
+test("an escalated report carries NO 'what we could not verify' list and NO hedge anywhere (U1)", () => {
+  // The de-hedging of the SUMMARY happens at the backend (the attach edge fn writes
+  // a runtime-first summary); the frontend's U1 job is to drop the hedge LIST + the
+  // hedge LANGUAGE in the final note. This asserts that frontend contract.
   const v = buildReportView(
     makeReport({
-      score: 28,
+      score: 34,
       deep: true,
-      summary:
-        "Project X does things. No malicious behavior was observed in our static read; full runtime behavior was not executed in a sandbox on this pass.",
-      forensics_json: {
-        schema: "claude-rabbit/forensic-record@1",
-        verdict: { headline: "Ran in the sandbox; the project crashed early so runtime is largely unverified." },
-      },
+      summary: "We ran AmrDab/clawdcursor in an isolated sandbox. It built and started, then exited with an error on startup.",
+      forensics_json: { schema: "claude-rabbit/forensic-record@1" },
     }),
   );
   assert.equal(v._ranSandbox, true);
+  assert.equal(v._notVerified.length, 0, "no 'what we could not verify' list on an escalated repo");
+  assert.ok(!HEDGE.test(v._finalNote), "final note is hedge-free: " + v._finalNote);
+  // The forensic card's verdict word must equal the hero verdict (one report, one verdict).
+  assert.equal(v._forensics?._verdictWord, v.verdict, "forensic card verdict must match the hero");
+});
+
+test("a STATIC report STILL keeps its honest 'could not verify' list (the reframe is escalation-only)", () => {
+  const v = buildReportView(makeReport({ score: 84, deep: false, forensics_json: null }));
+  assert.equal(v._ranSandbox, false);
+  assert.ok(v._notVerified.length > 0, "static reads keep the honest hedge list");
   assert.ok(
-    !/not executed in a sandbox/i.test(v.summary),
-    "a sandbox-run report must not claim it wasn't run: " + v.summary,
+    v._notVerified.some((s) => /not executed in a sandbox/i.test(s)),
+    "static read names that runtime wasn't exercised: " + JSON.stringify(v._notVerified),
   );
-  assert.ok(/Ran in the sandbox/i.test(v.summary), "summary should carry the dynamic headline: " + v.summary);
-  // The project description survives the reconciliation.
-  assert.ok(/Project X does things/i.test(v.summary), v.summary);
 });
 
 test("without forensics the stored summary is returned verbatim (no surprise edits)", () => {

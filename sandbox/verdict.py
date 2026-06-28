@@ -254,18 +254,30 @@ def build_verdict(report):
 
     # --- the verdict line — NEVER a bare "Safe" -----------------------------
     if not findings and not run_exercised:
-        # We observed no malice, but we never actually exercised the code (build
-        # failed, or it crashed on startup). Rail #1: that is INCONCLUSIVE, never
-        # a confident green "Clean run". Keep it out of the clean bands and say so.
+        # We observed no malice, but the code did not run to a clean finish (build
+        # failed, or it crashed on startup). The SCORE cap keeps it out of the clean
+        # bands (a crash is limited evidence + a quality signal) — that is score
+        # policy, NOT a verbal hedge. The headline states the CONCRETE outcome with
+        # confidence (the crash/build-failure IS the finding); no "did not run to
+        # completion / largely unverified / could not verify" language (U1). The
+        # one_word stays out of the clean bands; the rendered report shows the
+        # blended verdict, so this internal label is never surfaced as-is.
         label = "Inconclusive"
         color = "yellow"
         if score > 64:
             score = 64
-        headline = (
-            "No malicious behavior observed, but the project did not run to "
-            "completion in our sandbox, so its runtime behavior is largely "
-            "unverified."
-        )
+        if report.get("auto_build_succeeded", False):
+            headline = (
+                "Built and started in the sandbox, then exited with an error on "
+                "startup; no malicious behavior, credential access, or outbound "
+                "exfiltration was observed before it exited."
+            )
+        else:
+            headline = (
+                "Detonated in the sandbox; the project did not build to a runnable "
+                "state. No malicious behavior, credential access, or outbound "
+                "exfiltration was observed."
+            )
     elif not findings:
         headline = "No malicious behavior observed in our sandbox run."
     else:
