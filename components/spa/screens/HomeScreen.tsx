@@ -179,7 +179,7 @@ export function HomeScreen() {
                 whiteSpace: "nowrap",
               }}
             >
-              We read the code, then we run it
+              A security product for open source
             </span>
           </div>
           <h1
@@ -205,8 +205,9 @@ export function HomeScreen() {
               maxWidth: 480,
             }}
           >
-            Paste any GitHub repo. We clone it into an isolated sandbox, actually run it, and hand back one honest safety
-            score, before it ever touches your machine.
+            Claude Rabbit is a free, open-source security product for the developer community. Paste any public GitHub repo
+            and we clone it into an isolated sandbox, run it for real, and hand back one honest safety score: what the project
+            is, what it did when we ran it, and what we could not verify.
           </p>
 
           <div style={{ animation: "fadeIn .6s var(--ease) both" }}>
@@ -323,7 +324,7 @@ export function HomeScreen() {
               The danger board
             </h2>
             <p style={{ fontSize: 14.5, color: "var(--t4)", margin: "12px 0 0", maxWidth: 440, lineHeight: 1.55 }}>
-              The most dangerous repositories our sandbox has run and caught, named and ranked as they change.
+              The lowest-scoring repositories we&rsquo;ve flagged, named and ranked as they change.
             </p>
           </div>
           <button
@@ -358,7 +359,7 @@ export function HomeScreen() {
                 Nothing caught yet.
               </div>
               <div style={{ fontSize: 13, color: "var(--t4)", lineHeight: 1.55, maxWidth: 420, margin: "0 auto" }}>
-                The board lists only repos the sandbox has run and caught scoring low. Real catches appear here as they land.
+                The board lists only repos we&rsquo;ve flagged scoring low. Real catches appear here as they land.
               </div>
             </div>
           )}
@@ -416,12 +417,21 @@ export function HomeScreen() {
       <div className="reveal" style={{ position: "relative", zIndex: 1, maxWidth: 1040, margin: "140px auto 0", padding: "0 24px" }}>
         <div style={{ maxWidth: 620, marginBottom: 48 }}>
           <h2 className="serif" style={{ fontSize: "clamp(32px,4.4vw,46px)", margin: "0 0 18px", color: "var(--t1)", lineHeight: 1.02, letterSpacing: "-0.01em" }}>
-            We read the code, then we run it and watch.
+            We protect the world from open-source malware.
           </h2>
           <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
-            Reading source tells you what code is meant to do. Running it tells you what it actually does. We clone the
-            repository into a disposable, isolated cloud sandbox, execute it, and watch its real behavior. The sandbox
-            holds no real credentials, locks down network egress, and is reimaged to a clean state after every scan.
+            Claude Rabbit is a real security product &mdash; free and open-source &mdash; with one mission: protect the world
+            from open-source malware, and grow from there toward cybersecurity more broadly. We start where the threat is most
+            personal: the developers who clone and run unknown code every day. A repo or package can run hostile code the
+            moment you install it, draining GitHub tokens, cloud keys, and crypto wallets before a build even finishes. More
+            than 454,600 new malicious open-source packages appeared in 2025 &mdash; up 75% in a year &mdash; and the attacks
+            that matter carry no CVE at all; they only exist at runtime. So we run the code: every scan clones the repo into
+            a disposable, isolated sandbox, executes it, and watches what it actually does.
+          </p>
+          <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: "18px 0 0" }}>
+            It is a public good. Every scan we finish becomes a permanent public report, growing a shared, vetted-repo
+            database that belongs to the whole community &mdash; never locked behind a paywall. Signing in only saves your
+            history and adds to that shared record; it never buys you more.
           </p>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 18 }}>
@@ -483,8 +493,9 @@ export function HomeScreen() {
               Star it. Know before you run.
             </h2>
             <p style={{ fontSize: 16, color: "var(--t3)", margin: "0 0 30px", maxWidth: 440, lineHeight: 1.62 }}>
-              We are a free security tool for the open-source community. We read every repo&rsquo;s code and escalate the
-              riskiest to a real sandbox. If Claude Rabbit ever stops you running the wrong thing, a star is the only thanks we ask.
+              We are a free, open-source security product on a mission to protect the open-source community from malware.
+              Every scan grows a public database of vetted repositories &mdash; a community asset that belongs to everyone.
+              If Claude Rabbit ever stops you running the wrong thing, a star is the only thanks we ask.
             </p>
             <a
               href="https://github.com/AIdhirajSingh/clauderabbit"
@@ -576,7 +587,7 @@ export function HomeScreen() {
               fontSize: 12.5,
             }}
           >
-            <span>© 2026 Claude Rabbit · We read the code, then we run it — malware protection for the open-source community.</span>
+            <span>© 2026 Claude Rabbit · A free, open-source security product, protecting the open-source community from malware.</span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)", boxShadow: "0 0 7px var(--green)" }} />
               All systems operational
