@@ -103,7 +103,7 @@ export function DashboardScreen() {
           </button>
         ))}
       </div>
-      <div style={{ marginTop: 13, fontSize: 12, color: "var(--t5)" }}>A 15-second ad runs on each scan after your first.</div>
+      <div style={{ marginTop: 13, fontSize: 12, color: "var(--t5)" }}>Scan as much as you like — every scan grows the public database of vetted repos.</div>
 
       <div style={{ marginTop: 52 }}>
         <div style={{ fontSize: 11.5, color: "var(--t4)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 16 }}>

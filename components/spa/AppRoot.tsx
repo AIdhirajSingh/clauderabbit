@@ -19,7 +19,6 @@ import { Sidebar } from "./components/Sidebar";
 import { Toast } from "./components/Toast";
 import { LogsOverlay } from "./components/LogsOverlay";
 import { HomeScreen } from "./screens/HomeScreen";
-import { AdScreen } from "./screens/AdScreen";
 import { ProcessingScreen } from "./screens/ProcessingScreen";
 import { ReportScreen } from "./screens/ReportScreen";
 import { LeaderboardScreen } from "./screens/LeaderboardScreen";
@@ -32,8 +31,6 @@ function CurrentScreen() {
   switch (state.screen) {
     case "home":
       return <HomeScreen />;
-    case "ad":
-      return <AdScreen />;
     case "processing":
       return <ProcessingScreen />;
     case "report":
