@@ -60,6 +60,10 @@ function clampView(v: View): View {
 export function WorldMap({ dots, loaded }: WorldMapProps) {
   const [view, setView] = useState<View>(INITIAL_VIEW);
   const [dragging, setDragging] = useState(false);
+  // The "newly added" pulse anchor: a stable timestamp captured ONCE at mount
+  // (React-pure — Date.now() in render is impure). Repos scanned within ~10 min of
+  // opening the board pulse, then settle.
+  const [now] = useState(() => Date.now());
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -166,8 +170,7 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
             <path d={WORLD_OUTLINE_PATH} fill="var(--s3)" stroke="var(--line2)" strokeWidth={0.4} />
             {(() => {
               // A dot is "newly added" for ~10 minutes after its repo was first
-              // scanned; it pulses, then settles. Computed once per render.
-              const now = Date.now();
+              // scanned; it pulses, then settles. `now` is the stable mount anchor.
               return dots.map((d) => {
                 const color = BAND_COLOR[d.band];
                 const isNew = d.createdAt != null && now - Date.parse(d.createdAt) < 600_000;
