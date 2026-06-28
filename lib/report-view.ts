@@ -159,7 +159,7 @@ function finalNote(score: number, forensics: ForensicsView | undefined): string 
   // evidence), and the low-score reason names the static + reputation concerns
   // (explanation, not a hedge). Caught-attack language must survive (never softened).
   if (forensics._caughtAttack) {
-    return "We ran it in the sandbox and caught it attempting credential access or outbound exfiltration — every outbound attempt was intercepted and never reached its destination. This is malware behavior; do not run it outside a fully disposable environment.";
+    return "We ran it in the sandbox and caught it attempting credential access or outbound exfiltration. Every outbound attempt was intercepted and never reached its destination. This is malware behavior; do not run it outside a fully disposable environment.";
   }
   // Ran, nothing malicious observed. Say exactly that, plainly. When the score is
   // low it is driven by the static read + reputation, which we NAME as the reason.
