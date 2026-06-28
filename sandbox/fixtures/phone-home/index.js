@@ -13,6 +13,7 @@
  * www.example.com is the RFC-2606 documentation domain — a safe, real,
  * resolvable target that exists precisely to be used in examples like this.
  */
+/* eslint-disable @typescript-eslint/no-require-imports */
 'use strict';
 const https = require('https');
 const dns = require('dns');

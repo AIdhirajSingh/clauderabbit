@@ -439,9 +439,9 @@ export const ACTIVITY: ActivityEntry[] = [
 
 /** Homepage "use case" cards — honest product copy (what the tool is for). */
 export const useCases: UseCase[] = [
-  { no: "01", title: "Cloning a tutorial", body: "You found a repo on a forum and you are about to npm install. Check it first, in seconds, before it touches your machine." },
-  { no: "02", title: "Vetting a dependency", body: "A library looks useful but the owner is unfamiliar. See what it does at install time and whether the account is real." },
-  { no: "03", title: "The take-home task", body: "A recruiter sent a repo to clone and run. The oldest trick in the book. We run it in a sandbox so you never have to." },
+  { no: "01", title: "Cloning a tutorial", body: "You found a repo on a forum and you are about to npm install. We run it in a sandbox and hand back an honest score in seconds." },
+  { no: "02", title: "Vetting a dependency", body: "A library looks useful but the owner is unfamiliar. We surface what it does at install time and whether the account is real." },
+  { no: "03", title: "The take-home task", body: "A recruiter sent a repo to clone and run — the oldest trick in the book. We run it in a sandbox and report exactly what it tried to do." },
   { no: "04", title: "Agents that clone and run", body: "Autonomous coding agents pull and execute code with no human watching. A scan is the guardrail before they run." },
 ];
 
