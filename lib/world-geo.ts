@@ -228,6 +228,13 @@ export function resolveLocation(
     const hit = CITY_COORDS[city];
     if (hit && city.length > 3 && raw.includes(city)) return hit;
   }
+  // US state (name or 2-letter code) BEFORE the country fallback, so "City, CA" /
+  // "City, Texas" resolve to the US. Major non-US cities are already caught by the
+  // city table above, so the ambiguous 2-letter codes (ca, in, de) rarely mis-fire.
+  const us = COUNTRY_CENTROIDS["united states"];
+  if (us) {
+    for (const p of parts) if (US_STATES.has(p)) return us;
+  }
   // Country from a comma-part (prefer the last part, usually the country) then whole.
   for (const p of [...parts].reverse()) {
     const c = centroidForCountry(p);
@@ -235,6 +242,20 @@ export function resolveLocation(
   }
   return centroidForCountry(raw);
 }
+
+/** US state names + USPS codes, for "City, State" locations that omit the country. */
+const US_STATES: Set<string> = new Set([
+  "alabama", "al", "alaska", "ak", "arizona", "az", "arkansas", "ar", "california", "ca",
+  "colorado", "co", "connecticut", "ct", "delaware", "de", "florida", "fl", "georgia", "ga",
+  "hawaii", "hi", "idaho", "id", "illinois", "il", "indiana", "in", "iowa", "ia", "kansas", "ks",
+  "kentucky", "ky", "louisiana", "la", "maine", "me", "maryland", "md", "massachusetts", "ma",
+  "michigan", "mi", "minnesota", "mn", "mississippi", "ms", "missouri", "mo", "montana", "mt",
+  "nebraska", "ne", "nevada", "nv", "new hampshire", "nh", "new jersey", "nj", "new mexico", "nm",
+  "new york state", "north carolina", "nc", "north dakota", "nd", "ohio", "oh", "oklahoma", "ok",
+  "oregon", "or", "pennsylvania", "pa", "rhode island", "ri", "south carolina", "sc",
+  "south dakota", "sd", "tennessee", "tn", "texas", "tx", "utah", "ut", "vermont", "vt",
+  "virginia", "va", "washington state", "wa", "west virginia", "wv", "wisconsin", "wi", "wyoming", "wy",
+]);
 
 /**
  * Hand-built low-poly continent outline, authored against the equirectangular
