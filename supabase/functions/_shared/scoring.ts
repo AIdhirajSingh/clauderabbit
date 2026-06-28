@@ -492,6 +492,25 @@ function reputationDeltas(rep: ScoringReputation): ScoreDelta[] {
 // --- Public API --------------------------------------------------------------
 
 /**
+ * The one-word verdict for a score band — the SINGLE source of truth for the
+ * score->verdict map, used by both the fast path and the escalation/attach path.
+ * Derived PURELY from the computed score so the verdict can never be a bare "Safe"
+ * and can never disagree with the band. Dangerous band splits at 30 into "High
+ * risk" (30-59) and "Malicious" (<30), matching the read-model prompt + design.md.
+ */
+export function verdictForScore(score: number): string {
+  return score >= 90
+    ? "Trusted"
+    : score >= 80
+      ? "Likely safe"
+      : score >= 60
+        ? "Caution"
+        : score >= 30
+          ? "High risk"
+          : "Malicious";
+}
+
+/**
  * Compute the authoritative safety score from weighted, named signals.
  *
  * The model FEEDS the signals; this function DECIDES the number. Code/behavior
@@ -524,4 +543,128 @@ export function computeScore(inputs: ScoringInputs): ScoreResult {
     });
   }
   return { score, baseline: BASELINE, breakdown };
+}
+
+// --- Escalated (deep-run) score ----------------------------------------------
+//
+// When a repo escalates and the sandbox ACTUALLY RUNS it, the escalation OWNS the
+// report: the score is recomputed with the RUNTIME observation as the PRIMARY
+// term, not the stage-1 static/reputation number with forensics bolted on. The
+// runtime is the strongest signal (we ran it), so it leads; the static read and
+// reputation become bounded adjustments. Exercise-gating is the rail that stops a
+// run which never really executed (crash on startup, build failure) from being
+// whitewashed into a clean band — a crash is limited evidence AND a quality
+// signal, so its score is capped. This is score policy, not a verbal hedge.
+
+/** A caught attack (observed egress / credential read / captured C2 host) hard-caps
+ * the score — the runtime dominates and the verdict must read dangerous. Sits below
+ * the "Malicious" band split so the band and the narrative always agree. */
+const ESC_CAUGHT_ATTACK_CEILING = 25;
+/** A run that did not BOTH build and run cleanly (crashed/failed to build) cannot
+ * reach the clean bands: we saw less, and software that crashes on startup is itself
+ * a trust signal. Matches verdict.py's dynamic-score cap for non-exercised runs. */
+const ESC_INCOMPLETE_RUN_CEILING = 64;
+/** Floor on the residual static concern (NEGATIVE-only): unresolved static findings
+ * the short run didn't exercise can lower the score, bounded, but never raise it. */
+const ESC_STATIC_RESIDUAL_FLOOR = -18;
+
+/** Inputs for the escalated (deep-run) score. The edge function extracts the
+ * runtime primitives from the forensic record and supplies the stage-1 code
+ * findings + reputation as the bounded adjustments. Pure: no forensic-JSON
+ * coupling here, so this stays deterministic + unit-testable. */
+export interface ScoringEscalatedInputs {
+  /** The runtime assessment from verdict.py (`forensics.verdict.dynamic_score`). */
+  dynamicScore: number;
+  /** The repo BOTH built and ran without crashing (auto_build_succeeded && ran_without_crash). */
+  exercised: boolean;
+  /** The run was caught attempting egress / credential theft / reached a captured C2 host. */
+  caughtAttack: boolean;
+  /** Stage-1 code/behavior findings — residual static concern the run did not resolve. */
+  codeRisky: ScoringRiskyItem[];
+  /** Reputation facts (owner/community) — same bounded, separate group as the fast path. */
+  reputation: ScoringReputation;
+}
+
+/**
+ * Compute the escalated score: runtime-PRIMARY, with bounded static + reputation
+ * adjustments and exercise-gating ceilings. Returns the same `ScoreResult` shape
+ * (a full citation trail whose deltas sum from `baseline` to `score`), so the
+ * escalated report's "Score" chapter is as auditable as the fast path's.
+ *
+ * Pure and deterministic — identical inputs always yield an identical result, so
+ * a fresh deep run and a later cached view of the same commit score identically.
+ */
+export function computeEscalatedScore(inputs: ScoringEscalatedInputs): ScoreResult {
+  const dyn = clampScore(inputs.dynamicScore);
+  // A caught attack is never treated as a "clean exercised" run, even if it built+ran.
+  const cleanExercised = inputs.exercised && !inputs.caughtAttack;
+  const breakdown: ScoreDelta[] = [];
+
+  // PRIMARY term: the score starts from what running it actually showed.
+  breakdown.push({
+    factor: "runtime_observation",
+    delta: dyn,
+    detail: `The sandbox run scored ${dyn}/100 from observed runtime behavior — the primary signal.`,
+    group: "code",
+  });
+
+  // Residual static concern (NEGATIVE-only, bounded): code/behavior the static read
+  // flagged that the run did not exercise. Running clean does not erase a real
+  // undisclosed install hook; static fear can never RAISE a score the run earned.
+  const codeRisky = inputs.codeRisky.filter((r) => r.kind === "code" || r.kind === "behavior");
+  let staticSum = 0;
+  for (const r of codeRisky) staticSum += severityWeight(r.severity);
+  const staticAdj = Math.max(ESC_STATIC_RESIDUAL_FLOOR, Math.min(0, staticSum));
+  if (staticAdj < 0) {
+    breakdown.push({
+      factor: "static_residual",
+      delta: staticAdj,
+      detail: `${codeRisky.length} static code/behavior concern(s) the run did not exercise (bounded residual risk).`,
+      group: "code",
+    });
+  }
+
+  // Reputation — bounded nudge, structurally separate. When the run did NOT cleanly
+  // exercise the code (a caught attack, a crash, or a build failure), reputation may
+  // only LOWER: a good reputation cannot lift a score the run did not earn.
+  const repRaw = reputationDeltas(inputs.reputation);
+  if (cleanExercised) {
+    breakdown.push(...repRaw);
+  } else {
+    breakdown.push(...repRaw.filter((d) => d.delta < 0));
+  }
+
+  let rawSum = breakdown.reduce((s, d) => s + d.delta, 0);
+
+  // Exercise-gating ceilings (score policy, not a hedge).
+  const ceiling = inputs.caughtAttack
+    ? ESC_CAUGHT_ATTACK_CEILING
+    : !inputs.exercised
+      ? ESC_INCOMPLETE_RUN_CEILING
+      : 100;
+  if (rawSum > ceiling) {
+    breakdown.push({
+      factor: inputs.caughtAttack ? "caught_attack_ceiling" : "incomplete_run_ceiling",
+      delta: ceiling - rawSum,
+      detail: inputs.caughtAttack
+        ? `Caught attempting credential access or outbound exfiltration in the sandbox; the score is capped at ${ceiling}.`
+        : `The repo did not both build and run cleanly in the sandbox; the score is capped at ${ceiling}.`,
+      group: "code",
+    });
+    rawSum = ceiling;
+  }
+
+  const score = clampScore(rawSum);
+  const rounded = Math.round(rawSum);
+  if (score !== rounded) {
+    breakdown.push({
+      factor: score <= 0 ? "clamp_floor" : "clamp_ceiling",
+      delta: score - rounded,
+      detail: `Raw score ${rounded} clamped to the ${score <= 0 ? "0" : "100"} bound (a safety score is always 0-100).`,
+      group: "code",
+    });
+  }
+  // baseline 0: the runtime observation is itself the first delta, so
+  // `baseline + Σ(breakdown deltas) === score` holds exactly.
+  return { score, baseline: 0, breakdown };
 }
