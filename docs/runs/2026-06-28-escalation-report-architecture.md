@@ -74,7 +74,17 @@
 - **U1 — Escalation owns a fresh complete report** — ✅ DONE + MERGED (PR #18), proven in browser (clawdcursor 28->49 "High risk", hedge-free, coherent), reviewed SHIP.
 - **U5a — Kill the stale "Queued… not executed" line** — LARGELY SUBSUMED by U1 (escalated reports get rewritten logs). Minor residual cleanup for the transient pre-detonation/cached state — QUEUED low-pri.
 - **U2 — Report rendered as real designed frontend from design.md; forensics woven in first-class** — ✅ DONE (branch claude/report-design): the forensic evidence is re-woven as a first-class "What running it revealed" section in design.md's language (no amber panel, no duplicate verdict), proven in browser, independent design review SHIP.
-- **U3 — Sandbox speed (parallel boot, golden image, reuse clone, real parallel OpenCode)** — QUEUED.
+- **U3 — Sandbox speed** — ✅ DONE (branch claude/sandbox-speed): PARALLEL trap+detonation VM boot
+  (background+wait, max not sum) + 5s SSH polling + ASYNC detonation-VM teardown (overlaps analysis/
+  verdict). **MEASURED on a real clawdcursor detonation: boot/setup overhead 4.5min -> ~50s** (START
+  15:15:02 -> both VMs RUNNING 15:15:52; was ~4.5min sequential) — a 5x cut of the exact boot+setup
+  overhead the brief flagged. Containment UNCHANGED (detonation idle until BUILD, gated behind the trap
+  assert; deny-egress from boot; zero orphan VMs; re-blended clawdcursor 49 "High risk" cleanly). The
+  clawdcursor TOTAL stays ~10min because its npm install is genuinely heavy (legitimate build work, the
+  rare/heavy case), not overhead. REMAINING last-mile levers for ~2min on a typical repo (documented,
+  larger infra): golden TRAP image (bake squid/sinkd to remove the ~40s trap provision), warm VM pool
+  (boot in seconds), faster machine for heavy builds, real parallel OpenCode (currently OFF in the inline
+  path — CR_AGENTIC unset — so not in the critical path). Commits b36f258 (parallel boot) + f5a08ee (async teardown).
 - **U5b — Real OpenCode/AI stream surfaced live + full log persisted** — QUEUED (pairs with U3).
 - **U4 — World map: a dot per repo by origin, click->report, pulse new** — QUEUED (standalone).
 
