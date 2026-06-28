@@ -38,7 +38,7 @@ import {
   type RiskyItemView,
 } from "@/lib/report-view";
 import { parseRepoInput } from "@/lib/parse-repo";
-import { runScan } from "@/lib/scan";
+import { runScan, type ScanStage } from "@/lib/scan";
 import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
@@ -145,6 +145,14 @@ interface State {
    */
   procLive: boolean;
   /**
+   * The REAL streamed scan stages for a live scan (BUG-5/6) — each appended as
+   * the edge function emits it, so the timeline reflects actual work, not canned
+   * text on a timer. Empty for demo scans and for a fast cache hit.
+   */
+  procStages: LogChapter[];
+  /** The stage currently running (its `active` event arrived, `done` has not). */
+  procActiveCh: string | null;
+  /**
    * The danger-board bundle (real DB data: ranked caught repos, map dots, live
    * counts, score histogram). Lazily fetched on first board navigation — never
    * on the homepage — so the marketing/SEO surface stays cheap. Starts empty
@@ -205,6 +213,8 @@ const initialState: State = {
   sidebarCollapsed: false,
   liveReports: {},
   procLive: false,
+  procStages: [],
+  procActiveCh: null,
   board: EMPTY_BOARD_DATA,
   boardLoading: false,
   boardPage: 0,
@@ -370,35 +380,6 @@ const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = SUGGESTION_IDS.ma
   (id) => ({ id, label: id }),
 );
 
-/**
- * Generic fast-path timeline shown while a REAL scan is in flight (the live
- * scan has no pre-known demo logs). Mirrors the fast-path chapters the edge
- * function actually runs: clone → static scan → reputation → read. The step
- * advances on the same timer as the demo flow; the report is shown when the
- * network call resolves, not when the timer ends.
- */
-const LIVE_PROC_CHAPTERS: LogChapter[] = [
-  {
-    ch: "Clone",
-    kind: "ok",
-    lines: ["Resolving the repository and its latest commit", "Reading the tree at the resolved SHA"],
-  },
-  {
-    ch: "Static scan",
-    kind: "ok",
-    lines: ["Scanning for install hooks, obfuscation, and credential access", "Flagging regions for the read model"],
-  },
-  {
-    ch: "Reputation",
-    kind: "ok",
-    lines: ["Checking owner account age and history", "Folding in community signal (kept separate from code)"],
-  },
-  {
-    ch: "Read",
-    kind: "ok",
-    lines: ["Read model reading only the flagged regions", "Blending the score and finalizing the verdict"],
-  },
-];
 
 // ───────────────── report-view derivation (shared) ─────────────────
 // finalNote / notVerified / sev* / kindLabel / logColor / buildReportView all
@@ -640,6 +621,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const liveScanToken = useRef(0);
   // The pending live-scan target (owner/repo + ref) for retry.
   const liveScanTarget = useRef<{ owner: string; repo: string; ref?: string } | null>(null);
+  // The source of truth for streamed stages during an in-flight scan. `patch` is
+  // a plain dispatch (NOT a functional updater), so rapid onStage events must
+  // accumulate here and copy into reducer state, never read stale reducer state.
+  const procStagesRef = useRef<LogChapter[]>([]);
   // The report id whose on-demand fetch is in flight. A ref (set synchronously
   // before the await) dedupes concurrent ensureActiveReport calls — including a
   // React StrictMode double-mount — without waiting for an async reducer commit.
@@ -981,6 +966,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       liveScanTarget.current = { owner, repo, ...(ref ? { ref } : {}) };
       const token = ++liveScanToken.current;
 
+      // Reset the real-stage accumulator for this scan (BUG-5/6). The timeline
+      // is now driven by REAL streamed events, not a canned timer.
+      procStagesRef.current = [];
       patch({
         screen: "processing",
         procRepoId: id,
@@ -989,26 +977,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
         procStep: 0,
         procDeep: false,
         failed: false,
+        procStages: [],
+        // A non-null placeholder so the timeline shows a single live spinner
+        // immediately — a fast cache hit (no streamed stages) never flashes a
+        // blank timeline before navigating to the report.
+        procActiveCh: "Starting scan",
       });
 
       if (procTimer.current) clearInterval(procTimer.current);
       if (adTimer.current) clearInterval(adTimer.current);
-      const total = LIVE_PROC_CHAPTERS.length;
-      // Advance through the chapters, then hold on the last one until the
-      // network call resolves (do not auto-advance past it).
-      procTimer.current = setInterval(() => {
-        const step = stateRef.current.procStep + 1;
-        if (step >= total - 1) {
-          patch({ procStep: total - 1 });
-          if (procTimer.current) clearInterval(procTimer.current);
-        } else {
-          patch({ procStep: step });
+
+      // Each REAL streamed stage updates the timeline. Token-guarded so late
+      // events from a superseded/retried scan can never paint over a newer one.
+      const onStage = (stage: ScanStage): void => {
+        if (token !== liveScanToken.current) return;
+        if (stage.status === "active") {
+          patch({ procActiveCh: stage.ch });
+          return;
         }
-      }, PROC_STEP_MS);
+        // done → append the completed chapter with its REAL lines. Validate the
+        // kind against the allowed set rather than trusting the wire value.
+        const kind: LogChapter["kind"] =
+          stage.kind === "warn" || stage.kind === "bad" ? stage.kind : "ok";
+        procStagesRef.current = [
+          ...procStagesRef.current,
+          { ch: stage.ch, kind, lines: stage.lines ?? [] },
+        ];
+        patch({ procStages: procStagesRef.current, procActiveCh: null });
+      };
 
       // Always send the deviceId (limits are tracked by login AND device) plus
-      // the session access token when signed in, so the function can verify the
-      // user and enforce the per-user / per-device daily limit server-side.
+      // the session access token when signed in, so the function can verify and
+      // attribute the scan server-side.
       const deviceId = getDeviceId();
       const accessToken = sessionRef.current?.access_token;
       runScan({
@@ -1017,13 +1017,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...(ref ? { ref } : {}),
         ...(deviceId ? { deviceId } : {}),
         ...(accessToken ? { accessToken } : {}),
+        onStage,
       })
         .then((result) => {
           // Ignore a resolution that has been superseded (newer scan / retry).
           if (token !== liveScanToken.current) return;
           if (procTimer.current) clearInterval(procTimer.current);
           if (!result.ok) {
-            patch({ failed: true });
+            // Clear live-scan state so the failed card never sits on stale
+            // streaming flags (procLive / procActiveCh) until the user retries.
+            patch({ failed: true, procLive: false, procActiveCh: null });
             return;
           }
           const report = result.report;
@@ -1048,7 +1051,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // surfaces the retryable failed state rather than hanging the loader.
           if (token !== liveScanToken.current) return;
           if (procTimer.current) clearInterval(procTimer.current);
-          patch({ failed: true });
+          patch({ failed: true, procLive: false, procActiveCh: null });
         });
     },
     [patch, toast],
@@ -1576,16 +1579,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The processing screen drives off a demo repo's known logs OR, for a real
   // scan in flight, the generic live timeline. `procLogs` is whichever applies.
   const procDemoRepo = state.procRepoId ? REPOS[state.procRepoId] : null;
+  // Demo flow only — a live scan's timeline comes from real streamed stages.
   const procLogs = useMemo<LogChapter[]>(
-    () => (state.procLive ? LIVE_PROC_CHAPTERS : (procDemoRepo?.logs ?? [])),
-    [state.procLive, procDemoRepo],
+    () => procDemoRepo?.logs ?? [],
+    [procDemoRepo],
   );
   const procChapters = useMemo<ProcChapterView[]>(() => {
-    if (procLogs.length === 0) return [];
-    return procLogs.map((l, i) => {
-      const st = i < state.procStep ? "done" : i === state.procStep ? "active" : "pending";
+    const mk = (
+      l: LogChapter,
+      st: "done" | "active" | "pending",
+      isLast: boolean,
+    ): ProcChapterView => {
       const col = logColor(l.kind);
-      const isLast = i >= procLogs.length - 1;
       return {
         ch: l.ch,
         lines: l.lines,
@@ -1598,8 +1603,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
         _showCheck: st === "done",
         _lineThrough: isLast ? "transparent" : st === "done" ? col : "var(--line)",
       };
-    });
-  }, [procLogs, state.procStep]);
+    };
+    if (state.procLive) {
+      // REAL streamed stages (BUG-5/6): each received stage is done; the active
+      // stage (if any) shows the loader. No fabricated pending steps, ever.
+      const out: ProcChapterView[] = [];
+      const hasActive = state.procActiveCh != null;
+      state.procStages.forEach((l, i) => {
+        out.push(mk(l, "done", !hasActive && i === state.procStages.length - 1));
+      });
+      if (state.procActiveCh != null) {
+        out.push(mk({ ch: state.procActiveCh, kind: "ok", lines: [] }, "active", true));
+      }
+      return out;
+    }
+    // Demo flow: known logs advanced by the demo timer (clearly-demo examples).
+    if (procLogs.length === 0) return [];
+    return procLogs.map((l, i) =>
+      mk(
+        l,
+        i < state.procStep ? "done" : i === state.procStep ? "active" : "pending",
+        i >= procLogs.length - 1,
+      ),
+    );
+  }, [state.procLive, state.procStages, state.procActiveCh, procLogs, state.procStep]);
 
   // For a live scan the repo name comes from the pending id; otherwise the demo repo.
   const procName = procDemoRepo
@@ -1607,13 +1634,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     : state.procLive && state.procRepoId
       ? state.procRepoId
       : "";
-  const procPhase = procLogs.length
-    ? state.procStep >= procLogs.length - 1
-      ? "Finalizing verdict"
-      : state.procDeep && state.procStep >= 3
-        ? "Running in the sandbox"
-        : "Analyzing"
-    : "";
+  const procPhase = state.procLive
+    ? state.procActiveCh
+      ? state.procActiveCh
+      : state.procStages.length > 0
+        ? "Finalizing verdict"
+        : "Starting scan"
+    : procLogs.length
+      ? state.procStep >= procLogs.length - 1
+        ? "Finalizing verdict"
+        : state.procDeep && state.procStep >= 3
+          ? "Running in the sandbox"
+          : "Analyzing"
+      : "";
 
   const pickSuggestion = useCallback(
     (id: string) => {

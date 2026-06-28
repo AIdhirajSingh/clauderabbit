@@ -30,3 +30,23 @@ export function jsonResponse(body: unknown, status = 200): Response {
 export function preflightResponse(): Response {
   return new Response(null, { status: 204, headers: corsHeaders });
 }
+
+/**
+ * Build a STREAMING Response (NDJSON by default) with CORS headers applied. A
+ * raw `new Response(stream)` would omit the CORS headers `jsonResponse` adds, so
+ * the browser would block every cross-origin streamed scan — this helper makes
+ * that impossible to forget. Always HTTP 200; in-band events carry success/error.
+ */
+export function streamResponse(
+  body: ReadableStream<Uint8Array>,
+  contentType = "application/x-ndjson",
+): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": contentType,
+      "Cache-Control": "no-cache",
+    },
+  });
+}
