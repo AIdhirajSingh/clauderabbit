@@ -121,6 +121,29 @@ Refined by the no-default-network finding. Build egress UP through the forge:
 Then A4: rewire orchestrate + /api/deep to host+microVM, reuse stage-1 clone, keep milestones+forensics,
 browser proof; cut over only after containment >= the two-VM moat.
 
+## A3 PROVEN — the deceptive forging egress unlocks condition-gated malware (the core correctness fix)
+On cr-host-build, a condition-gated exfil fixture (beacon C2 -> only if it answers, read+exfil decoy creds)
+was detonated through the forge. Under the OLD sinkhole this stays dormant (false clean); under the forge:
+- `forge-up.sh` builds a per-run netns: dummy `forge0`@169.254.0.1, dnsmasq answer-all -> forge IP, iptables
+  REDIRECT (nat OUTPUT+PREROUTING) all TCP -> mitmproxy:8080 transparent (`--showhost --set
+  upstream_cert=false --set connection_strategy=lazy`, the upstream_cert=false was the fix for the TLS
+  handshake hang), `--ignore-hosts` registry allowlist, loading `forge_addon.py`. CA: guest trusts
+  /root/.mitmproxy/mitmproxy-ca-cert.pem (the analog of baking the CA into the guest rootfs).
+- PROOF (real run): `CR_FIX_BEACON status=200` (forge answered as the C2) -> `CR_FIX_GATE open` -> 
+  `CR_FIX_CRED_READ bytes=98` -> `CR_FIX_EXFIL_SENT status=200` -> `CR_FIX_DONE ran`. The forge CAPTURE:
+  `evil-c2.example /beacon sni=evil-c2.example` and `drop.evil-c2.example /upload | body: [default]
+  aws_access_key_id=AKIA_CR_DECOY_CANARY aws_secret_access_key=...` — the FULL attack (beacon + the
+  exfiltrated decoy creds, with the REAL intended C2 names via SNI/pretty_host) captured as forensic
+  evidence. No real packet left (netns has only 169.254.0.0/24, no default route; every name -> forge IP).
+  `forge-down.sh`: netns_left=0 mitm_procs_left=0 (zero orphans, per-run reset).
+- Honest-limits hook present: a client TLS refusal after our leaf (cert-pinning/mTLS) -> captured as
+  `tls_intercept_refused` ("encrypted C2 attempted, interception refused"), never a false clean.
+- Fixed in installer: added `dnsmasq-base` to base packages (forge DNS).
+- NEXT (A4): integrate the microVM's Kata-CNI egress into the forge netns (so the malware runs IN the
+  microVM, not a host process), then rewire /api/deep -> single-host+microVM substrate, browser proof,
+  retire the two-VM path. The forge correctness itself is now PROVEN; A4 is the microVM<->forge wiring +
+  app integration.
+
 ## Live status
 - 2026-06-28: mandate received. Comprehended current arch + infra. Started A0 feasibility probe.
 - **A0a RESULT — GREEN LIGHT (the load-bearing fact is YES):** on a `n2-standard-4 --enable-nested-virtualization`

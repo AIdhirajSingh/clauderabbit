@@ -29,7 +29,7 @@ if [ -e /dev/kvm ]; then mark KVM ok; else mark KVM FAIL; echo "no /dev/kvm — 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null 2>&1
 apt-get install -y ca-certificates curl gnupg jq bc dmsetup squashfs-tools e2fsprogs \
-  iptables iproute2 git pipx zstd >/dev/null 2>&1
+  iptables iproute2 git pipx zstd dnsmasq-base >/dev/null 2>&1
 mark BASEPKGS $?
 
 # ── Stage 2: containerd (Docker repo build — known-good devmapper snapshotter) ───────

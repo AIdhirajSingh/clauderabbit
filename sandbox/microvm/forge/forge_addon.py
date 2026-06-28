@@ -62,11 +62,18 @@ class Forge:
 
     def request(self, flow: http.HTTPFlow) -> None:
         req = flow.request
+        # The INTENDED destination: prefer the TLS SNI / Host header (the real C2 name),
+        # not the forge IP the client actually connected to. pretty_host is the Host
+        # header when present; client_conn.sni is the TLS name for https flows.
+        sni = getattr(flow.client_conn, "sni", None)
+        intended = sni or req.pretty_host or req.host
         _emit(
             {
                 "kind": "http_request",
                 "scheme": req.scheme,
-                "host": req.host,          # the INTENDED destination (real C2 / exfil target)
+                "host": intended,          # the INTENDED destination (real C2 / exfil target)
+                "sni": sni,
+                "connected_ip": req.host,  # what it actually connected to (the forge)
                 "port": req.port,
                 "method": req.method,
                 "path": req.path,
@@ -92,10 +99,11 @@ class Forge:
     def response(self, flow: http.HTTPFlow) -> None:
         # Record what we forged back (so the timeline shows the full conversation).
         if flow.response is not None:
+            sni = getattr(flow.client_conn, "sni", None)
             _emit(
                 {
                     "kind": "http_response_forged",
-                    "host": flow.request.host,
+                    "host": sni or flow.request.pretty_host or flow.request.host,
                     "status": flow.response.status_code,
                     "forged": True,
                 }
