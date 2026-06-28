@@ -229,25 +229,60 @@ else
   die "provide --tarball <path> or --github <owner/repo>"
 fi
 
-# ---- 2. boot the TRAP host -------------------------------------------------
-# The trap has an EXTERNAL IP (for the build registry proxy + intended-IP
-# resolution) and is NOT cr-sandbox-tagged, so it keeps normal egress. Its
-# catch-all ports are reachable ONLY intra-VPC (the trap-ingress firewall rule).
-log "booting TRAP host $TRAP_VM (external IP, $TRAP_TAG; sinkhole DNS+sink+proxy+pcap)"
+# ---- 2. boot the TRAP host + the DETONATION VM IN PARALLEL ------------------
+# SPEED (U3): the two `instances create` calls are fired CONCURRENTLY (background
+# + wait), so the boot wall-clock is the MAX of the two, not the sum — the
+# detonation VM boots while the trap is still provisioning, instead of waiting for
+# the whole trap critical path first. CONTAINMENT IS UNCHANGED: the detonation VM
+# only sits idle until the BUILD phase, and BUILD is gated behind the trap
+# containment assert below, so nothing untrusted runs until the trap + sinkhole +
+# deny-egress are proven up. The trap (external IP, $TRAP_TAG, normal egress for
+# the registry proxy) and the detonation VM (no external IP, no SA/scopes,
+# deny-egress) are tagged + networked exactly as before; only the timing changes.
+GOLDEN_IMG="$(gcloud compute images list --filter="family:${GOLDEN_FAMILY}" \
+  --format="value(name)" --sort-by=~creationTimestamp --limit=1 2>/dev/null || true)"
 record_vm "$TRAP_VM"
+record_vm "$DET_VM"
+
+log "booting TRAP host $TRAP_VM + DETONATION VM $DET_VM in parallel"
 gcloud compute instances create "$TRAP_VM" \
   --zone="$ZONE" --machine-type="$MACHINE" \
   --image-family="$BASE_IMAGE_FAMILY" --image-project="$BASE_IMAGE_PROJECT" \
   --network-interface="subnet=cr-sandbox-subnet" \
   --tags="$TRAP_TAG" \
-  --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE >/dev/null \
-  || die "trap VM create failed"
+  --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE >/dev/null 2>&1 &
+TRAP_CREATE_PID=$!
 
+if [ -n "$GOLDEN_IMG" ]; then
+  log "detonation VM boots from golden $GOLDEN_IMG (no external IP, no SA, deny-egress)"
+  gcloud compute instances create "$DET_VM" \
+    --zone="$ZONE" --machine-type="$MACHINE" \
+    --image="$GOLDEN_IMG" \
+    --network-interface="subnet=cr-sandbox-subnet,no-address" \
+    --tags="$TAG" --no-service-account --no-scopes \
+    --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE >/dev/null 2>&1 &
+else
+  log "no golden image; detonation VM boots base $BASE_IMAGE_FAMILY (DEGRADED) with inline provision"
+  gcloud compute instances create "$DET_VM" \
+    --zone="$ZONE" --machine-type="$MACHINE" \
+    --image-family="$BASE_IMAGE_FAMILY" --image-project="$BASE_IMAGE_PROJECT" \
+    --network-interface="subnet=cr-sandbox-subnet,no-address" \
+    --tags="$TAG" --no-service-account --no-scopes \
+    --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE \
+    --metadata-from-file=startup-script="$(winpath "$PROVISION")" >/dev/null 2>&1 &
+fi
+DET_CREATE_PID=$!
+
+wait "$TRAP_CREATE_PID" || die "trap VM create failed"
+wait "$DET_CREATE_PID" || die "detonation VM create failed"
+
+# Trap SSH-wait (the detonation VM is already booting in parallel). Poll fast (5s)
+# so first-ready is detected quickly; same generous overall ceiling (60x5 = 300s).
 log "waiting for trap SSH..."
 TRAP_READY=0
-for i in $(seq 1 40); do
+for i in $(seq 1 60); do
   ssh_trap "true" >/dev/null 2>&1 && { TRAP_READY=1; break; }
-  sleep 10
+  sleep 5
 done
 [ "$TRAP_READY" = "1" ] || die "trap VM did not become reachable"
 
@@ -283,36 +318,14 @@ ssh_trap "systemctl is-active squid" 2>/dev/null | grep -qx "active" \
 log "build proxy healthy: squid active on the trap (registry allowlist enforced)"
 BUILD_PROXY="http://${TRAP_IP}:3128"
 
-# ---- 3. boot the DETONATION VM (no external IP, no SA/scopes, deny-egress) --
-GOLDEN_IMG="$(gcloud compute images list --filter="family:${GOLDEN_FAMILY}" \
-  --format="value(name)" --sort-by=~creationTimestamp --limit=1 2>/dev/null || true)"
-record_vm "$DET_VM"
-if [ -n "$GOLDEN_IMG" ]; then
-  log "booting DETONATION VM $DET_VM from golden $GOLDEN_IMG (no external IP, no SA, deny-egress)"
-  gcloud compute instances create "$DET_VM" \
-    --zone="$ZONE" --machine-type="$MACHINE" \
-    --image="$GOLDEN_IMG" \
-    --network-interface="subnet=cr-sandbox-subnet,no-address" \
-    --tags="$TAG" --no-service-account --no-scopes \
-    --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE >/dev/null \
-    || die "detonation VM create failed"
-else
-  log "no golden image; booting base $BASE_IMAGE_FAMILY (DEGRADED) with inline provision"
-  gcloud compute instances create "$DET_VM" \
-    --zone="$ZONE" --machine-type="$MACHINE" \
-    --image-family="$BASE_IMAGE_FAMILY" --image-project="$BASE_IMAGE_PROJECT" \
-    --network-interface="subnet=cr-sandbox-subnet,no-address" \
-    --tags="$TAG" --no-service-account --no-scopes \
-    --max-run-duration="$MAX_RUN" --instance-termination-action=DELETE \
-    --metadata-from-file=startup-script="$(winpath "$PROVISION")" >/dev/null \
-    || die "detonation VM create failed"
-fi
-
+# ---- 3. the DETONATION VM is already booting (created in parallel above) ----
+# Wait for its SSH. It booted WHILE the trap was provisioning, so this is usually
+# already ready (the boot overlapped the trap critical path). Poll fast (5s).
 log "waiting for detonation VM SSH over IAP..."
 DET_READY=0
-for i in $(seq 1 40); do
+for i in $(seq 1 60); do
   ssh_det "true" >/dev/null 2>&1 && { DET_READY=1; break; }
-  sleep 15
+  sleep 5
 done
 [ "$DET_READY" = "1" ] || die "detonation VM did not become reachable"
 
