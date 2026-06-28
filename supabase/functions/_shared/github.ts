@@ -64,6 +64,8 @@ export interface OwnerSignal {
   ageDays: number;
   publicRepos: number;
   established: boolean;
+  /** Free-text owner location from GitHub ("San Francisco, CA"), or null. */
+  location: string | null;
 }
 
 export interface ResolvedRepo {
@@ -163,6 +165,8 @@ interface GhUserResponse {
   name: string | null;
   created_at: string | null;
   public_repos: number;
+  /** Free-text owner location ("San Francisco, CA"), or null. U4: world-map origin. */
+  location: string | null;
 }
 
 interface GhTreeResponse {
@@ -213,6 +217,7 @@ export async function ownerSignal(owner: string): Promise<OwnerSignal> {
     ageDays: age.days,
     publicRepos: u.public_repos ?? 0,
     established,
+    location: typeof u.location === "string" && u.location.trim() ? u.location.trim() : null,
   };
 }
 
