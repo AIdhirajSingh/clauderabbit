@@ -71,9 +71,9 @@
 
 ## Unit plan (dependency order) + status
 
-- **U1 — Escalation owns a fresh complete report** (data architecture + honesty reframe) — PLANNED -> cold-audit next.
-- **U5a — Kill the stale "Queued… not executed" line + persist deep-run log chapters** (small, unblocks log coherence) — QUEUED.
-- **U2 — Report rendered as real designed frontend from design.md; forensics woven in first-class** — QUEUED (pairs with U1).
+- **U1 — Escalation owns a fresh complete report** — ✅ DONE + MERGED (PR #18), proven in browser (clawdcursor 28->49 "High risk", hedge-free, coherent), reviewed SHIP.
+- **U5a — Kill the stale "Queued… not executed" line** — LARGELY SUBSUMED by U1 (escalated reports get rewritten logs). Minor residual cleanup for the transient pre-detonation/cached state — QUEUED low-pri.
+- **U2 — Report rendered as real designed frontend from design.md; forensics woven in first-class** — ✅ DONE (branch claude/report-design): the forensic evidence is re-woven as a first-class "What running it revealed" section in design.md's language (no amber panel, no duplicate verdict), proven in browser, independent design review SHIP.
 - **U3 — Sandbox speed (parallel boot, golden image, reuse clone, real parallel OpenCode)** — QUEUED.
 - **U5b — Real OpenCode/AI stream surfaced live + full log persisted** — QUEUED (pairs with U3).
 - **U4 — World map: a dot per repo by origin, click->report, pulse new** — QUEUED (standalone).
