@@ -42,6 +42,18 @@ export type ScanResult =
   | { ok: true; report: Report }
   | { ok: false; error: string };
 
+/**
+ * A real, streamed scan-stage event (BUG-5/6). The edge function emits one
+ * `active` event when a stage starts and one `done` event (with real lines) when
+ * it completes. The processing timeline renders these — never canned text.
+ */
+export interface ScanStage {
+  ch: string;
+  status: "active" | "done";
+  kind?: string;
+  lines?: string[];
+}
+
 interface ScanArgs {
   owner: string;
   repo: string;
@@ -54,6 +66,27 @@ interface ScanArgs {
    * The publishable `apikey` header is still sent for gateway routing.
    */
   accessToken?: string;
+  /**
+   * Called for each REAL streamed scan-stage event as it arrives. Optional — when
+   * omitted (or when the response is a non-streamed cache hit) no stages fire.
+   */
+  onStage?: (stage: ScanStage) => void;
+}
+
+/** Hard ceiling for a single scan request — longer than the slowest deep read. */
+const SCAN_TIMEOUT_MS = 90_000;
+
+/**
+ * Split accumulated NDJSON text into complete lines plus a trailing remainder.
+ * Pure + exported so the partial-line-across-chunks behavior is unit-tested: a
+ * chunk can end mid-object, so the last (incomplete) segment is kept in `rest`
+ * and only re-parsed once its closing newline arrives.
+ */
+export function splitNdjson(buffer: string, chunk: string): { lines: string[]; rest: string } {
+  const combined = buffer + chunk;
+  const parts = combined.split("\n");
+  const rest = parts.pop() ?? "";
+  return { lines: parts.filter((l) => l.trim().length > 0), rest };
 }
 
 const SEVERITIES: ReadonlySet<string> = new Set<Severity>(["high", "med", "low"]);
@@ -397,61 +430,153 @@ export async function runScan(args: ScanArgs): Promise<ScanResult> {
     return { ok: false, error: "Scanner is not configured." };
   }
 
-  let res: Response;
+  // A half-open stream that stalls would otherwise spin the loader forever, so
+  // every scan is bounded by a hard ceiling timeout via an AbortController.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
   try {
-    res = await fetch(functionUrl(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        // `apikey` is the publishable key — it routes the request at the
-        // Functions gateway. The Bearer carries the USER session token when
-        // signed in (so the function can verify + attribute it); otherwise it
-        // falls back to the publishable key for the logged-out free scan.
-        apikey: key,
-        Authorization: `Bearer ${args.accessToken ?? key}`,
-      },
-      body: JSON.stringify({
-        owner: args.owner,
-        repo: args.repo,
-        ...(args.ref ? { ref: args.ref } : {}),
-        ...(args.deviceId ? { deviceId: args.deviceId } : {}),
-      }),
-    });
-  } catch {
-    return {
-      ok: false,
-      error: "Network error reaching the scanner. Check your connection and retry.",
-    };
-  }
-
-  if (!res.ok) {
-    // The function returns { error } with a meaningful status code. Prefer the
-    // function's specific message; only fall back to a status-derived friendly
-    // string when the body gave us nothing specific.
-    const GENERIC = "The scan could not be completed.";
-    let message = GENERIC;
+    let res: Response;
     try {
-      const body = (await res.json()) as { error?: string };
-      if (typeof body.error === "string" && body.error) message = body.error;
+      res = await fetch(functionUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // `apikey` is the publishable key — it routes the request at the
+          // Functions gateway. The Bearer carries the USER session token when
+          // signed in (so the function can verify + attribute it); otherwise it
+          // falls back to the publishable key for the logged-out free scan.
+          apikey: key,
+          Authorization: `Bearer ${args.accessToken ?? key}`,
+        },
+        body: JSON.stringify({
+          owner: args.owner,
+          repo: args.repo,
+          ...(args.ref ? { ref: args.ref } : {}),
+          ...(args.deviceId ? { deviceId: args.deviceId } : {}),
+        }),
+        signal: controller.signal,
+      });
     } catch {
-      // Non-JSON error body — keep the status-derived fallback below.
+      if (controller.signal.aborted) {
+        return { ok: false, error: "The scan timed out. Please try again." };
+      }
+      return {
+        ok: false,
+        error: "Network error reaching the scanner. Check your connection and retry.",
+      };
     }
-    if (message === GENERIC) {
-      if (res.status === 404) {
-        message = "Repository not found. Check the owner and repo name.";
-      } else if (res.status === 429) {
-        message = "GitHub rate limit hit. Please try again in a few minutes.";
+
+    if (!res.ok) {
+      // The function returns { error } with a meaningful status code (early
+      // errors + the cache path stay non-streamed JSON). Prefer the function's
+      // specific message; fall back to a status-derived friendly string.
+      const GENERIC = "The scan could not be completed.";
+      let message = GENERIC;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (typeof body.error === "string" && body.error) message = body.error;
+      } catch {
+        // Non-JSON error body — keep the status-derived fallback below.
+      }
+      if (message === GENERIC) {
+        if (res.status === 404) {
+          message = "Repository not found. Check the owner and repo name.";
+        } else if (res.status === 429) {
+          message = "GitHub rate limit hit. Please try again in a few minutes.";
+        }
+      }
+      return { ok: false, error: message };
+    }
+
+    // A FRESH scan streams NDJSON stage events; a cache hit (or any non-stream
+    // response) is plain JSON. Detect by Content-Type and consume accordingly.
+    const contentType = res.headers.get("content-type") ?? "";
+    const isStream =
+      (contentType.includes("ndjson") || contentType.includes("event-stream")) && !!res.body;
+    if (isStream && res.body) {
+      try {
+        return await consumeScanStream(res.body, args.onStage);
+      } catch {
+        if (controller.signal.aborted) {
+          return { ok: false, error: "The scan timed out. Please try again." };
+        }
+        return { ok: false, error: "The scanner returned an unreadable response." };
       }
     }
-    return { ok: false, error: message };
-  }
 
-  let payload: unknown;
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      return { ok: false, error: "The scanner returned an unreadable response." };
+    }
+    return { ok: true, report: normalizeReport(payload) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Consume the NDJSON scan stream: surface each `stage` via `onStage`, capture the
+ * final `report`, and map an in-band `error` event to a failed result. Buffers
+ * partial lines across chunks (a JSON object can be split across two reads) and
+ * skips any unparseable line rather than aborting the whole scan.
+ */
+async function consumeScanStream(
+  body: ReadableStream<Uint8Array>,
+  onStage?: (stage: ScanStage) => void,
+): Promise<ScanResult> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let report: Report | null = null;
+  let error: string | null = null;
+
+  const handle = (line: string): void => {
+    let ev: unknown;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return; // stray/blank/partial line — skip, never abort the stream
+    }
+    if (!ev || typeof ev !== "object") return;
+    const e = ev as Record<string, unknown>;
+    if (e.t === "stage" && typeof e.ch === "string" && (e.status === "active" || e.status === "done")) {
+      onStage?.({
+        ch: e.ch,
+        status: e.status,
+        ...(typeof e.kind === "string" ? { kind: e.kind } : {}),
+        ...(Array.isArray(e.lines)
+          ? { lines: e.lines.filter((l): l is string => typeof l === "string") }
+          : {}),
+      });
+    } else if (e.t === "result") {
+      report = normalizeReport(e.report);
+    } else if (e.t === "error") {
+      error = typeof e.error === "string" && e.error ? e.error : "The scan failed.";
+    }
+  };
+
   try {
-    payload = await res.json();
-  } catch {
-    return { ok: false, error: "The scanner returned an unreadable response." };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const split = splitNdjson(buffer, decoder.decode(value, { stream: true }));
+      buffer = split.rest;
+      for (const line of split.lines) handle(line);
+      if (error) break; // an in-band error ends the stream early
+    }
+    const tail = buffer.trim();
+    if (tail) handle(tail);
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // reader already released
+    }
   }
 
-  return { ok: true, report: normalizeReport(payload) };
+  if (error) return { ok: false, error };
+  if (report) return { ok: true, report };
+  return { ok: false, error: "The scan ended without a result. Please retry." };
 }

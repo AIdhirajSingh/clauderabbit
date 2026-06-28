@@ -19,7 +19,7 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { jsonResponse, preflightResponse } from "../_shared/cors.ts";
+import { jsonResponse, preflightResponse, streamResponse } from "../_shared/cors.ts";
 import {
   GitHubRateLimitError,
   type OwnerSignal,
@@ -719,229 +719,333 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // the point. The previous stage-1/dynamic daily limits are removed; a scan is
   // never blocked by a quota.
 
-  // 3. Static scan → flagged regions (code signals only).
-  const scan = staticScan(files);
-
-  // 4. Owner reputation signal (kept separate).
-  let owner: OwnerSignal;
-  try {
-    owner = await ownerSignal(ownerLogin);
-  } catch (e) {
-    console.error("ownerSignal failed:", e instanceof Error ? e.message : e);
-    // Degrade gracefully — reputation unknown, but do not fail the whole scan.
-    owner = {
-      login: ownerLogin,
-      type: "User",
-      name: null,
-      createdAt: null,
-      ageLabel: "unknown",
-      ageDays: -1,
-      publicRepos: 0,
-      established: false,
-    };
-  }
-
-  // 5. Read model (fast tier) reads ONLY flagged regions + metadata.
-  let model: ModelOutput;
-  try {
-    const result = await generate({
-      tier: "fast",
-      json: true,
-      responseSchema: RESPONSE_SCHEMA,
-      maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
-      system: buildSystemPrompt(),
-      prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length),
-    });
-    model = result.json as ModelOutput;
-  } catch (e) {
-    console.error("read model failed:", e instanceof Error ? e.message : e);
-    return jsonResponse({ error: "Analysis model call failed" }, 502);
-  }
-
-  // 6. Validate model output. The model's `score` is NOT used as the score — it
-  // is only kept as a sanity reference. The authoritative score is COMPUTED by
-  // the deterministic formula from the real signals (step 6b).
-  const confidence = clamp(model.confidence, 0, 1, 0.5);
-  const risky = normalizeRisky(model.risky);
-
-  // 7. Escalation gate (decision only — no sandbox run in this unit). Produces a
-  // concise written reason (escalating OR cleared-on-static-read) for the report.
-  const escalation = decideEscalation(model, scan, owner, confidence);
-  const escalate = escalation.escalate;
-  const escalationReason = escalation.reason;
-  const scanPath = escalate ? "deep" : "fast";
-  const deep = escalate;
-
-  // 6b. Compute the AUTHORITATIVE score from weighted, named signals. The model
-  // FED the signals (static flags, reputation facts, per-finding risky items,
-  // confidence); the SCORE and its cited breakdown are decided here by code. The
-  // dynamic-outcome inputs are omitted on the fast path (no sandbox run yet).
-  const scoringInputs: ScoringInputs = {
-    signals: scan.signals,
-    installTimeNetwork: scan.installTimeNetwork,
-    severityHint: scan.severityHint,
-    risky: risky.map((r) => ({ severity: r.severity, kind: r.kind })),
-    reputation: {
-      established: owner.established,
-      ageDays: owner.ageDays,
-      // -1 = unknown (model returned no sentiment); 0 = a genuine negative read.
-      // The sentinel keeps the two distinct in the score (see scoring.ts).
-      sentScore: typeof model.reputation?.sentScore === "number"
-        ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
-        : -1,
-      stars: metadata.stars,
-    },
-    confidence,
-    escalated: escalate,
+  // BUG-5/6: a fresh scan STREAMS its REAL stages as they happen (NDJSON), so the
+  // processing timeline shows actual work — not a canned, timer-driven animation.
+  // Early errors + the cache hit above stay normal JSON (status codes preserved);
+  // only this fresh-scan path streams. The single consumer (runScan) maps an
+  // in-band {t:"error"} to its retryable failed state, so a post-stream failure
+  // (model down / persist failure) is surfaced as HTTP 200 + an error event rather
+  // than a 5xx — an accepted tradeoff for V1 (runScan is the only caller).
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  const emit = async (obj: unknown): Promise<void> => {
+    try {
+      await writer.write(enc.encode(JSON.stringify(obj) + "\n"));
+    } catch (e) {
+      // The client went away mid-stream; nothing more to do.
+      console.error("scan stream write failed:", e instanceof Error ? e.message : e);
+    }
   };
-  const scoreResult = computeScore(scoringInputs);
-  const score = scoreResult.score;
-  const scoreBreakdown = scoreResult.breakdown;
-  const verdict = enforceVerdictRails(model.verdict, score);
 
-  // 7b. (Dynamic daily limit removed — scans are unlimited; see step 2b.)
-
-  // Build logs from the model, then append the computed-score citation and the
-  // escalation decision. We never fabricate a dynamic run — an escalation only
-  // records that the deep path was QUEUED.
-  const logs = Array.isArray(model.logs) ? model.logs : [];
-  // The cited score breakdown — the deltas that produced the number.
-  logs.push(buildScoreChapter(score, scoreBreakdown));
-  if (escalate) {
-    const hasEsc = logs.some((l) => /escalat/i.test(l.ch));
-    if (!hasEsc) {
-      logs.push({
-        ch: "Escalation",
-        kind: scan.severityHint === "high" ? "bad" : "warn",
+  const produce = async (): Promise<void> => {
+    try {
+      // Stage: resolve (already done before the stream opened).
+      await emit({
+        t: "stage",
+        ch: "Resolve",
+        status: "done",
+        kind: "ok",
         lines: [
-          "Escalation gate tripped on the static read",
-          `Reason: ${escalationReason}`,
-          "Queued for dynamic sandbox run (not executed on this pass)",
+          `Resolved ${ownerLogin}/${repoName}@${commitSha.slice(0, 7)}`,
+          `${files.length} file(s) in the tree at the resolved SHA`,
         ],
       });
-    }
-  }
 
-  // 8. Persist — owner reputation, report, scan event.
-  let ownerId: number | null = null;
-  try {
-    const { data: ownerUp } = await db
-      .from("owners")
-      .upsert(
-        {
-          github_login: ownerLogin,
-          display_name: owner.name,
-          account_age_label: owner.ageLabel,
-          created_at_github: owner.createdAt,
+      // 3. Static scan → flagged regions (code signals only).
+      await emit({ t: "stage", ch: "Static scan", status: "active" });
+      const scan = staticScan(files);
+      const flaggedCount = scan.flaggedRegions.length;
+      await emit({
+        t: "stage",
+        ch: "Static scan",
+        status: "done",
+        kind: scan.severityHint === "high" ? "bad" : flaggedCount > 0 ? "warn" : "ok",
+        lines: [
+          flaggedCount > 0
+            ? `${flaggedCount} region(s) flagged for the read model`
+            : "No regions flagged on the static read",
+          `Static severity: ${scan.severityHint}`,
+        ],
+      });
+
+      // 4. Owner reputation signal (kept SEPARATE from code/behavior).
+      await emit({ t: "stage", ch: "Reputation", status: "active" });
+      let owner: OwnerSignal;
+      try {
+        owner = await ownerSignal(ownerLogin);
+      } catch (e) {
+        console.error("ownerSignal failed:", e instanceof Error ? e.message : e);
+        // Degrade gracefully — reputation unknown, but do not fail the whole scan.
+        owner = {
+          login: ownerLogin,
+          type: "User",
+          name: null,
+          createdAt: null,
+          ageLabel: "unknown",
+          ageDays: -1,
+          publicRepos: 0,
+          established: false,
+        };
+      }
+      await emit({
+        t: "stage",
+        ch: "Reputation",
+        status: "done",
+        kind: "ok",
+        lines: [
+          `Owner ${ownerLogin} · ${owner.ageLabel}${owner.established ? " · established" : " · new account"}`,
+          `${formatNumber(metadata.stars)} stars (kept separate from code signals)`,
+        ],
+      });
+
+      // 5. Read model (fast tier) reads ONLY flagged regions + metadata.
+      await emit({ t: "stage", ch: "Read", status: "active" });
+      let model: ModelOutput;
+      try {
+        const result = await generate({
+          tier: "fast",
+          json: true,
+          responseSchema: RESPONSE_SCHEMA,
+          maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
+          system: buildSystemPrompt(),
+          prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length),
+        });
+        model = result.json as ModelOutput;
+      } catch (e) {
+        console.error("read model failed:", e instanceof Error ? e.message : e);
+        await emit({ t: "error", error: "Analysis model call failed" });
+        return;
+      }
+
+      // 6. Validate model output. The model's `score` is NOT used as the score —
+      // it is only a sanity reference. The authoritative score is COMPUTED by the
+      // deterministic formula from the real signals (step 6b).
+      const confidence = clamp(model.confidence, 0, 1, 0.5);
+      const risky = normalizeRisky(model.risky);
+      await emit({
+        t: "stage",
+        ch: "Read",
+        status: "done",
+        kind: "ok",
+        lines: [
+          `Read model read ${flaggedCount} flagged region(s) + repo metadata`,
+          `Model read: ${model.verdict} · confidence ${Math.round(confidence * 100)}%`,
+        ],
+      });
+
+      // 7. Escalation gate (decision only). Produces a concise written reason
+      // (escalating OR cleared-on-static-read) for the report.
+      const escalation = decideEscalation(model, scan, owner, confidence);
+      const escalate = escalation.escalate;
+      const escalationReason = escalation.reason;
+      const scanPath = escalate ? "deep" : "fast";
+      const deep = escalate;
+
+      // 6b. Compute the AUTHORITATIVE score from weighted, named signals. The model
+      // FED the signals (static flags, reputation facts, per-finding risky items,
+      // confidence); the SCORE and its cited breakdown are decided here by code.
+      const scoringInputs: ScoringInputs = {
+        signals: scan.signals,
+        installTimeNetwork: scan.installTimeNetwork,
+        severityHint: scan.severityHint,
+        risky: risky.map((r) => ({ severity: r.severity, kind: r.kind })),
+        reputation: {
           established: owner.established,
-          public_repos: owner.publicRepos,
-          stars_total: metadata.stars,
-          sentiment: model.reputation?.sentiment ?? null,
-          sentiment_score: model.reputation?.sentScore != null
-            ? Math.round(clamp(model.reputation.sentScore, 0, 100, 50))
-            : null,
-          reputation_json: model.reputation ?? null,
-          fetched_at: new Date().toISOString(),
+          ageDays: owner.ageDays,
+          // -1 = unknown (model returned no sentiment); 0 = a genuine negative read.
+          sentScore: typeof model.reputation?.sentScore === "number"
+            ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
+            : -1,
+          stars: metadata.stars,
         },
-        { onConflict: "github_login" },
-      )
-      .select("id")
-      .maybeSingle();
-    ownerId = (ownerUp as { id: number } | null)?.id ?? null;
-  } catch (e) {
-    console.error("owner upsert failed:", e instanceof Error ? e.message : e);
-  }
+        confidence,
+        escalated: escalate,
+      };
+      const scoreResult = computeScore(scoringInputs);
+      const score = scoreResult.score;
+      const scoreBreakdown = scoreResult.breakdown;
+      const verdict = enforceVerdictRails(model.verdict, score);
 
-  const stats = model.stats ?? {
-    loc: "—",
-    packages: model.packages?.length ?? 0,
-    stars: formatNumber(metadata.stars),
-    created: monthYear(metadata.createdAt),
-  };
+      await emit({
+        t: "stage",
+        ch: "Verdict",
+        status: "done",
+        kind: score < 40 ? "bad" : score < 65 ? "warn" : "ok",
+        lines: [
+          `Score ${score}/100 · ${verdict}`,
+          escalate
+            ? `Escalation: ${escalationReason}`
+            : `${escalationReason}`,
+        ],
+      });
 
-  let reportId: number | null = null;
-  try {
-    const { data: reportUp, error: reportErr } = await db
-      .from("reports")
-      .upsert(
-        {
+      // Build logs from the model, then append the computed-score citation and the
+      // escalation decision. We never fabricate a dynamic run — an escalation only
+      // records that the deep path was QUEUED.
+      const logs = Array.isArray(model.logs) ? model.logs : [];
+      logs.push(buildScoreChapter(score, scoreBreakdown));
+      if (escalate) {
+        const hasEsc = logs.some((l) => /escalat/i.test(l.ch));
+        if (!hasEsc) {
+          logs.push({
+            ch: "Escalation",
+            kind: scan.severityHint === "high" ? "bad" : "warn",
+            lines: [
+              "Escalation gate tripped on the static read",
+              `Reason: ${escalationReason}`,
+              "Queued for dynamic sandbox run (not executed on this pass)",
+            ],
+          });
+        }
+      }
+
+      // 8. Persist — owner reputation, report, scan event.
+      let ownerId: number | null = null;
+      try {
+        const { data: ownerUp } = await db
+          .from("owners")
+          .upsert(
+            {
+              github_login: ownerLogin,
+              display_name: owner.name,
+              account_age_label: owner.ageLabel,
+              created_at_github: owner.createdAt,
+              established: owner.established,
+              public_repos: owner.publicRepos,
+              stars_total: metadata.stars,
+              sentiment: model.reputation?.sentiment ?? null,
+              sentiment_score: model.reputation?.sentScore != null
+                ? Math.round(clamp(model.reputation.sentScore, 0, 100, 50))
+                : null,
+              reputation_json: model.reputation ?? null,
+              fetched_at: new Date().toISOString(),
+            },
+            { onConflict: "github_login" },
+          )
+          .select("id")
+          .maybeSingle();
+        ownerId = (ownerUp as { id: number } | null)?.id ?? null;
+      } catch (e) {
+        console.error("owner upsert failed:", e instanceof Error ? e.message : e);
+      }
+
+      const stats = model.stats ?? {
+        loc: "—",
+        packages: model.packages?.length ?? 0,
+        stars: formatNumber(metadata.stars),
+        created: monthYear(metadata.createdAt),
+      };
+
+      let reportId: number | null = null;
+      try {
+        const { data: reportUp, error: reportErr } = await db
+          .from("reports")
+          .upsert(
+            {
+              owner_login: ownerLogin,
+              repo_name: repoName,
+              commit_sha: commitSha,
+              ref,
+              owner_id: ownerId,
+              score,
+              verdict,
+              cached: false,
+              deep,
+              summary: model.summary ?? "",
+              confidence,
+              scan_path: scanPath,
+              stats_json: stats,
+              packages_json: model.packages ?? [],
+              risky_json: risky,
+              logs_json: logs,
+            },
+            { onConflict: "owner_login,repo_name,commit_sha" },
+          )
+          .select("id")
+          .maybeSingle();
+        if (reportErr) throw reportErr;
+        reportId = (reportUp as { id: number } | null)?.id ?? null;
+      } catch (e) {
+        console.error("report upsert failed:", e instanceof Error ? e.message : e);
+        await emit({ t: "error", error: "Failed to persist report" });
+        return;
+      }
+
+      try {
+        await db.from("scans").insert({
+          user_id: userId,
+          device_id: deviceId,
+          report_id: reportId,
           owner_login: ownerLogin,
           repo_name: repoName,
-          commit_sha: commitSha,
-          ref,
-          owner_id: ownerId,
+          scan_path: scanPath,
+          score,
+          status: "done",
+          is_dynamic: deep,
+        });
+      } catch (e) {
+        console.error("scan insert failed:", e instanceof Error ? e.message : e);
+      }
+
+      // 9. Final result — the full structured report (identical shape to the
+      // pre-streaming JSON, so the client normalizer is unchanged).
+      await emit({
+        t: "result",
+        report: {
+          id: `${ownerLogin}/${repoName}`,
+          owner: ownerLogin,
+          name: repoName,
           score,
           verdict,
           cached: false,
           deep,
           summary: model.summary ?? "",
-          confidence,
+          ownerHistory: model.ownerHistory ?? {
+            handle: owner.login,
+            name: owner.name ?? owner.login,
+            age: owner.ageLabel,
+            established: owner.established,
+            repos: owner.publicRepos,
+            note: "",
+          },
+          reputation: model.reputation ?? {
+            stars: formatNumber(metadata.stars),
+            forks: formatNumber(metadata.forks),
+            sentiment: "",
+            sentScore: 0,
+          },
+          stats,
+          packages: model.packages ?? [],
+          risky,
+          logs,
+          commit_sha: commitSha,
           scan_path: scanPath,
-          stats_json: stats,
-          packages_json: model.packages ?? [],
-          risky_json: risky,
-          logs_json: logs,
+          confidence,
+          escalate,
+          escalationReason,
+          scoreBreakdown,
         },
-        { onConflict: "owner_login,repo_name,commit_sha" },
-      )
-      .select("id")
-      .maybeSingle();
-    if (reportErr) throw reportErr;
-    reportId = (reportUp as { id: number } | null)?.id ?? null;
-  } catch (e) {
-    console.error("report upsert failed:", e instanceof Error ? e.message : e);
-    return jsonResponse({ error: "Failed to persist report" }, 500);
-  }
+      });
+    } catch (e) {
+      console.error("scan stream failed:", e instanceof Error ? e.message : e);
+      await emit({ t: "error", error: "The scan failed unexpectedly." });
+    } finally {
+      try {
+        await writer.close();
+      } catch {
+        // already closed
+      }
+    }
+  };
 
-  try {
-    await db.from("scans").insert({
-      user_id: userId,
-      device_id: deviceId,
-      report_id: reportId,
-      owner_login: ownerLogin,
-      repo_name: repoName,
-      scan_path: scanPath,
-      score,
-      status: "done",
-      is_dynamic: deep,
-    });
-  } catch (e) {
-    console.error("scan insert failed:", e instanceof Error ? e.message : e);
-  }
-
-  // 9. Return the full structured report.
-  return jsonResponse({
-    id: `${ownerLogin}/${repoName}`,
-    owner: ownerLogin,
-    name: repoName,
-    score,
-    verdict,
-    cached: false,
-    deep,
-    summary: model.summary ?? "",
-    ownerHistory: model.ownerHistory ?? {
-      handle: owner.login,
-      name: owner.name ?? owner.login,
-      age: owner.ageLabel,
-      established: owner.established,
-      repos: owner.publicRepos,
-      note: "",
-    },
-    reputation: model.reputation ?? {
-      stars: formatNumber(metadata.stars),
-      forks: formatNumber(metadata.forks),
-      sentiment: "",
-      sentScore: 0,
-    },
-    stats,
-    packages: model.packages ?? [],
-    risky,
-    logs,
-    commit_sha: commitSha,
-    scan_path: scanPath,
-    confidence,
-    escalate,
-    escalationReason,
-    scoreBreakdown,
-  });
+  // Keep the edge worker alive until the streamed body is fully produced —
+  // without this, Supabase can retire the worker after the headers flush and
+  // truncate a multi-second scan mid-stream.
+  const edgeRuntime = (globalThis as unknown as {
+    EdgeRuntime?: { waitUntil(p: Promise<unknown>): void };
+  }).EdgeRuntime;
+  const producing = produce();
+  if (edgeRuntime) edgeRuntime.waitUntil(producing);
+  return streamResponse(readable);
 });
