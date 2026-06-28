@@ -956,6 +956,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         sentScore: typeof model.reputation?.sentScore === "number"
           ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
           : 0,
+        // U4: the owner's GitHub location, stored so the world map can plot a dot at
+        // every scanned repo's geographic ORIGIN (resolved client-side). Free text;
+        // null when the owner did not set one. Not rendered in the report itself.
+        location: owner.location ?? null,
       };
 
       // 8. Persist — owner reputation, report, scan event.
