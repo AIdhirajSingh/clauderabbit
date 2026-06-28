@@ -13,9 +13,12 @@
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
+  computeEscalatedScore,
   computeScore,
+  type ScoringEscalatedInputs,
   type ScoringInputs,
   type ScoringReputation,
+  type ScoringRiskyItem,
   type ScoringStaticSignals,
 } from "./scoring.ts";
 
@@ -350,4 +353,113 @@ Deno.test("unknown sentiment (-1) yields no delta, but 0 is a genuine negative r
   );
   assertBreakdownConsistent(u);
   assertBreakdownConsistent(n);
+});
+
+// --- Escalated (deep-run) score ---------------------------------------------
+
+const CODE_HIGH: ScoringRiskyItem = { severity: "high", kind: "code" };
+const NEW_OWNER_REP: ScoringReputation = {
+  established: false,
+  ageDays: 12,
+  sentScore: -1,
+  stars: 5,
+};
+
+function escInputs(over: Partial<ScoringEscalatedInputs> = {}): ScoringEscalatedInputs {
+  return {
+    dynamicScore: 80,
+    exercised: true,
+    caughtAttack: false,
+    codeRisky: [],
+    reputation: { ...UNKNOWN_REP },
+    ...over,
+  };
+}
+
+Deno.test("escalated: a CAUGHT ATTACK hard-caps the score (<=25) even with great reputation", () => {
+  const r = computeEscalatedScore(
+    escInputs({ dynamicScore: 90, caughtAttack: true, reputation: { ...ESTABLISHED_REP } }),
+  );
+  assert(r.score <= 25, `caught attack must cap <=25, got ${r.score}`);
+  assert(
+    r.breakdown.some((d) => d.factor === "caught_attack_ceiling"),
+    "a caught attack records the ceiling delta",
+  );
+  assertBreakdownConsistent(r);
+});
+
+Deno.test("escalated: a CLEAN reputation cannot lift a caught attack out of the red", () => {
+  const r = computeEscalatedScore(
+    escInputs({ dynamicScore: 95, exercised: true, caughtAttack: true, reputation: { ...ESTABLISHED_REP } }),
+  );
+  assert(r.score < 30, `caught attack stays dangerous regardless of reputation, got ${r.score}`);
+  // No POSITIVE reputation delta is applied when the run wasn't cleanly exercised.
+  assert(
+    !r.breakdown.some((d) => d.group === "reputation" && d.delta > 0),
+    "positive reputation must NOT apply to a caught attack",
+  );
+});
+
+Deno.test("escalated: a crash-on-startup (NOT exercised) cannot reach the clean bands (<=64)", () => {
+  const r = computeEscalatedScore(
+    escInputs({ dynamicScore: 64, exercised: false, reputation: { ...ESTABLISHED_REP } }),
+  );
+  assert(r.score <= 64, `a non-exercised run cannot reach the clean band, got ${r.score}`);
+  // Reputation may only LOWER a non-exercised run; a great reputation cannot whitewash it.
+  assert(
+    !r.breakdown.some((d) => d.group === "reputation" && d.delta > 0),
+    "positive reputation must NOT apply to a non-exercised run",
+  );
+  assertBreakdownConsistent(r);
+});
+
+Deno.test("escalated: a CLEAN, fully-exercised run earns a clean-band score; reputation may lift it", () => {
+  const plain = computeEscalatedScore(escInputs({ dynamicScore: 80, exercised: true }));
+  const repped = computeEscalatedScore(
+    escInputs({ dynamicScore: 80, exercised: true, reputation: { ...ESTABLISHED_REP } }),
+  );
+  assert(repped.score >= plain.score, "a good reputation can lift a clean exercised run");
+  assert(repped.score >= 80, `clean exercised + good rep should be clean-band, got ${repped.score}`);
+  assertBreakdownConsistent(plain);
+  assertBreakdownConsistent(repped);
+});
+
+Deno.test("escalated: running it clean LIFTS a statically-feared repo above static fear (the wedge)", () => {
+  // Static read alone would condemn (high code finding + new owner). The run executes cleanly.
+  const escalated = computeEscalatedScore(
+    escInputs({
+      dynamicScore: 82,
+      exercised: true,
+      caughtAttack: false,
+      codeRisky: [CODE_HIGH],
+      reputation: { ...NEW_OWNER_REP },
+    }),
+  );
+  // The runtime is primary: a clean exercised run sits well above a static-only condemnation,
+  // but the unresolved static finding + new owner still pull it down (bounded), never below the
+  // residual. It must NOT be whitewashed to green, and NOT stay at the static floor.
+  assert(escalated.score > 40, `clean run should lift above static fear, got ${escalated.score}`);
+  assert(escalated.score < 82, `unresolved static + new owner still apply, got ${escalated.score}`);
+  assert(
+    escalated.breakdown.some((d) => d.factor === "static_residual" && d.delta < 0),
+    "the unresolved static finding is a negative residual",
+  );
+  assertBreakdownConsistent(escalated);
+});
+
+Deno.test("escalated: clawdcursor-like (crash on startup, install concerns, new owner) lands red but coherent", () => {
+  const r = computeEscalatedScore(
+    escInputs({
+      dynamicScore: 64, // verdict.py caps a crashed run at 64
+      exercised: false, // built then crashed on startup
+      caughtAttack: false,
+      codeRisky: [CODE_HIGH], // undisclosed install-time scripts
+      reputation: { ...NEW_OWNER_REP }, // new account
+    }),
+  );
+  assert(r.score < 60, `a crashing, statically-flagged, new-owner repo is dangerous, got ${r.score}`);
+  assert(r.score > 0, "but it is not a zero (no malice was observed)");
+  // The runtime observation is the leading citation, never a stage-1 number bolted on.
+  assertEquals(r.breakdown[0].factor, "runtime_observation");
+  assertBreakdownConsistent(r);
 });
