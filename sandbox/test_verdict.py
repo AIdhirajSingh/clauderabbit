@@ -50,10 +50,16 @@ check("crashed run: label not 'Clean run'", v["one_word"] != "Clean run",
       f'got label={v["one_word"]!r}')
 check("crashed run: score below clean band", v["dynamic_score"] < 85,
       f'got score={v["dynamic_score"]}')
-check("crashed run: headline admits it did not run to completion",
-      "did not run to completion" in v["headline"].lower()
-      or "crash" in v["headline"].lower()
-      or "not run to completion" in v["headline"].lower(),
+# U1: the headline states the crash CONCRETELY (no "did not run to completion /
+# largely unverified" hedge) — "exited with an error on startup".
+check("crashed run: headline states the crash concretely (no hedge)",
+      "exited with an error" in v["headline"].lower()
+      or "crash" in v["headline"].lower(),
+      f'got headline={v["headline"]!r}')
+check("crashed run: headline carries NO 'did not run to completion / unverified' hedge",
+      "did not run to completion" not in v["headline"].lower()
+      and "largely unverified" not in v["headline"].lower()
+      and "could not verify" not in v["headline"].lower(),
       f'got headline={v["headline"]!r}')
 check("crashed run: not_verified names the crash",
       any("crash" in n.lower() or "exited with an error" in n.lower()
