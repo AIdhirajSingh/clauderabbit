@@ -242,16 +242,18 @@ function buildRuntimeSummary(
 ): string {
   const target = `${owner}/${repo}`;
   const kind = rt.projectType ? `${rt.projectType} ` : "";
-  let ranClause: string;
+  // Two clean sentences: what the run DID, then what we OBSERVED. No repetition of
+  // "in an isolated sandbox" (the opening already says it), no hedge language.
+  let ranSentence: string;
   if (rt.exercised) {
-    ranClause = `It built and ran cleanly in an isolated sandbox`;
+    ranSentence = "It built and ran cleanly.";
   } else if (rt.builtOk) {
-    ranClause = `It built and started in an isolated sandbox, then exited with an error on startup`;
+    ranSentence = "It built and started, then exited with an error on startup.";
   } else {
-    ranClause = `It was detonated in an isolated sandbox; the project did not build to a runnable state`;
+    ranSentence = "The project did not build to a runnable state.";
   }
 
-  let behaviorClause: string;
+  let behaviorSentence: string;
   if (rt.caughtAttack) {
     const what = rt.credReads > 0 && rt.capturedHost
       ? `reading high-value credentials and attempting to reach ${rt.capturedHost}`
@@ -260,9 +262,9 @@ function buildRuntimeSummary(
         : rt.capturedHost
           ? `attempting to reach ${rt.capturedHost}`
           : `attempting outbound exfiltration`;
-    behaviorClause = `and we caught it ${what} — every outbound attempt was intercepted by the sandbox sinkhole and never reached its destination`;
+    behaviorSentence = `We caught it ${what} — every outbound attempt was intercepted by the sandbox and never reached its destination.`;
   } else {
-    behaviorClause = `with no malicious behavior, credential access, or outbound exfiltration observed`;
+    behaviorSentence = "We observed no malicious behavior, credential access, or outbound exfiltration.";
   }
 
   const concerns: string[] = [];
@@ -272,10 +274,9 @@ function buildRuntimeSummary(
     ? ` Its score is held down by ${concerns.join(" and ")}.`
     : "";
 
-  return `We ran ${target}, a ${kind}project, in an isolated sandbox. ${ranClause} ${behaviorClause}.${tail}`.replace(
-    /\s+/g,
-    " ",
-  ).trim();
+  return `We ran ${target}, a ${kind}project, in an isolated sandbox. ${ranSentence} ${behaviorSentence}${tail}`
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** The fresh Score chapter (mirrors the fast path's format, from the blend breakdown). */
