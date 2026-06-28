@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# forge-down.sh — tear down a per-run forge netns and all its processes. Run as root.
+# forge-down.sh — tear down a per-run forge (both netns + processes). Run as root.
 # Per-scan reset: leaves ZERO orphan forge processes / namespaces (a containment rail).
 set -uo pipefail
-NS="${1:-cr-run}"
-for pf in "/run/${NS}-mitm.pid" "/run/${NS}-dnsmasq.pid"; do
+ID="${1:-default}"
+FNS="cr-forge-${ID}"; RNS="cr-run-${ID}"
+for pf in "/run/${FNS}-mitm.pid" "/run/${FNS}-dnsmasq.pid"; do
   [ -f "$pf" ] && kill "$(cat "$pf")" 2>/dev/null || true
   rm -f "$pf"
 done
-# kill any stragglers bound to this netns by name match, then delete the netns
-pkill -f "netns exec ${NS} " 2>/dev/null || true
-ip netns pids "$NS" 2>/dev/null | xargs -r kill 2>/dev/null || true
-ip netns del "$NS" 2>/dev/null || true
-rm -rf "/etc/netns/${NS}" "/tmp/${NS}-dnsmasq.conf" "/tmp/${NS}-mitm.log"
-echo "CR_FORGE_DOWN ns=${NS} netns_left=$(ip netns list 2>/dev/null | grep -c "^${NS}\b") mitm_procs_left=$(pgrep -fc "netns exec ${NS}" 2>/dev/null || echo 0)"
+pkill -f "netns exec ${FNS} " 2>/dev/null || true
+for NS in "$FNS" "$RNS"; do
+  ip netns pids "$NS" 2>/dev/null | xargs -r kill 2>/dev/null || true
+  ip netns del "$NS" 2>/dev/null || true
+done
+rm -rf "/tmp/${FNS}-dnsmasq.conf" "/tmp/${FNS}-mitm.log"
+left=$(ip netns list 2>/dev/null | grep -cE "^(${FNS}|${RNS})\b")
+procs=$(pgrep -fc "netns exec ${FNS}" 2>/dev/null || echo 0)
+echo "CR_FORGE_DOWN id=${ID} netns_left=${left} mitm_procs_left=${procs}"
