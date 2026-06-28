@@ -336,17 +336,22 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
             <span style={{ fontSize: 11.5, color: "var(--t2)", letterSpacing: "0.1em", textTransform: "uppercase" }}>Final verdict</span>
           </div>
           <p style={{ fontSize: 16.5, color: "var(--t1)", lineHeight: 1.62, margin: "0 0 20px", textWrap: "pretty" }}>{r._finalNote}</p>
-          <div style={{ paddingTop: 18, borderTop: "1px solid var(--line2)" }}>
-            <div style={{ fontSize: 12, color: "var(--t4)", marginBottom: 11 }}>What we could not verify</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {r._notVerified.map((nv) => (
-                <div key={nv} style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13.5, color: "var(--t3)", lineHeight: 1.5 }}>
-                  <span style={{ color: "var(--t5)", flexShrink: 0 }}>—</span>
-                  <span>{nv}</span>
-                </div>
-              ))}
+          {/* "What we could not verify" is for STATIC reads only. An escalated repo
+              (the sandbox RAN it) has no hedge list — the list is empty and the whole
+              block is hidden so no dangling heading sits over nothing (U1). */}
+          {r._notVerified.length > 0 && (
+            <div style={{ paddingTop: 18, borderTop: "1px solid var(--line2)" }}>
+              <div style={{ fontSize: 12, color: "var(--t4)", marginBottom: 11 }}>What we could not verify</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {r._notVerified.map((nv) => (
+                  <div key={nv} style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13.5, color: "var(--t3)", lineHeight: 1.5 }}>
+                    <span style={{ color: "var(--t5)", flexShrink: 0 }}>—</span>
+                    <span>{nv}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* logs cta */}
@@ -664,31 +669,11 @@ function ForensicSection({ f }: { f: ForensicsView }) {
           </div>
         </Block>
       </div>
-
-      {/* honest not-verified — never a bare Safe */}
-      <div style={{ paddingTop: 18, borderTop: "1px solid var(--line2)" }}>
-        {f._possiblyDormant && (
-          <p style={{ fontSize: 13.5, color: "var(--amber)", lineHeight: 1.6, margin: "0 0 12px" }}>
-            This code ran to completion but exhibited no observable behavior. That is reported as unverified, not clean —
-            condition-gated or trap-aware code that withholds its payload looks exactly like this.
-          </p>
-        )}
-        {f._notVerified.length > 0 && (
-          <>
-            <div style={{ fontSize: 12, color: "var(--t4)", marginBottom: 11 }}>What this sandbox run did not verify</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {f._notVerified.map((nv, i) => (
-                // Index key: `nv` is attacker-influenced text that could repeat;
-                // this is a static display list, so the index is the safe key.
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13, color: "var(--t3)", lineHeight: 1.55 }}>
-                  <span style={{ color: "var(--t5)", flexShrink: 0 }}>—</span>
-                  <span style={{ textWrap: "pretty" }}>{nv}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
+      {/* U1: an escalated repo carries NO "what this sandbox run did not verify"
+          hedge and no "reported as unverified" dormant note — the sandbox RAN it,
+          and the report states what running it showed with confidence. The
+          never-a-bare-"Safe" rail is met by the evidence above (what it ran, the
+          network intent, the containment proof, the in-VM behavior), not a hedge. */}
     </section>
   );
 }

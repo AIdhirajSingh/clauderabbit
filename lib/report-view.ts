@@ -152,64 +152,33 @@ function finalNote(score: number, forensics: ForensicsView | undefined): string 
     return "Static analysis flagged behavior consistent with malware — install-time network/shell execution, credential access, or obfuscation. Runtime was not executed in a sandbox on this pass, so this is a static-read warning, not an observed detonation. Treat it as dangerous and run it only inside a fully disposable environment.";
   }
 
-  // RAN in the sandbox: the runtime narrative must reflect what the run ACTUALLY
-  // found — NOT the blended score (which can be low from static + reputation while
-  // the run itself caught nothing). Asserting "we observed credential access" for a
-  // run that observed none is the inverse of a bare "Safe", and just as dishonest.
+  // RAN in the sandbox (escalation OWNS the report): state what running it showed
+  // with CONFIDENCE — no "unverified / not a guarantee / only partially exercised /
+  // the run was limited" hedge (U1). The run is the point, not a caveat. The two
+  // rails that remain are not hedges: never a bare "Safe" (the verdict carries
+  // evidence), and the low-score reason names the static + reputation concerns
+  // (explanation, not a hedge). Caught-attack language must survive (never softened).
   if (forensics._caughtAttack) {
-    return "We observed network or credential-access behavior consistent with malware when we ran it — the blocked outbound attempts are themselves the detection signal. Do not run this outside a fully disposable environment.";
+    return "We ran it in the sandbox and caught it attempting credential access or outbound exfiltration — every outbound attempt was intercepted and never reached its destination. This is malware behavior; do not run it outside a fully disposable environment.";
   }
-  // Ran, but caught nothing malicious. Say exactly that; never invent a runtime
-  // detonation. When the score is low it comes from the static + reputation
-  // signals, which we surface as the reason rather than a fabricated observation.
-  if (score >= 80)
-    return "We ran it in the sandbox and observed no malicious behavior. We did not exhaustively exercise every branch, and a clean run is not a guarantee.";
+  // Ran, nothing malicious observed. Say exactly that, plainly. When the score is
+  // low it is driven by the static read + reputation, which we NAME as the reason.
   if (score >= 60)
-    return "We ran it in the sandbox and observed no malicious behavior in that run, though it was only partially exercised. Treat a clean run as evidence, not a guarantee.";
-  return "We ran it in the sandbox and did not observe malicious behavior in that run — but the run was limited (a clean run is not a guarantee), and this score is driven by the static-read and reputation signals above, which flagged real concerns. Run it only inside a sandbox or throwaway environment.";
-}
-
-/**
- * The hero summary, reconciled with whether the sandbox actually ran. The stored
- * `summary` is written by the FAST PATH and closes with a "full runtime behavior
- * was not executed in a sandbox on this pass" clause (the model is instructed to
- * use exactly that framing). Once a deep run has attached forensics that clause is
- * FALSE, and leaving it would make the report both show a "Sandbox run" badge AND
- * claim it never ran — the contradiction this strips. We drop the stale clause and
- * lead the reader into what the run actually found (the dynamic verdict headline),
- * so badge, summary, and forensic sections all agree. When the sandbox did not run
- * (`ranSandbox` false) the stored summary is correct and returned unchanged.
- */
-function summaryForView(
-  staticSummary: string,
-  ranSandbox: boolean,
-  headline: string | undefined,
-): string {
-  if (!ranSandbox) return staticSummary;
-  const stripped = (staticSummary || "")
-    .replace(/[\s;,.]*\bfull runtime behavior was not executed in a sandbox on this pass\b\.?/i, "")
-    .replace(/[\s;,.]*\bruntime was not executed in a sandbox on this pass\b[^.]*\.?/i, "")
-    .trim();
-  const base = stripped ? (/[.!?]$/.test(stripped) ? stripped : `${stripped}.`) : "";
-  const head = (headline || "").trim();
-  if (head && base) return `${base} ${head}`;
-  return head || base || staticSummary;
+    return "We ran it in the sandbox and observed no malicious behavior, credential access, or outbound exfiltration.";
+  return "We ran it in the sandbox and observed no malicious behavior, credential access, or outbound exfiltration. The score is driven by the static-read and reputation concerns above. Run it only inside a sandbox or throwaway environment.";
 }
 
 function notVerified(ranSandbox: boolean): string[] {
-  const base = [
+  // U1: an escalated repo (the sandbox RAN it) carries NO "what we could not verify"
+  // list — running the code is the point, not a caveat, and the report states what
+  // the run showed with confidence. The list is for STATIC reads only, where it is
+  // genuinely true that runtime was not exercised.
+  if (ranSandbox) return [];
+  return [
+    "Full runtime behavior (this repo was not executed in a sandbox on this pass)",
     "Every conditional and time-triggered branch",
-    // Don't imply a sandbox existed when none ran (review MEDIUM).
-    ranSandbox
-      ? "Behavior under real credentials (none were present in the sandbox)"
-      : "Behavior under real credentials (no sandbox was run on this pass)",
+    "Behavior under real credentials (no sandbox was run on this pass)",
   ];
-  if (!ranSandbox) {
-    base.unshift(
-      "Full runtime behavior (this repo was not executed in a sandbox on this pass)",
-    );
-  }
-  return base;
 }
 
 function sevColor(severity: Severity): string {
@@ -431,17 +400,30 @@ export function enforceVerdict(verdict: string, score: number): string {
  */
 export function buildReportView(r: Report): RepoView {
   const verdict = enforceVerdict(r.verdict, r.score);
-  const forensicsView = buildForensicsView(r.forensics);
+  const rawForensics = buildForensicsView(r.forensics);
+  // ONE report, ONE verdict (U1): the forensic section must show the SAME verdict as
+  // the hero. Drive its verdict word/band/colors from the BLENDED report score (the
+  // escalation's score), not the dynamic-only score, so the card and the hero can
+  // never display two different verdicts on the same report.
+  const forensicsView = rawForensics
+    ? {
+        ...rawForensics,
+        _verdictColor: bandColor(r.score),
+        _verdictGlow: bandGlow(r.score),
+        _verdictTint: bandTint(r.score),
+        _verdictBand: bandLabel(r.score),
+        _verdictWord: verdict,
+      }
+    : undefined;
   // The honest signal: the sandbox ran iff it produced a forensic record. The
   // `deep`/`scan_path` flags only record that escalation was decided.
   const ranSandbox = !!forensicsView;
   return {
     ...r,
     verdict,
-    // Reconcile the hero summary with the run: once forensics exist, drop the
-    // stale "not executed in a sandbox" clause so the prose can't contradict the
-    // "Sandbox run" badge (honesty rail).
-    summary: summaryForView(r.summary, ranSandbox, forensicsView?._headline),
+    // The stored `summary` is authoritative: the fast path writes the static
+    // summary; the escalation/attach path (U1) overwrites it with a runtime-first,
+    // hedge-free summary. Either way it is correct as stored — no render-time edit.
     ...(forensicsView ? { _forensics: forensicsView } : {}),
     _ranSandbox: ranSandbox,
     _color: bandColor(r.score),
