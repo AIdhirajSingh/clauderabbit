@@ -45,6 +45,7 @@ export interface OwnerRow {
   stars_total: number | null;
   sentiment: string | null;
   sentiment_score: number | null;
+  reputation_json?: unknown;
 }
 
 /** Format an integer with k/M suffixes, matching the edge function's helper. */
@@ -53,6 +54,37 @@ function formatNumber(n: number | null): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+/**
+ * Reputation for a row: the persisted DETERMINISTIC view (`reputation_json`) when
+ * present, so the SSR/cached render matches the fresh scan exactly — including
+ * `forks`, which the legacy stats/columns path could not recover. Mirrors the
+ * edge function's `reputationFromOwner` (BUG-17). Falls back to columns for
+ * rows persisted before this view existed.
+ */
+function reputationFromOwner(
+  owner: OwnerRow | null,
+  starsFallback: string,
+): { stars: string; forks: string; sentiment: string; sentScore: number } {
+  const rj = owner?.reputation_json;
+  if (rj && typeof rj === "object") {
+    const r = rj as Record<string, unknown>;
+    if (typeof r.stars === "string") {
+      return {
+        stars: r.stars,
+        forks: typeof r.forks === "string" ? r.forks : "—",
+        sentiment: typeof r.sentiment === "string" ? r.sentiment : (owner?.sentiment ?? ""),
+        sentScore: typeof r.sentScore === "number" ? r.sentScore : (owner?.sentiment_score ?? 0),
+      };
+    }
+  }
+  return {
+    stars: starsFallback,
+    forks: "—",
+    sentiment: owner?.sentiment ?? "",
+    sentScore: owner?.sentiment_score ?? 0,
+  };
 }
 
 /** Reshape a `reports` row (and optional joined owner) into a `Report`. */
@@ -83,12 +115,7 @@ export function reportRowToReport(row: ReportRow): Report {
       repos: owner?.public_repos ?? 0,
       note: "",
     },
-    reputation: {
-      stars,
-      forks: typeof statsJson.forks === "string" ? statsJson.forks : "—",
-      sentiment: owner?.sentiment ?? "",
-      sentScore: owner?.sentiment_score ?? 0,
-    },
+    reputation: reputationFromOwner(owner, stars),
     stats: {
       loc: typeof statsJson.loc === "string" ? statsJson.loc : "—",
       packages:
