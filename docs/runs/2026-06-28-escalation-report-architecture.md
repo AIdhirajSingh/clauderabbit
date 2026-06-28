@@ -84,7 +84,19 @@ re-test -> close). One-unit git, main green, gitleaks never bypassed, prove in t
 
 ## Unit log
 
-### U1 — Escalation owns a fresh complete report — IN PROGRESS (branch claude/inline-moat off main; new branch for U1 TBD)
+### U1 — Escalation owns a fresh complete report — CODE DONE + DEPLOYED, browser proof next (branch claude/escalation-owns-report off main)
+**Status:** all code landed + committed (3c59ce5 score, 2ae6fb2 attach+blend, b7fc34d frontend hedge-free,
+8518f3d verdict.py, d59dfa8 direct-update). attach-forensics DEPLOYED with the blend. Gates: tsc clean,
+node tests 61/61, deno scoring 17/17, verdict.py 18/18. NOTE: dropped the RPC migration — the edge fn
+persists via a direct service-role `db.from('reports').update()` (bypasses RLS, no DB-password-gated
+db push, columns already exist), so audit required-change #3 (drop+recreate RPC) is N/A. REMAINING:
+restart dev on this branch + re-run clawdcursor in the browser to prove the fresh coherent report
+(expect ~34 "High risk", runtime-first hedge-free summary, ONE verdict card==hero, NO "what we could not
+verify"), confirm cache==fresh, then INDEPENDENT zero-context security/correctness review of the U1
+diff (sandbox/credential/routing touched: attach-forensics direct write), then PR -> merge.
+
+(original cold-audit notes below)
+### U1 cold-audit detail (branch claude/escalation-owns-report off main)
 COLD AUDIT verdict: **GO-WITH-CHANGES**. Plan at scratchpad/u1-plan.md. The 7 REQUIRED changes (all adopted):
 1. `computeEscalatedScore` EXERCISE-GATES the clean-run lift: caughtAttack→min(dyn,25); !exercised
    (`!auto_build_succeeded||!ran_without_crash`)→cap 64, static+rep may only LOWER; clean-exercised→
