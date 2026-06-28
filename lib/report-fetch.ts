@@ -16,7 +16,7 @@ import type { Report } from "./types";
 
 /** The exact column set the report view needs, with the owner row joined. */
 export const REPORT_SELECT =
-  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,forensics_json,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score)";
+  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,forensics_json,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score,reputation_json)";
 
 /**
  * Latest report for (owner, repo) — newest by created_at, owner joined, fully
