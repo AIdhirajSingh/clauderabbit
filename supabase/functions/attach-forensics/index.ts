@@ -29,6 +29,13 @@ import {
   type ScoringSeverity,
   verdictForScore,
 } from "../_shared/scoring.ts";
+import {
+  isDeepRunChapter,
+  type LogChapter,
+  type LogKind,
+  sanitizeTimeline,
+  timelineToChapters,
+} from "../_shared/run-timeline.ts";
 
 /** Max bytes we will read for a forensic record before rejecting (DoS guard). */
 const MAX_BODY_BYTES = 512 * 1024;
@@ -113,13 +120,7 @@ function looksLikeForensicRecord(f: unknown): f is Record<string, unknown> {
 // fresh runtime-primary score (scoring.ts computeEscalatedScore), a runtime-first
 // HEDGE-FREE summary, and rewritten Score/Sandbox-run log chapters — all persisted
 // at attach so a fresh deep run and a later cached view of the same commit agree.
-
-type LogKind = "ok" | "warn" | "bad";
-interface LogChapter {
-  ch: string;
-  kind: LogKind;
-  lines: string[];
-}
+// LogChapter/LogKind + the run-timeline collapse live in _shared/run-timeline.ts.
 
 function asNum(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
@@ -294,25 +295,31 @@ function buildScoreChapter(score: number, breakdown: ScoreDelta[]): LogChapter {
 
 /**
  * Rewrite the persisted log chapters for an escalated report: DROP the stale
- * stage-1 "Score" + "Escalation" chapters (which carry the old number and the
- * "Queued… not executed on this pass" line), keep the rest, and append a
- * "Sandbox run" chapter + the fresh blended "Score" chapter.
+ * stage-1 "Score" + "Escalation" chapters (the old number + the "flagged for
+ * detonation" note), keep the real static-read chapters, then APPEND the real
+ * deep-run timeline (one chapter per provision -> build -> run -> capture -> reset
+ * milestone), the "Sandbox run" outcome chapter, and the fresh blended "Score".
  */
 function rewriteEscalatedLogs(
   existing: unknown,
   score: number,
   breakdown: ScoreDelta[],
   rt: RuntimeFacts,
+  timelineChapters: LogChapter[],
 ): LogChapter[] {
   const kept: LogChapter[] = [];
   for (const c of asArr(existing)) {
     const o = asObj(c);
     const ch = typeof o.ch === "string" ? o.ch : "";
-    if (/^score$/i.test(ch) || /escalat/i.test(ch)) continue; // drop stale chapters
+    // Drop the stale stage-1 Score/Escalation AND any prior deep-run chapters, so a
+    // re-attach replaces the run section instead of compounding duplicates.
+    if (/^score$/i.test(ch) || /escalat/i.test(ch) || isDeepRunChapter(ch)) continue;
     const kind = o.kind === "bad" || o.kind === "warn" ? o.kind : "ok";
     const lines = asArr(o.lines).filter((l): l is string => typeof l === "string");
     kept.push({ ch: ch || "Log", kind, lines });
   }
+  // The real run, step by step (empty when the legacy runner sends no timeline).
+  kept.push(...timelineChapters);
   const runLines = [
     rt.exercised
       ? "Built and ran cleanly under the sinkhole; no malicious behavior observed."
@@ -426,7 +433,8 @@ export async function handler(req: Request): Promise<Response> {
   });
   const verdict = verdictForScore(score);
   const summary = buildRuntimeSummary(owner, repo, rt, rep, topConcern(row.risky_json));
-  const logs = rewriteEscalatedLogs(row.logs_json, score, breakdown, rt);
+  const timelineChapters = timelineToChapters(sanitizeTimeline(b.timeline));
+  const logs = rewriteEscalatedLogs(row.logs_json, score, breakdown, rt, timelineChapters);
 
   // Persist the escalation's report ATOMICALLY: forensics + the fresh blended
   // score/verdict/summary + rewritten logs, in one EXACT-MATCH update. The service
