@@ -107,3 +107,10 @@ The world map was always empty: `analyze-payload.py geoip_lookup` had no geo sou
 - **PROVEN on a REAL GCP detonation (zero orphan VMs):** produced REAL geo -> www.example.com -> 104.20.23.154 -> United States / California / San Francisco / Cloudflare. +tests/board-data.test.ts locks the geo->dot render with that exact shape; honest-empty when no country.
 - **Independent SECURITY review APPROVE-WITH-FIXES (geo path = attacker-influenced data):** hardened via the ipaddress module — explicit IP-literal validation before URL interpolation (verified injection garbage -> None), precise private/reserved/CGNAT/IPv4-mapped/cloud-metadata exclusion, capped resp.read(65536). Honesty rail + containment unchanged. Gates GREEN: py/tc/lint/node-56/gitleaks.
 - **Named wall (live board only):** the LIVE prod board map plot needs the forensics persisted to reports.forensics_json (v_board_dots reads it) — same CR_DEEP_RUNNER_KEY persistence wall as BUG-3 (a throwaway secret this run forbids). Geo production + render are proven; activation is the same one-step Adhiraj handoff.
+
+### U-loadtest — Production load test on a prod build — DONE + PROVEN (branch claude/prod-load-test off a9bc6f5)
+Re-ran the load test on the CURRENT prod build (`npm run build` → `next start -p 3100`) to confirm this session's changes (streamed scan fn, BUG-17 determinism reputation_json join, copy) did not regress the public surfaces. autocannon, 30 conns × 10s each, **0 errors / 0 timeouts / 0 non-2xx** on every route:
+- Homepage `/`: **750 rps, p50 36ms, p99 73ms** (prior ~777/36/65).
+- SSR report `/unjs/mlly`: **178 rps, p50 142ms, p99 1138ms** (prior ~175/154/1042) — the p99 tail is the Supabase round-trip, absorbed by the SHA-cache + CDN edge-caching in prod.
+- Trust badge `/badge/unjs/mlly`: **440 rps, p50 58ms, p99 144ms** (prior ~596/48/120).
+Consistent with the Phase-11 baseline → NO regression. The scan EDGE FUNCTION was deliberately NOT load-tested (paid Gemini calls + rate-limited by design — hammering it would be costly + unrepresentative; the cached report path is what scales). Added a reusable `scripts/load-test.sh`. Gates: build compiled, gitleaks clean.
