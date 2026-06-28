@@ -93,10 +93,33 @@ container ran hardware-isolated in a Firecracker microVM:
   kernel; the different kernel proves a real Firecracker microVM, not a host namespace. The microVM substrate
   is REAL on this free-trial account. Containerd-2.x quirk learned: pulling with a non-default snapshotter
   needs platform context; `ctr run --snapshotter devmapper` handles unpack itself.
-- NEXT in A2/A3: prove isolation is ABSOLUTE (no host-fs reach, no net except via the forge) + per-run reset
-  (disposable rootfs, zero orphans) -> wire the deceptive forging egress (mitmproxy transparent + per-SNI leaf
-  under the baked-in CA + TPROXY/REDIRECT from the guest netns + `ignore_hosts` registry fast-path) -> detonate
-  a real exfil fixture and prove the forge UNLOCKS its C2 beacon (captured, no real packet out).
+## A2 CONTAINMENT PROVEN (on cr-host-build)
+- **Host-fs isolation ABSOLUTE:** a host marker `/root/CR_HOST_SECRET_MARKER` is "No such file or directory"
+  inside the guest. Firecracker has no virtio-fs -> the microVM sees ONLY its block-device rootfs, never the
+  host fs / static-read state / analysis brain. The spec's hardest isolation invariant: held.
+- **No network egress by DEFAULT:** the guest has only `lo` (127.0.0.1); `wget example.com` -> "bad address".
+  The microVM is network-isolated out of the box. => the forging egress (A3) is purely ADDITIVE: attach a tap
+  wired ONLY to the host forge; never a default route to the real internet. (Better than the old sinkhole,
+  which started from full DNAT-everything.)
+- **Per-run reset:** ZERO orphan firecracker procs after `--rm` (blast-radius VMs cleaned). The "2 devmapper
+  snapshots" are the reusable alpine image layers (correct), not containers. TODO(harden): 2 lingering
+  `containerd-shim-kata` procs after multi-run — reap them for the zero-orphans invariant (a host-side
+  cleanup sweep in the orchestrator, like the old VM_LEDGER sweep).
+
+## A3 plan (next) — the deceptive forging egress (the spec's core correctness fix)
+Refined by the no-default-network finding. Build egress UP through the forge:
+1. mitmproxy forge addon (real code, sandbox/microvm/forge/): transparent mode; per-SNI leaf under the baked
+   CA so non-pinning TLS clients complete the handshake + reveal payload; DNS -> answer every name with the
+   forge IP; HTTP -> generic 200/canned; raw TCP/UDP -> accept + canned. `--ignore-hosts` allowlist
+   (registry.npmjs.org|pypi.org|files.pythonhosted.org|crates.io|...) passed through + logged (real NAT).
+2. Wire the microVM a tap (Kata CNI `tc-redirect-tap`, or a manual netns+tap) whose ONLY route lands in the
+   host forge via TPROXY (TCP+UDP, preserves dst) / REDIRECT. Bake the mitmproxy CA into the detonation guest
+   rootfs trust store.
+3. PROVE: detonate a known-exfil fixture; the forge UNLOCKS its C2 beacon (captured plaintext, NO real packet
+   leaves the host); a real `npm install` works via the registry fast-path; a cert-PINNING client aborts ->
+   reported as an honest "encrypted C2 attempted, interception refused" signal (never a false clean).
+Then A4: rewire orchestrate + /api/deep to host+microVM, reuse stage-1 clone, keep milestones+forensics,
+browser proof; cut over only after containment >= the two-VM moat.
 
 ## Live status
 - 2026-06-28: mandate received. Comprehended current arch + infra. Started A0 feasibility probe.
