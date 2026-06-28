@@ -82,14 +82,25 @@ cmd_provision() {
   mkdir -p "$SINK_DIR" "$SINK_CAPTURE_DIR" /opt/cr
 
   # ---- containment hardening FIRST (before any service is up) --------------
-  log "hardening containment: ip_forward=0, FORWARD DROP, no NAT"
+  # Both IPv4 AND IPv6: a payload that opens an IPv6 socket must not be able to
+  # use the trap as a forwarding gateway either. (The VPC also deny-egresses v6,
+  # so this is the matching second belt.)
+  log "hardening containment: forwarding=0 (v4+v6), FORWARD DROP (v4+v6), no NAT"
   sysctl -w net.ipv4.ip_forward=0 >/dev/null
-  echo "net.ipv4.ip_forward=0" > /etc/sysctl.d/99-cr-noforward.conf
+  sysctl -w net.ipv6.conf.all.forwarding=0 >/dev/null 2>&1 || true
+  sysctl -w net.ipv6.conf.default.forwarding=0 >/dev/null 2>&1 || true
+  { echo "net.ipv4.ip_forward=0"
+    echo "net.ipv6.conf.all.forwarding=0"
+    echo "net.ipv6.conf.default.forwarding=0"
+  } > /etc/sysctl.d/99-cr-noforward.conf
   iptables -P FORWARD DROP
   iptables -F FORWARD
+  ip6tables -P FORWARD DROP 2>/dev/null || true
+  ip6tables -F FORWARD 2>/dev/null || true
   # Ensure there is NO masquerade/SNAT that could translate detonation traffic
-  # out to the real internet.
+  # out to the real internet (v4 + v6).
   iptables -t nat -F POSTROUTING 2>/dev/null || true
+  ip6tables -t nat -F POSTROUTING 2>/dev/null || true
 
   # ---- self-signed cert for the TLS sink -----------------------------------
   if [ ! -f "$SINK_CERT" ]; then
@@ -198,15 +209,41 @@ cmd_registries() {
 }
 
 cmd_assert() {
-  # Containment must hold. ABORT loudly if not.
-  local fwd pol mq
-  fwd="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 1)"
-  [ "$fwd" = "0" ] || die "CONTAINMENT VIOLATION: ip_forward=$fwd (must be 0)"
-  pol="$(iptables -L FORWARD -n 2>/dev/null | head -1)"
-  echo "$pol" | grep -q "policy DROP" || die "CONTAINMENT VIOLATION: FORWARD policy is not DROP ($pol)"
-  mq="$(iptables -t nat -S POSTROUTING 2>/dev/null | grep -i MASQUERADE || true)"
-  [ -z "$mq" ] || die "CONTAINMENT VIOLATION: a MASQUERADE/SNAT rule is present: $mq"
-  log "containment OK: ip_forward=0, FORWARD policy DROP, no MASQUERADE."
+  # Containment must hold. ABORT loudly if it cannot be made to hold.
+  #
+  # The GCE guest environment can transiently re-enable net.ipv4.ip_forward
+  # during early boot/network setup — AFTER cmd_provision hardened it. That is a
+  # benign race that flips only ONE of three independent belts; the load-bearing
+  # rails (FORWARD policy DROP and the absence of any MASQUERADE/SNAT) persist
+  # regardless, as does the detonation VM's own no-external-IP + VPC deny-egress.
+  # So we self-heal: re-apply the IDEMPOTENT hardening and re-verify a few times.
+  # This NEVER weakens the rail — if containment genuinely will not hold after
+  # re-applying, we still die and the detonation is refused (fail-closed).
+  local fwd fwd6 pol mq mq6 attempt
+  for attempt in 1 2 3; do
+    sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.all.forwarding=0 >/dev/null 2>&1 || true
+    iptables -P FORWARD DROP 2>/dev/null || true
+    iptables -t nat -F POSTROUTING 2>/dev/null || true
+    ip6tables -P FORWARD DROP 2>/dev/null || true
+    ip6tables -t nat -F POSTROUTING 2>/dev/null || true
+
+    # A missing v6 forwarding knob (IPv6 disabled on the host) reads as 0 =
+    # contained — there is no v6 path to forward over.
+    fwd="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 1)"
+    fwd6="$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || echo 0)"
+    pol="$(iptables -L FORWARD -n 2>/dev/null | head -1)"
+    mq="$(iptables -t nat -S POSTROUTING 2>/dev/null | grep -i MASQUERADE || true)"
+    mq6="$(ip6tables -t nat -S POSTROUTING 2>/dev/null | grep -i MASQUERADE || true)"
+    if [ "$fwd" = "0" ] && [ "$fwd6" = "0" ] && echo "$pol" | grep -q "policy DROP" \
+       && [ -z "$mq" ] && [ -z "$mq6" ]; then
+      log "containment OK (attempt $attempt): forwarding=0 (v4+v6), FORWARD policy DROP, no MASQUERADE."
+      return 0
+    fi
+    log "containment not settled (attempt $attempt): v4_fwd=$fwd v6_fwd=$fwd6 FORWARD='$pol' MASQ='${mq:-none}'/'${mq6:-none}'; re-applying"
+    sleep 2
+  done
+  die "CONTAINMENT VIOLATION after 3 reapply attempts: v4_fwd=$fwd v6_fwd=$fwd6 FORWARD='$pol' MASQ4='$mq' MASQ6='$mq6' — refusing to proceed"
 }
 
 main() {

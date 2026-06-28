@@ -89,6 +89,18 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$ZONE" ] || die "--zone required (e.g. us-central1-a)"
+
+# Validate UNTRUSTED inputs before they reach `git clone` or gcloud VM names.
+# The --github value can originate from a DB row (user-influenceable via a scan
+# request, then drained by run-deep-queue.sh), so it must be a clean owner/repo
+# with no shell/URL metacharacters — matching the edge function's `isSegment`.
+if [ -n "$GITHUB" ]; then
+  printf '%s' "$GITHUB" | grep -Eq '^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$' \
+    || die "invalid --github (want owner/repo using [A-Za-z0-9._-]): $GITHUB"
+fi
+# NAME becomes part of gcloud VM names (cr-sbx-<NAME>-<ts>); keep it a strict slug.
+printf '%s' "$NAME" | grep -Eq '^[A-Za-z0-9-]{1,40}$' \
+  || die "invalid --name (want [A-Za-z0-9-], <=40 chars): $NAME"
 REGION="${ZONE%-*}"
 TS="$(date +%s)"
 DET_VM="cr-sbx-${NAME}-${TS}"
@@ -126,13 +138,22 @@ cleanup() {
       verify_gone "$vm" && log "  $vm gone." || log "  WARNING: $vm may linger — sweep will retry."
     done < "$VM_LEDGER"
   fi
-  # Belt-and-suspenders: sweep ANY straggler with our prefixes in this zone.
+  # Belt-and-suspenders: sweep ANY STALE straggler with our prefixes in this zone.
+  # The per-run ledger above already removed exactly this run's VMs; this catches
+  # orphans from a prior run whose EXIT trap never fired. It is time-scoped to
+  # VMs older than the dead-man's-switch window so it can NEVER delete a
+  # concurrently-running scan's fresh VMs (those are < MAX_RUN old). genuine
+  # orphans are older than this (and self-delete via --max-run-duration anyway).
+  local cutoff age_filter
+  cutoff="$(date -u -d '35 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)"
+  age_filter=""
+  [ -n "$cutoff" ] && age_filter=" AND creationTimestamp<'$cutoff'"
   local stragglers
   stragglers="$(gcloud compute instances list \
-    --filter="zone:( $ZONE ) AND (name~'^cr-sbx-' OR name~'^cr-trap-' OR name~'^cr-analysis-')" \
+    --filter="zone:( $ZONE ) AND (name~'^cr-sbx-' OR name~'^cr-trap-' OR name~'^cr-analysis-')${age_filter}" \
     --format="value(name)" 2>/dev/null || true)"
   for vm in $stragglers; do
-    log "sweep deleting straggler $vm"
+    log "sweep deleting stale straggler $vm"
     gcloud compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 || true
   done
   rm -rf "$STAGE" 2>/dev/null || true
@@ -219,7 +240,8 @@ scp_trap_files() {
 retry 4 scp_trap_files || die "scp trap files failed (after retries)"
 retry 3 ssh_trap "sudo mkdir -p /opt/cr && sudo mv /tmp/sinkd.py /opt/cr/sinkd.py && sudo mv /tmp/trap-host.sh /opt/cr/trap-host.sh && sudo chmod +x /opt/cr/trap-host.sh" \
   || die "trap staging move failed"
-ssh_trap "sudo bash /opt/cr/trap-host.sh provision" >/dev/null 2>&1 || log "WARNING: trap provision returned non-zero (will verify)"
+TRAP_PROV_LOG="$RESULTS_DIR/${NAME}-trap-provision.log"
+ssh_trap "sudo bash /opt/cr/trap-host.sh provision" > "$TRAP_PROV_LOG" 2>&1 || log "WARNING: trap provision returned non-zero (see $TRAP_PROV_LOG)"
 
 # fetch the trap's PRIVATE IP — everything the detonation VM talks to is THIS.
 TRAP_IP="$(ssh_trap "cat /opt/cr/TRAP_IP 2>/dev/null" | tr -d '\r\n ')"
@@ -231,7 +253,7 @@ TRAP_IP="$(ssh_trap "cat /opt/cr/TRAP_IP 2>/dev/null" | tr -d '\r\n ')"
   || die "trap private IP is not a valid 10.200.x address (refusing to proceed): '${TRAP_IP}'"
 log "trap private IP = $TRAP_IP"
 # Re-assert trap containment before we detonate anything.
-ssh_trap "sudo bash /opt/cr/trap-host.sh assert" >/dev/null 2>&1 || die "TRAP CONTAINMENT ASSERT FAILED — refusing to detonate"
+ssh_trap "sudo bash /opt/cr/trap-host.sh assert" > "$RESULTS_DIR/${NAME}-trap-assert.log" 2>&1 || { log "trap assert output:"; sed 's/^/  [assert] /' "$RESULTS_DIR/${NAME}-trap-assert.log" >&2 2>/dev/null || true; die "TRAP CONTAINMENT ASSERT FAILED — refusing to detonate"; }
 # Gate the build proxy: if squid is not active, the registry-allowlist enforcement
 # is silently absent and the BUILD phase would either fail or (worse) appear to
 # pass without allowlist control. Assert it is up before we depend on it.
