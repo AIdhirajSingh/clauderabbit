@@ -71,8 +71,12 @@
 
 ## Unit plan (dependency order) + status
 
-- **U1 — Escalation owns a fresh complete report** (data architecture + honesty reframe) — PLANNED -> cold-audit next.
-- **U5a — Kill the stale "Queued… not executed" line + persist deep-run log chapters** (small, unblocks log coherence) — QUEUED.
+- **U1 — Escalation owns a fresh complete report** — ✅ DONE + MERGED (PR #18, main d651839), proven in browser, reviewed SHIP.
+- **U5a — Kill the stale "Queued… not executed" line** — LARGELY SUBSUMED by U1: escalated reports now get
+  rewritten logs (the stale chapter is dropped on attach; proven staleQueued:false). Residual: the fast
+  path still WRITES "Queued for dynamic sandbox run (not executed on this pass)" at scan/index.ts:932 for
+  the transient escalated-not-yet-detonated state (never the final state with the inline moat). Small
+  cleanup remains for that transient/cached-pre-detonation case. — QUEUED (low priority).
 - **U2 — Report rendered as real designed frontend from design.md; forensics woven in first-class** — QUEUED (pairs with U1).
 - **U3 — Sandbox speed (parallel boot, golden image, reuse clone, real parallel OpenCode)** — QUEUED.
 - **U5b — Real OpenCode/AI stream surfaced live + full log persisted** — QUEUED (pairs with U3).
