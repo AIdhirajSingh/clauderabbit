@@ -20,7 +20,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { band } from "./score";
 import { normalizeForensics } from "./scan";
 import { buildForensicsView } from "./report-view";
-import { centroidForCountry, project, type MapPoint } from "./world-geo";
+import { centroidForCountry, project, resolveLocation, type MapPoint } from "./world-geo";
 import type { LeaderboardEntry } from "./types";
 
 /** Page size for the infinite-scroll ranked list. */
@@ -102,6 +102,12 @@ export interface BoardDot {
   host: string | null;
   /** The projected position in the map's MAP_W×MAP_H space. */
   point: MapPoint;
+  /** U4: "egress" = plotted where the code was caught calling out; "origin" =
+   * plotted at the repo owner's own location (every scanned repo gets a dot). */
+  source: "egress" | "origin";
+  /** U4: when this repo was first scanned (reports.created_at) — drives the
+   * ~10-minute "newly added" pulse. Null when unknown (egress-view rows). */
+  createdAt: string | null;
 }
 
 /** Live board counts, each a precise fact about the reports cache. */
@@ -217,6 +223,8 @@ export function dotFromGeoRow(row: BoardDotRow): BoardDot | null {
     place: placeLabel(row),
     host,
     point: project(centroid.lat, centroid.lng),
+    source: "egress",
+    createdAt: null,
   };
 }
 
@@ -319,24 +327,98 @@ async function fetchScoreDistribution(client: BoardClient): Promise<ScoreDistrib
   }
 }
 
+/** A reports row joined to its owner, for the per-repo ORIGIN dot. */
+interface OriginRow {
+  owner_login: string;
+  repo_name: string;
+  score: number;
+  created_at: string;
+  owners: { reputation_json: unknown } | { reputation_json: unknown }[] | null;
+}
+
+/** Reshape a report+owner row into an ORIGIN dot at the owner's location, or null
+ * when the location cannot be resolved (no fabricated dot). Pure. */
+export function originDotFromRow(row: OriginRow): BoardDot | null {
+  const owner = Array.isArray(row.owners) ? row.owners[0] : row.owners;
+  const rj = owner?.reputation_json;
+  const loc = rj && typeof rj === "object"
+    ? (rj as Record<string, unknown>).location
+    : null;
+  const location = typeof loc === "string" && loc.trim() ? loc.trim() : null;
+  const coords = resolveLocation(location);
+  if (!coords) return null;
+  return {
+    id: `${row.owner_login}/${row.repo_name}@origin`,
+    owner: row.owner_login,
+    name: row.repo_name,
+    score: row.score,
+    band: band(row.score),
+    country: location ?? "",
+    place: location ?? "",
+    host: null,
+    point: project(coords.lat, coords.lng),
+    source: "origin",
+    createdAt: row.created_at,
+  };
+}
+
+/** Fetch an ORIGIN dot for every scanned repo (latest per repo) at its owner's
+ * location. Never throws; failure yields []. U4: the map is always alive — every
+ * repo gets a dot, not only the ones caught phoning home. */
+async function fetchOriginDots(client: BoardClient): Promise<BoardDot[]> {
+  try {
+    const { data, error } = await client
+      .from("reports")
+      .select("owner_login,repo_name,score,created_at,owners(reputation_json)")
+      .order("created_at", { ascending: false })
+      .limit(MAX_BOARD_DOTS);
+    if (error || !data) return [];
+    const raw = data as unknown as OriginRow[];
+    const seen = new Set<string>();
+    const dots: BoardDot[] = [];
+    for (const r of raw) {
+      const key = `${r.owner_login}/${r.repo_name}`;
+      if (seen.has(key)) continue; // newest-first → keep the latest per repo
+      seen.add(key);
+      const d = originDotFromRow(r);
+      if (d) dots.push(d);
+    }
+    return dots;
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Fetch the full initial board bundle (list page 0 + dots + stats +
  * distribution) in parallel. `loaded` is true only when the list page query
- * itself succeeded, so the UI can distinguish a genuinely empty board from a
- * failed load. Never throws.
+ * itself succeeded. The map dots are EVERY scanned repo: an EGRESS dot where the
+ * code was caught calling out (when captured), else an ORIGIN dot at the repo
+ * owner's own location — so the map is always alive, not just for caught repos.
+ * Egress overrides origin for the same repo; the origin's created_at carries the
+ * "newly added" pulse onto either dot. Never throws.
  */
 export async function fetchBoardData(client: BoardClient): Promise<BoardData> {
-  const [page, dots, stats, distribution] = await Promise.all([
+  const [page, egressDots, originDots, stats, distribution] = await Promise.all([
     fetchBoardPage(client, 0),
     fetchBoardDots(client),
+    fetchOriginDots(client),
     fetchBoardStats(client),
     fetchScoreDistribution(client),
   ]);
+  const byRepo = new Map<string, BoardDot>();
+  for (const d of originDots) byRepo.set(`${d.owner}/${d.name}`, d);
+  for (const d of egressDots) {
+    const key = `${d.owner}/${d.name}`;
+    // Prefer the egress dot (where it was caught calling out) but keep the origin's
+    // created_at so the "newly added" pulse still fires for caught repos too.
+    byRepo.set(key, { ...d, createdAt: d.createdAt ?? byRepo.get(key)?.createdAt ?? null });
+  }
   return {
     loaded: page.ok,
     rows: page.rows,
     hasMore: page.hasMore,
-    dots,
+    dots: [...byRepo.values()],
     stats,
     distribution,
   };

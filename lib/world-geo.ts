@@ -155,6 +155,109 @@ export function centroidForCountry(country: string | null | undefined): { lat: n
 }
 
 /**
+ * Major-city coordinates for resolving a GitHub owner's free-text `location`
+ * ("San Francisco, CA", "Bengaluru", "Berlin, Germany"). Owners overwhelmingly
+ * write a city, so city-level placement reads truer than a country centroid. This
+ * is a curated list of the cities GitHub owners most commonly name - not a
+ * gazetteer; anything unmatched falls back to the country, then to null (honest
+ * over invented). Keys are lowercase; aliases (sf, nyc, bangalore) included.
+ */
+const CITY_COORDS: Record<string, { lat: number; lng: number }> = {
+  "san francisco": { lat: 37.77, lng: -122.42 }, sf: { lat: 37.77, lng: -122.42 },
+  "bay area": { lat: 37.6, lng: -122.1 }, "silicon valley": { lat: 37.39, lng: -122.08 },
+  "san jose": { lat: 37.34, lng: -121.89 }, "palo alto": { lat: 37.44, lng: -122.14 },
+  "new york": { lat: 40.71, lng: -74.0 }, nyc: { lat: 40.71, lng: -74.0 }, brooklyn: { lat: 40.68, lng: -73.94 },
+  "los angeles": { lat: 34.05, lng: -118.24 }, la: { lat: 34.05, lng: -118.24 },
+  seattle: { lat: 47.61, lng: -122.33 }, austin: { lat: 30.27, lng: -97.74 },
+  boston: { lat: 42.36, lng: -71.06 }, chicago: { lat: 41.88, lng: -87.63 },
+  denver: { lat: 39.74, lng: -104.99 }, "washington": { lat: 38.9, lng: -77.04 },
+  "washington dc": { lat: 38.9, lng: -77.04 }, atlanta: { lat: 33.75, lng: -84.39 },
+  portland: { lat: 45.52, lng: -122.68 }, miami: { lat: 25.76, lng: -80.19 },
+  toronto: { lat: 43.65, lng: -79.38 }, vancouver: { lat: 49.28, lng: -123.12 }, montreal: { lat: 45.5, lng: -73.57 },
+  london: { lat: 51.51, lng: -0.13 }, manchester: { lat: 53.48, lng: -2.24 },
+  berlin: { lat: 52.52, lng: 13.4 }, munich: { lat: 48.14, lng: 11.58 }, hamburg: { lat: 53.55, lng: 9.99 },
+  paris: { lat: 48.86, lng: 2.35 }, amsterdam: { lat: 52.37, lng: 4.9 },
+  madrid: { lat: 40.42, lng: -3.7 }, barcelona: { lat: 41.39, lng: 2.17 },
+  rome: { lat: 41.9, lng: 12.5 }, milan: { lat: 45.46, lng: 9.19 },
+  zurich: { lat: 47.38, lng: 8.54 }, vienna: { lat: 48.21, lng: 16.37 },
+  stockholm: { lat: 59.33, lng: 18.06 }, copenhagen: { lat: 55.68, lng: 12.57 },
+  oslo: { lat: 59.91, lng: 10.75 }, helsinki: { lat: 60.17, lng: 24.94 },
+  dublin: { lat: 53.35, lng: -6.26 }, lisbon: { lat: 38.72, lng: -9.14 },
+  warsaw: { lat: 52.23, lng: 21.01 }, prague: { lat: 50.08, lng: 14.44 },
+  moscow: { lat: 55.75, lng: 37.62 }, "saint petersburg": { lat: 59.93, lng: 30.34 },
+  kyiv: { lat: 50.45, lng: 30.52 }, kiev: { lat: 50.45, lng: 30.52 },
+  istanbul: { lat: 41.01, lng: 28.98 }, "tel aviv": { lat: 32.08, lng: 34.78 },
+  dubai: { lat: 25.2, lng: 55.27 },
+  bangalore: { lat: 12.97, lng: 77.59 }, bengaluru: { lat: 12.97, lng: 77.59 },
+  mumbai: { lat: 19.08, lng: 72.88 }, "new delhi": { lat: 28.61, lng: 77.21 }, delhi: { lat: 28.61, lng: 77.21 },
+  hyderabad: { lat: 17.39, lng: 78.49 }, chennai: { lat: 13.08, lng: 80.27 }, pune: { lat: 18.52, lng: 73.86 },
+  tokyo: { lat: 35.68, lng: 139.69 }, beijing: { lat: 39.9, lng: 116.41 }, shanghai: { lat: 31.23, lng: 121.47 },
+  shenzhen: { lat: 22.54, lng: 114.06 }, "hong kong": { lat: 22.32, lng: 114.17 },
+  singapore: { lat: 1.35, lng: 103.82 }, seoul: { lat: 37.57, lng: 126.98 },
+  sydney: { lat: -33.87, lng: 151.21 }, melbourne: { lat: -37.81, lng: 144.96 },
+  "são paulo": { lat: -23.55, lng: -46.63 }, "sao paulo": { lat: -23.55, lng: -46.63 },
+  "rio de janeiro": { lat: -22.91, lng: -43.17 }, "buenos aires": { lat: -34.6, lng: -58.38 },
+  "mexico city": { lat: 19.43, lng: -99.13 }, lagos: { lat: 6.52, lng: 3.38 },
+  nairobi: { lat: -1.29, lng: 36.82 }, cairo: { lat: 30.04, lng: 31.24 },
+  "cape town": { lat: -33.92, lng: 18.42 }, jakarta: { lat: -6.21, lng: 106.85 },
+  bangkok: { lat: 13.76, lng: 100.5 }, manila: { lat: 14.6, lng: 120.98 },
+};
+
+/**
+ * Resolve a GitHub owner's free-text `location` to map coordinates. Tries an exact
+ * city match (whole string or a comma-part), then a city substring, then a country
+ * from any comma-part, then the whole string as a country. Returns null when
+ * nothing resolves ("Earth", "remote") - the map then renders NO dot rather than
+ * inventing a location. Real resolution is exhausted before giving up.
+ */
+export function resolveLocation(
+  location: string | null | undefined,
+): { lat: number; lng: number } | null {
+  if (!location) return null;
+  const raw = location.trim().toLowerCase();
+  if (!raw || raw.length > 120) return null;
+  const exact = CITY_COORDS[raw];
+  if (exact) return exact;
+  const parts = raw.split(/[,/|;]+/).map((p) => p.trim()).filter(Boolean);
+  for (const p of parts) {
+    const hit = CITY_COORDS[p];
+    if (hit) return hit;
+  }
+  // City named anywhere in the string (e.g. "San Francisco Bay Area").
+  for (const city in CITY_COORDS) {
+    const hit = CITY_COORDS[city];
+    if (hit && city.length > 3 && raw.includes(city)) return hit;
+  }
+  // US state (name or 2-letter code) BEFORE the country fallback, so "City, CA" /
+  // "City, Texas" resolve to the US. Major non-US cities are already caught by the
+  // city table above, so the ambiguous 2-letter codes (ca, in, de) rarely mis-fire.
+  const us = COUNTRY_CENTROIDS["united states"];
+  if (us) {
+    for (const p of parts) if (US_STATES.has(p)) return us;
+  }
+  // Country from a comma-part (prefer the last part, usually the country) then whole.
+  for (const p of [...parts].reverse()) {
+    const c = centroidForCountry(p);
+    if (c) return c;
+  }
+  return centroidForCountry(raw);
+}
+
+/** US state names + USPS codes, for "City, State" locations that omit the country. */
+const US_STATES: Set<string> = new Set([
+  "alabama", "al", "alaska", "ak", "arizona", "az", "arkansas", "ar", "california", "ca",
+  "colorado", "co", "connecticut", "ct", "delaware", "de", "florida", "fl", "georgia", "ga",
+  "hawaii", "hi", "idaho", "id", "illinois", "il", "indiana", "in", "iowa", "ia", "kansas", "ks",
+  "kentucky", "ky", "louisiana", "la", "maine", "me", "maryland", "md", "massachusetts", "ma",
+  "michigan", "mi", "minnesota", "mn", "mississippi", "ms", "missouri", "mo", "montana", "mt",
+  "nebraska", "ne", "nevada", "nv", "new hampshire", "nh", "new jersey", "nj", "new mexico", "nm",
+  "new york state", "north carolina", "nc", "north dakota", "nd", "ohio", "oh", "oklahoma", "ok",
+  "oregon", "or", "pennsylvania", "pa", "rhode island", "ri", "south carolina", "sc",
+  "south dakota", "sd", "tennessee", "tn", "texas", "tx", "utah", "ut", "vermont", "vt",
+  "virginia", "va", "washington state", "wa", "west virginia", "wv", "wisconsin", "wi", "wyoming", "wy",
+]);
+
+/**
  * Hand-built low-poly continent outline, authored against the equirectangular
  * 360×180 projection (x: lng+180, y: 90-lat). Decorative only — it gives the
  * dotted field a recognizable shape and names nothing. Kept coarse on purpose

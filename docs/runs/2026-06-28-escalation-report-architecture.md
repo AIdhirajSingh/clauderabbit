@@ -86,7 +86,13 @@
   (boot in seconds), faster machine for heavy builds, real parallel OpenCode (currently OFF in the inline
   path — CR_AGENTIC unset — so not in the critical path). Commits b36f258 (parallel boot) + f5a08ee (async teardown).
 - **U5b — Real OpenCode/AI stream surfaced live + full log persisted** — QUEUED (pairs with U3).
-- **U4 — World map: a dot per repo by origin, click->report, pulse new** — QUEUED (standalone).
+- **U4 — World map: a dot per repo by origin, click->report, pulse new** — ✅ DONE (branch claude/world-map-origin):
+  scan edge fn fetches the owner's GitHub `location` -> reputation_json (no migration); client resolves it
+  (new resolveLocation: ~80 cities + US states + country fallback) to an ORIGIN dot per repo; egress geo
+  still plotted when captured else fall back to origin so the map is always alive; dots CLICKABLE (SVG <a>
+  -> report in a new tab), hover = repo name + place, newly-scanned repos PULSE ~10min then settle; no
+  invented locations (URL/"Earth" -> no dot). PROVEN in browser: kentcdodds + addyosmani render as 2
+  clickable, pulsing origin dots (href=/owner/repo target=_blank). 66/66 tests (5 new resolveLocation).
 
 Per-unit aidhiraj_protocol (research -> plan -> COLD zero-context audit -> execute -> per-file rigor ->
 self-review + INDEPENDENT zero-context review for any sandbox/VM/credential/routing change -> act +

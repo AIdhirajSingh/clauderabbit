@@ -15,6 +15,7 @@ import {
   MAP_W,
   centroidForCountry,
   project,
+  resolveLocation,
 } from "../lib/world-geo.ts";
 
 test("project maps (0,0) to the map center", () => {
@@ -79,4 +80,42 @@ test("centroidForCountry returns null for unknown/empty countries (no invented l
   assert.equal(centroidForCountry("   "), null);
   assert.equal(centroidForCountry(null), null);
   assert.equal(centroidForCountry(undefined), null);
+});
+
+// U4: resolve a GitHub owner's free-text location to coordinates for the origin dot.
+
+test("resolveLocation places a known city (case + whitespace tolerant)", () => {
+  const sf = resolveLocation("San Francisco, CA");
+  assert.ok(sf, "San Francisco should resolve");
+  assert.ok(Math.abs(sf!.lat - 37.77) < 0.5 && Math.abs(sf!.lng + 122.42) < 0.5, "near SF");
+  assert.ok(resolveLocation("  bengaluru  "), "Bengaluru resolves");
+  assert.ok(resolveLocation("Berlin, Germany"), "Berlin resolves (city wins over country)");
+});
+
+test("resolveLocation resolves 'City, State' (US state) to the US even without a country", () => {
+  const us = centroidForCountry("united states");
+  // Cities NOT in the major-city table fall through to the US-state recognizer.
+  assert.deepEqual(resolveLocation("Sunnyvale, California"), us, "California -> US");
+  assert.deepEqual(resolveLocation("San Diego, CA"), us, "CA -> US");
+  assert.deepEqual(resolveLocation("Salt Lake City, Utah, USA"), us, "Utah/USA -> US");
+});
+
+test("resolveLocation falls back to the country for a 'City, Country' part", () => {
+  assert.deepEqual(resolveLocation("Lyon, France"), centroidForCountry("France"));
+  assert.deepEqual(resolveLocation("Kyoto, Japan"), centroidForCountry("Japan"));
+});
+
+test("resolveLocation invents NOTHING for an unresolvable location", () => {
+  assert.equal(resolveLocation("Earth"), null);
+  assert.equal(resolveLocation("https://opencollective.com/pmndrs"), null);
+  assert.equal(resolveLocation("remote"), null);
+  assert.equal(resolveLocation(""), null);
+  assert.equal(resolveLocation(null), null);
+  assert.equal(resolveLocation(undefined), null);
+});
+
+test("resolveLocation prefers a major non-US city over an ambiguous 2-letter code", () => {
+  // "Toronto, CA" — CA is both California's code and Canada's ISO2; the city wins.
+  const toronto = resolveLocation("Toronto, CA");
+  assert.ok(toronto && Math.abs(toronto.lat - 43.65) < 0.5, "Toronto resolves to Toronto, not the US/Canada centroid");
 });
