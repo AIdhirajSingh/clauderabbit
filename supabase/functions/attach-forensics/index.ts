@@ -427,27 +427,40 @@ export async function handler(req: Request): Promise<Response> {
   const summary = buildRuntimeSummary(owner, repo, rt, rep, topConcern(row.risky_json));
   const logs = rewriteEscalatedLogs(row.logs_json, score, breakdown, rt);
 
-  const { data, error } = await db.rpc("attach_forensics", {
-    p_owner_login: owner,
-    p_repo_name: repo,
-    p_commit_sha: sha,
-    p_forensics: forensics,
-    p_score: score,
-    p_verdict: verdict,
-    p_summary: summary,
-    p_logs: logs,
-  });
+  // Persist the escalation's report ATOMICALLY: forensics + the fresh blended
+  // score/verdict/summary + rewritten logs, in one EXACT-MATCH update. The service
+  // client bypasses RLS, so a direct update is equivalent to the old security-definer
+  // RPC and needs NO schema migration (the columns already exist) — it just writes
+  // more of them. Determinism: computed once here, so a fresh deep run and a later
+  // cached view of the same commit SHA read identical values.
+  const { data, error } = await db
+    .from("reports")
+    .update({
+      forensics_json: forensics,
+      deep: true,
+      score,
+      verdict,
+      summary,
+      logs_json: logs,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("owner_login", owner)
+    .eq("repo_name", repo)
+    .eq("commit_sha", sha)
+    .select("id")
+    .maybeSingle();
 
   if (error) {
-    const msg = error.message || "attach failed";
-    const status = /no report|not found/i.test(msg) ? 404 : 500;
-    // Log the detail server-side only; return a generic message so DB/schema
-    // internals never leak to the caller.
-    console.error("attach_forensics RPC failed:", msg);
-    return jsonResponse({ error: status === 404 ? "Report not found" : "Attach failed" }, status);
+    // Log the detail server-side only; return a generic message so DB internals
+    // never leak to the caller.
+    console.error("attach update failed:", error.message);
+    return jsonResponse({ error: "Attach failed" }, 500);
+  }
+  if (!data) {
+    return jsonResponse({ error: "Report not found" }, 404);
   }
 
-  return jsonResponse({ ok: true, report_id: data ?? null });
+  return jsonResponse({ ok: true, report_id: (data as { id: number }).id ?? null });
 }
 
 Deno.serve((req) =>
