@@ -23,6 +23,7 @@ build_one() {
 build_one cred-stealer
 build_one miner
 build_one exfil-c2
+build_one phone-home
 build_one benign-deps
 
 log "fixtures built:"

@@ -25,6 +25,7 @@ Usage (in the disposable analysis env):
 """
 import argparse
 import base64
+import ipaddress
 import json
 import socket
 import sys
@@ -99,9 +100,76 @@ def resolve_intended(host):
         return []
 
 
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598 shared address space
+
+
+def _ip_obj(ip):
+    """Parse `ip` to an ipaddress object (unwrapping IPv4-mapped IPv6); None if not
+    a valid IP literal. The geo path is fed attacker-influenced capture data, so we
+    never trust the string — only a real, parsed IP is ever used or interpolated."""
+    try:
+        obj = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return None
+    if isinstance(obj, ipaddress.IPv6Address) and obj.ipv4_mapped is not None:
+        return obj.ipv4_mapped
+    return obj
+
+
+def is_private_ip(ip):
+    """True for any address that is not a globally-routable public IP (or that is
+    not a valid IP at all). We must never geolocate private/internal/reserved space
+    — including the sandbox's own subnet, link-local, CGNAT, and IPv4-mapped IPv6."""
+    obj = _ip_obj(ip)
+    if obj is None:
+        return True  # not a real IP → never geolocate it
+    if (obj.is_private or obj.is_loopback or obj.is_link_local or obj.is_reserved
+            or obj.is_multicast or obj.is_unspecified):
+        return True
+    if obj.version == 4 and obj in _CGNAT:
+        return True
+    return False
+
+
+def geoip_http_lookup(ip):
+    """Best-effort, NO-KEY IP -> geo (country/region/city/org) for a PUBLIC IP.
+
+    Intelligence ONLY: this geolocates the address the code INTENDED to reach (the
+    sinkhole already contained the actual connection); we never connect to it. Runs
+    in the disposable off-VM analysis env. Returns None on any failure so the caller
+    falls back to an honest "no geo" — the world map then plots nothing rather than
+    a guess.
+    """
+    # Only ever interpolate a validated, normalized IP literal into the URL — the
+    # source value is attacker-influenced, so this is the SSRF/injection boundary.
+    obj = _ip_obj(ip)
+    if obj is None or is_private_ip(ip):
+        return None
+    try:
+        req = urllib.request.Request(
+            f"https://ipwho.is/{obj}",
+            headers={"User-Agent": "claude-rabbit-forensics"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            # Cap the read — a hostile/oversized response must not OOM the analysis.
+            data = json.loads(resp.read(65536).decode("utf-8"))
+        if not data.get("success"):
+            return None
+        conn = data.get("connection") or {}
+        return {
+            "country": data.get("country") or None,
+            "region": data.get("region") or None,
+            "city": data.get("city") or None,
+            "org": (conn.get("org") or conn.get("isp")) or None,
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def geoip_lookup(ip, reader):
     if not ip:
         return None
+    # 1. Offline GeoLite2 db, when present (preferred — no external call).
     if reader is not None:
         try:
             r = reader.city(ip)
@@ -115,12 +183,14 @@ def geoip_lookup(ip, reader):
             }
         except Exception:  # noqa: BLE001
             pass
-    # Fallback: classify private vs public, no external call.
-    label = "private/reserved" if (
-        ip.startswith("10.") or ip.startswith("192.168.")
-        or ip.startswith("127.") or ip.startswith("169.254.")
-        or any(ip.startswith(f"172.{i}.") for i in range(16, 32))
-    ) else "public (geo unavailable — no GeoIP db present)"
+    # 2. Public IP + no db → best-effort no-key HTTP geo (the world-map source).
+    if not is_private_ip(ip):
+        http = geoip_http_lookup(ip)
+        if http and http.get("country"):
+            return {"ip": ip, **{k: v for k, v in http.items() if v}}
+    # 3. Honest fallback: classify private vs public, claim NO country.
+    label = "private/reserved" if is_private_ip(ip) \
+        else "public (geo unavailable — lookup failed)"
     return {"ip": ip, "country": None, "note": label}
 
 
