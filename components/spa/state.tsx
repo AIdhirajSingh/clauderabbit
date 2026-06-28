@@ -76,17 +76,16 @@ const PROC_STEP_MS = 740;
 const PROC_STEP_DEEP_MS = 880;
 /** Delay after the last log step before the report renders. */
 const PROC_TAIL_MS = 560;
-/** Ad countdown starts here (seconds). */
-const AD_SECONDS = 15;
 /** Toast auto-dismiss (ms). */
 const TOAST_MS = 3400;
 /** Delay between picking a suggestion chip and firing the scan. */
 const SUGGESTION_PICK_MS = 140;
 /**
- * localStorage key for the repo the user was about to scan when the login gate
- * fired. Persisted here (not just in reducer state) because a real OAuth/magic-
- * link sign-in is a full-page redirect that wipes React state — on return we
- * restore it so the user lands ready to scan what they came for.
+ * localStorage key for a repo to restore into the scan box after an optional
+ * sign-in. Sign-in NEVER gates a scan (BUG-11), but a user who signs in mid-flow
+ * goes through a full-page OAuth/magic-link redirect that wipes React state, so
+ * if a pending repo was stored we restore it on return. Read/cleared defensively;
+ * it is harmless when absent.
  */
 const PENDING_REPO_KEY = "cr-pending-repo";
 
@@ -97,7 +96,6 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 export type Screen =
   | "home"
-  | "ad"
   | "processing"
   | "report"
   | "leaderboard"
@@ -117,7 +115,6 @@ interface State {
   activeRepoId: string | null;
   sourceScreen: Screen;
   showLogs: boolean;
-  adCount: number;
   procStep: number;
   procDeep: boolean;
   procRepoId: string | null;
@@ -188,7 +185,6 @@ const initialState: State = {
   activeRepoId: null,
   sourceScreen: "home",
   showLogs: false,
-  adCount: AD_SECONDS,
   procStep: -1,
   procDeep: false,
   procRepoId: null,
@@ -516,7 +512,6 @@ export interface AppApi {
   onFocus: () => void;
   onBlur: () => void;
   noop: (e: React.MouseEvent) => void;
-  skipAd: () => void;
   failProcessing: () => void;
   retryScan: () => void;
   openReport: (id: string, from?: Screen) => void;
@@ -611,7 +606,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Imperative timers, cleared-before-start exactly like the prototype.
   const procTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const adTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tailTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -726,8 +720,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ── prefill the scan box from a `?repo=owner/repo` query param (mount) ──
   // The public "not yet scanned" page links home with the repo prefilled, so
-  // the user lands ready to scan it. We only prefill the input (no auto-scan)
-  // to keep the first-scan-free / login UX entirely in the user's hands.
+  // the user lands ready to scan it. We only prefill the input (no auto-scan) —
+  // the user presses Scan when ready (scans are free + unlimited, never gated).
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -855,7 +849,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // report cache) to sessionStorage so a tab switch-and-return or same-session
   // remount restores the exact screen and re-serves cached reports instantly. ──
   // Only content screens (home/report/leaderboard) are persisted; on any other
-  // screen (processing/ad/login/dashboard/profile) we clear the snapshot so a
+  // screen (processing/login/dashboard/profile) we clear the snapshot so a
   // remount does not rehydrate a stale process screen.
   useEffect(() => {
     // Skip the initial mount commit: at that point `state` is still the
@@ -884,7 +878,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       if (procTimer.current) clearInterval(procTimer.current);
-      if (adTimer.current) clearInterval(adTimer.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
       if (tailTimer.current) clearTimeout(tailTimer.current);
       if (pickTimer.current) clearTimeout(pickTimer.current);
@@ -923,7 +916,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         failed: false,
       });
       if (procTimer.current) clearInterval(procTimer.current);
-      if (adTimer.current) clearInterval(adTimer.current);
       const total = repo.logs.length;
       procTimer.current = setInterval(
         () => {
@@ -985,7 +977,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
 
       if (procTimer.current) clearInterval(procTimer.current);
-      if (adTimer.current) clearInterval(adTimer.current);
 
       // Each REAL streamed stage updates the timeline. Token-guarded so late
       // events from a superseded/retried scan can never paint over a newer one.
@@ -1057,31 +1048,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patch, toast],
   );
 
-  const startAd = useCallback(
-    (id: string, from: Screen) => {
-      patch({ screen: "ad", adCount: AD_SECONDS, procRepoId: id, sourceScreen: from });
-      if (adTimer.current) clearInterval(adTimer.current);
-      if (procTimer.current) clearInterval(procTimer.current);
-      adTimer.current = setInterval(() => {
-        const c = stateRef.current.adCount - 1;
-        if (c <= 0) {
-          if (adTimer.current) clearInterval(adTimer.current);
-          patch({ adCount: 0 });
-          startProcessing(id, from);
-        } else {
-          patch({ adCount: c });
-        }
-      }, 1000);
-    },
-    [patch, startProcessing],
-  );
-
   const doScan = useCallback(() => {
     // Cancel any pending suggestion-chip pick so a stale delayed call can't fire
     // with an outdated screen after the user has navigated away.
     if (pickTimer.current) clearTimeout(pickTimer.current);
 
-    const fresh = stateRef.current.scanCount;
     const from: Screen = stateRef.current.screen === "dashboard" ? "dashboard" : "home";
 
     // Branch: a seeded DEMO repo (instant showcase) vs a REAL repo (live scan).
@@ -1093,26 +1064,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // The id used for gating + history: the demo id, or "owner/repo" for real.
+    // The id used for history: the demo id, or "owner/repo" for real.
     const id = demoId ?? `${parsed!.owner}/${parsed!.repo}`;
 
-    // Login gate (preserved exactly): after the free first scan, logged-out
-    // users must sign in to continue. The pending repo (input) is restored on login.
-    if (fresh >= 1 && !stateRef.current.loggedIn && stateRef.current.screen !== "dashboard") {
-      // Persist the pending repo across the full-page OAuth/magic-link redirect
-      // (which wipes reducer state); the auth listener restores it on SIGNED_IN.
-      try {
-        localStorage.setItem(PENDING_REPO_KEY, id);
-      } catch {
-        // Storage unavailable — pendingRepo still set in-memory for same-tab login.
-      }
-      patch({ screen: "login", pendingRepo: id });
-      toast("Sign in to continue scanning.", "var(--blue)");
-      return;
-    }
-
+    // Scans are FREE and UNLIMITED — NEVER gated by sign-in or an ad (BUG-11).
+    // Sign-in is offered only to keep history + contribute to the public vetted-
+    // repo database; it never blocks a scan, so there is no login/ad gate here.
     if (demoId) {
-      // ── DEMO path (unchanged): instant cached view, ad gate, or instant proc. ──
+      // ── DEMO path: instant cached view, else the demo processing timeline. ──
       const repo = REPOS[demoId];
       if (!repo) return;
       if (repo.cached || stateRef.current.scannedIds.includes(demoId)) {
@@ -1126,20 +1085,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         toast("Cached report, served instantly. No compute.", bandColor(repo.score));
         return;
       }
-      if (fresh === 0) {
-        toast("Scan started. First one is on us.", "var(--green)");
-        startProcessing(demoId, from);
-      } else {
-        startAd(demoId, from);
-      }
+      startProcessing(demoId, from);
       return;
     }
 
-    // ── REAL path: same first-scan-free / ad UX, but a real backend scan. ──
-    // The parser yields owner/repo only; the edge function resolves the default
-    // branch when no ref is given, so a live scan does not pass a ref here.
+    // ── REAL path: a real backend scan, run immediately (no gate). The parser
+    // yields owner/repo only; the edge function resolves the default branch. ──
     const { owner, repo } = parsed!;
-    const ref: string | undefined = undefined;
     // A repo we already scanned this session: serve the live-cached report.
     const cachedReport = stateRef.current.liveReports[id];
     if (cachedReport && stateRef.current.scannedIds.includes(id)) {
@@ -1153,42 +1105,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast("Cached report, served instantly. No compute.", bandColor(cachedReport.score));
       return;
     }
-    if (fresh === 0) {
-      toast("Scan started. First one is on us.", "var(--green)");
-      startLiveProcessing(owner, repo, ref, from);
-    } else {
-      patch({ screen: "ad", adCount: AD_SECONDS, sourceScreen: from });
-      if (adTimer.current) clearInterval(adTimer.current);
-      if (procTimer.current) clearInterval(procTimer.current);
-      // The ad gates a real scan: when it ends, kick off the live scan.
-      liveScanTarget.current = { owner, repo };
-      patch({ procRepoId: id });
-      adTimer.current = setInterval(() => {
-        const c = stateRef.current.adCount - 1;
-        if (c <= 0) {
-          if (adTimer.current) clearInterval(adTimer.current);
-          patch({ adCount: 0 });
-          startLiveProcessing(owner, repo, ref, from);
-        } else {
-          patch({ adCount: c });
-        }
-      }, 1000);
-    }
-  }, [patch, resolveDemoId, startAd, startLiveProcessing, startProcessing, toast]);
-
-  const skipAd = useCallback(() => {
-    if (adTimer.current) clearInterval(adTimer.current);
-    // A live scan target takes priority (the ad gated a real scan); else demo.
-    const target = liveScanTarget.current;
-    const cur = stateRef.current;
-    if (cur.procLive || (target && (!cur.procRepoId || !REPOS[cur.procRepoId]))) {
-      if (target) {
-        startLiveProcessing(target.owner, target.repo, target.ref, cur.sourceScreen);
-        return;
-      }
-    }
-    startProcessing(cur.procRepoId ?? "", cur.sourceScreen);
-  }, [startLiveProcessing, startProcessing]);
+    startLiveProcessing(owner, repo, undefined, from);
+  }, [patch, resolveDemoId, startLiveProcessing, startProcessing, toast]);
 
   const failProcessing = useCallback(() => {
     if (procTimer.current) clearInterval(procTimer.current);
@@ -1788,7 +1706,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       onFocus,
       onBlur,
       noop,
-      skipAd,
       failProcessing,
       retryScan,
       openReport,
@@ -1844,7 +1761,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       onFocus,
       onBlur,
       noop,
-      skipAd,
       failProcessing,
       retryScan,
       openReport,
