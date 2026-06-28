@@ -526,6 +526,35 @@ interface ReportRow {
   owner_id: number | null;
 }
 
+/** Reputation for a cached render: the persisted deterministic view when present
+ * (so it matches the fresh render incl. `forks`), else the legacy column shape. */
+function reputationFromOwner(ownerRow: OwnerRow | null): {
+  stars: string;
+  forks: string;
+  sentiment: string;
+  sentScore: number;
+} {
+  const rj = ownerRow?.reputation_json;
+  if (rj && typeof rj === "object") {
+    const r = rj as Record<string, unknown>;
+    if (typeof r.stars === "string") {
+      return {
+        stars: r.stars,
+        forks: typeof r.forks === "string" ? r.forks : "—",
+        sentiment: typeof r.sentiment === "string" ? r.sentiment : (ownerRow?.sentiment ?? ""),
+        sentScore: typeof r.sentScore === "number" ? r.sentScore : (ownerRow?.sentiment_score ?? 0),
+      };
+    }
+  }
+  // Legacy rows (no deterministic view persisted) — reconstruct from columns.
+  return {
+    stars: ownerRow?.stars_total != null ? formatNumber(ownerRow.stars_total) : "—",
+    forks: "—",
+    sentiment: ownerRow?.sentiment ?? "",
+    sentScore: ownerRow?.sentiment_score ?? 0,
+  };
+}
+
 function reshapeCached(row: ReportRow, ownerRow: OwnerRow | null): unknown {
   return {
     id: `${row.owner_login}/${row.repo_name}`,
@@ -544,14 +573,11 @@ function reshapeCached(row: ReportRow, ownerRow: OwnerRow | null): unknown {
       repos: ownerRow?.public_repos ?? 0,
       note: "",
     },
-    reputation: {
-      stars: ownerRow?.stars_total != null
-        ? formatNumber(ownerRow.stars_total)
-        : "—",
-      forks: "—",
-      sentiment: ownerRow?.sentiment ?? "",
-      sentScore: ownerRow?.sentiment_score ?? 0,
-    },
+    // Reputation is reconstructed from the persisted DETERMINISTIC view
+    // (reputation_json), so the cached render matches the fresh render exactly —
+    // including `forks`, which the older column-only path could not recover. Falls
+    // back to the columns for rows persisted before this view existed.
+    reputation: reputationFromOwner(ownerRow),
     stats: row.stats_json ?? {},
     packages: row.packages_json ?? [],
     risky: row.risky_json ?? [],
@@ -581,6 +607,7 @@ interface OwnerRow {
   stars_total: number | null;
   sentiment: string | null;
   sentiment_score: number | null;
+  reputation_json?: unknown;
 }
 
 // --- Main handler ------------------------------------------------------------
@@ -900,6 +927,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
         }
       }
 
+      // Deterministic owner + reputation views, built from REAL GitHub facts +
+      // the model's sentiment read — NOT the model's free-text ownerHistory /
+      // reputation (which vary run to run). These are what the report shows AND
+      // what we persist (ownerHistory via the owner columns, reputation via
+      // reputation_json), so a fresh render and a later cached render of the same
+      // commit are byte-identical (BUG-17, determinism per commit SHA).
+      const ownerView = {
+        handle: owner.login,
+        name: owner.name ?? owner.login,
+        age: owner.ageLabel,
+        established: owner.established,
+        repos: owner.publicRepos,
+        note: "",
+      };
+      const repView = {
+        stars: formatNumber(metadata.stars),
+        forks: formatNumber(metadata.forks),
+        sentiment: model.reputation?.sentiment ?? "",
+        sentScore: typeof model.reputation?.sentScore === "number"
+          ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
+          : 0,
+      };
+
       // 8. Persist — owner reputation, report, scan event.
       let ownerId: number | null = null;
       try {
@@ -915,10 +965,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
               public_repos: owner.publicRepos,
               stars_total: metadata.stars,
               sentiment: model.reputation?.sentiment ?? null,
+              // This column is the board/aggregate signal (neutral 50 default).
+              // The REPORT display reads `reputation_json.sentScore` (0 = "no
+              // model read"), so the two intentionally differ on the no-read case.
               sentiment_score: model.reputation?.sentScore != null
                 ? Math.round(clamp(model.reputation.sentScore, 0, 100, 50))
                 : null,
-              reputation_json: model.reputation ?? null,
+              // Persist the DETERMINISTIC reputation view so the cached render
+              // reconstructs the exact same reputation (incl. forks) as the
+              // fresh render did.
+              reputation_json: repView,
               fetched_at: new Date().toISOString(),
             },
             { onConflict: "github_login" },
@@ -1001,20 +1057,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           cached: false,
           deep,
           summary: model.summary ?? "",
-          ownerHistory: model.ownerHistory ?? {
-            handle: owner.login,
-            name: owner.name ?? owner.login,
-            age: owner.ageLabel,
-            established: owner.established,
-            repos: owner.publicRepos,
-            note: "",
-          },
-          reputation: model.reputation ?? {
-            stars: formatNumber(metadata.stars),
-            forks: formatNumber(metadata.forks),
-            sentiment: "",
-            sentScore: 0,
-          },
+          ownerHistory: ownerView,
+          reputation: repView,
           stats,
           packages: model.packages ?? [],
           risky,
