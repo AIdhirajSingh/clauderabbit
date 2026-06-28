@@ -299,7 +299,7 @@ export function HomeScreen() {
                 </button>
               ))}
             </div>
-            <div style={{ marginTop: 20, fontSize: 12.5, color: "var(--t5)" }}>Your first scan is free. No account, no ad.</div>
+            <div style={{ marginTop: 20, fontSize: 12.5, color: "var(--t5)" }}>Free and open source. No account needed — sign in only to save your history.</div>
           </div>
         </div>
 
@@ -477,7 +477,7 @@ export function HomeScreen() {
               }}
             >
               <StarIcon size={13} />
-              <span style={{ fontSize: 12, color: "var(--t3)" }}>Free · ad-supported · source-available</span>
+              <span style={{ fontSize: 12, color: "var(--t3)" }}>Free · unlimited · open source</span>
             </div>
             <h2 className="serif" style={{ fontSize: "clamp(34px,4.6vw,52px)", margin: "0 0 16px", color: "var(--t1)", lineHeight: 1.02, letterSpacing: "-0.015em" }}>
               Star it. Know before you run.
