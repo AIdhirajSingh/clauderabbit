@@ -433,10 +433,20 @@ d["egress_control_probe"]=probe.strip()
 json.dump(d,open(p,"w"),indent=2)
 PY
 
-# ---- 9. DELETE the detonation VM NOW (reset) — trap stays to hold capture --
-log "=== RESET: deleting detonation VM $DET_VM now (capture already collected) ==="
-gcloud compute instances delete "$DET_VM" --zone="$ZONE" --quiet >/dev/null 2>&1 || true
-verify_gone "$DET_VM" && log "detonation VM gone." || log "WARNING: detonation VM may linger (sweep will retry)."
+# ---- 9. DELETE the detonation VM (reset) — ASYNC so analysis/verdict overlap --
+# SPEED (U3): the detonation VM delete (~15-20s) runs in the BACKGROUND while the
+# off-VM analysis + verdict + forensics — which all read the LOCAL captured bytes,
+# never the VM — proceed. We `wait` for the delete before the script returns (below),
+# so the per-scan RESET INVARIANT still holds: the detonation VM is gone before we
+# finish, and the EXIT trap is the backstop. The trap stays up to hold the capture
+# until the EXIT trap reaps it. Capture was already collected above, so nothing
+# downstream needs the detonation VM.
+log "=== RESET: deleting detonation VM $DET_VM (async; capture already collected) ==="
+(
+  gcloud compute instances delete "$DET_VM" --zone="$ZONE" --quiet >/dev/null 2>&1
+  verify_gone "$DET_VM" && log "detonation VM gone." || log "WARNING: detonation VM may linger (sweep will retry)."
+) &
+DET_DELETE_PID=$!
 # remove it from the ledger so cleanup doesn't re-attempt (harmless if it does)
 grep -v "^$DET_VM$" "$VM_LEDGER" > "$VM_LEDGER.tmp" 2>/dev/null && mv "$VM_LEDGER.tmp" "$VM_LEDGER" || true
 
@@ -489,6 +499,11 @@ python3 "$FORENSICS" --behavior "$LOCAL_REPORT" --capture "$LOCAL_CAPTURE" \
   --target "$NAME" --out "$LOCAL_FORENSICS" | tail -40
 
 log "results: behavior=$LOCAL_REPORT capture=$LOCAL_CAPTURE analysis=$LOCAL_ANALYSIS verdict=$LOCAL_VERDICT forensics=$LOCAL_FORENSICS"
+
+# Ensure the async detonation-VM delete (started at the RESET above) has finished
+# before we return — the per-scan reset invariant must hold (the VM is gone), and
+# the EXIT trap is only a backstop. It almost always completed during analysis.
+wait "${DET_DELETE_PID:-}" 2>/dev/null || true
 
 # ---- 12. trap deleted by the EXIT trap (and detonation already gone) -------
 log "scan complete for $NAME. Trap VM will be deleted now (reset)."
