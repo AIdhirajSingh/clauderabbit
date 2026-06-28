@@ -95,6 +95,26 @@ restart dev on this branch + re-run clawdcursor in the browser to prove the fres
 verify"), confirm cache==fresh, then INDEPENDENT zero-context security/correctness review of the U1
 diff (sandbox/credential/routing touched: attach-forensics direct write), then PR -> merge.
 
+**INDEPENDENT REVIEW (zero-context, security+correctness): SHIP** — no CRITICAL/HIGH. Validated: the
+direct service-role `db.from('reports').update().eq(owner).eq(repo).eq(sha)` is provably SINGLE-ROW via
+the `uq_reports_owner_repo_sha` unique constraint (initial_schema.sql:117) — equivalent to the old RPC,
+auth-first (runner-key constant-time), no injection (PostgREST .eq params), no wrong-row overwrite; blend
+ceilings can't whitewash (caught-attack 25 < Malicious-split 30; crash/build-fail cap 64; static residual
+neg-only; clean-exercised is the only path to green); determinism preserved (all rendered fields persisted
+at attach); rails intact (never bare Safe, caught-attack never softened, reputation separate, hedge-removal
+escalation-ONLY, containment-failure warning kept); malformed-forensic-record safe (asNum/asObj/asArr
+guards + Deno.serve catch; summary strings render as escaped React text). 3 NON-BLOCKING follow-ups:
+M1 SELECT-then-UPDATE not atomic (near-impossible race given runner-gate + 1/day deep; worst case = stale
+residual term; future single-statement RPC); L1 read `error` dropped silently (behavior correct, log it);
+L2 `_possiblyDormant`/`_notVerified` now unused on ForensicsView (dead-ish). Deferred (don't churn the
+deployed fn mid-proof).
+
+RE-DETONATION in flight (curl /api/deep clawdcursor, ~12min) to prove the FRESH blend persists + the report
+re-renders coherently in the browser (cache blocks browser auto-retrigger of a forensics-present repo, so
+the re-detonation is triggered via the real /api/deep route; the coherent RESULT is verified in the browser).
+NEXT after re-blend lands: verify browser (score 28->~34 High risk, runtime-first summary, clean logs, one
+verdict) -> commit any L1 fix -> PR claude/escalation-owns-report -> merge -> mark U1 DONE -> start U5a/U2.
+
 (original cold-audit notes below)
 ### U1 cold-audit detail (branch claude/escalation-owns-report off main)
 COLD AUDIT verdict: **GO-WITH-CHANGES**. Plan at scratchpad/u1-plan.md. The 7 REQUIRED changes (all adopted):
