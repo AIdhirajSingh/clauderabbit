@@ -40,10 +40,10 @@ export function LoginScreen() {
       <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div style={{ width: "100%", maxWidth: 400, animation: "riseIn .6s var(--ease) both" }}>
           <h1 className="serif" style={{ fontSize: 42, margin: "0 0 12px", color: "var(--t1)", textAlign: "center", lineHeight: 1.02, letterSpacing: "-0.01em" }}>
-            Keep scanning.
+            Save your scans.
           </h1>
           <p style={{ fontSize: 15, color: "var(--t3)", margin: "0 0 36px", textAlign: "center", lineHeight: 1.55 }}>
-            Your first scan was free. Sign in to keep your scan history and help grow the public database of vetted repositories.
+            Scanning is free and unlimited — no account required. Sign in only to keep your scan history and help grow the public database of vetted repositories.
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
