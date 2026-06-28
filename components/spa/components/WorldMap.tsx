@@ -60,6 +60,10 @@ function clampView(v: View): View {
 export function WorldMap({ dots, loaded }: WorldMapProps) {
   const [view, setView] = useState<View>(INITIAL_VIEW);
   const [dragging, setDragging] = useState(false);
+  // The "newly added" pulse anchor: a stable timestamp captured ONCE at mount
+  // (React-pure — Date.now() in render is impure). Repos scanned within ~10 min of
+  // opening the board pulse, then settle.
+  const [now] = useState(() => Date.now());
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -164,19 +168,43 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
         >
           <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
             <path d={WORLD_OUTLINE_PATH} fill="var(--s3)" stroke="var(--line2)" strokeWidth={0.4} />
-            {dots.map((d) => {
-              const color = BAND_COLOR[d.band];
-              return (
-                <g key={d.id} transform={`translate(${d.point.x} ${d.point.y})`}>
-                  <circle r={3.4 / view.scale} fill={color} opacity={0.18} />
-                  <circle r={1.7 / view.scale} fill={color}>
-                    <title>
-                      {d.owner}/{d.name} — caught calling {d.host ?? "a destination"} in {d.place}
-                    </title>
-                  </circle>
-                </g>
-              );
-            })}
+            {(() => {
+              // A dot is "newly added" for ~10 minutes after its repo was first
+              // scanned; it pulses, then settles. `now` is the stable mount anchor.
+              return dots.map((d) => {
+                const color = BAND_COLOR[d.band];
+                const isNew = d.createdAt != null && now - Date.parse(d.createdAt) < 600_000;
+                // Hover: repo name + where. Egress dots say what it was caught
+                // calling; origin dots just name the owner's location.
+                const title =
+                  d.source === "egress"
+                    ? `${d.owner}/${d.name} — caught calling ${d.host ?? "a destination"} in ${d.place}`
+                    : `${d.owner}/${d.name}${d.place ? ` — ${d.place}` : ""}`;
+                return (
+                  // Clickable: opens the repo's public report in a NEW TAB. An SVG
+                  // <a> navigates on a click; a map drag does not trigger it.
+                  <a key={d.id} href={`/${d.owner}/${d.name}`} target="_blank" rel="noopener noreferrer" style={{ cursor: "pointer" }}>
+                    <g transform={`translate(${d.point.x} ${d.point.y})`}>
+                      <circle r={3.4 / view.scale} fill={color} opacity={0.18} />
+                      {isNew && (
+                        <circle
+                          r={1.7 / view.scale}
+                          fill={color}
+                          opacity={0.55}
+                          style={{ animation: "pulseRing 2s ease-out infinite" }}
+                        />
+                      )}
+                      <circle r={1.7 / view.scale} fill={color}>
+                        <title>
+                          {title}
+                          {isNew ? " · just added" : ""}
+                        </title>
+                      </circle>
+                    </g>
+                  </a>
+                );
+              });
+            })()}
           </g>
         </svg>
 
@@ -193,9 +221,10 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
               padding: 24,
             }}
           >
-            <p style={{ margin: 0, fontSize: 12.5, color: "var(--t4)", textAlign: "center", lineHeight: 1.5, maxWidth: 320 }}>
-              No outbound destinations captured yet. A dot appears here only when the
-              sandbox catches a real repo calling out, placed at the country we resolved.
+            <p style={{ margin: 0, fontSize: 12.5, color: "var(--t4)", textAlign: "center", lineHeight: 1.5, maxWidth: 340 }}>
+              No repos with a resolvable location yet. Every scanned repo gets a dot at
+              its owner&apos;s location, or where its code was caught calling out. Hover a
+              dot for the repo, click to open its report.
             </p>
           </div>
         )}
