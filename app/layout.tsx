@@ -6,7 +6,8 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: "Claude Rabbit",
-  description: "Everyone reads the code. We run it.",
+  description:
+    "Claude Rabbit is a free, open-source security product protecting the open-source community from malware. We clone any public GitHub repo into an isolated sandbox, run it, and return one honest safety score.",
 };
 
 /**
