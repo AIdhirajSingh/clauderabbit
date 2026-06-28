@@ -262,6 +262,12 @@ export interface Report {
    * then not rendered — no empty shell).
    */
   forensics?: Forensics;
+  /**
+   * The resolved commit SHA this report is for. Carried through so the inline
+   * deep run can pin its detonation to (and attach its forensics onto) this exact
+   * report row — fresh and cached renders agree per commit (see BUG-17).
+   */
+  commit_sha?: string;
 }
 
 /** A row on the public dangerous-repos leaderboard. */

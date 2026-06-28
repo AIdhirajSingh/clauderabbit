@@ -38,7 +38,7 @@ import {
   type RiskyItemView,
 } from "@/lib/report-view";
 import { parseRepoInput } from "@/lib/parse-repo";
-import { runScan, type ScanStage } from "@/lib/scan";
+import { runScan, runDeepScan, type ScanStage } from "@/lib/scan";
 import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
@@ -1032,7 +1032,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...(accessToken ? { accessToken } : {}),
         onStage,
       })
-        .then((result) => {
+        .then(async (result) => {
           // Ignore a resolution that has been superseded (newer scan / retry).
           if (token !== liveScanToken.current) return;
           if (procTimer.current) clearInterval(procTimer.current);
@@ -1043,6 +1043,94 @@ export function AppProvider({ children }: { children: ReactNode }) {
             return;
           }
           const report = result.report;
+
+          // ── INLINE DEEP RUN (the moat, no queue) ────────────────────────────
+          // The fast path tripped the escalation gate (deep) but has NOT detonated
+          // yet (no forensics). Do NOT navigate to the static report — stay on the
+          // processing screen and spawn a real sealed sandbox VM inline, streaming
+          // its milestones into the SAME timeline. We navigate only once the
+          // forensics are captured + attached, to a genuine "Sandbox run".
+          if (report.deep && !report.forensics && report.commit_sha) {
+            const sha = report.commit_sha;
+            // Record WHY it escalated as an honest completed chapter, flip the
+            // timeline into deep mode, then let the deep stream drive the rest.
+            procStagesRef.current = [
+              ...procStagesRef.current,
+              {
+                ch: "Escalation",
+                kind: "warn",
+                lines: [
+                  "Fast-path signals were ambiguous — escalating to a live sandbox detonation.",
+                ],
+              },
+            ];
+            patch({
+              procDeep: true,
+              procStages: procStagesRef.current,
+              procActiveCh: "Spawning sealed sandbox VM",
+            });
+
+            const deep = await runDeepScan({ owner, repo, sha, onStage });
+            if (token !== liveScanToken.current) return;
+
+            // Re-fetch the (now forensics-bearing) row, retrying a few times for
+            // read-after-write. attach_forensics UPDATEs the row in place, so the
+            // latest-by-created_at read returns the same row now carrying forensics.
+            let updated: typeof report | null = null;
+            if (deep.ok && deep.persisted && SUPABASE_URL && SUPABASE_ANON_KEY) {
+              for (let i = 0; i < 4 && token === liveScanToken.current; i++) {
+                const rep = await fetchLatestReportRest(
+                  SUPABASE_URL,
+                  SUPABASE_ANON_KEY,
+                  owner,
+                  repo,
+                );
+                if (rep?.forensics) {
+                  updated = rep;
+                  break;
+                }
+                await new Promise((res) => setTimeout(res, 800));
+              }
+            }
+            if (token !== liveScanToken.current) return;
+
+            const finalReport = updated ?? report;
+            const cur = stateRef.current;
+            patch({
+              screen: "report",
+              procLive: false,
+              procDeep: false,
+              activeRepoId: id,
+              liveReports: { ...cur.liveReports, [id]: finalReport },
+              scanCount: cur.scanCount + 1,
+              scannedIds: cur.scannedIds.includes(id)
+                ? cur.scannedIds
+                : [...cur.scannedIds, id],
+              dynamicUsed: cur.dynamicUsed + 1,
+              showLogs: false,
+            });
+
+            if (updated?.forensics) {
+              // Refresh the board so the new world-map dot + deep-run count appear.
+              const supabase = getSupabase();
+              if (supabase) {
+                void fetchBoardData(supabase)
+                  .then((data) => {
+                    if (token === liveScanToken.current) patch({ board: data, boardPage: 0 });
+                  })
+                  .catch(() => {});
+              }
+              toast("Sandbox run complete. Forensics attached.", bandColor(finalReport.score));
+            } else if (deep.ok) {
+              // Ran but produced/persisted no record — never imply a clean result.
+              toast("Sandbox ran, but no forensic record was captured.", "var(--amber)");
+            } else {
+              toast(`Sandbox run did not complete: ${deep.error}`, "var(--amber)");
+            }
+            return;
+          }
+
+          // ── fast-path resolution (no escalation) ────────────────────────────
           const cur = stateRef.current;
           patch({
             screen: "report",
@@ -1067,7 +1155,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           patch({ failed: true, procLive: false, procActiveCh: null });
         });
     },
-    [patch, toast],
+    [patch, toast, getSupabase],
   );
 
   const doScan = useCallback(() => {
