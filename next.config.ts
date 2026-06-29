@@ -41,8 +41,11 @@ const nextConfig: NextConfig = {
       { key: "X-DNS-Prefetch-Control", value: "on" },
     ];
     // A functional CSP: self + the inline styles the design uses + Supabase for the
-    // anon REST/auth reads + data/https images. frame-ancestors 'none' clickjack-proofs
-    // the app (the badge route below re-opens framing for embedding).
+    // anon REST/auth reads + data/https images. The shipped Claude Design loads its two
+    // typefaces (Instrument Serif + Geist) from Google Fonts, so the fonts.googleapis.com
+    // stylesheet (style-src) and the fonts.gstatic.com font files (font-src) MUST be
+    // allowed — otherwise the CSP silently breaks the design's typography on a cold cache.
+    // frame-ancestors 'none' clickjack-proofs the app (the badge route below re-opens framing).
     const csp = [
       "default-src 'self'",
       "base-uri 'self'",
@@ -50,8 +53,8 @@ const nextConfig: NextConfig = {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "img-src 'self' data: https:",
-      "font-src 'self' data:",
-      "style-src 'self' 'unsafe-inline'",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "connect-src 'self' https://*.supabase.co https://*.supabase.in",
     ].join("; ");
