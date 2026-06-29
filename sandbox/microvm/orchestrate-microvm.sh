@@ -31,6 +31,11 @@ OWNER="${GITHUB%%/*}"; REPO="${GITHUB##*/}"
 # strict: owner/repo/ref already validated by the caller; re-guard against metacharacters
 case "$OWNER$REPO" in *[!A-Za-z0-9._-]*) die "bad owner/repo";; esac
 case "$REF" in *[!A-Za-z0-9._-]*) die "bad ref";; esac
+# reject bare "." / ".." (the charset alone permits them) so the fixture cp can never
+# resolve to the fixtures dir itself or a parent — defense in depth for direct invocation.
+for seg in "$OWNER" "$REPO" "$REF"; do
+  case "$seg" in ""|"."|"..") die "segment must not be empty, '.' or '..'";; esac
+done
 
 WORK="/tmp/cr-scan-${ID}"; REPO_DIR="$WORK/repo"
 # Full ref: nerdctl/buildkit store images under docker.io/library/<name>; `ctr run`

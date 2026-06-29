@@ -468,8 +468,13 @@ export async function handler(req: Request): Promise<Response> {
   }
   let reportId = (data as { id?: number } | null)?.id ?? null;
   if (!data) {
-    // No stage-1 row to update (a direct deep detonation, e.g. a forge test fixture):
-    // the deep path stands alone — INSERT a minimal report row (owner_id is nullable).
+    // No stage-1 row to update. A standalone INSERT is allowed ONLY for the local forge
+    // test fixtures (owner "cr-fixtures") — never for arbitrary public repos, so a leaked
+    // runner key cannot forge a clean verdict for a real package that was never scanned.
+    // A real repo with no row means the fast path never ran: fail closed (404), don't insert.
+    if (owner !== "cr-fixtures") {
+      return jsonResponse({ error: "Report not found" }, 404);
+    }
     const { data: ins, error: insErr } = await db
       .from("reports")
       .insert({ owner_login: owner, repo_name: repo, commit_sha: sha, scan_path: "deep", ...fields })
