@@ -427,9 +427,139 @@ class ParallelAnalysis:
         }
 
 
+# --- CLI: wire the real engine + stream events as orchestrate milestones ------
+
+def _emit_milestone(ev: "AgentEvent") -> None:
+    """Forward one live agent event to STDERR in the `[agent] ...` shape orchestrate-
+    microvm.sh + /api/deep's milestone parser already understand, so three agents'
+    real reasoning streams to the UI as it happens."""
+    import sys
+    txt = (ev.text or "").replace("\n", " ").strip()
+    print(f"[agent] {ev.agent_id} {ev.kind}: {txt}"[:400], file=sys.stderr, flush=True)
+
+
+def main(argv: list[str]) -> int:
+    import argparse
+    import os as _os
+    import shutil
+    import subprocess
+    import sys
+
+    ap = argparse.ArgumentParser(description="Three-parallel-agent cross-verified analysis")
+    ap.add_argument("--repo-dir", required=True)
+    ap.add_argument("--graph", required=True, help="knowledge-graph.json path")
+    ap.add_argument("--commit-sha", required=True)
+    ap.add_argument("--name", required=True)
+    ap.add_argument("--trap-ip", required=True)
+    ap.add_argument("--results-dir", required=True)
+    ap.add_argument("--time-budget-s", type=float, required=True)
+    ap.add_argument("--token-budget", type=int, required=True)
+    ap.add_argument("--cage-duration-s", type=float, default=None)
+    ap.add_argument("--engine", choices=("opencode", "vertex"), default="opencode",
+                    help="which brain drives the three agents (opencode falls back to "
+                         "vertex if the binary is unavailable)")
+    ap.add_argument("--project", help="GCP project for Vertex/OpenCode-Vertex")
+    ap.add_argument("--location", help="Vertex location")
+    ap.add_argument("--out", help="write agentic-findings.json here")
+    args = ap.parse_args(argv)
+
+    # The vertex engine has no fallback, so it needs creds up front; opencode may run
+    # without them (it only needs them IF it has to fall back to vertex).
+    if args.engine == "vertex" and (not args.project or not args.location):
+        ap.error("--engine vertex requires --project and --location")
+
+    with open(args.graph, "r", encoding="utf-8") as fh:
+        graph = json.load(fh)
+
+    from agent_loop import SYSTEM_PROMPT
+    base_system = SYSTEM_PROMPT
+
+    # Build a per-lens model_call for the chosen engine. OpenCode is the mandated
+    # brain; if it can't run (binary missing/not executable) we fall back at RUNTIME to
+    # the proven Vertex-direct client (the design doc's documented fallback) so a scan
+    # never fails on OpenCode being unavailable. The lens-specialized system prompt is
+    # bound here (the loop passes the shared SYSTEM_PROMPT; we substitute the lens one).
+    def make_model_call(lens: AgentLens):
+        system = _system_for(base_system, lens)
+
+        _vertex_cache: dict = {}
+        def vertex_call(msgs, tools):
+            if "fn" not in _vertex_cache:
+                from vertex_client import make_vertex_model_call, LEAD_MODEL as V_LEAD
+                if not args.project or not args.location:
+                    # A regular Exception (NOT SystemExit/BaseException) so a worker
+                    # thread degrades gracefully via _run_one and the run still writes
+                    # an honest @2 record — never-blank. Missing-creds for the chosen
+                    # engine is validated up front in main() below.
+                    raise RuntimeError("vertex fallback needs --project/--location")
+                _vertex_cache["fn"] = make_vertex_model_call(
+                    project=args.project, location=args.location, model=V_LEAD)
+            return _vertex_cache["fn"](system, msgs, tools)
+
+        if args.engine == "vertex":
+            return lambda sys_, msgs, tools: vertex_call(msgs, tools)
+
+        from opencode_client import make_opencode_model_call, OpenCodeUnavailable, LEAD_MODEL as OC_LEAD
+        oc = make_opencode_model_call(
+            model=OC_LEAD, project=args.project, location=args.location,
+            scratch_dir=f"/tmp/cr-oc-{args.name}-{lens.lens_id}")
+
+        def opencode_then_vertex(sys_, msgs, tools):
+            try:
+                return oc(system, msgs, tools)
+            except OpenCodeUnavailable as e:
+                print(f"[agent] {lens.lens_id} opencode unavailable ({e}); vertex fallback",
+                      file=sys.stderr, flush=True)
+                return vertex_call(msgs, tools)
+        return opencode_then_vertex
+
+    gcloud_bin = shutil.which("gcloud") or "gcloud"
+
+    def ssh_exec(command: str) -> str:
+        # Real intra-VPC relay into the sealed VM (mirrors agent_loop.main). Resilient:
+        # a relay failure returns "" so the detonation records unexecuted and the pass
+        # continues (never-blank); detonation validity is still enforced by detonator.py.
+        try:
+            proc = subprocess.run(
+                [gcloud_bin, "compute", "ssh", _os.environ.get("CR_DET_VM", ""),
+                 "--zone", _os.environ.get("CR_ZONE", ""), "--tunnel-through-iap",
+                 "--command", command],
+                capture_output=True, text=True, timeout=180,
+            )
+            if proc.stderr and proc.stderr.strip():
+                print(f"[agent] ssh stderr: {proc.stderr.strip()[:800]!r}", file=sys.stderr, flush=True)
+            return proc.stdout or ""
+        except Exception as e:  # noqa: BLE001 — boundary: never propagate into the loop
+            print(f"[agent] ssh_exec failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            return ""
+
+    analysis = ParallelAnalysis(
+        repo_dir=args.repo_dir, graph=graph, commit_sha=args.commit_sha, name=args.name,
+        trap_ip=args.trap_ip, ssh_exec=ssh_exec, make_model_call=make_model_call,
+        base_system=base_system, time_budget_s=args.time_budget_s,
+        token_budget=args.token_budget, results_dir=args.results_dir,
+        cage_duration_s=args.cage_duration_s, on_event=_emit_milestone,
+    )
+    print(f"[agent] launching THREE parallel agents ({args.engine}) over disjoint regions",
+          file=sys.stderr, flush=True)
+    try:
+        result = analysis.run()
+    except Exception as e:  # noqa: BLE001 — never-blank
+        print(f"[agent] parallel analysis crashed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        result = {"schema": "claude-rabbit/agentic-findings@2", "name": args.name,
+                  "crashed": f"{type(e).__name__}: {e}", "cross_verified_findings": [],
+                  "dynamic_outcome": {"credentialReadObserved": False,
+                                      "egressIntercepted": False, "autoBuildSucceeded": False}}
+    out_path = args.out or _os.path.join(args.results_dir, f"{args.name}-agentic-findings.json")
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 # --- module self-check (no SDK, no host) -------------------------------------
 
-if __name__ == "__main__":
+def _smoke() -> None:
     # Tiny smoke run with a deterministic fake model + fake relay, so the file is
     # runnable on its own as a sanity check (the real tests live in test_parallel_agents.py).
     demo_graph = {
@@ -459,3 +589,11 @@ if __name__ == "__main__":
     print(json.dumps({"agents": out["agents"], "events": len(events),
                       "cross": len(out["cross_verified_findings"]),
                       "outcome": out["dynamic_outcome"]}, indent=2))
+
+
+if __name__ == "__main__":
+    import sys
+    # With CLI args, run the real three-agent analysis; with none, the offline smoke.
+    if len(sys.argv) > 1:
+        raise SystemExit(main(sys.argv[1:]))
+    _smoke()

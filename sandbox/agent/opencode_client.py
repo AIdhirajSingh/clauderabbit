@@ -89,10 +89,14 @@ def make_opencode_model_call(
         try:
             proc = run(argv, capture_output=True, text=True, timeout=timeout_s,
                        cwd=scratch_dir, env=env)
-        except FileNotFoundError as e:
-            raise OpenCodeUnavailable(f"opencode binary not found: {e}") from e
         except subprocess.TimeoutExpired as e:
             raise OpenCodeUnavailable(f"opencode run timed out after {timeout_s}s") from e
+        except OSError as e:
+            # FileNotFoundError (missing binary), PermissionError (not executable), and
+            # WinError 193 (not a valid executable) are all OSError — any of them means
+            # OpenCode can't run here, so signal unavailable for a clean fallback rather
+            # than letting the raw OS error crash the agent.
+            raise OpenCodeUnavailable(f"opencode could not be executed: {e}") from e
         stdout = getattr(proc, "stdout", "") or ""
         if getattr(proc, "returncode", 1) != 0 and not stdout.strip():
             stderr = (getattr(proc, "stderr", "") or "")[:400]
