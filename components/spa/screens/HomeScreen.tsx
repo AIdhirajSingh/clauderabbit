@@ -300,7 +300,7 @@ export function HomeScreen() {
                 </button>
               ))}
             </div>
-            <div style={{ marginTop: 20, fontSize: 12.5, color: "var(--t5)" }}>Free and open source. No account needed — sign in only to save your history.</div>
+            <div style={{ marginTop: 20, fontSize: 12.5, color: "var(--t4)" }}>Free and open source. No account needed — sign in only to save your history.</div>
           </div>
         </div>
 
@@ -405,7 +405,7 @@ export function HomeScreen() {
                   {r.reason}
                 </div>
               </div>
-              <span style={{ flexShrink: 0, color: "var(--t5)" }}>
+              <span style={{ flexShrink: 0, color: "var(--t4)" }}>
                 <Chevron size={15} />
               </span>
             </div>
@@ -447,7 +447,7 @@ export function HomeScreen() {
                 transition: "border-color .22s var(--ease), transform .22s var(--ease), background .22s",
               }}
             >
-              <div className="serif tnum" style={{ fontSize: 30, color: "var(--t5)", marginBottom: 16, lineHeight: 1 }}>
+              <div className="serif tnum" style={{ fontSize: 30, color: "var(--t4)", marginBottom: 16, lineHeight: 1 }}>
                 {u.no}
               </div>
               <div style={{ fontSize: 17, fontWeight: 600, color: "var(--t1)", marginBottom: 9, letterSpacing: "-0.01em" }}>
@@ -565,7 +565,7 @@ export function HomeScreen() {
                       transition: "color .16s var(--ease), gap .16s var(--ease)",
                     }}
                   >
-                    <span style={{ flexShrink: 0, color: "var(--t5)" }}>
+                    <span style={{ flexShrink: 0, color: "var(--t4)" }}>
                       <Chevron size={12} stroke="1.6" />
                     </span>
                     {lnk.label}
