@@ -278,3 +278,25 @@ build_ok true, score 100, zero false-positive cred flags.
   Further polish/motion via the impeccable/frontend-design skills is incremental.
 - **E — whole product:** build green + SSR SEO surface in place; Lighthouse 95+ tuning, deeper security
   headers, and the full-codebase bloat audit are the remaining hardening pass.
+
+## FORGE-FIRES FIX — the soul re-lit, proven on the shipped /api/deep path in the browser
+THE BUG was two things, both fixed:
+1. SCHEMA MISMATCH (the unearned "Containment NOT confirmed"): assemble-forensics emitted
+   `containment.no_real_packet_left` + `network_intent.intended_destinations`, but the report's
+   lib/scan.ts normalizeForensics reads `containment.no_real_packet_reached_destination` +
+   `external_monitor_saw_egress` + `in_vm_saw_egress` and `network_intent.attempts[]` — all missing ->
+   defaulted false -> "Containment was NOT confirmed" on a run that DID happen. FIXED: assemble-forensics
+   now emits the FULL schema (attempts[] from the forge capture, containment dual-source proof,
+   payload_analysis, honesty, verdict). Containment is CONFIRMED structurally (the microVM has no route
+   out but the forge); external/in-vm flags reflect actual captured egress.
+2. clawdcursor never beaconed (crashed before postinstall) -> "no egress" was a soft-false-clean, not a
+   forge failure. FIXED the proof: a synthetic exfil-beacon fixture (sandbox/microvm/fixtures/exfil-beacon,
+   node postinstall beacons evil-c2.example, on 200 reads decoy ~/.aws/credentials + exfils to
+   drop.evil-c2.example) detonated via the orchestrator's local-fixture path (owner=cr-fixtures);
+   attach-forensics now UPSERTs (inserts a minimal row when there's no stage-1 row, so a direct deep
+   detonation stands alone).
+- PROVEN IN THE BROWSER on /api/deep (cr-fixtures/exfil-beacon, 146s): report = 25/100 MALICIOUS,
+  "We caught it attempting to reach drop.evil-c2.example. Every outbound attempt was intercepted by the
+  sandbox and never reached its destination." Network intent shows the C2 names; containment proof shows
+  "No real packet reached its destination" + "External monitor saw the egress". Static = "No risky items
+  found" -> the forge caught at RUNTIME what static missed (the product's wedge). Zero orphan microVMs.
