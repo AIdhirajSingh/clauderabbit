@@ -227,3 +227,26 @@ the forging proxy -> prove: hardware isolation, the forge unlocks the exfil fixt
 no real packet out), registry fast-path lets a real npm install through, per-run reset + zero orphans. Then
 bake the golden image. Containment re-proven on the new path BEFORE any cutover; the two-VM moat stays the
 live path until the microVM path is proven >= it on safety.
+
+## A4 ORCHESTRATOR + /api/deep CUTOVER — PROVEN in the browser
+The host orchestrator (sandbox/microvm/orchestrate-microvm.sh) ties it together per scan: reuse stage-1's
+pinned clone (else clone) -> buildkit builds a per-scan image (FROM cr-detonation-base + COPY repo) ->
+forge-up -> detonate the real repo in a Firecracker microVM via kata-fc with egress forced through the forge
+-> assemble-forensics.py (forge capture + in-guest observation -> canonical record) -> forge-down (zero
+orphans). Emits the same [orch] milestone strings /api/deep's milestone() parses. Proven on the host:
+octocat/Hello-World -> score 100; sindresorhus/slugify -> real npm install (509 registry passthroughs),
+build_ok true, score 100, zero false-positive cred flags.
+- Registry fast-path: the forge ADDON proxies registries to the real upstream (genuine build) over a leaf the
+  guest trusts via the baked CA; forges everything else. dnsmasq resolves registries to REAL IPs (so the
+  passthrough isn't a loop); a per-run NATed uplink (10.111.x/30) the GUEST cannot use; --ignore-hosts dropped
+  (unreliable in transparent mode). New host stack: nerdctl-full + buildkitd on the CONTAINERD worker (so a
+  locally-built FROM resolves + built images land where ctr finds them).
+- **CUTOVER: app/api/deep/route.ts now SSHes to the sandbox host and runs orchestrate-microvm.sh** (via bash
+  so gcloud.cmd resolves on Windows), streams its [orch] stderr as milestones, reads the forensic record from
+  stdout, POSTs {forensics, timeline} to attach-forensics (U5 timeline preserved). The local two-VM
+  orchestrate.sh spawn is RETIRED. PROVEN IN THE LOCALHOST BROWSER: a direct /api/deep call detonated
+  octocat/Hello-World on the NEW substrate in 54s — all stages streamed (Clone+pin -> Provision detonation VM
+  -> Build under containment -> Run under the sinkhole -> Capture+reset -> Compute verdict -> Persist),
+  result persisted:true. UI scan of AmrDab/clawdcursor rendered its report (cached, determinism per SHA).
+  Fresh clawdcursor new-substrate detonation in flight to update the report off the new substrate.
+- tsc 0, eslint 0 on route.ts. Two-VM moat retired from the live path; cr-sandbox-* firewall rules remain.
