@@ -361,3 +361,25 @@ config on host = location global (commit 68095d9).
   destructive-gate blocked the in-session tee — repo is source of truth, no further reboot this session.)
 - **NEXT:** merge PR; optional enhancement = real per-target agent detonation relay (run-harness run-target in
   the microVM) + surfacing code_behavior_findings in a dedicated report panel; then D polish + remaining E.
+
+## SHIPPED @ 2026-06-29 — C live-host + D + E + ~30s latency, all merged
+All on main: forge fix (#24), E headers+SEO (#25), C engine (#26), C live-host (#27), D+E polish + independent
+security-review hardening (#28), ~30s latency (#29).
+- **Brain:** gemini-3.1-flash-lite (lead) + gemini-3.5-flash (advisor) via the Vertex GLOBAL endpoint, driven by
+  real OpenCode (`opencode run`) on cr-host-build. PROVEN by running on a real /api/deep run in the browser.
+- **C — three agents live:** the agentic phase runs THREE parallel OpenCode agents (install / runtime / payload)
+  over a disjoint knowledge-graph partition, streaming real reasoning into the "Three agents read the code"
+  /api/deep chapter, cross-verified; explore-only (facts from the forge). Privilege-dropped to the non-root user
+  (runuser); $ID/--name/AGENT_USER validated. D: a dedicated report panel renders the agents' findings with a
+  "Code read · not confirmed at runtime" chip (inference vs fact); honest escalated-static copy; U1 respected.
+- **B — latency: ~30s.** The agentic pass runs CONCURRENTLY with the forge detonation (independent resources) →
+  31s wall-clock on a real run (down from ~70-94s), zero orphan microVMs.
+- **E — production-grade:** Lighthouse on the prod build = report page 100/100/100 (a11y/BP/SEO), homepage
+  96/100/100; performance LCP 239ms, CLS 0.03. Security headers (HSTS/CSP/frame/nosniff) + the review hardening;
+  client bundle carries NO server secrets (runner key / SA JSON absent; only the publishable key). robots+sitemap
+  +report JSON-LD. Independent honesty audit CLEAN (enforceVerdict client+server, reputation/code separation,
+  containment gated on proof, demo data real+labeled); dead-code audit CLEAN (removed 3 dead CSS rules).
+- **Every run re-proved:** 25/100 Malicious on cr-fixtures/exfil-beacon, both C2 hosts captured, CONFIRMED
+  containment ("No real packet reached its destination"), three agents folded into the report. Gates: tsc 0,
+  node 66/66, 83 agent tests, deno-clean, bash -n clean. The moat runs THROUGH the forge with three agents
+  reasoning live — shipped.
