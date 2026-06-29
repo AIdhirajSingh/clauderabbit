@@ -36,6 +36,9 @@ case "$REF" in *[!A-Za-z0-9._-]*) die "bad ref";; esac
 for seg in "$OWNER" "$REPO" "$REF"; do
   case "$seg" in ""|"."|"..") die "segment must not be empty, '.' or '..'";; esac
 done
+# $ID is interpolated into root-owned paths (WORK, scratch dirs, container names, the
+# agentic scratch dir) — validate it to the same safe grammar so it can never traverse.
+case "$ID" in ""|"."|"..") die "id must not be empty, '.' or '..'";; *[!A-Za-z0-9._-]*) die "bad id";; esac
 
 WORK="/tmp/cr-scan-${ID}"; REPO_DIR="$WORK/repo"
 # Full ref: nerdctl/buildkit store images under docker.io/library/<name>; `ctr run`
@@ -94,30 +97,37 @@ ph build_and_forge
 # agents think). Explore-only: the agents read + reason + cross-verify; the verified
 # runtime FACTS come from the forge detonation below. Degrades gracefully (never blocks
 # the detonation) if the agent code / opencode / deno is absent.
-AGENTIC_JSON="$WORK/agentic-findings.json"
-# orchestrate runs as root (sudo from /api/deep), but OpenCode's binary + config and
-# deno live in the invoking user's home — resolve that user and run the agents with its
-# HOME so `opencode` finds ~/.config/opencode (provider=global). ADC is the instance SA
-# via the metadata server, so it works regardless of HOME.
+# orchestrate runs as root (sudo from /api/deep), but the agents must NOT: OpenCode is a
+# third-party headless agent and the repo bytes it reads are untrusted, so it runs as the
+# non-root invoking user (privilege drop). That user owns opencode + its config (provider
+# =global) + deno; ADC is the instance SA via the metadata server, so it works regardless.
 AGENT_USER="$(logname 2>/dev/null || echo "${SUDO_USER:-root}")"
+# Validate the resolved user — it sets HOME/PATH for a spawned process, so a hostile
+# value could point PATH at attacker binaries. Refuse anything outside the safe grammar.
+case "$AGENT_USER" in ""|root|*[!A-Za-z0-9._-]*) AGENT_USER="";; esac
 AGENT_HOME="/home/${AGENT_USER}"
 OPENCODE_BIN="${CR_OPENCODE_BIN:-${AGENT_HOME}/.opencode/bin/opencode}"
-if [ -d /opt/cr/agent ] && [ -x "$OPENCODE_BIN" ]; then
-  KG="$WORK/knowledge-graph.json"
+AGENT_WORK="$WORK/agent"
+AGENTIC_JSON="$AGENT_WORK/agentic-findings.json"
+if [ -n "$AGENT_USER" ] && [ -d /opt/cr/agent ] && [ -x "$OPENCODE_BIN" ]; then
+  KG="$AGENT_WORK/knowledge-graph.json"
   DENO_DIR="${AGENT_HOME}/.deno/bin"
-  HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" \
+  # The dropped user needs its own writable working dir + READ on the (untrusted) clone.
+  mkdir -p "$AGENT_WORK/results"; chown -R "$AGENT_USER" "$AGENT_WORK" 2>/dev/null || true
+  chmod -R a+rX "$REPO_DIR" 2>/dev/null || true
+  runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" \
     python3 /opt/cr/agent/knowledge_graph.py "$REPO_DIR" --out "$KG" 1>&2 \
     || log "knowledge graph build degraded"
-  HOME="$AGENT_HOME" CR_OPENCODE_BIN="$OPENCODE_BIN" PATH="$DENO_DIR:$PATH" \
+  runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" CR_OPENCODE_BIN="$OPENCODE_BIN" \
     python3 /opt/cr/agent/parallel_agents.py --engine opencode --explore-only \
       --repo-dir "$REPO_DIR" --graph "$KG" --commit-sha "$REF" --name "ag-${ID}" \
-      --trap-ip 10.200.0.1 --results-dir "$WORK/agent-results" \
+      --trap-ip 10.200.0.1 --results-dir "$AGENT_WORK/results" \
       --time-budget-s 180 --token-budget 60000 \
       --project "${CR_GCP_PROJECT:-gen-lang-client-0062239756}" --location global \
       --out "$AGENTIC_JSON" 1>/dev/null \
     || log "agentic pass degraded"
 else
-  log "agentic pass skipped (agent code or opencode not present)"
+  log "agentic pass skipped (no valid non-root user, or agent code/opencode absent)"
 fi
 ph agentic
 
@@ -136,8 +146,8 @@ CAP="/var/log/cr-forge/cr-run-${ID}-capture.jsonl"
 log "folding captured network intent"
 FORENSICS="$WORK/forensics.json"
 python3 "$HERE/assemble-forensics.py" "$CAP" --owner "$OWNER" --repo "$REPO" --sha "$REF" \
-  --agentic "$AGENTIC_JSON" > "$FORENSICS" 2>/dev/null \
-  || die "forensics assembly failed"
+  --agentic "$AGENTIC_JSON" > "$FORENSICS" 2>"/tmp/cr-forensics-${ID}.log" \
+  || { log "forensics assembly failed (see /tmp/cr-forensics-${ID}.log)"; die "forensics assembly failed"; }
 log "emitting forensic record"
 ph forensics
 

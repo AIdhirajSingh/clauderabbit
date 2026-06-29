@@ -271,11 +271,14 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
                       <path d="M2.5 6.2l2.2 2.3 4.8-5" stroke="var(--green)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </span>
-                  <span style={{ fontSize: 15, color: "var(--t1)", fontWeight: 500 }}>No risky items found</span>
+                  <span style={{ fontSize: 15, color: "var(--t1)", fontWeight: 500 }}>
+                    No risky items found {r._forensics ? "on the static read" : ""}
+                  </span>
                 </div>
                 <p style={{ fontSize: 13, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
-                  Static scanners returned no signatures, no install hooks, no obfuscation, and no embedded secrets. The
-                  read model was confident enough that a sandbox run was not warranted.
+                  {r._forensics
+                    ? "Static scanners returned no signatures, no install hooks, no obfuscation, and no embedded secrets — so this repo was escalated to a full sandbox run. What running it actually revealed is below."
+                    : "Static scanners returned no signatures, no install hooks, no obfuscation, and no embedded secrets. The read model was confident enough that a sandbox run was not warranted."}
                 </p>
               </div>
             )}
@@ -476,6 +479,46 @@ function ForensicSection({ f }: { f: ForensicsView }) {
         </Block>
       </div>
 
+      {/* three agents read the code — their cross-verified inferences from READING the
+          source, kept distinct from the runtime FACTS below (what actually happened). */}
+      {f.raw.verdict.code_behavior_findings.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 12 }}>
+            <Eyebrow>Three agents read the code</Eyebrow>
+          </div>
+          <Block>
+            <p style={{ fontSize: 12.5, color: "var(--t4)", lineHeight: 1.6, margin: "0 0 14px" }}>
+              Three agents — install-time, runtime, and payload — read the source in parallel and
+              cross-verified. These are their inferences from reading the code; the runtime facts below
+              are what actually happened when we ran it.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {f.raw.verdict.code_behavior_findings.map((cf, i) => {
+                const sev =
+                  cf.severity === "high" ? "var(--red)" : cf.severity === "med" ? "var(--amber)" : "var(--t4)";
+                return (
+                  <div
+                    key={`${cf.signal}-${i}`}
+                    style={{ border: "1px solid var(--line)", borderRadius: 13, padding: 15, background: "var(--s2)" }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8, flexWrap: "wrap" }}>
+                      <span style={{ width: 7, height: 7, borderRadius: "50%", background: sev, boxShadow: `0 0 7px ${sev}`, flexShrink: 0 }} />
+                      <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--t1)" }}>{cf.signal}</span>
+                      <span style={{ fontSize: 10, color: "var(--t4)", padding: "2px 8px", border: "1px solid var(--line2)", borderRadius: 6, letterSpacing: "0.02em" }}>
+                        Code read · not confirmed at runtime
+                      </span>
+                    </div>
+                    {cf.detail && (
+                      <p style={{ fontSize: 12.5, color: "var(--t3)", lineHeight: 1.55, margin: 0 }}>{cf.detail}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Block>
+        </div>
+      )}
+
       {/* network intent — what it tried to reach */}
       <div style={{ marginBottom: 18 }}>
         <div style={{ marginBottom: 12 }}>
@@ -573,9 +616,11 @@ function ForensicSection({ f }: { f: ForensicsView }) {
         */}
         <Block
           style={{
-            borderColor: cont.no_real_packet_reached_destination
-              ? "oklch(0.80 0.14 158 / 0.45)"
-              : "var(--amber)",
+            // Full `border` shorthand (not just borderColor) so it cleanly overrides
+            // Block's own `border` shorthand — mixing the two warns + can drop the color.
+            border: `1px solid ${
+              cont.no_real_packet_reached_destination ? "oklch(0.80 0.14 158 / 0.45)" : "var(--amber)"
+            }`,
           }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
@@ -775,7 +820,7 @@ function BehaviorStat({
       </div>
       <div style={{ fontSize: 11.5, color: "var(--t4)", marginTop: 7, lineHeight: 1.4 }}>
         {label}
-        {hint ? <span style={{ color: "var(--t5)" }}> · {hint}</span> : null}
+        {hint ? <span style={{ color: "var(--t4)" }}> · {hint}</span> : null}
       </div>
     </div>
   );
