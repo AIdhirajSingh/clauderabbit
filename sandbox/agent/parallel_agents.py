@@ -459,7 +459,9 @@ def main(argv: list[str]) -> int:
                     help="which brain drives the three agents (opencode falls back to "
                          "vertex if the binary is unavailable)")
     ap.add_argument("--project", help="GCP project for Vertex/OpenCode-Vertex")
-    ap.add_argument("--location", help="Vertex location")
+    # The 3.x Gemini line serves only on the GLOBAL Vertex endpoint, so global is the
+    # known-good default (a regional location 404s gemini-3.1-flash-lite).
+    ap.add_argument("--location", default="global", help="Vertex location (default: global)")
     ap.add_argument("--out", help="write agentic-findings.json here")
     args = ap.parse_args(argv)
 
