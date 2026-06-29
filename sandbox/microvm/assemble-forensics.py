@@ -83,9 +83,56 @@ def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
     return c2, observation, refused
 
 
-def assemble(capture_path: str, owner: str, repo: str, sha: str) -> dict:
+def load_agentic(path: str | None) -> dict:
+    """Read the three-agent cross-verified findings (agentic-findings@2), if present.
+    Returns {} on any miss/error so the forensic record is identical when the agentic
+    pass was skipped or degraded — the agents enrich the report, they never gate it."""
+    if not path:
+        return {}
+    try:
+        data = json.loads(open(path, encoding="utf-8").read())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _agentic_findings(agentic: dict) -> tuple[list[dict], dict]:
+    """Fold the three agents' cross-verified inferences into code_behavior_findings
+    (the report's code-analysis section) and a compact `agentic` summary. These are
+    the agents' READING of the code (inferences) — kept distinct from the forge's
+    observed runtime FACTS; each detail is attributed to the agent + marked as a read,
+    so the report never presents an inference as a confirmed observation."""
+    cross = agentic.get("cross_verified_findings", []) if isinstance(agentic, dict) else []
+    findings: list[dict] = []
+    for c in cross:
+        if not isinstance(c, dict):
+            continue
+        lenses = ", ".join(c.get("lenses", []) or []) or "agent"
+        hints = c.get("severity_hints", []) or []
+        severity = "high" if "high" in hints else "med" if "med" in hints else "low"
+        infs = c.get("inferences", []) or []
+        detail = infs[0].get("text", "") if infs and isinstance(infs[0], dict) else ""
+        corroborated = bool(c.get("corroborated"))
+        findings.append({
+            "signal": f"{lenses} agent flagged {c.get('target', '?')}"
+                      + (" (corroborated by 2+ agents)" if corroborated else ""),
+            "severity": severity,
+            "detail": ("Agent analysis (code read, not a runtime observation): " + detail)[:1000],
+        })
+    summary = {
+        "mode": agentic.get("mode"),
+        "agents": agentic.get("agents", []),
+        "corroborated_count": agentic.get("corroborated_count", 0),
+        "finding_count": len(findings),
+    } if agentic else {}
+    return findings, summary
+
+
+def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: str | None = None) -> dict:
     c2, obs, refused = load(capture_path)
     obs = obs or {}
+    agentic = load_agentic(agentic_path)
+    agentic_code_findings, agentic_summary = _agentic_findings(agentic)
     observed = obs.get("observed", {}) if isinstance(obs, dict) else {}
 
     # ── network intent: one ATTEMPT row per captured C2/exfil request ──────────────
@@ -221,13 +268,19 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str) -> dict:
             "score_color": "red" if score < 60 else "amber" if score < 80 else "green",
             "one_word": "Malicious" if cred_exfil else "Dangerous" if attack else "Likely safe",
             "headline": "",  # the hero verdict is re-blended by attach-forensics
-            "code_behavior_findings": [],
+            # The three agents' code-read inferences render in the code-analysis section
+            # (attributed + marked as a read, distinct from the forge's runtime facts).
+            "code_behavior_findings": agentic_code_findings,
             "captured_network_intent": captured_intent,
             "egress_intercepted_count": len(attempts),
             "attack_egress_intercepted": attack,
             "not_verified": [],
         },
         "honesty": {"possibly_dormant_unverified": False, "notes": []},
+        # The three-agent analysis summary (mode + which agents ran + corroboration),
+        # for a dedicated "three agents read the code" report panel. Empty {} when the
+        # agentic pass was skipped, so the record is unchanged on a no-agent run.
+        "agentic": agentic_summary,
     }
 
 
@@ -240,7 +293,8 @@ def main(argv: list[str]) -> int:
     rest = argv[1:]
     for i in range(0, len(rest) - 1, 2):
         kv[rest[i].lstrip("-")] = rest[i + 1]
-    rec = assemble(cap, kv.get("owner", ""), kv.get("repo", ""), kv.get("sha", ""))
+    rec = assemble(cap, kv.get("owner", ""), kv.get("repo", ""), kv.get("sha", ""),
+                   agentic_path=kv.get("agentic"))
     print(json.dumps(rec, indent=2))
     return 0
 

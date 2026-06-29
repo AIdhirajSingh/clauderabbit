@@ -88,6 +88,39 @@ grep -q "CR_FORGE_MITM ok" /tmp/cr-forge-up-${ID}.log || log "forge proxy warnin
 log "build proxy healthy: forge active"
 ph build_and_forge
 
+# 3.5) AGENTIC pass — THREE parallel OpenCode agents read the clone + reason live.
+# The controller IS the host here, so the agents run locally; their `[agent]` reasoning
+# streams to stderr (the same channel /api/deep parses, so the browser watches three
+# agents think). Explore-only: the agents read + reason + cross-verify; the verified
+# runtime FACTS come from the forge detonation below. Degrades gracefully (never blocks
+# the detonation) if the agent code / opencode / deno is absent.
+AGENTIC_JSON="$WORK/agentic-findings.json"
+# orchestrate runs as root (sudo from /api/deep), but OpenCode's binary + config and
+# deno live in the invoking user's home — resolve that user and run the agents with its
+# HOME so `opencode` finds ~/.config/opencode (provider=global). ADC is the instance SA
+# via the metadata server, so it works regardless of HOME.
+AGENT_USER="$(logname 2>/dev/null || echo "${SUDO_USER:-root}")"
+AGENT_HOME="/home/${AGENT_USER}"
+OPENCODE_BIN="${CR_OPENCODE_BIN:-${AGENT_HOME}/.opencode/bin/opencode}"
+if [ -d /opt/cr/agent ] && [ -x "$OPENCODE_BIN" ]; then
+  KG="$WORK/knowledge-graph.json"
+  DENO_DIR="${AGENT_HOME}/.deno/bin"
+  HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" \
+    python3 /opt/cr/agent/knowledge_graph.py "$REPO_DIR" --out "$KG" 1>&2 \
+    || log "knowledge graph build degraded"
+  HOME="$AGENT_HOME" CR_OPENCODE_BIN="$OPENCODE_BIN" PATH="$DENO_DIR:$PATH" \
+    python3 /opt/cr/agent/parallel_agents.py --engine opencode --explore-only \
+      --repo-dir "$REPO_DIR" --graph "$KG" --commit-sha "$REF" --name "ag-${ID}" \
+      --trap-ip 10.200.0.1 --results-dir "$WORK/agent-results" \
+      --time-budget-s 180 --token-budget 60000 \
+      --project "${CR_GCP_PROJECT:-gen-lang-client-0062239756}" --location global \
+      --out "$AGENTIC_JSON" 1>/dev/null \
+    || log "agentic pass degraded"
+else
+  log "agentic pass skipped (agent code or opencode not present)"
+fi
+ph agentic
+
 # 4) DETONATE: run the repo in a Firecracker microVM, egress forced through the forge
 log "=== BUILD phase: installing deps + running under the forge ==="
 timeout 240 ctr run --with-ns "network:/var/run/netns/cr-run-${ID}" --snapshotter devmapper \
@@ -102,7 +135,8 @@ log "=== RESET: deleting detonation VM ==="
 CAP="/var/log/cr-forge/cr-run-${ID}-capture.jsonl"
 log "folding captured network intent"
 FORENSICS="$WORK/forensics.json"
-python3 "$HERE/assemble-forensics.py" "$CAP" --owner "$OWNER" --repo "$REPO" --sha "$REF" > "$FORENSICS" 2>/dev/null \
+python3 "$HERE/assemble-forensics.py" "$CAP" --owner "$OWNER" --repo "$REPO" --sha "$REF" \
+  --agentic "$AGENTIC_JSON" > "$FORENSICS" 2>/dev/null \
   || die "forensics assembly failed"
 log "emitting forensic record"
 ph forensics
