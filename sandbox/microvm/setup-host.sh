@@ -143,4 +143,22 @@ timeout 8 $MITM --no-server >/dev/null 2>&1 || true
 fact MITM_CA "$([ -f /root/.mitmproxy/mitmproxy-ca-cert.pem ] && echo present || echo MISSING)"
 mark MITM ok
 
+# ── Stage 7: nerdctl-full (buildkit + buildctl) — build the per-scan detonation image ─
+# The orchestrator builds a thin per-scan image (base detonation image + the repo clone)
+# via buildkit, then detonates it via kata-fc. nerdctl-full bundles buildkitd + buildctl.
+NCV="$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/containerd/nerdctl/releases/latest)")"
+NCV="${NCV#v}"
+curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NCV}/nerdctl-full-${NCV}-linux-${KARCH}.tar.gz" -o /tmp/nerdctl-full.tgz
+tar -xzf /tmp/nerdctl-full.tgz -C /usr/local 2>/dev/null
+fact NERDCTL_VER "$(/usr/local/bin/nerdctl --version 2>/dev/null | awk '{print $3}')"
+# Use the CONTAINERD worker (not OCI) so buildkit shares containerd's image store: a
+# locally-built base image resolves as `FROM`, and built images land where `ctr run` finds them.
+mkdir -p /etc/buildkit
+printf '[worker.oci]\n  enabled = false\n[worker.containerd]\n  enabled = true\n  namespace = "default"\n' > /etc/buildkit/buildkitd.toml
+# start buildkitd (the nerdctl-full tarball ships the systemd unit)
+systemctl enable --now buildkit >/dev/null 2>&1 || true
+sleep 1
+fact BUILDKITD "$(systemctl is-active buildkit 2>/dev/null || (command -v buildkitd >/dev/null && echo present) || echo MISSING)"
+mark BUILDKIT ok
+
 echo "CR_SETUP_DONE $(date -u +%FT%TZ)"
