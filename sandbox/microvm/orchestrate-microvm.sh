@@ -47,29 +47,37 @@ trap cleanup EXIT
 
 log "ensuring hermetic network"
 
+# Per-phase timing in ms (B): emit our-overhead per phase so the worst is visible + killed.
+nowms() { date +%s%3N; }
+T_START=$(nowms); T_LAST=$T_START
+ph() { local n; n=$(nowms); echo "[orch] phase ${1}: $((n - T_LAST))ms" >&2; T_LAST=$n; }
+
 # 1) reuse stage-1's pinned clone if present, else clone now (off-VM, on the host)
 log "cloning public repo ${GITHUB}@${REF:0:12}"
 rm -rf "$WORK"; mkdir -p "$WORK"
 if [ -d "/opt/cr/clones/${OWNER}-${REPO}-${REF}/.git" ]; then
   cp -a "/opt/cr/clones/${OWNER}-${REPO}-${REF}" "$REPO_DIR"
 else
-  git clone --quiet "https://github.com/${OWNER}/${REPO}.git" "$REPO_DIR" 2>/dev/null || die "clone failed"
-  ( cd "$REPO_DIR" && git fetch --quiet origin "$REF" 2>/dev/null && git checkout --quiet "$REF" 2>/dev/null ) \
+  git clone --quiet --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$REPO_DIR" 2>/dev/null || die "clone failed"
+  ( cd "$REPO_DIR" && git fetch --quiet --depth 1 origin "$REF" 2>/dev/null && git checkout --quiet "$REF" 2>/dev/null ) \
     || ( cd "$REPO_DIR" && git checkout --quiet "$REF" 2>/dev/null ) || true
 fi
 log "pinned detonation target $(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "$REF")"
+ph clone
 
-# 2) build the per-scan detonation image (base + the repo)
+# 2 + 3 run CONCURRENTLY (independent): the per-scan image build AND the forge bring-up.
+# Total = max(build, forge), not sum.
+log "booting TRAP host"
+bash "$HERE/forge/forge-up.sh" "$ID" >/tmp/cr-forge-up-${ID}.log 2>&1 &
+FORGE_PID=$!
 log "booting DETONATION VM"
 printf 'FROM cr-detonation-base:latest\nCOPY . /repo\n' > "$WORK/Dockerfile"
 "$NERDCTL" build -t "$IMG" -f "$WORK/Dockerfile" "$REPO_DIR" >/tmp/cr-build-${ID}.log 2>&1 || die "per-scan image build failed"
 log "staging harness"
-
-# 3) bring up the deceptive forge (per-run netns + forging egress)
-log "booting TRAP host"
-bash "$HERE/forge/forge-up.sh" "$ID" >/tmp/cr-forge-up-${ID}.log 2>&1 || die "forge-up failed"
+wait "$FORGE_PID" || die "forge-up failed"
 grep -q "CR_FORGE_MITM ok" /tmp/cr-forge-up-${ID}.log || log "forge proxy warning (see log)"
 log "build proxy healthy: forge active"
+ph build_and_forge
 
 # 4) DETONATE: run the repo in a Firecracker microVM, egress forced through the forge
 log "=== BUILD phase: installing deps + running under the forge ==="
@@ -78,6 +86,7 @@ timeout 240 ctr run --with-ns "network:/var/run/netns/cr-run-${ID}" --snapshotte
   python3 /opt/cr/detonate.py >/tmp/cr-run-${ID}.log 2>&1 || true
 log "containment confirmed: no real packet left the host (forge intercepted all egress)"
 log "=== RUN phase complete ==="
+ph detonate
 
 # 5) assemble the forensic record from the forge capture
 log "=== RESET: deleting detonation VM ==="
@@ -87,6 +96,7 @@ FORENSICS="$WORK/forensics.json"
 python3 "$HERE/assemble-forensics.py" "$CAP" --owner "$OWNER" --repo "$REPO" --sha "$REF" > "$FORENSICS" 2>/dev/null \
   || die "forensics assembly failed"
 log "emitting forensic record"
+ph forensics
 
 # 6) persist to attach-forensics (if configured)
 if [ -n "${CR_SUPABASE_URL:-}" ] && [ -n "${CR_RUNNER_KEY:-}" ]; then
@@ -103,5 +113,7 @@ PY
     && log "forensics attached to report" || log "attach-forensics POST failed (see /tmp/cr-attach-${ID}.log)"
 fi
 
+ph attach
+echo "[orch] phase orchestrator_overhead_total: $(( $(nowms) - T_START ))ms" >&2
 log "scan complete"
 cat "$FORENSICS"
