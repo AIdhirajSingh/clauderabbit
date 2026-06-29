@@ -33,8 +33,12 @@ import re
 import subprocess
 from typing import Any, Callable, Optional
 
-# Provider-qualified model strings for OpenCode's google-vertex provider. The bare
-# model ids match vertex_client.py (docs/INFRASTRUCTURE.md is authoritative).
+# Provider-qualified model strings for OpenCode's google-vertex provider. The 3.x
+# Gemini line is served ONLY on the Vertex GLOBAL endpoint (locations/global), NOT on
+# any regional endpoint — gemini-3.1-flash-lite 404s on us-central1 but 200s on global
+# (probed live). So the OpenCode provider must be configured with location "global"
+# (see the host ~/.config/opencode/opencode.json). Lead = lite (fast, high-volume),
+# advisor = flash. Kept in sync with vertex_client.py.
 LEAD_MODEL = "google-vertex/gemini-3.1-flash-lite"
 ADVISOR_MODEL = "google-vertex/gemini-3.5-flash"
 

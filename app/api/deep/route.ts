@@ -157,6 +157,34 @@ interface Stage {
  * the browser sees genuine provision → build → run → capture → reset progress.
  */
 function milestone(rawLine: string): Stage | null {
+  // Three-agent stream: orchestrate forwards the agentic pass's `[agent]` stderr
+  // lines verbatim. Each agent's REAL reasoning is surfaced live under one chapter
+  // so the browser watches three OpenCode agents think in parallel.
+  const agent = rawLine.match(/^\[agent\]\s*(.*)$/);
+  if (agent) {
+    const body = agent[1] ?? "";
+    if (/^launching THREE parallel agents/.test(body))
+      return {
+        ch: "Three agents read the code",
+        status: "active",
+        lines: ["Three OpenCode agents exploring in parallel — install-time · runtime · payload"],
+      };
+    const a = body.match(/^(install|runtime|payload)\s+(thinking|finding|detonate)[:]?\s*(.*)$/);
+    if (a) {
+      const lens = a[1] ?? "";
+      const kind = a[2] ?? "";
+      const text = (a[3] ?? "").trim();
+      if (kind === "thinking" && text)
+        return { ch: "Three agents read the code", status: "active", lines: [`[${lens}] ${text}`] };
+      if (kind === "finding" && text)
+        return { ch: "Three agents read the code", status: "active", lines: [`[${lens}] flagged ${text}`] };
+      if (kind === "detonate" && /run-target/.test(text))
+        return { ch: "Three agents read the code", status: "active", lines: [`[${lens}] requested a sandbox detonation`] };
+    }
+    if (/^cross-verified|^three agents done/i.test(body))
+      return { ch: "Three agents read the code", status: "done", kind: "ok", lines: ["Cross-verified findings from three agents"] };
+    return null;
+  }
   const m = rawLine.replace(/^\[orch\]\s*/, "");
   if (/^ensuring hermetic network/.test(m))
     return { ch: "Seal the network", status: "active", lines: ["Building the hermetic network + sinkhole rules"] };

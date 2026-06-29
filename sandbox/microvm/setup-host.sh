@@ -54,8 +54,15 @@ set -e
 DM_DIR=/var/lib/containerd/devmapper; POOL=cr-devpool
 [ -f ${DM_DIR}/data ] || { touch ${DM_DIR}/data; truncate -s 100G ${DM_DIR}/data; }
 [ -f ${DM_DIR}/meta ] || { touch ${DM_DIR}/meta; truncate -s 10G ${DM_DIR}/meta; }
-DATA_DEV=$(losetup --find --show ${DM_DIR}/data)
-META_DEV=$(losetup --find --show ${DM_DIR}/meta)
+# REUSE an existing loop for each backing file if one is already attached. A second
+# `losetup --find` would attach a DUPLICATE loop to the same file (a reboot ran this
+# alongside the boot attach), double-opening it and corrupting the thin-pool's
+# free-space tracking so new snapshots fail with "no data available" — the live
+# post-reboot detonation regression. Only create a loop when none exists.
+DATA_DEV=$(losetup -j ${DM_DIR}/data -O NAME -n 2>/dev/null | awk 'NR==1{print $1}')
+[ -n "${DATA_DEV}" ] || DATA_DEV=$(losetup --find --show ${DM_DIR}/data)
+META_DEV=$(losetup -j ${DM_DIR}/meta -O NAME -n 2>/dev/null | awk 'NR==1{print $1}')
+[ -n "${META_DEV}" ] || META_DEV=$(losetup --find --show ${DM_DIR}/meta)
 SECTORS=$(( $(blockdev --getsize64 -q ${DATA_DEV}) / 512 ))
 dmsetup ls | grep -q "^${POOL}" || \
   dmsetup create "${POOL}" --table "0 ${SECTORS} thin-pool ${META_DEV} ${DATA_DEV} 128 32768"
