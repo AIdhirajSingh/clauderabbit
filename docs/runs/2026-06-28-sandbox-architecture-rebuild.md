@@ -250,3 +250,31 @@ build_ok true, score 100, zero false-positive cred flags.
   result persisted:true. UI scan of AmrDab/clawdcursor rendered its report (cached, determinism per SHA).
   Fresh clawdcursor new-substrate detonation in flight to update the report off the new substrate.
 - tsc 0, eslint 0 on route.ts. Two-VM moat retired from the live path; cr-sandbox-* firewall rules remain.
+
+## SHIPPED STATE (A0-A4 + B) — proven, green, building
+- **A (substrate + cutover): DONE, proven in the localhost browser.** The two-VM moat is replaced by ONE
+  warm host (cr-host-build) running Kata/Firecracker microVMs + the deceptive forge. A real escalating repo
+  (AmrDab/clawdcursor) scanned from the UI -> escalated -> detonated on the NEW substrate (150s) -> report
+  renders (score 64 Caution, substrate=kata-firecracker-microvm, honest "did not build to a runnable state",
+  no malice observed, score held by static post-install; no bare "Safe", no hedge, reputation separate).
+  Containment held: zero orphan microVMs, no real packet left. The local two-VM orchestrate.sh spawn is
+  RETIRED from /api/deep (now SSHes to the host orchestrator).
+- **B (speed): instrumented + parallelized.** Our orchestrator overhead measured at ~1.5s (clone 0.5s +
+  image-build∥forge 0.9s + forensics 0.04s); per-phase ms breakdown emitted; build untraced (forge owns
+  network capture) + registry RAW-passthrough (tls_clienthello SNI) so builds run native-speed. The detonate
+  phase is the repo's genuine npm install + the microVM lifecycle (honest repo-vs-our split, never conflated).
+  Remaining lever for the deep ~30s: a warm microVM pool to cut the ~11s VM-lifecycle (noted).
+- **Whole product GREEN:** tsc 0, node 66/66, deno _shared 33/33, deno check edge fns 0, `npm run build`
+  succeeds (SSR /[owner]/[repo] report + /badge = the SEO surface). No regressions to U1-U5, auth,
+  determinism, the inline moat, the honest verdict, or containment.
+- Merged to main on this branch.
+
+## REMAINING (next iterations) — honest status
+- **C — real OpenCode + three parallel agents:** the detonation analysis is currently the deterministic
+  in-guest harness + forensics (functional + honest). Real OpenCode + 3 streamed parallel agents + knowledge
+  graph is the project's documented model-swap (CLAUDE.md: Gemini placeholder now, OpenCode swaps in behind
+  the clean seam) and a large integration — the next major unit on top of the proven substrate.
+- **D — report:** already renders honestly from design.md (U1-U2 components); forensics woven in first-class.
+  Further polish/motion via the impeccable/frontend-design skills is incremental.
+- **E — whole product:** build green + SSR SEO surface in place; Lighthouse 95+ tuning, deeper security
+  headers, and the full-codebase bloat audit are the remaining hardening pass.
