@@ -24,8 +24,6 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 // Privileged local capability: a real Node child process + filesystem. Never edge.
 export const runtime = "nodejs";
@@ -42,8 +40,12 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 // x-runner-key for the function. Missing the anon header → gateway 401, no attach.
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 const REPO_ROOT = process.cwd();
-const ORCHESTRATE = path.join(REPO_ROOT, "sandbox", "orchestrate.sh");
-const RESULTS_DIR = path.join(REPO_ROOT, "sandbox", "results");
+// The NEW substrate runs on a persistent host VM (one host + Kata/Firecracker microVMs +
+// the deceptive forge). /api/deep SSHes to that host and runs the per-scan orchestrator
+// there, streaming its [orch] milestones back over stderr and reading the forensic record
+// from stdout. (The old two-VM `sandbox/orchestrate.sh` ran locally and is retired.)
+const SANDBOX_HOST = process.env.CR_SANDBOX_HOST ?? "cr-host-build";
+const REMOTE_ORCH = process.env.CR_REMOTE_ORCH ?? "/opt/cr/microvm/orchestrate-microvm.sh";
 
 // The dev/controller process may be launched with a narrower PATH than an
 // interactive shell (e.g. the preview runner), so the `bash` + `gcloud` the moat
@@ -297,7 +299,7 @@ export async function POST(req: Request): Promise<Response> {
   inFlight++;
 
   const slug = buildSlug(owner, repo);
-  const forensicsPath = path.join(RESULTS_DIR, `${slug}-forensics.json`);
+  let stdoutBuf = ""; // accumulates the orchestrator's forensic-record JSON (its stdout)
 
   let released = false;
   const release = () => {
@@ -352,15 +354,22 @@ export async function POST(req: Request): Promise<Response> {
       recordStage({
         ch: "Escalate",
         status: "active",
-        lines: ["Gate tripped — spawning a fresh sealed sandbox VM"],
+        lines: ["Gate tripped — detonating on the microVM sandbox host"],
       });
 
       try {
-        child = spawn(
-          BASH,
-          [ORCHESTRATE, "--zone", ZONE, "--github", `${owner}/${repo}`, "--ref", sha, "--name", slug],
-          { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"], shell: false, env: childEnv() },
-        );
+        // Run the per-scan orchestrator ON the sandbox host over SSH. We invoke gcloud
+        // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
+        // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
+        // so interpolating them into the remote command is injection-free.
+        const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
+        const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
+        child = spawn(BASH, ["-c", gcloudCmd], {
+          cwd: REPO_ROOT,
+          stdio: ["ignore", "pipe", "pipe"],
+          shell: false,
+          env: childEnv(),
+        });
       } catch (e) {
         emit({ t: "error", error: `failed to spawn sandbox orchestrator: ${msg(e)}` });
         finish();
@@ -385,9 +394,9 @@ export async function POST(req: Request): Promise<Response> {
         }
       });
 
-      // Drain stdout so the pipe never blocks; truth comes from the forensics FILE.
-      child.stdout?.on("data", () => {
-        /* intentionally drained */
+      // The orchestrator prints the forensic record JSON to stdout; accumulate it.
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdoutBuf += chunk.toString("utf8");
       });
 
       child.on("close", async (code) => {
@@ -397,15 +406,15 @@ export async function POST(req: Request): Promise<Response> {
           finish();
           return;
         }
+        // Parse the forensic record from the orchestrator's stdout (it `cat`s the record
+        // last). gcloud/ssh banners may precede it, so extract from the first "{".
         let forensics: unknown;
         try {
-          forensics = JSON.parse(await readFile(forensicsPath, "utf8"));
+          const start = stdoutBuf.indexOf("{");
+          forensics = JSON.parse(start >= 0 ? stdoutBuf.slice(start) : stdoutBuf);
         } catch {
           // Ran but produced no record — honest distinct signal, never implies safe.
-          emit({
-            t: "error",
-            error: "sandbox completed but produced no forensic record",
-          });
+          emit({ t: "error", error: "sandbox completed but produced no forensic record" });
           finish();
           return;
         }
