@@ -88,6 +88,43 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
   };
 }
 
+/**
+ * schema.org structured data for the report — a `Review` of the repository, with
+ * the 0–100 score as the rating and the one-word verdict as its alternate name.
+ * This is what lets the accumulating report database surface as rich results in
+ * search (the SEO asset). The rating is the SAME enforced score the page shows, so
+ * the structured data can never advertise a verdict the on-page report doesn't.
+ */
+function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
+  const slug = `${view.owner}/${view.name}`;
+  const ld = {
+    "@context": "https://schema.org",
+    "@type": "Review",
+    name: `${slug} — Claude Rabbit safety report`,
+    reviewBody: view.summary,
+    itemReviewed: {
+      "@type": "SoftwareSourceCode",
+      name: slug,
+      codeRepository: `https://github.com/${slug}`,
+      url: `${SITE_URL}/${slug}`,
+    },
+    reviewRating: {
+      "@type": "Rating",
+      ratingValue: view.score,
+      bestRating: 100,
+      worstRating: 0,
+      alternateName: view.verdict,
+    },
+    author: { "@type": "Organization", name: "Claude Rabbit", url: SITE_URL },
+  };
+  return (
+    <script
+      type="application/ld+json"
+      dangerouslySetInnerHTML={{ __html: JSON.stringify(ld) }}
+    />
+  );
+}
+
 export default async function ReportPage({ params }: RouteParams) {
   const { owner, repo } = await params;
   const report = await getLatestReport(owner, repo);
@@ -109,6 +146,7 @@ export default async function ReportPage({ params }: RouteParams) {
         overflowX: "hidden",
       }}
     >
+      <ReportJsonLd view={view} />
       <ServerNav />
       <ReportBody
         r={view}
