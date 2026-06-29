@@ -501,9 +501,12 @@ function ForensicSection({ f }: { f: ForensicsView }) {
                     key={`${cf.signal}-${i}`}
                     style={{ border: "1px solid var(--line)", borderRadius: 13, padding: 15, background: "var(--s2)" }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: cf.detail ? 9 : 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8, flexWrap: "wrap" }}>
                       <span style={{ width: 7, height: 7, borderRadius: "50%", background: sev, boxShadow: `0 0 7px ${sev}`, flexShrink: 0 }} />
                       <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--t1)" }}>{cf.signal}</span>
+                      <span style={{ fontSize: 10, color: "var(--t4)", padding: "2px 8px", border: "1px solid var(--line2)", borderRadius: 6, letterSpacing: "0.02em" }}>
+                        Code read · not confirmed at runtime
+                      </span>
                     </div>
                     {cf.detail && (
                       <p style={{ fontSize: 12.5, color: "var(--t3)", lineHeight: 1.55, margin: 0 }}>{cf.detail}</p>
@@ -613,9 +616,11 @@ function ForensicSection({ f }: { f: ForensicsView }) {
         */}
         <Block
           style={{
-            borderColor: cont.no_real_packet_reached_destination
-              ? "oklch(0.80 0.14 158 / 0.45)"
-              : "var(--amber)",
+            // Full `border` shorthand (not just borderColor) so it cleanly overrides
+            // Block's own `border` shorthand — mixing the two warns + can drop the color.
+            border: `1px solid ${
+              cont.no_real_packet_reached_destination ? "oklch(0.80 0.14 158 / 0.45)" : "var(--amber)"
+            }`,
           }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>

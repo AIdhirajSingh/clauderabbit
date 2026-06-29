@@ -124,6 +124,9 @@ def _agentic_findings(agentic: dict) -> tuple[list[dict], dict]:
         "agents": agentic.get("agents", []),
         "corroborated_count": agentic.get("corroborated_count", 0),
         "finding_count": len(findings),
+        # True when the agentic pass crashed/degraded — so the UI can say "agent analysis
+        # did not complete" instead of silently implying the agents ran and found nothing.
+        "crashed": bool(agentic.get("crashed")),
     } if agentic else {}
     return findings, summary
 
@@ -225,6 +228,23 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
         score -= 20
     score = max(1, min(100, score))
 
+    # ── honesty: a run that did NOT build+execute to clean completion did not exercise
+    # time- or condition-gated branches, so absence of captured malice is NOT proof of
+    # safety (the never-bare-Safe rail applied to the dynamic record). Never hardcode this.
+    built_ok = bool(obs.get("auto_build_succeeded"))
+    ran_ok = bool(obs.get("ran_without_crash"))
+    dormant_unverified = not (built_ok and ran_ok)
+    honesty_notes: list[str] = []
+    if dormant_unverified:
+        honesty_notes.append(
+            "The repo did not build and run to clean completion in the sandbox, so time- "
+            "or condition-gated branches may not have executed. Absence of captured malice "
+            "is not proof of safety.")
+    if agentic.get("crashed"):
+        honesty_notes.append(
+            "The three-agent code analysis did not complete for this run; agent findings "
+            "are partial or absent.")
+
     return {
         "schema": "claude-rabbit/forensic-record/microvm-1",
         "generated_at": "",
@@ -276,7 +296,7 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             "attack_egress_intercepted": attack,
             "not_verified": [],
         },
-        "honesty": {"possibly_dormant_unverified": False, "notes": []},
+        "honesty": {"possibly_dormant_unverified": dormant_unverified, "notes": honesty_notes},
         # The three-agent analysis summary (mode + which agents ran + corroboration),
         # for a dedicated "three agents read the code" report panel. Empty {} when the
         # agentic pass was skipped, so the record is unchanged on a no-agent run.

@@ -469,6 +469,12 @@ def main(argv: list[str]) -> int:
                          "verified facts). Agent findings are honest inferences, not facts.")
     args = ap.parse_args(argv)
 
+    # --name is interpolated into scratch dir paths (/tmp/cr-oc-<name>-<lens>) created on
+    # the host; validate it to a safe grammar so it can never traverse out of /tmp.
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9._-]+", args.name or ""):
+        ap.error("--name must match [A-Za-z0-9._-]+")
+
     # The vertex engine has no fallback, so it needs creds up front; opencode may run
     # without them (it only needs them IF it has to fall back to vertex).
     if args.engine == "vertex" and (not args.project or not args.location):
