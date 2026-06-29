@@ -28,12 +28,16 @@ import sys
 
 CANARY = "CR-CANARY-DO-NOT-EXFIL-deadbeef0123456789"
 TELEMETRY_HOST = "cr-harness.cr.internal"
+PROBE_PATH = "/cr-containment-probe"  # OUR containment probe — never the malware's intent
 REGISTRY_HOSTS = ("npmjs.org", "pypi.org", "pythonhosted.org", "crates.io", "debian.org", "ubuntu.com", "nodejs.org", "yarnpkg.com")
 
 
 def _is_registry(host: str) -> bool:
+    # ANCHORED suffix match — `endswith(r)` alone would match `evilnpmjs.org` and
+    # silently drop a C2 host as a registry, producing a false clean. Mirror the
+    # forge addon's anchored REGISTRY_RE exactly.
     h = (host or "").lower()
-    return any(h == r or h.endswith("." + r) or h.endswith(r) for r in REGISTRY_HOSTS)
+    return any(h == r or h.endswith("." + r) for r in REGISTRY_HOSTS)
 
 
 def _b64body(rec: dict) -> str:
@@ -73,6 +77,8 @@ def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
             continue
         if _is_registry(host):
             continue  # registry fast-path: real, logged, not malicious intent
+        if r.get("path") == PROBE_PATH:
+            continue  # our own containment probe — not the malware's network intent
         c2.append(r)
     return c2, observation, refused
 
@@ -132,22 +138,32 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str) -> dict:
     any_egress = len(attempts) > 0
     attack = cred_exfil or cred_reads > 0 or any_egress
 
-    # ── containment proof (dual-source) — CONFIRMED structurally on this substrate ──
-    if any_egress:
+    # ── containment proof — POSITIVELY evidenced by the in-guest control probe ──────
+    # The probe attempts a direct-to-IP egress before the untrusted code runs; if the
+    # forge intercepted it (forged reply, not the real host) containment is CONFIRMED.
+    # This is positive evidence, not a default — a probe that reached the real internet
+    # would make this False (an honest "not confirmed", an isolation failure). When the
+    # observation predates the probe (older runs) we have no positive evidence -> not
+    # confirmed rather than a default-true claim.
+    probe_contained = bool(obs.get("containment_probe_contained")) if "containment_probe_contained" in obs else False
+    if probe_contained and any_egress:
         notes = (f"The forge intercepted {len(attempts)} outbound attempt(s) "
                  f"({', '.join(captured_intent[:4])}); each was answered by the forge and "
-                 f"no real packet reached its destination. The host-side forge (external "
-                 f"monitor) captured the egress; the in-VM trace corroborated it.")
+                 f"no real packet reached its destination. A control probe confirmed the "
+                 f"interception, and the in-VM trace corroborated the egress.")
+    elif probe_contained:
+        notes = ("A control probe confirmed the sandbox intercepts all egress (the microVM "
+                 "has no route to the real internet except the forge). The detonation itself "
+                 "made no outbound connection attempts during this run.")
     else:
-        notes = ("The detonation made no outbound connection attempts. The microVM has no "
-                 "route to the real internet except the forge, so the sandbox confirms no "
-                 "real packet could leave its boundary.")
+        notes = ("Containment was not positively confirmed for this run (no successful control "
+                 "probe). Treat any egress as potentially uncontained.")
     containment = {
         "external_monitor_saw_egress": any_egress,                     # the host-side forge capture
         "in_vm_saw_egress": any_egress or observed.get("connect_count", 0) > 0,
-        "no_real_packet_reached_destination": True,                    # structural on this substrate
+        "no_real_packet_reached_destination": probe_contained,         # POSITIVE evidence (the probe)
         "containment_notes": notes,
-        "egress_control_probe": "deny-by-default: microVM egress forced through the host forge",
+        "egress_control_probe": "contained" if probe_contained else "not-confirmed",
     }
 
     # ── deterministic runtime score (attach-forensics re-blends this) ──────────────
