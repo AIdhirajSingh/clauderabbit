@@ -300,3 +300,34 @@ THE BUG was two things, both fixed:
   sandbox and never reached its destination." Network intent shows the C2 names; containment proof shows
   "No real packet reached its destination" + "External monitor saw the egress". Static = "No risky items
   found" -> the forge caught at RUNTIME what static missed (the product's wedge). Zero orphan microVMs.
+
+## Status @ 2026-06-29 (continuation: forge fixed -> E -> C engine)
+- **Part 1 — FORGE: DONE + MERGED** (#24, main 4b7a238): forge fires + CONFIRMED containment on shipped
+  /api/deep; security-review fixes (anchored registry match — no `evilnpmjs.org` false-clean; containment
+  control probe = positive evidence not default; UPSERT blast-radius limited to cr-fixtures; probe filtered
+  from network intent). Re-proven in browser; clawdcursor refreshed to earned containment.
+- **E — production hardening: MERGED** (#25, main 09a6763): security headers (HSTS/CSP/frame/nosniff/
+  referrer/permissions; badge stays embeddable; CSP allows the design's Google Fonts); SEO (app/robots.ts,
+  app/sitemap.ts reading the public reports table via anon REST, report-page schema.org Review JSON-LD).
+  Proven in browser: robots/sitemap serve real DB URLs, JSON-LD valid (25/Malicious fixture), Instrument
+  Serif renders under CSP, zero CSP violations. tsc 0, node 66/66.
+- **C — agentic engine: BUILT + PROVEN BY RUNNING, PR #26 open** (branch claude/agentic-three-parallel,
+  commits b93dc86 + adc6519). `sandbox/agent/parallel_agents.py` = THREE real lens-specialized AgentLoops
+  (install / runtime-exfil / obfuscation-payload) running CONCURRENTLY over a DISJOINT graph partition,
+  streaming real reasoning live as AgentEvents, then cross-verification (corroboration = ≥2 lenses or
+  fact-backed; PRIORITIZATION only, never promotes inference->fact; C5 intact) + UNIONed ScoringDynamicOutcome.
+  `sandbox/agent/opencode_client.py` = real `opencode run` headless seam behind the same model_call contract
+  as vertex_client; OpenCodeUnavailable -> runtime Vertex fallback. CLI main() streams `[agent] <lens> <kind>`
+  milestones (the shape /api/deep already parses). SAFE because the boundary is the relay, not the brain:
+  detonation still goes through detonator.detonate() + allowed_targets (disjoint subset per agent) + sinkhole.
+  Proven by running: 83/83 agent tests (64 existing + 19 new) + CLI E2E (3 agents, disjoint partitions, live
+  milestones, OpenCode->Vertex fallback, honest @2 record written even when every engine unavailable = never-blank).
+- **C — NEXT PHASE (live-host, not yet done):** (1) adapt the agentic detonate relay to the microVM+forge
+  topology (current detonator.detonate() SSHes a sealed sinkhole VM; the merged substrate detonates via
+  `ctr run` into Firecracker through the forge — these differ); (2) wire parallel_agents.py into
+  orchestrate-microvm.sh as the exploration phase + map `[agent]` milestones into /api/deep so 3 agents
+  stream live in the UI; (3) fold agentic-findings@2 into assemble-forensics (cross_verified_findings ->
+  verdict.code_behavior_findings; dynamic_outcome already maps to computeEscalatedScore); (4) install
+  OpenCode on cr-host-build; (5) prove on /api/deep in the browser. This phase needs the running GCP host.
+- **D — report polish:** report already renders honestly (forensics first-class, no hedge, never-bare-Safe,
+  reputation separate). Remaining: design.md-driven motion/polish pass + surfacing the 3-agent stream in D.
