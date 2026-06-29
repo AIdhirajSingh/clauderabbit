@@ -96,6 +96,57 @@ export async function fetchLatestReportRest(
   }
 }
 
+/** One published report's routable slug + last-modified, for the sitemap. */
+export interface ReportSlug {
+  owner: string;
+  repo: string;
+  lastmod: string | null;
+}
+
+/**
+ * Most-recently-updated public report slugs (deduped to one row per owner/repo),
+ * for the SEO sitemap. Reads via the same anonymous PostgREST path the report
+ * pages use — reports are public, so no session is needed and the authenticated
+ * read-hang is avoided. Returns [] on any miss/error/timeout (never throws), so a
+ * flaky DB degrades the sitemap to just the static routes rather than 500-ing it.
+ */
+export async function fetchRecentReportSlugs(
+  supabaseUrl: string,
+  anonKey: string,
+  limit = 2000,
+  timeoutMs = 8_000,
+): Promise<ReportSlug[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const base = supabaseUrl.replace(/\/$/, "");
+    const url =
+      `${base}/rest/v1/reports?select=owner_login,repo_name,created_at` +
+      `&order=created_at.desc&limit=${limit}`;
+    const res = await fetch(url, {
+      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return [];
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows)) return [];
+    // Newest-first → first occurrence of each owner/repo is its latest report.
+    const seen = new Map<string, ReportSlug>();
+    for (const r of rows as Array<{ owner_login?: string; repo_name?: string; created_at?: string }>) {
+      const owner = r.owner_login;
+      const repo = r.repo_name;
+      if (!owner || !repo) continue;
+      const key = `${owner}/${repo}`;
+      if (!seen.has(key)) seen.set(key, { owner, repo, lastmod: r.created_at ?? null });
+    }
+    return [...seen.values()];
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * True when `id` is a clean two-segment "owner/repo" slug (both parts non-empty,
  * exactly one "/"). The single source of truth for "is this a safe report id" —
