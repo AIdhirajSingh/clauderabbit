@@ -36,7 +36,10 @@
   --s1:rgba(255,255,255,0.026); --s2:rgba(255,255,255,0.05); --s3:rgba(255,255,255,0.085);
   --glass:rgba(22,19,15,0.66); --glass2:rgba(255,255,255,0.04);
   --line:rgba(255,255,255,0.08); --line2:rgba(255,255,255,0.13); --line3:rgba(255,255,255,0.22);
-  --t1:#f4f1ea; --t2:#d9d4ca; --t3:#a39c90; --t4:#7e7669; --t5:#574f44; --t6:#39322a;
+  /* --t4 lightened #7e7669 -> #9a917f so muted secondary text clears WCAG AA (4.5:1)
+     on the dark surfaces it sits on (was 3.4-4.1; Lighthouse color-contrast). Still
+     clearly muted, and the t3 > t4 > t5 hierarchy is preserved. */
+  --t1:#f4f1ea; --t2:#d9d4ca; --t3:#a39c90; --t4:#9a917f; --t5:#574f44; --t6:#39322a;
   --ink:#f4f1ea; --ink-fg:#1a1714; --inkhi:rgba(255,255,255,0.5);
   --green:oklch(0.80 0.14 158); --green-g:oklch(0.80 0.14 158 / 0.40); --green-t:oklch(0.80 0.14 158 / 0.13);
   --blue:oklch(0.74 0.11 232); --blue-g:oklch(0.74 0.11 232 / 0.40); --blue-t:oklch(0.74 0.11 232 / 0.13);

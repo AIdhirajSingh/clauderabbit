@@ -820,7 +820,7 @@ function BehaviorStat({
       </div>
       <div style={{ fontSize: 11.5, color: "var(--t4)", marginTop: 7, lineHeight: 1.4 }}>
         {label}
-        {hint ? <span style={{ color: "var(--t5)" }}> · {hint}</span> : null}
+        {hint ? <span style={{ color: "var(--t4)" }}> · {hint}</span> : null}
       </div>
     </div>
   );

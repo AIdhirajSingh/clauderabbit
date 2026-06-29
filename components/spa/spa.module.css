@@ -99,12 +99,6 @@
   transform: translateY(0) scale(0.97);
 }
 
-/* ── home: activity row ── */
-.activityRow:hover {
-  border-color: var(--line2);
-  transform: translateY(-2px);
-}
-
 /* ── home: danger-board "See full board" button ── */
 .boardCta:hover {
   border-color: var(--line3);
@@ -137,16 +131,6 @@
 .footerLink:hover {
   color: var(--t1);
   gap: 13px;
-}
-
-/* ── ad: skip button ── */
-.skipBtn:hover {
-  color: var(--t3);
-}
-
-/* ── processing: simulate-failure button ── */
-.simFailBtn:hover {
-  color: var(--t4);
 }
 
 /* ── external GitHub repo link (report header, activity strip) ── */

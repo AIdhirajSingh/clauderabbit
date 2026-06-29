@@ -153,7 +153,7 @@ export default async function ReportPage({ params }: RouteParams) {
         clean={clean}
         logsCta={<ServerLogs report={report} />}
         footer={
-          <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t6)" }}>
+          <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t4)" }}>
             Auto-published at {SITE_URL.replace(/^https?:\/\//, "")}/{view.owner}/{view.name} · re-checked when the repo changes
           </div>
         }
@@ -264,7 +264,7 @@ function ServerFooter() {
         padding: "26px 24px",
         textAlign: "center",
         fontSize: 12.5,
-        color: "var(--t5)",
+        color: "var(--t4)",
       }}
     >
       Claude Rabbit — a free, open-source security product, protecting the open-source community from malware.
