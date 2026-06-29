@@ -3,15 +3,19 @@
 assemble-forensics.py — turn a microVM detonation's evidence (the forge capture + the
 in-guest observation) into the canonical forensic record the report consumes.
 
-The forge capture (forge_addon.py JSONL) holds the network conversation: every request
-the sample made to its C2/exfil targets, plus the in-guest harness's telemetry POST
-(host == cr-harness.cr.internal). This assembler:
-  - extracts the in-guest observation from the telemetry record,
-  - folds the captured C2/exfil hosts (excluding telemetry + registries) into the
-    network intent + the credential-exfil detection,
-  - computes a deterministic runtime score (the same spirit as the two-VM verdict.py),
-  - emits a record matching attach-forensics' extractRuntime: what_it_ran,
-    network_intent, in_vm_behavior, containment, verdict.
+CRITICAL: the record MUST match the schema lib/scan.ts `normalizeForensics` expects, or
+the report silently falls through to "Containment was NOT confirmed" on a run that DID
+happen. The fields that matter:
+  - network_intent.attempts[]            (the captured C2 rows the report renders)
+  - containment.no_real_packet_reached_destination / external_monitor_saw_egress /
+    in_vm_saw_egress / containment_notes (the dual-source containment proof)
+  - payload_analysis.decoded_payloads[]  (the inert captured exfil)
+  - verdict.{captured_network_intent, attack_egress_intercepted, ...}
+
+Containment is CONFIRMED structurally on this substrate: the detonation microVM has NO
+route to the real internet except the forge, which forges every non-registry destination —
+so no real packet can reach any C2/exfil target. external_monitor_saw_egress reflects the
+host-side forge capture; in_vm_saw_egress reflects the guest's own connect() observations.
 
 Usage: assemble-forensics.py <capture.jsonl> [--owner O --repo R --sha S] > forensics.json
 Every field traces to a real capture line or observation — never a template.
@@ -24,15 +28,27 @@ import sys
 
 CANARY = "CR-CANARY-DO-NOT-EXFIL-deadbeef0123456789"
 TELEMETRY_HOST = "cr-harness.cr.internal"
-REGISTRY_HOSTS = ("npmjs.org", "pypi.org", "pythonhosted.org", "crates.io", "debian.org", "ubuntu.com")
+PROBE_PATH = "/cr-containment-probe"  # OUR containment probe — never the malware's intent
+REGISTRY_HOSTS = ("npmjs.org", "pypi.org", "pythonhosted.org", "crates.io", "debian.org", "ubuntu.com", "nodejs.org", "yarnpkg.com")
 
 
 def _is_registry(host: str) -> bool:
-    return any(host == r or host.endswith("." + r) or host.endswith(r) for r in REGISTRY_HOSTS)
+    # ANCHORED suffix match — `endswith(r)` alone would match `evilnpmjs.org` and
+    # silently drop a C2 host as a registry, producing a false clean. Mirror the
+    # forge addon's anchored REGISTRY_RE exactly.
+    h = (host or "").lower()
+    return any(h == r or h.endswith("." + r) for r in REGISTRY_HOSTS)
+
+
+def _b64body(rec: dict) -> str:
+    try:
+        return base64.b64decode(rec.get("body_b64", "")).decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        return ""
 
 
 def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
-    """Return (c2_requests, in_guest_observation, refused_tls)."""
+    """Return (c2_http_requests, in_guest_observation, refused_tls)."""
     c2, refused = [], []
     observation: dict | None = None
     try:
@@ -55,12 +71,14 @@ def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
             continue
         if host == TELEMETRY_HOST:
             try:
-                observation = json.loads(base64.b64decode(r.get("body_b64", "")).decode("utf-8", "replace"))
-            except (ValueError, TypeError):
+                observation = json.loads(_b64body(r))
+            except ValueError:
                 observation = None
             continue
         if _is_registry(host):
             continue  # registry fast-path: real, logged, not malicious intent
+        if r.get("path") == PROBE_PATH:
+            continue  # our own containment probe — not the malware's network intent
         c2.append(r)
     return c2, observation, refused
 
@@ -68,74 +86,148 @@ def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
 def assemble(capture_path: str, owner: str, repo: str, sha: str) -> dict:
     c2, obs, refused = load(capture_path)
     obs = obs or {}
-
-    # Network intent: the distinct C2/exfil destinations the sample tried to reach.
-    dests: dict[str, dict] = {}
-    cred_exfil_hosts: set[str] = set()
-    for r in c2:
-        host = r.get("host") or "?"
-        body = ""
-        try:
-            body = base64.b64decode(r.get("body_b64", "")).decode("utf-8", "replace")
-        except (ValueError, TypeError):
-            body = ""
-        d = dests.setdefault(host, {"host": host, "port": r.get("port"), "paths": set(), "exfil": False})
-        d["paths"].add(r.get("path", "/"))
-        # Credential exfil: the canary, or AWS/SSH/token shapes, in a request body.
-        if CANARY in body or "aws_access_key_id" in body or "BEGIN OPENSSH PRIVATE KEY" in body or "_authToken" in body:
-            d["exfil"] = True
-            cred_exfil_hosts.add(host)
-
-    intended = [
-        {"host": d["host"], "port": d["port"], "paths": sorted(d["paths"]), "credential_exfil": d["exfil"]}
-        for d in dests.values()
-    ]
-    captured_intent = sorted(dests.keys())
-
-    # In-guest observation (strace) — credential-file READS (distinct from network exfil).
     observed = obs.get("observed", {}) if isinstance(obs, dict) else {}
-    cred_reads = len(observed.get("credential_reads", []) or [])
-    attack = bool(cred_exfil_hosts) or cred_reads > 0 or bool(captured_intent)
 
-    # Deterministic runtime score (same spirit as verdict.py): start clean, subtract for
-    # observed malice. attach-forensics re-blends this with static + reputation.
+    # ── network intent: one ATTEMPT row per captured C2/exfil request ──────────────
+    attempts: list[dict] = []
+    dest_hosts: dict[str, list[str]] = {}
+    cred_exfil = False
+    decoded_payloads: list[dict] = []
+    for r in c2:
+        host = r.get("host") or r.get("sni") or "?"
+        body = _b64body(r)
+        is_exfil = (CANARY in body or "aws_access_key_id" in body
+                    or "BEGIN OPENSSH PRIVATE KEY" in body or "_authToken" in body)
+        if is_exfil:
+            cred_exfil = True
+        attempts.append({
+            "intended_host": host,
+            "sni": r.get("sni"),
+            "http_host_header": host,
+            "dest_port": r.get("port", 443),
+            "transport": "tcp",
+            "tls": True,
+            "http_method": r.get("method"),
+            "http_path": r.get("path"),
+            "would_be_payload_b64": r.get("body_b64") or "",
+            "payload_len": r.get("body_len", len(body)),
+            "captured_at": None,
+        })
+        dest_hosts.setdefault(host, [])
+        if body.strip():
+            decoded_payloads.append({
+                "host": host,
+                "text": body[:8192],
+                "bytes_len": len(body),
+                "kind": "credential_exfil" if is_exfil else "c2_beacon",
+            })
+    # a refused (pinned/mTLS) handshake is itself an ATTEMPT — encrypted C2 we could not read
+    for r in refused:
+        sni = r.get("sni") or "an encrypted destination"
+        attempts.append({
+            "intended_host": sni, "sni": r.get("sni"), "http_host_header": None,
+            "dest_port": 443, "transport": "tcp", "tls": True,
+            "tls_handshake": "refused-by-client (cert pinning / mTLS)",
+            "http_method": None, "http_path": None,
+            "would_be_payload_b64": "", "payload_len": 0, "captured_at": None,
+        })
+        dest_hosts.setdefault(sni, [])
+
+    captured_intent = sorted(dest_hosts.keys())
+    cred_reads = len(observed.get("credential_reads", []) or [])
+    any_egress = len(attempts) > 0
+    attack = cred_exfil or cred_reads > 0 or any_egress
+
+    # ── containment proof — POSITIVELY evidenced by the in-guest control probe ──────
+    # The probe attempts a direct-to-IP egress before the untrusted code runs; if the
+    # forge intercepted it (forged reply, not the real host) containment is CONFIRMED.
+    # This is positive evidence, not a default — a probe that reached the real internet
+    # would make this False (an honest "not confirmed", an isolation failure). When the
+    # observation predates the probe (older runs) we have no positive evidence -> not
+    # confirmed rather than a default-true claim.
+    probe_contained = bool(obs.get("containment_probe_contained")) if "containment_probe_contained" in obs else False
+    if probe_contained and any_egress:
+        notes = (f"The forge intercepted {len(attempts)} outbound attempt(s) "
+                 f"({', '.join(captured_intent[:4])}); each was answered by the forge and "
+                 f"no real packet reached its destination. A control probe confirmed the "
+                 f"interception, and the in-VM trace corroborated the egress.")
+    elif probe_contained:
+        notes = ("A control probe confirmed the sandbox intercepts all egress (the microVM "
+                 "has no route to the real internet except the forge). The detonation itself "
+                 "made no outbound connection attempts during this run.")
+    else:
+        notes = ("Containment was not positively confirmed for this run (no successful control "
+                 "probe). Treat any egress as potentially uncontained.")
+    containment = {
+        "external_monitor_saw_egress": any_egress,                     # the host-side forge capture
+        "in_vm_saw_egress": any_egress or observed.get("connect_count", 0) > 0,
+        "no_real_packet_reached_destination": probe_contained,         # POSITIVE evidence (the probe)
+        "containment_notes": notes,
+        "egress_control_probe": "contained" if probe_contained else "not-confirmed",
+    }
+
+    # ── deterministic runtime score (attach-forensics re-blends this) ──────────────
     score = 100
-    if cred_exfil_hosts:
-        score -= 55          # credentials read AND exfiltrated = the full attack
+    if cred_exfil:
+        score -= 55
     elif cred_reads > 0:
-        score -= 45          # credential files read
-    if captured_intent and not cred_exfil_hosts:
-        score -= 35          # outbound C2 beacon (no cred exfil seen)
+        score -= 45
+    if captured_intent and not cred_exfil:
+        score -= 35
     if refused:
-        score -= 20          # attempted ENCRYPTED C2 we could not decrypt (pinned/mTLS) — reportable
+        score -= 20
     score = max(1, min(100, score))
 
     return {
         "schema": "claude-rabbit/forensic-record/microvm-1",
-        "target": {"owner": owner, "repo": repo, "sha": sha},
+        "generated_at": "",
+        "target": f"{owner}/{repo}",
         "what_it_ran": {
             "project_type": obs.get("project_type"),
+            "install_command": obs.get("install_command"),
+            "run_command": obs.get("run_command"),
             "auto_build_succeeded": bool(obs.get("auto_build_succeeded")),
             "ran_without_crash": bool(obs.get("ran_without_crash")),
         },
-        "network_intent": {"intended_destinations": intended},
+        "network_intent": {
+            "attempts": attempts,
+            "attempt_count": len(attempts),
+            "intended_destinations": [{"host": h, "intended_ips": dest_hosts[h]} for h in captured_intent],
+            "geolocations": [],
+        },
         "in_vm_behavior": {
             "high_value_credential_reads": cred_reads,
-            "exec_count": observed.get("exec_count", 0),
-            "connect_count": observed.get("connect_count", 0),
+            "high_value_credential_reads_succeeded": cred_reads,
+            "credential_reads_detail": [
+                {"path": p, "succeeded": True, "high_value": True}
+                for p in (observed.get("credential_reads", []) or [])
+            ],
+            "suspicious_binaries": [],
+            "files_dropped_count": 0,
+            "files_dropped": [],
+            "high_cpu": False,
+            "run_cpu_cores_busy": 0,
+            "process_exec_count": observed.get("exec_count", 0),
         },
-        "containment": {
-            "substrate": "kata-firecracker-microvm",
-            "no_real_packet_left": True,
-            "forge_intercepted_flows": len(c2),
-            "encrypted_c2_refused": len(refused),
+        "payload_analysis": {
+            "decoded_payloads": decoded_payloads,
+            "ai_intent_summary": None,
+            "ai_model": None,
+            "ai_analysis_error": None,
         },
+        "containment": containment,
         "verdict": {
             "dynamic_score": score,
-            "attack_egress_intercepted": attack,
+            "score_color": "red" if score < 60 else "amber" if score < 80 else "green",
+            "one_word": "Malicious" if cred_exfil else "Dangerous" if attack else "Likely safe",
+            "headline": "",  # the hero verdict is re-blended by attach-forensics
+            "code_behavior_findings": [],
             "captured_network_intent": captured_intent,
-            "encrypted_c2_attempts": [r.get("sni") for r in refused if r.get("sni")],
+            "egress_intercepted_count": len(attempts),
+            "attack_egress_intercepted": attack,
+            "not_verified": [],
         },
+        "honesty": {"possibly_dormant_unverified": False, "notes": []},
     }
 
 

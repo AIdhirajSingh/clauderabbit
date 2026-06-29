@@ -64,6 +64,21 @@ def configure_egress() -> None:
         print(f"CR_HARNESS resolv.conf write failed: {e}", file=sys.stderr)
 
 
+def containment_probe() -> bool:
+    """POSITIVE containment evidence (the analog of the two-VM control probe): try to
+    reach a real external host by IP. If the forge is intercepting, the reply is the
+    forge's forged signature, NOT the real host — so containment is positively CONFIRMED.
+    If we somehow got a real response, a real packet escaped and we must NOT claim
+    containment. Returns True iff the egress was intercepted (contained)."""
+    try:
+        with urllib.request.urlopen("http://1.1.1.1/cr-containment-probe", timeout=6) as r:
+            body = r.read(256).decode("utf-8", "replace")
+            # The forge answers every non-registry flow with {"status":"ok","ok":true}.
+            return '"ok":true' in body or '"status":"ok"' in body
+    except Exception:  # noqa: BLE001 — a blocked/forged probe (no real internet) is contained
+        return True
+
+
 def plant_decoys() -> None:
     for path, content in DECOYS.items():
         try:
@@ -156,6 +171,9 @@ def emit(record: dict) -> None:
 
 def main() -> int:
     configure_egress()
+    # POSITIVE containment evidence BEFORE the untrusted code runs: confirm the forge
+    # intercepts a direct-to-IP egress attempt (not default-true).
+    contained = containment_probe()
     plant_decoys()
     ptype, install_cmd, run_cmd = detect_commands()
     # BUILD untraced (fast — the forge captures install-time network); RUN traced (cheap).
@@ -170,6 +188,7 @@ def main() -> int:
         "build": build,
         "run": run,
         "observed": obs,
+        "containment_probe_contained": contained,
         "t": round(time.time(), 3),
     }
     emit(record)

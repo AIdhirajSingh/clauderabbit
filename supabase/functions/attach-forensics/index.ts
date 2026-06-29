@@ -442,17 +442,18 @@ export async function handler(req: Request): Promise<Response> {
   // RPC and needs NO schema migration (the columns already exist) — it just writes
   // more of them. Determinism: computed once here, so a fresh deep run and a later
   // cached view of the same commit SHA read identical values.
+  const fields = {
+    forensics_json: forensics,
+    deep: true,
+    score,
+    verdict,
+    summary,
+    logs_json: logs,
+    updated_at: new Date().toISOString(),
+  };
   const { data, error } = await db
     .from("reports")
-    .update({
-      forensics_json: forensics,
-      deep: true,
-      score,
-      verdict,
-      summary,
-      logs_json: logs,
-      updated_at: new Date().toISOString(),
-    })
+    .update(fields)
     .eq("owner_login", owner)
     .eq("repo_name", repo)
     .eq("commit_sha", sha)
@@ -465,11 +466,28 @@ export async function handler(req: Request): Promise<Response> {
     console.error("attach update failed:", error.message);
     return jsonResponse({ error: "Attach failed" }, 500);
   }
+  let reportId = (data as { id?: number } | null)?.id ?? null;
   if (!data) {
-    return jsonResponse({ error: "Report not found" }, 404);
+    // No stage-1 row to update. A standalone INSERT is allowed ONLY for the local forge
+    // test fixtures (owner "cr-fixtures") — never for arbitrary public repos, so a leaked
+    // runner key cannot forge a clean verdict for a real package that was never scanned.
+    // A real repo with no row means the fast path never ran: fail closed (404), don't insert.
+    if (owner !== "cr-fixtures") {
+      return jsonResponse({ error: "Report not found" }, 404);
+    }
+    const { data: ins, error: insErr } = await db
+      .from("reports")
+      .insert({ owner_login: owner, repo_name: repo, commit_sha: sha, scan_path: "deep", ...fields })
+      .select("id")
+      .maybeSingle();
+    if (insErr) {
+      console.error("attach insert failed:", insErr.message);
+      return jsonResponse({ error: "Attach failed" }, 500);
+    }
+    reportId = (ins as { id?: number } | null)?.id ?? null;
   }
 
-  return jsonResponse({ ok: true, report_id: (data as { id: number }).id ?? null });
+  return jsonResponse({ ok: true, report_id: reportId });
 }
 
 Deno.serve((req) =>
