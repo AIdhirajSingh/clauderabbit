@@ -331,3 +331,33 @@ THE BUG was two things, both fixed:
   OpenCode on cr-host-build; (5) prove on /api/deep in the browser. This phase needs the running GCP host.
 - **D — report polish:** report already renders honestly (forensics first-class, no hedge, never-bare-Safe,
   reputation separate). Remaining: design.md-driven motion/polish pass + surfacing the 3-agent stream in D.
+
+## Status @ 2026-06-29 (C LIVE-HOST integration — PROVEN in the browser)
+Model endpoint FIX (user-corrected, was a regression): the 3.x Gemini line serves ONLY on the Vertex
+GLOBAL endpoint (locations/global) — gemini-3.1-flash-lite 404s on us-central1 but 200s on global. Restored
+gemini-3.1-flash-lite (lead) + gemini-3.5-flash (advisor); --location defaults to global; OpenCode provider
+config on host = location global (commit 68095d9).
+- **Host (cr-host-build) provisioned for the agents:** OpenCode 1.17.11 installed (~/.opencode/bin), provider
+  google-vertex@global; deno 2.9.0 + unzip (for scan_files.ts static scan → hotspots); the agent code at
+  /opt/cr/agent + supabase _shared at /opt/supabase/functions/_shared (scan_files.ts import). Host SA granted
+  roles/aiplatform.user + scope broadened to cloud-platform (keyless ADC via metadata; needed an instance
+  stop/start — which caused the devmapper regression below).
+- **C wired into orchestrate-microvm.sh + /api/deep + assemble-forensics (commit 245a27e, PR #?):** an AGENTIC
+  phase runs the 3 OpenCode agents on the host over the clone+graph (explore-only; facts from the forge run),
+  streaming [agent] reasoning → /api/deep milestone() maps it to a live "Three agents read the code" chapter →
+  the browser watches 3 agents think. assemble-forensics folds agentic-findings@2 into code_behavior_findings
+  + an agentic section.
+- **PROVEN on a real /api/deep run in the localhost browser (cr-fixtures/exfil-beacon, 94s):** "Three agents
+  read the code" streamed live with real gemini-3.1-flash-lite reasoning (runtime: credential harvesting T1552
+  + C2/exfil to drop.evil-c2.example; install: postinstall supply-chain hook). The forge captured the beacon →
+  25/100 Malicious, network intent [drop.evil-c2.example, evil-c2.example], CONFIRMED containment ("No real
+  packet reached its destination", control probe confirmed). Report renders it all + the 3-agent chapter.
+- **DEVMAPPER REGRESSION fixed (cause, not symptom):** the host stop/start (for the SA scope) left the
+  devmapper thin-pool with DUPLICATE loop devices (boot attach + cr-dm-pool.service both ran losetup --find),
+  corrupting free-space tracking → "no data available" on new snapshots → detonation built nothing → empty
+  network intent + containment False (the rejected regression). FIX: reset the pool clean (single loop pair) +
+  rebuilt the base image; HARDENED cr-dm-pool.sh (setup-host.sh) to REUSE an existing loop per backing file.
+  Re-proven: 25/Malicious + confirmed containment. (Host's /usr/local/sbin/cr-dm-pool.sh hardened too; the
+  destructive-gate blocked the in-session tee — repo is source of truth, no further reboot this session.)
+- **NEXT:** merge PR; optional enhancement = real per-target agent detonation relay (run-harness run-target in
+  the microVM) + surfacing code_behavior_findings in a dedicated report panel; then D polish + remaining E.
