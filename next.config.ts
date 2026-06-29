@@ -30,15 +30,49 @@ const nextConfig: NextConfig = {
       "public/**",
     ],
   },
-  // The public trust badge and standalone HTML report exports are embedded on
-  // third-party sites, so badge routes must be cacheable and CORS-open.
+  // Security headers (production-grade) + the embeddable trust badge.
   async headers() {
+    // Hardening headers safe on every route (they don't affect embedding).
+    const base = [
+      { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), browsing-topics=()" },
+      { key: "X-DNS-Prefetch-Control", value: "on" },
+    ];
+    // A functional CSP: self + the inline styles the design uses + Supabase for the
+    // anon REST/auth reads + data/https images. The shipped Claude Design loads its two
+    // typefaces (Instrument Serif + Geist) from Google Fonts, so the fonts.googleapis.com
+    // stylesheet (style-src) and the fonts.gstatic.com font files (font-src) MUST be
+    // allowed — otherwise the CSP silently breaks the design's typography on a cold cache.
+    // frame-ancestors 'none' clickjack-proofs the app (the badge route below re-opens framing).
+    const csp = [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      "img-src 'self' data: https:",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "connect-src 'self' https://*.supabase.co https://*.supabase.in",
+    ].join("; ");
     return [
       {
+        // every route EXCEPT the embeddable badge (negative lookahead)
+        source: "/((?!badge/).*)",
+        headers: [...base, { key: "X-Frame-Options", value: "DENY" }, { key: "Content-Security-Policy", value: csp }],
+      },
+      {
+        // The public trust badge + standalone HTML report exports are embedded on
+        // third-party sites, so badge routes stay cacheable, CORS-open, and frameable.
         source: "/badge/:path*",
         headers: [
+          ...base,
           { key: "Access-Control-Allow-Origin", value: "*" },
           { key: "Cache-Control", value: "public, max-age=300, s-maxage=600" },
+          { key: "Content-Security-Policy", value: "frame-ancestors *" },
         ],
       },
     ];
