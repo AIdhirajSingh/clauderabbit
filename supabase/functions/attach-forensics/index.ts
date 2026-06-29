@@ -442,17 +442,18 @@ export async function handler(req: Request): Promise<Response> {
   // RPC and needs NO schema migration (the columns already exist) — it just writes
   // more of them. Determinism: computed once here, so a fresh deep run and a later
   // cached view of the same commit SHA read identical values.
+  const fields = {
+    forensics_json: forensics,
+    deep: true,
+    score,
+    verdict,
+    summary,
+    logs_json: logs,
+    updated_at: new Date().toISOString(),
+  };
   const { data, error } = await db
     .from("reports")
-    .update({
-      forensics_json: forensics,
-      deep: true,
-      score,
-      verdict,
-      summary,
-      logs_json: logs,
-      updated_at: new Date().toISOString(),
-    })
+    .update(fields)
     .eq("owner_login", owner)
     .eq("repo_name", repo)
     .eq("commit_sha", sha)
@@ -465,11 +466,23 @@ export async function handler(req: Request): Promise<Response> {
     console.error("attach update failed:", error.message);
     return jsonResponse({ error: "Attach failed" }, 500);
   }
+  let reportId = (data as { id?: number } | null)?.id ?? null;
   if (!data) {
-    return jsonResponse({ error: "Report not found" }, 404);
+    // No stage-1 row to update (a direct deep detonation, e.g. a forge test fixture):
+    // the deep path stands alone — INSERT a minimal report row (owner_id is nullable).
+    const { data: ins, error: insErr } = await db
+      .from("reports")
+      .insert({ owner_login: owner, repo_name: repo, commit_sha: sha, scan_path: "deep", ...fields })
+      .select("id")
+      .maybeSingle();
+    if (insErr) {
+      console.error("attach insert failed:", insErr.message);
+      return jsonResponse({ error: "Attach failed" }, 500);
+    }
+    reportId = (ins as { id?: number } | null)?.id ?? null;
   }
 
-  return jsonResponse({ ok: true, report_id: (data as { id: number }).id ?? null });
+  return jsonResponse({ ok: true, report_id: reportId });
 }
 
 Deno.serve((req) =>

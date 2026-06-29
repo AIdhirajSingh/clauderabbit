@@ -55,7 +55,11 @@ ph() { local n; n=$(nowms); echo "[orch] phase ${1}: $((n - T_LAST))ms" >&2; T_L
 # 1) reuse stage-1's pinned clone if present, else clone now (off-VM, on the host)
 log "cloning public repo ${GITHUB}@${REF:0:12}"
 rm -rf "$WORK"; mkdir -p "$WORK"
-if [ -d "/opt/cr/clones/${OWNER}-${REPO}-${REF}/.git" ]; then
+if [ "$OWNER" = "cr-fixtures" ] && [ -d "${HERE}/fixtures/${REPO}" ]; then
+  # local forge test fixtures (e.g. cr-fixtures/exfil-beacon) — detonated through the
+  # same real path, no GitHub clone. Proves the forge fires + captures on /api/deep.
+  cp -a "${HERE}/fixtures/${REPO}" "$REPO_DIR"
+elif [ -d "/opt/cr/clones/${OWNER}-${REPO}-${REF}/.git" ]; then
   cp -a "/opt/cr/clones/${OWNER}-${REPO}-${REF}" "$REPO_DIR"
 else
   git clone --quiet --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$REPO_DIR" 2>/dev/null || die "clone failed"
