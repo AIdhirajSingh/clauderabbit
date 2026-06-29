@@ -92,53 +92,64 @@ log "build proxy healthy: forge active"
 ph build_and_forge
 
 # 3.5) AGENTIC pass — THREE parallel OpenCode agents read the clone + reason live.
-# The controller IS the host here, so the agents run locally; their `[agent]` reasoning
-# streams to stderr (the same channel /api/deep parses, so the browser watches three
-# agents think). Explore-only: the agents read + reason + cross-verify; the verified
-# runtime FACTS come from the forge detonation below. Degrades gracefully (never blocks
-# the detonation) if the agent code / opencode / deno is absent.
+# Launched in the BACKGROUND so it overlaps the forge detonation below: the two are
+# independent (the agents read the off-VM clone on the host; the detonation runs the
+# pre-built image in the microVM), so the wall-clock is max(agentic, detonation) not the
+# sum — the latency win toward ~30s. Their `[agent]` reasoning streams to stderr (the
+# channel /api/deep parses) and interleaves with the detonation milestones, so the browser
+# watches three agents think WHILE the sandbox runs the code. We `wait` for it before
+# assembling forensics. Explore-only: the agents read + reason + cross-verify; the verified
+# runtime FACTS come from the forge detonation. Degrades gracefully (never blocks).
 # orchestrate runs as root (sudo from /api/deep), but the agents must NOT: OpenCode is a
 # third-party headless agent and the repo bytes it reads are untrusted, so it runs as the
 # non-root invoking user (privilege drop). That user owns opencode + its config (provider
 # =global) + deno; ADC is the instance SA via the metadata server, so it works regardless.
-AGENT_USER="$(logname 2>/dev/null || echo "${SUDO_USER:-root}")"
-# Validate the resolved user — it sets HOME/PATH for a spawned process, so a hostile
-# value could point PATH at attacker binaries. Refuse anything outside the safe grammar.
-case "$AGENT_USER" in ""|root|*[!A-Za-z0-9._-]*) AGENT_USER="";; esac
-AGENT_HOME="/home/${AGENT_USER}"
-OPENCODE_BIN="${CR_OPENCODE_BIN:-${AGENT_HOME}/.opencode/bin/opencode}"
 AGENT_WORK="$WORK/agent"
 AGENTIC_JSON="$AGENT_WORK/agentic-findings.json"
-if [ -n "$AGENT_USER" ] && [ -d /opt/cr/agent ] && [ -x "$OPENCODE_BIN" ]; then
-  KG="$AGENT_WORK/knowledge-graph.json"
-  DENO_DIR="${AGENT_HOME}/.deno/bin"
-  # The dropped user needs its own writable working dir + READ on the (untrusted) clone.
-  mkdir -p "$AGENT_WORK/results"; chown -R "$AGENT_USER" "$AGENT_WORK" 2>/dev/null || true
-  chmod -R a+rX "$REPO_DIR" 2>/dev/null || true
-  runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" \
-    python3 /opt/cr/agent/knowledge_graph.py "$REPO_DIR" --out "$KG" 1>&2 \
-    || log "knowledge graph build degraded"
-  runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" CR_OPENCODE_BIN="$OPENCODE_BIN" \
-    python3 /opt/cr/agent/parallel_agents.py --engine opencode --explore-only \
-      --repo-dir "$REPO_DIR" --graph "$KG" --commit-sha "$REF" --name "ag-${ID}" \
-      --trap-ip 10.200.0.1 --results-dir "$AGENT_WORK/results" \
-      --time-budget-s 180 --token-budget 60000 \
-      --project "${CR_GCP_PROJECT:-gen-lang-client-0062239756}" --location global \
-      --out "$AGENTIC_JSON" 1>/dev/null \
-    || log "agentic pass degraded"
-else
-  log "agentic pass skipped (no valid non-root user, or agent code/opencode absent)"
-fi
-ph agentic
+AGENTIC_PID=""
+(
+  AGENT_USER="$(logname 2>/dev/null || echo "${SUDO_USER:-root}")"
+  # Validate the resolved user — it sets HOME/PATH for a spawned process, so a hostile
+  # value could point PATH at attacker binaries. Refuse anything outside the safe grammar.
+  case "$AGENT_USER" in ""|root|*[!A-Za-z0-9._-]*) AGENT_USER="";; esac
+  AGENT_HOME="/home/${AGENT_USER}"
+  OPENCODE_BIN="${CR_OPENCODE_BIN:-${AGENT_HOME}/.opencode/bin/opencode}"
+  if [ -n "$AGENT_USER" ] && [ -d /opt/cr/agent ] && [ -x "$OPENCODE_BIN" ]; then
+    KG="$AGENT_WORK/knowledge-graph.json"
+    DENO_DIR="${AGENT_HOME}/.deno/bin"
+    # The dropped user needs its own writable working dir + READ on the (untrusted) clone.
+    mkdir -p "$AGENT_WORK/results"; chown -R "$AGENT_USER" "$AGENT_WORK" 2>/dev/null || true
+    chmod -R a+rX "$REPO_DIR" 2>/dev/null || true
+    runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" \
+      python3 /opt/cr/agent/knowledge_graph.py "$REPO_DIR" --out "$KG" 1>&2 \
+      || log "knowledge graph build degraded"
+    runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$DENO_DIR:$PATH" CR_OPENCODE_BIN="$OPENCODE_BIN" \
+      python3 /opt/cr/agent/parallel_agents.py --engine opencode --explore-only \
+        --repo-dir "$REPO_DIR" --graph "$KG" --commit-sha "$REF" --name "ag-${ID}" \
+        --trap-ip 10.200.0.1 --results-dir "$AGENT_WORK/results" \
+        --time-budget-s 180 --token-budget 60000 \
+        --project "${CR_GCP_PROJECT:-gen-lang-client-0062239756}" --location global \
+        --out "$AGENTIC_JSON" 1>/dev/null \
+      || log "agentic pass degraded"
+  else
+    log "agentic pass skipped (no valid non-root user, or agent code/opencode absent)"
+  fi
+) &
+AGENTIC_PID=$!
+log "=== AGENTIC pass: three agents reading the code (concurrent with detonation) ==="
 
-# 4) DETONATE: run the repo in a Firecracker microVM, egress forced through the forge
+# 4) DETONATE: run the repo in a Firecracker microVM, egress forced through the forge.
+# Runs CONCURRENTLY with the agentic pass above (independent resources).
 log "=== BUILD phase: installing deps + running under the forge ==="
 timeout 240 ctr run --with-ns "network:/var/run/netns/cr-run-${ID}" --snapshotter devmapper \
   --runtime io.containerd.run.kata-fc.v2 --rm "$IMG" "det-${ID}" \
   python3 /opt/cr/detonate.py >/tmp/cr-run-${ID}.log 2>&1 || true
 log "containment confirmed: no real packet left the host (forge intercepted all egress)"
 log "=== RUN phase complete ==="
-ph detonate
+# Join the agentic pass (it writes $AGENTIC_JSON, which forensics assembly reads). It
+# usually finished while the detonation ran; this just guarantees the file is complete.
+if [ -n "${AGENTIC_PID}" ]; then wait "${AGENTIC_PID}" 2>/dev/null || log "agentic wait returned nonzero"; fi
+ph agentic_and_detonate
 
 # 5) assemble the forensic record from the forge capture
 log "=== RESET: deleting detonation VM ==="
