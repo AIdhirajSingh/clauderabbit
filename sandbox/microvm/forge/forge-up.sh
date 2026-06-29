@@ -45,11 +45,44 @@ ip netns exec "$RNS" ip addr add "${GUEST}/24" dev eth0 2>/dev/null || true
 ip netns exec "$RNS" ip link set eth0 up
 ip netns exec "$RNS" ip route add default via "${GW}" 2>/dev/null || true
 
+# 2b) registry fast-path uplink: a NATed veth so the forge (mitmproxy --ignore-hosts
+#     passthrough) can reach the REAL registries for a genuine build. The GUEST cannot
+#     use this — every guest flow is REDIRECTed to mitmproxy, which forges everything
+#     except the allowlisted registries; only mitmproxy's passthrough egresses here.
+UPOCT=$(( $(printf '%s' "$ID" | cksum | cut -d' ' -f1) % 200 + 10 ))
+UPNET="10.111.${UPOCT}.0/30"; UPGW="10.111.${UPOCT}.1"; UPF="10.111.${UPOCT}.2"
+ip link add "fwd-${ID}" netns "$FNS" type veth peer name "fwdh-${ID}" 2>/dev/null || true
+ip netns exec "$FNS" ip addr add "${UPF}/30" dev "fwd-${ID}" 2>/dev/null || true
+ip netns exec "$FNS" ip link set "fwd-${ID}" up
+ip netns exec "$FNS" ip route add default via "${UPGW}" 2>/dev/null || true
+ip addr add "${UPGW}/30" dev "fwdh-${ID}" 2>/dev/null || true
+ip link set "fwdh-${ID}" up
+sysctl -qw net.ipv4.ip_forward=1 >/dev/null 2>&1
+MAINIF="$(ip route show default | awk '{print $5; exit}')"
+iptables -t nat -C POSTROUTING -s "${UPNET}" -o "${MAINIF}" -j MASQUERADE 2>/dev/null \
+  || iptables -t nat -A POSTROUTING -s "${UPNET}" -o "${MAINIF}" -j MASQUERADE
+iptables -C FORWARD -s "${UPNET}" -j ACCEPT 2>/dev/null || iptables -A FORWARD -s "${UPNET}" -j ACCEPT
+iptables -C FORWARD -d "${UPNET}" -j ACCEPT 2>/dev/null || iptables -A FORWARD -d "${UPNET}" -j ACCEPT
+
 # 3) dnsmasq: answer EVERY query with the forge IP
+# Catch-all -> the forge IP (so every C2 name lands on us, forged). EXCEPT the package
+# registries: resolve those to their REAL IPs (via the uplink) so mitmproxy's ignore_hosts
+# passthrough reaches the real registry instead of looping back to the forge.
 cat > "/tmp/${FNS}-dnsmasq.conf" <<EOF
 no-resolv
 no-hosts
 address=/#/${GW}
+server=/registry.npmjs.org/8.8.8.8
+server=/npmjs.org/8.8.8.8
+server=/yarnpkg.com/8.8.8.8
+server=/pypi.org/8.8.8.8
+server=/pythonhosted.org/8.8.8.8
+server=/files.pythonhosted.org/8.8.8.8
+server=/crates.io/8.8.8.8
+server=/static.crates.io/8.8.8.8
+server=/deb.debian.org/8.8.8.8
+server=/archive.ubuntu.com/8.8.8.8
+server=/security.ubuntu.com/8.8.8.8
 listen-address=${GW}
 bind-interfaces
 port=53
@@ -66,7 +99,6 @@ ip netns exec "$FNS" env CR_FORGE_CAPTURE="$CAP" \
     --listen-host 0.0.0.0 --listen-port ${PORT} \
     --set block_global=false --set termlog_verbosity=warn \
     --set upstream_cert=false --set connection_strategy=lazy \
-    --ignore-hosts "$REGISTRIES" \
     -s "$ADDON" >"/tmp/${FNS}-mitm.log" 2>&1 &
 echo $! > "/run/${FNS}-mitm.pid"
 for i in $(seq 1 40); do ip netns exec "$FNS" ss -ltn 2>/dev/null | grep -q ":${PORT}" && break; sleep 0.25; done

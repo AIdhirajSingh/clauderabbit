@@ -9,6 +9,13 @@ for pf in "/run/${FNS}-mitm.pid" "/run/${FNS}-dnsmasq.pid"; do
   rm -f "$pf"
 done
 pkill -f "netns exec ${FNS} " 2>/dev/null || true
+# remove the registry-uplink host plumbing (the per-run NATed veth + iptables)
+UPOCT=$(( $(printf '%s' "$ID" | cksum | cut -d' ' -f1) % 200 + 10 ))
+UPNET="10.111.${UPOCT}.0/30"
+ip link del "fwdh-${ID}" 2>/dev/null || true
+iptables -t nat -D POSTROUTING -s "${UPNET}" -o "$(ip route show default | awk '{print $5; exit}')" -j MASQUERADE 2>/dev/null || true
+iptables -D FORWARD -s "${UPNET}" -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -d "${UPNET}" -j ACCEPT 2>/dev/null || true
 for NS in "$FNS" "$RNS"; do
   ip netns pids "$NS" 2>/dev/null | xargs -r kill 2>/dev/null || true
   ip netns del "$NS" 2>/dev/null || true

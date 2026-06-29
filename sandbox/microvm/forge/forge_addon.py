@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -40,6 +41,15 @@ from mitmproxy import http, tls
 
 CAPTURE_PATH = os.environ.get("CR_FORGE_CAPTURE", "/var/log/cr-forge/capture.jsonl")
 MAX_BODY = int(os.environ.get("CR_FORGE_MAXBODY", "65536"))
+
+# Package registries: a GENUINE build needs these. We do NOT forge them — mitmproxy
+# proxies to the real upstream (the guest trusts our CA, so its TLS completes) and we
+# just LOG the flow. --ignore-hosts is unreliable in transparent mode (it matches the
+# IP, not the SNI), so the addon makes the decision on the SNI/Host instead.
+REGISTRY_RE = re.compile(
+    r"(^|\.)(registry\.npmjs\.org|npmjs\.org|yarnpkg\.com|pypi\.org|pythonhosted\.org"
+    r"|crates\.io|debian\.org|ubuntu\.com|nodejs\.org)$"
+)
 
 
 def _b64(raw: bytes | None) -> str:
@@ -67,6 +77,11 @@ class Forge:
         # header when present; client_conn.sni is the TLS name for https flows.
         sni = getattr(flow.client_conn, "sni", None)
         intended = sni or req.pretty_host or req.host
+        # Registry fast-path: log it, but DON'T set flow.response — mitmproxy then proxies
+        # the request to the REAL upstream registry, so the build gets genuine packages.
+        if REGISTRY_RE.search(intended or ""):
+            _emit({"kind": "registry_passthrough", "host": intended, "method": req.method, "path": req.path})
+            return
         _emit(
             {
                 "kind": "http_request",
@@ -98,8 +113,11 @@ class Forge:
 
     def response(self, flow: http.HTTPFlow) -> None:
         # Record what we forged back (so the timeline shows the full conversation).
+        # Skip registry flows — those are REAL upstream responses, not forged.
         if flow.response is not None:
             sni = getattr(flow.client_conn, "sni", None)
+            if REGISTRY_RE.search(sni or flow.request.pretty_host or ""):
+                return
             _emit(
                 {
                     "kind": "http_response_forged",

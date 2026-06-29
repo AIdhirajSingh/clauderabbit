@@ -33,16 +33,26 @@ import urllib.request
 FORGE_IP = os.environ.get("CR_FORGE_IP", "169.254.0.1")
 TELEMETRY_HOST = os.environ.get("CR_TELEMETRY_HOST", "cr-harness.cr.internal")
 REPO_DIR = os.environ.get("CR_REPO_DIR", "/repo")
+# Build gets a realistic budget (real installs run postinstall hooks — that's where most
+# install-time malware fires); the run phase is shorter (beacon/exfil happen fast).
+BUILD_TIMEOUT = int(os.environ.get("CR_BUILD_TIMEOUT", "120"))
 RUN_TIMEOUT = int(os.environ.get("CR_RUN_TIMEOUT", "25"))
 
 CANARY = "CR-CANARY-DO-NOT-EXFIL-deadbeef0123456789"
 # High-value credential paths real malware targets. Decoy values only — never real.
-DECOYS = {
+# Split: HIGH_VALUE files a legitimate build NEVER reads (so any read is a real signal),
+# vs TOOL_CONFIG files that build tools DO read legitimately (npm reads ~/.npmrc) — we
+# still plant those to catch EXFIL of their contents, but a mere READ is not malice.
+HIGH_VALUE = {
     os.path.expanduser("~/.aws/credentials"): f"[default]\naws_access_key_id=AKIA{CANARY[:16]}\naws_secret_access_key={CANARY}\n",
     os.path.expanduser("~/.ssh/id_rsa"): f"-----BEGIN OPENSSH PRIVATE KEY-----\n{CANARY}\n-----END OPENSSH PRIVATE KEY-----\n",
-    os.path.expanduser("~/.npmrc"): f"//registry.npmjs.org/:_authToken={CANARY}\n",
     os.path.expanduser("~/.docker/config.json"): json.dumps({"auths": {"index.docker.io": {"auth": CANARY}}}),
 }
+TOOL_CONFIG = {
+    os.path.expanduser("~/.npmrc"): f"//registry.npmjs.org/:_authToken={CANARY}\n",
+    os.path.expanduser("~/.netrc"): f"machine api.github.com login x password {CANARY}\n",
+}
+DECOYS = {**HIGH_VALUE, **TOOL_CONFIG}
 
 
 def configure_egress() -> None:
@@ -68,7 +78,9 @@ def detect_commands() -> tuple[str, list[str], list[str]]:
     """Return (project_type, install_cmd, run_cmd) from the repo manifest."""
     j = os.path.join
     if os.path.exists(j(REPO_DIR, "package.json")):
-        return "node", ["npm", "install", "--no-audit", "--no-fund"], ["npm", "start"]
+        # --omit=dev: install prod deps + run the repo's OWN postinstall (the main
+        # install-time malware vector) without the slow devDep trees.
+        return "node", ["npm", "install", "--omit=dev", "--no-audit", "--no-fund"], ["npm", "start"]
     if os.path.exists(j(REPO_DIR, "requirements.txt")):
         return "python", ["pip", "install", "-r", "requirements.txt"], ["python", "main.py"]
     if os.path.exists(j(REPO_DIR, "setup.py")) or os.path.exists(j(REPO_DIR, "pyproject.toml")):
@@ -106,7 +118,9 @@ def observe(trace_files: list[str]) -> dict:
         if not tf or not os.path.exists(tf):
             continue
         for line in open(tf, encoding="utf-8", errors="replace"):
-            for path in DECOYS:
+            # Only HIGH_VALUE reads are a signal — a legit build never reads ~/.aws or
+            # ~/.ssh, but it DOES read ~/.npmrc, so TOOL_CONFIG reads are not flagged.
+            for path in HIGH_VALUE:
                 if path in line and ("open" in line):
                     cred_reads.append(path)
             if "execve(" in line:
@@ -140,7 +154,7 @@ def main() -> int:
     configure_egress()
     plant_decoys()
     ptype, install_cmd, run_cmd = detect_commands()
-    build = _run(install_cmd, RUN_TIMEOUT) if install_cmd else {"ran": False, "reason": "no install"}
+    build = _run(install_cmd, BUILD_TIMEOUT) if install_cmd else {"ran": False, "reason": "no install"}
     run = _run(run_cmd, RUN_TIMEOUT) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
     record = {
