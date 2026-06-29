@@ -70,6 +70,18 @@ def _emit(record: dict[str, Any]) -> None:
 class Forge:
     """Forge a plausible success for every intercepted flow + capture it."""
 
+    def tls_clienthello(self, data: tls.ClientHelloData) -> None:
+        """Registry fast-path, done right: peek the SNI in the ClientHello and pass
+        registry connections through RAW (no MITM) straight to the real upstream. The
+        guest gets the real registry cert (npm/pip trust real CAs), and we skip the
+        decrypt/re-encrypt of every metadata request + tarball — the build runs at native
+        speed. We log the connection; we don't need its bytes. Everything else is MITM'd
+        and forged below. (--ignore-hosts is unreliable in transparent mode; this is not.)"""
+        sni = data.client_hello.sni
+        if sni and REGISTRY_RE.search(sni):
+            data.ignore_connection = True
+            _emit({"kind": "registry_passthrough_raw", "host": sni})
+
     def request(self, flow: http.HTTPFlow) -> None:
         req = flow.request
         # The INTENDED destination: prefer the TLS SNI / Host header (the real C2 name),

@@ -88,12 +88,16 @@ def detect_commands() -> tuple[str, list[str], list[str]]:
     return "unknown", [], []
 
 
-def _run(cmd: list[str], timeout: int) -> dict:
-    """Run a command under strace, capturing the syscall trace for observation."""
+def _run(cmd: list[str], timeout: int, trace_id: str = "", observe_syscalls: bool = True) -> dict:
+    """Run a command, optionally under strace. strace -f ptrace-stops on EVERY syscall
+    (huge overhead on a process-heavy npm/pip install), so the BUILD runs UNTRACED for
+    speed — the host forge captures ALL network (install-time exfil included). strace is
+    reserved for the short RUN phase, where it catches credential-file reads cheaply."""
     if not cmd:
         return {"ran": False, "reason": "no command"}
-    trace = "/tmp/cr-strace.log"
-    full = ["strace", "-f", "-e", "trace=open,openat,connect,execve", "-o", trace, *cmd]
+    trace = f"/tmp/cr-strace-{trace_id}.log" if trace_id else "/tmp/cr-strace.log"
+    full = (["strace", "-f", "-e", "trace=openat,execve", "-o", trace, *cmd]
+            if observe_syscalls else cmd)
     t0 = time.time()
     try:
         p = subprocess.run(full, cwd=REPO_DIR, timeout=timeout, capture_output=True)
@@ -101,14 +105,14 @@ def _run(cmd: list[str], timeout: int) -> dict:
     except subprocess.TimeoutExpired:
         rc, timed_out = None, True
     except FileNotFoundError:
-        # strace missing — run without it (still real, just less observation)
         try:
             p = subprocess.run(cmd, cwd=REPO_DIR, timeout=timeout, capture_output=True)
             rc, timed_out = p.returncode, False
         except subprocess.TimeoutExpired:
             rc, timed_out = None, True
         trace = ""
-    return {"ran": True, "rc": rc, "timed_out": timed_out, "secs": round(time.time() - t0, 2), "trace": trace}
+    return {"ran": True, "rc": rc, "timed_out": timed_out, "secs": round(time.time() - t0, 2),
+            "trace": trace if observe_syscalls else ""}
 
 
 def observe(trace_files: list[str]) -> dict:
@@ -154,8 +158,9 @@ def main() -> int:
     configure_egress()
     plant_decoys()
     ptype, install_cmd, run_cmd = detect_commands()
-    build = _run(install_cmd, BUILD_TIMEOUT) if install_cmd else {"ran": False, "reason": "no install"}
-    run = _run(run_cmd, RUN_TIMEOUT) if run_cmd else {"ran": False, "reason": "no run cmd"}
+    # BUILD untraced (fast — the forge captures install-time network); RUN traced (cheap).
+    build = _run(install_cmd, BUILD_TIMEOUT, "build", observe_syscalls=False) if install_cmd else {"ran": False, "reason": "no install"}
+    run = _run(run_cmd, RUN_TIMEOUT, "run", observe_syscalls=True) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
     record = {
         "schema": "claude-rabbit/in-guest-observation/1",
