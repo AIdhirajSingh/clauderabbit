@@ -24,12 +24,20 @@ CAP_DIR=/var/log/cr-forge
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 ADDON="$HERE/forge_addon.py"
 MITM="${CR_MITM:-/root/.local/bin/mitmdump}"
-REGISTRIES='(^|\.)(registry\.npmjs\.org|pypi\.org|files\.pythonhosted\.org|crates\.io|static\.crates\.io|deb\.debian\.org|archive\.ubuntu\.com|security\.ubuntu\.com)$'
 mkdir -p "$CAP_DIR"
 CAP="$CAP_DIR/${RNS}-capture.jsonl"; : > "$CAP"
 
 # 1) forge netns + bridge
 ip netns add "$FNS" 2>/dev/null || true
+# Resolver for processes INSIDE the forge netns (mitmproxy/the addon). `ip netns exec`
+# bind-mounts /etc/netns/<ns>/resolv.conf over /etc/resolv.conf for every exec into the ns.
+# The addon validates registry raw-passthroughs by resolving the SNI and checking the dest
+# IP is a real registry IP (containment). It MUST resolve via the SAME dnsmasq the guest uses
+# (->GW), or a CDN registry that hands different members to different resolvers would make a
+# legit registry IP fail the check and break the build. dnsmasq runs no-resolv, so this file
+# does not affect dnsmasq itself; only the addon's getaddrinfo. Created before any exec.
+mkdir -p "/etc/netns/${FNS}"
+printf 'nameserver %s\noptions timeout:2 attempts:2\n' "${GW}" > "/etc/netns/${FNS}/resolv.conf"
 ip netns exec "$FNS" ip link set lo up
 ip netns exec "$FNS" ip link add forgebr type bridge 2>/dev/null || true
 ip netns exec "$FNS" ip addr add "${GW}/24" dev forgebr 2>/dev/null || true
@@ -49,16 +57,34 @@ ip netns exec "$RNS" ip route add default via "${GW}" 2>/dev/null || true
 #     passthrough) can reach the REAL registries for a genuine build. The GUEST cannot
 #     use this — every guest flow is REDIRECTed to mitmproxy, which forges everything
 #     except the allowlisted registries; only mitmproxy's passthrough egresses here.
-UPOCT=$(( $(printf '%s' "$ID" | cksum | cut -d' ' -f1) % 200 + 10 ))
-UPNET="10.111.${UPOCT}.0/30"; UPGW="10.111.${UPOCT}.1"; UPF="10.111.${UPOCT}.2"
-ip link add "fwd-${ID}" netns "$FNS" type veth peer name "fwdh-${ID}" 2>/dev/null || true
-ip netns exec "$FNS" ip addr add "${UPF}/30" dev "fwd-${ID}" 2>/dev/null || true
-ip netns exec "$FNS" ip link set "fwd-${ID}" up
+# Linux interface names are capped at 15 chars (IFNAMSIZ). The uplink veth therefore
+# CANNOT be named from the (long) scan ID — `fwd-amrdab-clawdcursor-z6mt9ua4` is 30+
+# chars, so `ip link add` silently fails and the forge gets NO uplink: registry DNS can't
+# resolve, npm dies with EAI_AGAIN, and the repo "did not build". Derive a SHORT, stable
+# hash of the ID for both the veth names AND the /30 uplink subnet (forge-down recomputes
+# the same hash). Surface a creation failure instead of swallowing it.
+IFID=$(( $(printf '%s' "$ID" | cksum | cut -d' ' -f1) % 100000000 ))
+FWD="fwd-${IFID}"; FWDH="fwdh-${IFID}"
+# Uplink /30 inside 10.111.0.0/16 (a range known-clear of the GCP VPC subnet). Spread across
+# ~16k distinct /30s (NOT 200 buckets) so two concurrent detonations can't land on the same
+# subnet — a collision would cross-wire their MASQUERADE/routing and break containment by
+# letting one run's egress ride another run's NAT (review HIGH #3). forge-down recomputes this.
+UPB=$(( IFID % 16000 ))
+UPO3=$(( UPB / 64 )); UPO4=$(( (UPB % 64) * 4 ))
+UPNET="10.111.${UPO3}.${UPO4}/30"; UPGW="10.111.${UPO3}.$(( UPO4 + 1 ))"; UPF="10.111.${UPO3}.$(( UPO4 + 2 ))"
+ip link add "$FWD" netns "$FNS" type veth peer name "$FWDH" 2>"/tmp/${FNS}-uplink.err" \
+  || { echo "CR_FORGE_UPLINK_FAIL"; cat "/tmp/${FNS}-uplink.err" >&2; }
+ip netns exec "$FNS" ip addr add "${UPF}/30" dev "$FWD" 2>/dev/null || true
+ip netns exec "$FNS" ip link set "$FWD" up
 ip netns exec "$FNS" ip route add default via "${UPGW}" 2>/dev/null || true
-ip addr add "${UPGW}/30" dev "fwdh-${ID}" 2>/dev/null || true
-ip link set "fwdh-${ID}" up
+ip addr add "${UPGW}/30" dev "$FWDH" 2>/dev/null || true
+ip link set "$FWDH" up
 sysctl -qw net.ipv4.ip_forward=1 >/dev/null 2>&1
 MAINIF="$(ip route show default | awk '{print $5; exit}')"
+# Persist the uplink interface so teardown deletes the EXACT MASQUERADE rule we add here. If
+# the default route's interface changes before forge-down, re-deriving it there would orphan
+# this NAT rule (a slow leak of stale MASQUERADE rules across runs) — review MEDIUM #8.
+printf '%s' "$MAINIF" > "/run/${FNS}-mainif" 2>/dev/null || true
 iptables -t nat -C POSTROUTING -s "${UPNET}" -o "${MAINIF}" -j MASQUERADE 2>/dev/null \
   || iptables -t nat -A POSTROUTING -s "${UPNET}" -o "${MAINIF}" -j MASQUERADE
 iptables -C FORWARD -s "${UPNET}" -j ACCEPT 2>/dev/null || iptables -A FORWARD -s "${UPNET}" -j ACCEPT
@@ -66,32 +92,62 @@ iptables -C FORWARD -d "${UPNET}" -j ACCEPT 2>/dev/null || iptables -A FORWARD -
 
 # 3) dnsmasq: answer EVERY query with the forge IP
 # Catch-all -> the forge IP (so every C2 name lands on us, forged). EXCEPT the package
-# registries: resolve those to their REAL IPs (via the uplink) so mitmproxy's ignore_hosts
-# passthrough reaches the real registry instead of looping back to the forge.
-cat > "/tmp/${FNS}-dnsmasq.conf" <<EOF
-no-resolv
-no-hosts
-address=/#/${GW}
-server=/registry.npmjs.org/8.8.8.8
-server=/npmjs.org/8.8.8.8
-server=/yarnpkg.com/8.8.8.8
-server=/pypi.org/8.8.8.8
-server=/pythonhosted.org/8.8.8.8
-server=/files.pythonhosted.org/8.8.8.8
-server=/crates.io/8.8.8.8
-server=/static.crates.io/8.8.8.8
-server=/deb.debian.org/8.8.8.8
-server=/archive.ubuntu.com/8.8.8.8
-server=/security.ubuntu.com/8.8.8.8
-listen-address=${GW}
-bind-interfaces
-port=53
-EOF
-ip netns exec "$FNS" dnsmasq --conf-file="/tmp/${FNS}-dnsmasq.conf" --pid-file="/run/${FNS}-dnsmasq.pid" 2>/dev/null || true
+# registries: resolve those (and ALL their subdomains, dnsmasq server= is suffix-matching)
+# to their REAL IPs so the addon's verified passthrough reaches the real registry.
+#
+# This list MUST stay in sync with REGISTRY_RE in forge_addon.py (review H2): a domain the
+# addon treats as a registry but dnsmasq does NOT forward would resolve to the catch-all
+# forge IP for both guest and addon — a degenerate "match" that relays to a dead local
+# port and breaks the build (e.g. node-gyp fetching nodejs.org). The suffixes here are
+# exactly REGISTRY_RE's: npmjs.org, yarnpkg.com, pypi.org, pythonhosted.org, crates.io,
+# debian.org, ubuntu.com, nodejs.org (suffix-matching covers registry.npmjs.org,
+# files.pythonhosted.org, deb.debian.org, downloads.nodejs.org, ... automatically).
+#
+# Registry DNS goes to 8.8.8.8 (reachable from the forge netns via the NATed uplink). The
+# GCP metadata resolver 169.254.169.254 is link-local and NOT routable from inside the forge
+# netns (no route + not MASQUERADEd), so using it as primary only added a per-query timeout
+# before the 8.8.8.8 fallback — an EAI_AGAIN source under npm load. `filter-AAAA` strips
+# IPv6 (the microVM egress is IPv4-only — an AAAA is a dead route + wasted query). cache-size
+# absorbs the repeated lookups a dependency install makes; the addon shares this cache (it
+# resolves via this same dnsmasq), so its containment check sees the guest's exact IPs.
+REGDNS="${CR_REG_DNS:-8.8.8.8}"
+{
+  printf 'no-resolv\nno-hosts\nfilter-AAAA\ncache-size=4000\ndns-forward-max=300\naddress=/#/%s\n' "${GW}"
+  for d in npmjs.org yarnpkg.com pypi.org pythonhosted.org crates.io \
+           debian.org ubuntu.com nodejs.org; do
+    printf 'server=/%s/%s\n' "$d" "$REGDNS"
+  done
+  printf 'listen-address=%s\nbind-interfaces\nport=53\n' "${GW}"
+} > "/tmp/${FNS}-dnsmasq.conf"
+ip netns exec "$FNS" dnsmasq --conf-file="/tmp/${FNS}-dnsmasq.conf" --pid-file="/run/${FNS}-dnsmasq.pid" 2>"/tmp/${FNS}-dnsmasq.err" || true
+# dnsmasq readiness (review HIGH #4): a SILENT dnsmasq failure (port busy, bad config) leaves
+# the guest with NO resolver — every registry lookup fails and the repo "did not build". That
+# is precisely the failure we just spent a debugging cycle on, so confirm it is actually bound
+# on :53 before proceeding and surface a failure loudly instead of swallowing it.
+DNS_OK=0
+for i in $(seq 1 40); do
+  ip netns exec "$FNS" ss -lun 2>/dev/null | grep -q ":53" && { DNS_OK=1; break; }
+  sleep 0.1
+done
+if [ "$DNS_OK" != 1 ]; then echo "CR_FORGE_DNSMASQ_FAIL"; cat "/tmp/${FNS}-dnsmasq.err" >&2 2>/dev/null || true; fi
 
 # 4) REDIRECT all guest TCP arriving on the bridge -> mitmproxy (except the forge port)
 ip netns exec "$FNS" iptables -t nat -A PREROUTING -p tcp --dport ${PORT} -j RETURN
 ip netns exec "$FNS" iptables -t nat -A PREROUTING -p tcp -j REDIRECT --to-ports ${PORT}
+
+# 4b) CONTAINMENT (review CRITICAL #2): DROP any non-TCP guest egress that would be ROUTED
+# toward the real internet — UDP straight to 8.8.8.8:53, an ICMP ping, a raw socket — i.e.
+# anything that bypasses the forge. Such a packet is the one thing that could actually leave.
+# Reasoning on what legitimately transits the forge netns FORWARD chain: nothing.
+#   - guest TCP is REDIRECTed (nat PREROUTING) to the LOCAL mitmproxy -> INPUT, never FORWARD.
+#   - guest DNS goes to the forge IP (dnsmasq) -> INPUT, never FORWARD.
+#   - mitmproxy's own registry passthrough originates in THIS netns -> OUTPUT, never FORWARD.
+# So the ONLY thing that can hit FORWARD here is a guest packet aimed past the forge, and the
+# correct answer is DROP. A fresh netns has ip_forward=0 already; this makes the containment
+# guarantee explicit and survives any future change that turns forwarding on. (The host netns
+# FORWARD chain — where the registry-uplink MASQUERADE lives — is separate and untouched.)
+ip netns exec "$FNS" iptables -P FORWARD DROP
+ip netns exec "$FNS" iptables -A FORWARD -j DROP
 
 # 5) mitmproxy (transparent) loading the forge addon; registries pass through
 ip netns exec "$FNS" env CR_FORGE_CAPTURE="$CAP" \

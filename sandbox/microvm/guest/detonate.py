@@ -93,9 +93,14 @@ def detect_commands() -> tuple[str, list[str], list[str]]:
     """Return (project_type, install_cmd, run_cmd) from the repo manifest."""
     j = os.path.join
     if os.path.exists(j(REPO_DIR, "package.json")):
-        # --omit=dev: install prod deps + run the repo's OWN postinstall (the main
-        # install-time malware vector) without the slow devDep trees.
-        return "node", ["npm", "install", "--omit=dev", "--no-audit", "--no-fund"], ["npm", "start"]
+        # Install ALL deps (NOT --omit=dev): a TypeScript/bundled repo's build step needs
+        # devDeps (e.g. `tsc`), so omitting them dies with "tsc: not found" and the repo
+        # never builds or runs — we'd observe no runtime behavior. Installing dev deps also
+        # runs MORE lifecycle hooks (more install-time attack surface to capture). The
+        # fetch-retry flags ride out any intermittent registry hiccup.
+        return "node", ["npm", "install", "--no-audit", "--no-fund",
+                        "--fetch-retries=5", "--fetch-retry-mintimeout=2000",
+                        "--fetch-retry-maxtimeout=30000"], ["npm", "start"]
     if os.path.exists(j(REPO_DIR, "requirements.txt")):
         return "python", ["pip", "install", "-r", "requirements.txt"], ["python", "main.py"]
     if os.path.exists(j(REPO_DIR, "setup.py")) or os.path.exists(j(REPO_DIR, "pyproject.toml")):
@@ -114,20 +119,32 @@ def _run(cmd: list[str], timeout: int, trace_id: str = "", observe_syscalls: boo
     full = (["strace", "-f", "-e", "trace=openat,execve", "-o", trace, *cmd]
             if observe_syscalls else cmd)
     t0 = time.time()
+    p = None
     try:
         p = subprocess.run(full, cwd=REPO_DIR, timeout=timeout, capture_output=True)
         rc, timed_out = p.returncode, False
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         rc, timed_out = None, True
+        p = e  # TimeoutExpired carries any partial output captured before the timeout
     except FileNotFoundError:
         try:
             p = subprocess.run(cmd, cwd=REPO_DIR, timeout=timeout, capture_output=True)
             rc, timed_out = p.returncode, False
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             rc, timed_out = None, True
+            p = e
         trace = ""
+    # Keep a stderr/stdout tail so a build FAILURE is diagnosable (and can be surfaced as
+    # forensic data — "why the build did not complete") rather than a silent "did not build".
+    def _tail(attr: str) -> str:
+        raw = getattr(p, attr, None)
+        if not raw:
+            return ""
+        text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        return text[-1500:]
     return {"ran": True, "rc": rc, "timed_out": timed_out, "secs": round(time.time() - t0, 2),
-            "trace": trace if observe_syscalls else ""}
+            "trace": trace if observe_syscalls else "",
+            "stderr_tail": _tail("stderr"), "stdout_tail": _tail("stdout")}
 
 
 def observe(trace_files: list[str]) -> dict:
@@ -175,9 +192,20 @@ def main() -> int:
     # intercepts a direct-to-IP egress attempt (not default-true).
     contained = containment_probe()
     plant_decoys()
+    # DIAGNOSTIC: what does the microVM resolve the registry to? (real IP = passthrough
+    # path is healthy; forge IP / failure = the registry DNS forward isn't reaching us).
+    import socket as _socket
+    for _h in ("registry.npmjs.org", "evil-c2.example"):
+        try:
+            _ips = sorted({a[4][0] for a in _socket.getaddrinfo(_h, 443, proto=_socket.IPPROTO_TCP)})
+            print(f"CR_DNS {_h} -> {_ips}", file=sys.stderr, flush=True)
+        except Exception as _e:  # noqa: BLE001
+            print(f"CR_DNS {_h} FAILED: {type(_e).__name__}: {_e}", file=sys.stderr, flush=True)
     ptype, install_cmd, run_cmd = detect_commands()
     # BUILD untraced (fast — the forge captures install-time network); RUN traced (cheap).
     build = _run(install_cmd, BUILD_TIMEOUT, "build", observe_syscalls=False) if install_cmd else {"ran": False, "reason": "no install"}
+    print(f"CR_BUILD rc={build.get('rc')} timed_out={build.get('timed_out')} secs={build.get('secs')} "
+          f"stderr_tail={build.get('stderr_tail','')[:900]!r}", file=sys.stderr, flush=True)
     run = _run(run_cmd, RUN_TIMEOUT, "run", observe_syscalls=True) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
     record = {
