@@ -114,7 +114,11 @@ function Shell() {
     >
       <Background />
       {app.state.loggedIn && <Sidebar />}
-      <CurrentScreen />
+      {/* the active screen is the page's main content — a single <main> landmark
+          (the surrounding Background/Sidebar/overlays are chrome) for a11y. */}
+      <main>
+        <CurrentScreen />
+      </main>
       <LogsOverlay />
       <Toast />
     </div>
