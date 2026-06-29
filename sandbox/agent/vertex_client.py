@@ -30,7 +30,11 @@ from __future__ import annotations
 
 from typing import Any
 
-# Authoritative model strings (see docs/INFRASTRUCTURE.md).
+# Authoritative model strings (docs/INFRASTRUCTURE.md). The 3.x Gemini line serves
+# ONLY on the Vertex GLOBAL endpoint (locations/global) — it 404s on regional endpoints
+# like us-central1 but 200s on global (probed live). So the caller MUST pass
+# location="global" (make_vertex_model_call). Lead = lite (fast executor); advisor =
+# flash (capped hard-decision). Kept in sync with opencode_client.py.
 LEAD_MODEL = "gemini-3.1-flash-lite"
 ADVISOR_MODEL = "gemini-3.5-flash"
 
