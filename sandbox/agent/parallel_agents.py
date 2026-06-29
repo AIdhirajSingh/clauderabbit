@@ -463,6 +463,10 @@ def main(argv: list[str]) -> int:
     # known-good default (a regional location 404s gemini-3.1-flash-lite).
     ap.add_argument("--location", default="global", help="Vertex location (default: global)")
     ap.add_argument("--out", help="write agentic-findings.json here")
+    ap.add_argument("--explore-only", action="store_true",
+                    help="agents read+reason+cross-verify only; per-target detonation is "
+                         "deferred to the whole-repo forge detonation (which provides the "
+                         "verified facts). Agent findings are honest inferences, not facts.")
     args = ap.parse_args(argv)
 
     # The vertex engine has no fallback, so it needs creds up front; opencode may run
@@ -517,6 +521,13 @@ def main(argv: list[str]) -> int:
 
     gcloud_bin = shutil.which("gcloud") or "gcloud"
 
+    # Explore-only: the per-target detonation relay is a no-op returning a valid EMPTY
+    # observation, so detonate() succeeds with NO facts (the agent's finding is an honest
+    # inference, fact_count 0) and the whole-repo forge detonation supplies the verified
+    # runtime facts. The streamed `[agent] detonate` event still shows the agent's intent.
+    def explore_only_relay(command: str) -> str:
+        return '{"schema": "claude-rabbit/explore-only@1", "aggregate_observations": {}}'
+
     def ssh_exec(command: str) -> str:
         # Real intra-VPC relay into the sealed VM (mirrors agent_loop.main). Resilient:
         # a relay failure returns "" so the detonation records unexecuted and the pass
@@ -537,10 +548,11 @@ def main(argv: list[str]) -> int:
 
     analysis = ParallelAnalysis(
         repo_dir=args.repo_dir, graph=graph, commit_sha=args.commit_sha, name=args.name,
-        trap_ip=args.trap_ip, ssh_exec=ssh_exec, make_model_call=make_model_call,
-        base_system=base_system, time_budget_s=args.time_budget_s,
-        token_budget=args.token_budget, results_dir=args.results_dir,
-        cage_duration_s=args.cage_duration_s, on_event=_emit_milestone,
+        trap_ip=args.trap_ip, ssh_exec=(explore_only_relay if args.explore_only else ssh_exec),
+        make_model_call=make_model_call, base_system=base_system,
+        time_budget_s=args.time_budget_s, token_budget=args.token_budget,
+        results_dir=args.results_dir, cage_duration_s=args.cage_duration_s,
+        on_event=_emit_milestone,
     )
     print(f"[agent] launching THREE parallel agents ({args.engine}) over disjoint regions",
           file=sys.stderr, flush=True)
@@ -555,6 +567,11 @@ def main(argv: list[str]) -> int:
     out_path = args.out or _os.path.join(args.results_dir, f"{args.name}-agentic-findings.json")
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2)
+    # Final live line: closes the "Three agents read the code" stage in /api/deep.
+    n_corr = result.get("corroborated_count", 0)
+    n_total = len(result.get("cross_verified_findings", []))
+    print(f"[agent] cross-verified: {n_corr} corroborated of {n_total} findings",
+          file=sys.stderr, flush=True)
     print(json.dumps(result, indent=2))
     return 0
 
