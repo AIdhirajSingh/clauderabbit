@@ -138,11 +138,28 @@ export interface RepoView extends Omit<Report, "packages" | "risky" | "logs"> {
  * "blocked outbound attempts" for a scan that was never executed (BUG-2, the
  * canary). The runtime-claim language is reserved for scans that genuinely ran.
  */
-function finalNote(score: number, forensics: ForensicsView | undefined): string {
+function finalNote(score: number, forensics: ForensicsView | undefined, deep: boolean): string {
   // STATIC path (no forensic record): speak strictly in static terms. Never claim
   // "we observed [runtime]" or "blocked outbound attempts" for a scan that was
-  // never executed (BUG-2, the canary). Keyed on the score band.
+  // never executed (BUG-2, the canary).
   if (!forensics) {
+    // THREE-WAY HONESTY on the static surface. "Never escalated" and "escalation
+    // attempted but the sandbox run did not complete" are DIFFERENT truths and must
+    // never share a sentence. `deep` (persisted at escalation-DECISION time by the
+    // fast path — scan/index.ts: `const deep = escalate`) distinguishes them:
+    //   deep=false, no forensics → never escalated, a pure static read.
+    //   deep=true,  no forensics → escalation was flagged but produced no runtime
+    //                              record; the sandbox run did not complete. State
+    //                              that plainly — it is NOT a static-read clearance,
+    //                              and it never claims a runtime observation (none exists).
+    if (deep) {
+      if (score >= 80)
+        return "We flagged this repo for a live sandbox detonation, but the sandbox run did not complete on this pass — so its runtime behavior is unverified. This verdict reflects the static read only, not an observed detonation.";
+      if (score >= 60)
+        return "We flagged this repo for a live sandbox detonation, but the sandbox run did not complete on this pass — so its runtime behavior is unverified. Run it only inside a sandbox or throwaway environment.";
+      return "We flagged this repo for a live sandbox detonation because the static read was not clean, but the sandbox run did not complete on this pass — so its runtime behavior is unverified. Treat it as dangerous and run it only inside a fully disposable environment.";
+    }
+    // NEVER escalated — a pure static read. Keyed on the score band.
     if (score >= 90)
       return "No malicious behavior in our static read, and reputation is strong. Runtime was not executed in a sandbox on this pass, so this is a static-read clearance, not a guarantee.";
     if (score >= 80)
@@ -168,16 +185,22 @@ function finalNote(score: number, forensics: ForensicsView | undefined): string 
   return "We ran it in the sandbox and observed no malicious behavior, credential access, or outbound exfiltration. The score is driven by the static-read and reputation concerns above. Run it only inside a sandbox or throwaway environment.";
 }
 
-function notVerified(ranSandbox: boolean): string[] {
+function notVerified(ranSandbox: boolean, deep: boolean): string[] {
   // U1: an escalated repo (the sandbox RAN it) carries NO "what we could not verify"
   // list — running the code is the point, not a caveat, and the report states what
-  // the run showed with confidence. The list is for STATIC reads only, where it is
-  // genuinely true that runtime was not exercised.
+  // the run showed with confidence. The list is for reports where runtime was NOT
+  // exercised. When the repo was flagged for escalation but the run did not complete
+  // (deep, no forensics), the wording says exactly that — never the never-escalated
+  // "was not executed in a sandbox" phrasing, so the two states stay distinct.
   if (ranSandbox) return [];
   return [
-    "Full runtime behavior (this repo was not executed in a sandbox on this pass)",
+    deep
+      ? "Full runtime behavior (the sandbox run did not complete on this pass)"
+      : "Full runtime behavior (this repo was not executed in a sandbox on this pass)",
     "Every conditional and time-triggered branch",
-    "Behavior under real credentials (no sandbox was run on this pass)",
+    deep
+      ? "Behavior under real credentials (the sandbox run did not complete on this pass)"
+      : "Behavior under real credentials (no sandbox was run on this pass)",
   ];
 }
 
@@ -432,8 +455,8 @@ export function buildReportView(r: Report): RepoView {
     _band: bandLabel(r.score),
     _ring: RING_CIRC * (1 - r.score / 100),
     _hasRisky: r.risky.length > 0,
-    _finalNote: finalNote(r.score, forensicsView),
-    _notVerified: notVerified(ranSandbox),
+    _finalNote: finalNote(r.score, forensicsView, r.deep),
+    _notVerified: notVerified(ranSandbox, r.deep),
     _repBar: r.reputation.sentScore,
     _ownerInitial: (r.ownerHistory.name || "?").slice(0, 1).toUpperCase(),
     _ageColor: r.ownerHistory.established ? "var(--t1)" : "var(--amber)",

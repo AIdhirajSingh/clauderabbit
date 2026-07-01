@@ -107,10 +107,16 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
               {/* The scan-path badge is keyed on whether the sandbox ACTUALLY ran
                   (a forensic record exists), never the bare `deep` flag — so a
                   queued-but-not-executed escalation never wears a "Sandbox run"
-                  badge it didn't earn (BUG-2, the canary). */}
+                  badge it didn't earn (BUG-2, the canary). A repo that WAS flagged
+                  for escalation but whose run did not complete gets its own honest
+                  badge — distinct from both a real run and a pure static read. */}
               {r._ranSandbox ? (
                 <span style={{ fontSize: 11.5, color: "var(--t2)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
                   Sandbox run
+                </span>
+              ) : r.deep ? (
+                <span style={{ fontSize: 11.5, color: "var(--amber)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
+                  Sandbox run incomplete
                 </span>
               ) : (
                 <span style={{ fontSize: 11.5, color: "var(--t4)", padding: "5px 11px", border: "1px solid var(--line2)", borderRadius: 100 }}>
