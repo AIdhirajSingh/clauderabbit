@@ -158,7 +158,14 @@ log "=== AGENTIC pass: three agents reading the code (concurrent with detonation
 # 4) DETONATE: run the repo in a Firecracker microVM, egress forced through the forge.
 # Runs CONCURRENTLY with the agentic pass above (independent resources).
 log "=== BUILD phase: installing deps + running under the forge ==="
-timeout 240 ctr run --with-ns "network:/var/run/netns/cr-run-${ID}" --snapshotter devmapper \
+# --rlimit-nofile: a big monorepo install (e.g. react/react's 30-package tree) opens
+# thousands of files and dies with EMFILE under the default 1024 fd cap. Raise the microVM
+# container's NOFILE limit so a large but legitimate build isn't killed by a resource cap.
+# This is a RESOURCE limit only — no capability, no privilege, no egress path change; every
+# containment invariant (isolated netns, forge-only route, per-run reset) is unchanged.
+# Outer wall-clock cap = build budget (240) + run (25) + boot/probes/telemetry (~40) headroom.
+timeout 330 ctr run --with-ns "network:/var/run/netns/cr-run-${ID}" --snapshotter devmapper \
+  --rlimit-nofile 1048576:1048576 \
   --runtime io.containerd.run.kata-fc.v2 --rm "$IMG" "det-${ID}" \
   python3 /opt/cr/detonate.py >/tmp/cr-run-${ID}.log 2>&1 || true
 log "detonation complete: forge intercepted all guest TCP egress, non-TCP egress dropped; only allowlisted registry traffic egressed (NATed + logged). Positive containment evidence is the in-guest probe folded into forensics."
