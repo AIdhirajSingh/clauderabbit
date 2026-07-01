@@ -14,6 +14,10 @@ microVM (the container entrypoint), BEFORE and AROUND the untrusted repo. It:
      processes, files dropped) as one JSON record, exfiltrated to the host THROUGH the
      forge telemetry host (cr-harness.cr.internal) — the forge stores it; the host reads
      it from the capture. No virtio-fs / vsock needed; the forge channel carries telemetry.
+  5. Beacons the install-end/run-start PHASE BOUNDARY through the same telemetry
+     channel, so the host can tell a benign build-time dependency fetch (e.g. a
+     devDependency's installer pulling from github.com) apart from a genuine
+     run-phase network attempt when it scores the run — see assemble-forensics.py.
 
 Env:
   CR_FORGE_IP      the forge gateway (default 169.254.0.1)
@@ -34,6 +38,9 @@ import urllib.request
 
 FORGE_IP = os.environ.get("CR_FORGE_IP", "169.254.0.1")
 TELEMETRY_HOST = os.environ.get("CR_TELEMETRY_HOST", "cr-harness.cr.internal")
+# A distinct path from the main telemetry POST (below) so assemble-forensics.py can tell
+# the phase-boundary beacon apart from the full observation record at a glance.
+PHASE_MARKER_PATH = "/cr-phase-marker"
 REPO_DIR = os.environ.get("CR_REPO_DIR", "/repo")
 # Build gets a realistic budget (real installs run postinstall hooks — that's where most
 # install-time malware fires); the run phase is shorter (beacon/exfil happen fast). The
@@ -408,6 +415,29 @@ def emit(record: dict) -> None:
         pass
 
 
+def emit_phase_marker(phase: str) -> None:
+    """Beacon the install-end/run-start boundary to the host through the SAME forge
+    telemetry channel as `emit()`. The forge captures it as its own line and stamps it
+    with the HOST's own wall clock (the same clock every other captured attempt is
+    stamped with) — so assemble-forensics.py can classify every captured attempt as
+    build-phase (before this beacon) or run-phase (after), with no guest/host clock-
+    skew risk, since the comparison never leaves the host's clock. A distinct path
+    (not /cr-telemetry) keeps this beacon from being mistaken for the main observation
+    payload. Best-effort, like `emit()`: a lost beacon means assemble-forensics.py sees
+    no phase boundary and conservatively treats every captured attempt at full
+    weight — the existing, safe behavior — so a dropped marker can only fail toward
+    the STRONGER classification, never a softer one."""
+    try:
+        req = urllib.request.Request(
+            f"http://{TELEMETRY_HOST}{PHASE_MARKER_PATH}",
+            data=json.dumps({"phase": phase}).encode("utf-8"),
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=6).read(64)
+    except Exception:  # noqa: BLE001 — best effort; a lost beacon fails toward full weight
+        pass
+
+
 def main() -> int:
     configure_egress()
     # POSITIVE containment evidence BEFORE the untrusted code runs: confirm the forge
@@ -443,6 +473,10 @@ def main() -> int:
     print(f"CR_BUILD rc={build.get('rc')} timed_out={build.get('timed_out')} secs={build.get('secs')} "
           f"pm={package_manager} attempts={len(build_strategies)} "
           f"stderr_tail={build.get('stderr_tail','')[:900]!r}", file=sys.stderr, flush=True)
+    # The install is DONE and the run is about to start — beacon this exact boundary so
+    # the host can tell a benign build-time dependency fetch apart from a genuine
+    # run-phase network attempt (see emit_phase_marker + assemble-forensics.py).
+    emit_phase_marker("run_start")
     run = _run(run_cmd, RUN_TIMEOUT, "run", observe_syscalls=True) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
     # The strategy that actually built it (transparency: the report/forensics can say
