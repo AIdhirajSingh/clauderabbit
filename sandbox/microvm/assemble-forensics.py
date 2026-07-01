@@ -196,24 +196,37 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
     # observation predates the probe (older runs) we have no positive evidence -> not
     # confirmed rather than a default-true claim.
     probe_contained = bool(obs.get("containment_probe_contained")) if "containment_probe_contained" in obs else False
-    if probe_contained and any_egress:
+    # Non-TCP (UDP) egress probe: the forge only REDIRECTs TCP, so UDP must be dropped by the
+    # forge-netns FORWARD DROP. Present on hardened runs; absent on older ones (treated as
+    # unknown, not a failure, so a re-render of an old report doesn't rewrite history).
+    udp_known = "udp_egress_contained" in obs
+    udp_contained = bool(obs.get("udp_egress_contained")) if udp_known else True
+    # Containment is ABSOLUTE: it holds only if BOTH the TCP interception AND the non-TCP
+    # drop are confirmed. A UDP leak is a hard failure even if TCP was intercepted.
+    fully_contained = probe_contained and udp_contained
+    non_tcp_phrase = " and a direct UDP query was dropped (non-TCP egress contained)" if (udp_known and udp_contained) else ""
+    if udp_known and not udp_contained:
+        notes = ("CONTAINMENT FAILURE: a direct UDP packet reached the real internet, "
+                 "bypassing the forge's TCP interception. Treat this run as UNCONTAINED.")
+    elif fully_contained and any_egress:
         notes = (f"The forge intercepted {len(attempts)} outbound attempt(s) "
                  f"({', '.join(captured_intent[:4])}); each was answered by the forge and "
                  f"no real packet reached its destination. A control probe confirmed the "
-                 f"interception, and the in-VM trace corroborated the egress.")
-    elif probe_contained:
+                 f"interception{non_tcp_phrase}, and the in-VM trace corroborated the egress.")
+    elif fully_contained:
         notes = ("A control probe confirmed the sandbox intercepts all egress (the microVM "
-                 "has no route to the real internet except the forge). The detonation itself "
-                 "made no outbound connection attempts during this run.")
+                 "has no route to the real internet except the forge)" + non_tcp_phrase +
+                 ". The detonation itself made no outbound connection attempts during this run.")
     else:
         notes = ("Containment was not positively confirmed for this run (no successful control "
                  "probe). Treat any egress as potentially uncontained.")
     containment = {
         "external_monitor_saw_egress": any_egress,                     # the host-side forge capture
         "in_vm_saw_egress": any_egress or observed.get("connect_count", 0) > 0,
-        "no_real_packet_reached_destination": probe_contained,         # POSITIVE evidence (the probe)
+        "no_real_packet_reached_destination": fully_contained,         # POSITIVE evidence (TCP+UDP probes)
+        "non_tcp_egress_contained": (udp_contained if udp_known else None),
         "containment_notes": notes,
-        "egress_control_probe": "contained" if probe_contained else "not-confirmed",
+        "egress_control_probe": "contained" if fully_contained else "not-confirmed",
     }
 
     # ── deterministic runtime score (attach-forensics re-blends this) ──────────────

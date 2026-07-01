@@ -168,4 +168,57 @@ sleep 1
 fact BUILDKITD "$(systemctl is-active buildkit 2>/dev/null || (command -v buildkitd >/dev/null && echo present) || echo MISSING)"
 mark BUILDKIT ok
 
+# ── Stage 8: idle auto-shutdown watchdog (COST SAFETY RAIL) ──────────────────────────
+# A detonation host must NEVER bleed credit unattended. An interrupted session once left
+# this n2 running for ~2 days (real credit burned) because nothing reclaimed it. This
+# watchdog powers the host OFF after CR_IDLE_MIN minutes with (a) no fresh detonation
+# heartbeat, (b) nobody logged in, and (c) no detonation process in flight — so it reclaims
+# a genuinely abandoned host WITHOUT ever killing an in-progress scan. orchestrate-microvm.sh
+# refreshes /run/cr-activity on every scan; a running orchestrator/ctr/firecracker/mitmproxy/
+# opencode also counts as activity. Poweroff (STOP) reclaims the expensive running compute;
+# the host is restarted by provision-host.sh when work resumes.
+cat > /usr/local/sbin/cr-idle-shutdown.sh <<'WD'
+#!/usr/bin/env bash
+set -uo pipefail
+IDLE_MIN="${CR_IDLE_MIN:-30}"
+HB=/run/cr-activity
+now=$(date +%s)
+# self-seed once per boot (/run is tmpfs) so idle is measured from boot, not the epoch
+[ -f "$HB" ] || { : > "$HB"; echo "cr-idle: seeded heartbeat at boot"; exit 0; }
+last=$(stat -c %Y "$HB" 2>/dev/null || echo 0)
+if who 2>/dev/null | grep -q . \
+   || pgrep -f 'orchestrate-microvm\.sh|ctr run|firecracker|mitmdump|opencode run' >/dev/null 2>&1; then
+  last=$now; touch "$HB"           # active login or detonation in flight → reset the clock
+fi
+idle=$(( (now - last) / 60 ))
+echo "cr-idle: idle=${idle}m threshold=${IDLE_MIN}m"
+if [ "$idle" -ge "$IDLE_MIN" ]; then
+  echo "cr-idle: idle>=${IDLE_MIN}m — powering off to reclaim the host (cost rail)"
+  ${CR_IDLE_DRYRUN:+echo DRYRUN-would:} /sbin/poweroff
+fi
+WD
+chmod +x /usr/local/sbin/cr-idle-shutdown.sh
+cat > /etc/systemd/system/cr-idle-shutdown.service <<'UNIT'
+[Unit]
+Description=Claude Rabbit idle auto-shutdown (cost rail)
+[Service]
+Type=oneshot
+Environment=CR_IDLE_MIN=30
+ExecStart=/usr/local/sbin/cr-idle-shutdown.sh
+UNIT
+cat > /etc/systemd/system/cr-idle-shutdown.timer <<'UNIT'
+[Unit]
+Description=Periodic Claude Rabbit idle auto-shutdown check
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now cr-idle-shutdown.timer >/dev/null 2>&1
+mark IDLEWATCHDOG $?
+fact IDLE_TIMER "$(systemctl is-active cr-idle-shutdown.timer 2>/dev/null || echo inactive)"
+
 echo "CR_SETUP_DONE $(date -u +%FT%TZ)"

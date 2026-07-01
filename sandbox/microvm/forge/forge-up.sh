@@ -53,6 +53,20 @@ ip netns exec "$RNS" ip addr add "${GUEST}/24" dev eth0 2>/dev/null || true
 ip netns exec "$RNS" ip link set eth0 up
 ip netns exec "$RNS" ip route add default via "${GW}" 2>/dev/null || true
 
+# 2a) CONTAINMENT — close the IPv6 path. Every egress control below is IPv4 (the iptables
+# TCP REDIRECT, the FORWARD DROP, the NATed uplink). IPv6 is a SEPARATE stack: a link-local
+# or auto-configured v6 address + a v6 route would be a real egress path that bypasses ALL
+# of it. The guest is IPv4-only by design, so DISABLE IPv6 entirely in both namespaces, and
+# add an ip6tables FORWARD/OUTPUT DROP in the forge netns as a belt in case a kernel/setup
+# change ever re-enables it. Result: there is simply no IPv6 for a packet to leave on.
+for NS in "$RNS" "$FNS"; do
+  ip netns exec "$NS" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
+  ip netns exec "$NS" sysctl -qw net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
+done
+ip netns exec "$FNS" ip6tables -P FORWARD DROP 2>/dev/null || true
+ip netns exec "$FNS" ip6tables -A FORWARD -j DROP 2>/dev/null || true
+ip netns exec "$FNS" ip6tables -P OUTPUT DROP 2>/dev/null || true
+
 # 2b) registry fast-path uplink: a NATed veth so the forge (mitmproxy --ignore-hosts
 #     passthrough) can reach the REAL registries for a genuine build. The GUEST cannot
 #     use this — every guest flow is REDIRECTed to mitmproxy, which forges everything
