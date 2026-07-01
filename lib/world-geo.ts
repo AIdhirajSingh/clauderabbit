@@ -28,6 +28,61 @@ export interface MapPoint {
   y: number;
 }
 
+/** One dot's place within its co-located cluster, plus the fan-out offset. */
+export interface ClusterSlot {
+  /** 0-based position of this dot among the dots sharing its location. */
+  indexInCluster: number;
+  /** How many dots share this exact location (1 = not clustered). */
+  clusterSize: number;
+  /** Fan-out offset in map units at scale 1 (the renderer divides by the zoom
+   * scale so the cluster stays a constant on-screen size). {0,0} for a lone dot. */
+  dx: number;
+  dy: number;
+}
+
+/**
+ * Lay out co-located dots so they never stack into one unreadable blob — the
+ * "San Francisco problem": many repos resolve to the SAME city centroid. Dots
+ * whose projected points fall in the same ~0.5-unit cell are fanned out: a small
+ * cluster (≤8) onto an evenly-spaced ring, a larger one onto an Archimedean
+ * spiral, so each stays individually visible, hoverable and clickable. A lone
+ * dot is unmoved. Pure; the returned array is index-aligned with `points`.
+ */
+export function clusterOffsets(points: readonly MapPoint[], ringStep = 3.4): ClusterSlot[] {
+  const groups = new Map<string, number[]>();
+  const cellKey = (p: MapPoint) => `${Math.round(p.x * 2) / 2},${Math.round(p.y * 2) / 2}`;
+  points.forEach((p, i) => {
+    const k = cellKey(p);
+    const arr = groups.get(k);
+    if (arr) arr.push(i);
+    else groups.set(k, [i]);
+  });
+  const slots: ClusterSlot[] = new Array(points.length);
+  for (const idxs of groups.values()) {
+    const n = idxs.length;
+    idxs.forEach((origIdx, j) => {
+      let dx = 0;
+      let dy = 0;
+      if (n > 1) {
+        if (n <= 8) {
+          // even ring, starting at the top (−90°) for a stable, legible fan
+          const a = (2 * Math.PI * j) / n - Math.PI / 2;
+          dx = ringStep * Math.cos(a);
+          dy = ringStep * Math.sin(a);
+        } else {
+          // Archimedean spiral keeps roughly constant spacing for big clusters
+          const a = j * 0.7;
+          const r = ringStep * 0.55 * (1 + (a / (2 * Math.PI)) * 2);
+          dx = r * Math.cos(a);
+          dy = r * Math.sin(a);
+        }
+      }
+      slots[origIdx] = { indexInCluster: j, clusterSize: n, dx, dy };
+    });
+  }
+  return slots;
+}
+
 /**
  * Project a (lat, lng) onto the map space. Longitude → x linearly across the
  * full width; latitude → y with north up (lat +90 at the top, -90 at the
@@ -258,30 +313,8 @@ const US_STATES: Set<string> = new Set([
 ]);
 
 /**
- * Hand-built low-poly continent outline, authored against the equirectangular
- * 360×180 projection (x: lng+180, y: 90-lat). Decorative only — it gives the
- * dotted field a recognizable shape and names nothing. Kept coarse on purpose
- * so it stays a few hundred bytes, not a geo dataset.
+ * The real continent geometry now lives in `lib/world-geo-data.ts` (Natural
+ * Earth country boundaries, baked by scripts/gen-world-map.mjs in this same
+ * equirectangular MAP_W×MAP_H frame). The old hand-built low-poly outline was
+ * removed when the map switched to real geography.
  */
-export const WORLD_OUTLINE_PATH = [
-  // North America
-  "M 40 36 L 78 30 L 110 34 L 120 50 L 96 64 L 86 86 L 70 92 L 58 74 L 44 58 Z",
-  // Central America tail
-  "M 86 86 L 96 96 L 104 108 L 96 110 L 88 98 Z",
-  // South America
-  "M 104 110 L 122 108 L 132 126 L 124 150 L 110 162 L 102 150 L 100 128 Z",
-  // Greenland
-  "M 120 22 L 140 20 L 146 34 L 130 40 L 120 32 Z",
-  // Europe
-  "M 170 40 L 196 34 L 210 42 L 206 56 L 188 60 L 176 54 Z",
-  // Africa
-  "M 176 70 L 206 64 L 220 84 L 216 110 L 200 128 L 186 118 L 180 94 Z",
-  // Asia
-  "M 210 36 L 268 30 L 312 40 L 320 60 L 300 76 L 268 72 L 232 64 L 212 52 Z",
-  // India peninsula
-  "M 250 74 L 262 76 L 266 94 L 256 100 L 250 86 Z",
-  // SE Asia / Indonesia
-  "M 286 88 L 312 92 L 320 104 L 300 110 L 288 100 Z",
-  // Australia
-  "M 300 120 L 332 116 L 344 134 L 326 148 L 304 142 L 298 130 Z",
-].join(" ");

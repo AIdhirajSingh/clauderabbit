@@ -1,12 +1,18 @@
 "use client";
 
 /**
- * The danger-board world map — a dependency-free equirectangular SVG with one
- * colored dot per caught repo's captured destination country. Dots come ONLY
- * from real forensic geolocations (`state.board.dots`, derived from the
- * `v_board_dots` view); a repo with no resolved country places no dot. With
- * nothing caught yet the map renders the outline alone over an honest note —
- * never scattered with fake points.
+ * The danger-board world map — REAL Natural Earth country boundaries (the
+ * world-atlas countries-110m dataset, baked at build time into lib/world-geo-data
+ * by scripts/gen-world-map.mjs and projected equirectangular to match
+ * lib/world-geo's project()), with one colored dot per scanned repo at its real
+ * resolved location. Dots come ONLY from real geo (`state.board.dots`): a repo
+ * with no resolvable location places no dot. With nothing placed yet the map
+ * renders the real continents alone over an honest note — never fake points.
+ *
+ * Co-located repos (the "San Francisco problem" — many repos at one city
+ * centroid) are fanned out by `clusterOffsets` so each stays individually
+ * visible, hoverable and clickable rather than collapsing into one blob; a faint
+ * spider-leg ties each fanned dot back to its shared location.
  *
  * Dot color follows the one fixed band logic (red dangerous … green secure) via
  * the CSS band vars, so it recolors per theme. The map is pannable (drag) and
@@ -15,8 +21,9 @@
  * using no transitions on the transform (the pan/zoom is direct, not animated).
  */
 
-import { useCallback, useRef, useState } from "react";
-import { MAP_H, MAP_W, WORLD_OUTLINE_PATH } from "@/lib/world-geo";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { MAP_H, MAP_W, clusterOffsets } from "@/lib/world-geo";
+import { WORLD_COUNTRIES, WORLD_GRATICULE } from "@/lib/world-geo-data";
 import type { BoardDot } from "@/lib/board-data";
 
 interface WorldMapProps {
@@ -126,6 +133,33 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
   const resetView = useCallback(() => setView(INITIAL_VIEW), []);
   const hasDots = dots.length > 0;
 
+  // The real-geography layer never changes — memoize it so a pan/zoom (which only
+  // changes the parent <g> transform) doesn't re-diff 177 country paths.
+  const mapLayer = useMemo(
+    () => (
+      <>
+        <path d={WORLD_GRATICULE} fill="none" stroke="var(--line)" strokeWidth={0.12} opacity={0.45} />
+        {WORLD_COUNTRIES.map((c, i) => (
+          <path
+            key={i}
+            d={c.d}
+            fill="var(--s3)"
+            stroke="var(--line2)"
+            strokeWidth={0.22}
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </>
+    ),
+    [],
+  );
+
+  // Fan co-located dots so the same city never collapses into one blob. The
+  // offsets are in scale-1 map units; the renderer divides by view.scale so the
+  // fan stays a constant on-screen size at any zoom.
+  const slots = useMemo(() => clusterOffsets(dots.map((d) => d.point)), [dots]);
+
   return (
     <div
       style={{
@@ -167,44 +201,65 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
           }}
         >
           <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
-            <path d={WORLD_OUTLINE_PATH} fill="var(--s3)" stroke="var(--line2)" strokeWidth={0.4} />
-            {(() => {
+            {mapLayer}
+            {/* Spider-legs (under the dots): tie each fanned dot back to its shared
+                location so a cluster reads as "several repos, one place". */}
+            {dots.map((d, i) => {
+              const s = slots[i];
+              if (!s || s.clusterSize <= 1) return null;
+              return (
+                <line
+                  key={`leg-${d.id}`}
+                  x1={d.point.x}
+                  y1={d.point.y}
+                  x2={d.point.x + s.dx / view.scale}
+                  y2={d.point.y + s.dy / view.scale}
+                  stroke="var(--line2)"
+                  strokeWidth={0.4 / view.scale}
+                  opacity={0.55}
+                />
+              );
+            })}
+            {dots.map((d, i) => {
+              const s = slots[i];
+              const ox = s ? s.dx / view.scale : 0;
+              const oy = s ? s.dy / view.scale : 0;
+              const color = BAND_COLOR[d.band];
               // A dot is "newly added" for ~10 minutes after its repo was first
               // scanned; it pulses, then settles. `now` is the stable mount anchor.
-              return dots.map((d) => {
-                const color = BAND_COLOR[d.band];
-                const isNew = d.createdAt != null && now - Date.parse(d.createdAt) < 600_000;
-                // Hover: repo name + where. Egress dots say what it was caught
-                // calling; origin dots just name the owner's location.
-                const title =
-                  d.source === "egress"
-                    ? `${d.owner}/${d.name} — caught calling ${d.host ?? "a destination"} in ${d.place}`
-                    : `${d.owner}/${d.name}${d.place ? ` — ${d.place}` : ""}`;
-                return (
-                  // Clickable: opens the repo's public report in a NEW TAB. An SVG
-                  // <a> navigates on a click; a map drag does not trigger it.
-                  <a key={d.id} href={`/${d.owner}/${d.name}`} target="_blank" rel="noopener noreferrer" style={{ cursor: "pointer" }}>
-                    <g transform={`translate(${d.point.x} ${d.point.y})`}>
-                      <circle r={3.4 / view.scale} fill={color} opacity={0.18} />
-                      {isNew && (
-                        <circle
-                          r={1.7 / view.scale}
-                          fill={color}
-                          opacity={0.55}
-                          style={{ animation: "pulseRing 2s ease-out infinite" }}
-                        />
-                      )}
-                      <circle r={1.7 / view.scale} fill={color}>
-                        <title>
-                          {title}
-                          {isNew ? " · just added" : ""}
-                        </title>
-                      </circle>
-                    </g>
-                  </a>
-                );
-              });
-            })()}
+              const isNew = d.createdAt != null && now - Date.parse(d.createdAt) < 600_000;
+              // Hover: repo name + where. Egress dots say what it was caught
+              // calling; origin dots just name the owner's location.
+              const title =
+                d.source === "egress"
+                  ? `${d.owner}/${d.name} — caught calling ${d.host ?? "a destination"} in ${d.place}`
+                  : `${d.owner}/${d.name}${d.place ? ` — ${d.place}` : ""}`;
+              return (
+                // Clickable: opens the repo's public report in a NEW TAB. An SVG
+                // <a> navigates on a click; a map drag does not trigger it.
+                <a key={d.id} href={`/${d.owner}/${d.name}`} target="_blank" rel="noopener noreferrer" style={{ cursor: "pointer" }}>
+                  <g transform={`translate(${d.point.x + ox} ${d.point.y + oy})`}>
+                    <circle r={3.4 / view.scale} fill={color} opacity={0.18} />
+                    {isNew && (
+                      <circle
+                        r={1.7 / view.scale}
+                        fill={color}
+                        opacity={0.55}
+                        style={{ animation: "pulseRing 2s ease-out infinite" }}
+                      />
+                    )}
+                    {/* a thin ring in the panel color keeps overlapping dots separable */}
+                    <circle r={1.7 / view.scale} fill={color} stroke="var(--s1)" strokeWidth={0.5 / view.scale}>
+                      <title>
+                        {title}
+                        {s && s.clusterSize > 1 ? ` · ${s.clusterSize} repos at this location` : ""}
+                        {isNew ? " · just added" : ""}
+                      </title>
+                    </circle>
+                  </g>
+                </a>
+              );
+            })}
           </g>
         </svg>
 
