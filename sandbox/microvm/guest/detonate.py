@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -35,8 +36,10 @@ FORGE_IP = os.environ.get("CR_FORGE_IP", "169.254.0.1")
 TELEMETRY_HOST = os.environ.get("CR_TELEMETRY_HOST", "cr-harness.cr.internal")
 REPO_DIR = os.environ.get("CR_REPO_DIR", "/repo")
 # Build gets a realistic budget (real installs run postinstall hooks — that's where most
-# install-time malware fires); the run phase is shorter (beacon/exfil happen fast).
-BUILD_TIMEOUT = int(os.environ.get("CR_BUILD_TIMEOUT", "120"))
+# install-time malware fires); the run phase is shorter (beacon/exfil happen fast). The
+# budget is the TOTAL for the adaptive ladder (native install + any error-driven retry all
+# share it), so a repo whose first attempt fails fast still has room for a second attempt.
+BUILD_TIMEOUT = int(os.environ.get("CR_BUILD_TIMEOUT", "240"))
 RUN_TIMEOUT = int(os.environ.get("CR_RUN_TIMEOUT", "25"))
 
 CANARY = "CR-CANARY-DO-NOT-EXFIL-deadbeef0123456789"
@@ -112,6 +115,24 @@ def udp_egress_contained() -> bool:
                 pass
 
 
+def raise_fd_limit() -> None:
+    """A large monorepo install opens thousands of files at once; the default RLIMIT_NOFILE
+    soft cap makes npm/yarn/pnpm die with `EMFILE: too many open files` (observed on
+    react/react's 30-package monorepo) — a resource limit, NOT a dependency wrinkle. Raise
+    the soft limit to the hard limit in-process; the build children inherit it. No privilege
+    escalation, no containment change."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = 1048576 if hard == resource.RLIM_INFINITY else hard
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        print(f"CR_FDLIMIT soft={soft}->{resource.getrlimit(resource.RLIMIT_NOFILE)[0]} hard={hard}",
+              file=sys.stderr, flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"CR_FDLIMIT raise failed: {e}", file=sys.stderr, flush=True)
+
+
 def plant_decoys() -> None:
     for path, content in DECOYS.items():
         try:
@@ -122,23 +143,191 @@ def plant_decoys() -> None:
             pass
 
 
-def detect_commands() -> tuple[str, list[str], list[str]]:
-    """Return (project_type, install_cmd, run_cmd) from the repo manifest."""
+# npm flags every attempt carries: install ALL deps (NOT --omit=dev — a TS/bundled repo's
+# build needs devDeps like `tsc`; omitting them dies with "tsc: not found" and the repo
+# never builds/runs; installing them also fires MORE lifecycle hooks = more install-time
+# attack surface to capture). The fetch-retry flags ride out an intermittent registry hiccup.
+NPM_FLAGS = ["--no-audit", "--no-fund", "--fetch-retries=5",
+             "--fetch-retry-mintimeout=2000", "--fetch-retry-maxtimeout=30000"]
+
+
+def _read_pkg() -> dict:
+    try:
+        with open(os.path.join(REPO_DIR, "package.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001 — a malformed/absent manifest is not our problem to solve
+        return {}
+
+
+def detect_node_pm() -> str:
+    """The package manager the repo is NATIVE to — from its lockfile first (authoritative),
+    then the packageManager field. A plain `npm install` on a yarn/pnpm-native repo is
+    often already the wrong tool, so pick the right one before adapting on error."""
+    j = os.path.join
+    if os.path.exists(j(REPO_DIR, "pnpm-lock.yaml")):
+        return "pnpm"
+    if os.path.exists(j(REPO_DIR, "yarn.lock")):
+        return "yarn"
+    if os.path.exists(j(REPO_DIR, "package-lock.json")) or os.path.exists(j(REPO_DIR, "npm-shrinkwrap.json")):
+        return "npm"
+    pm = str(_read_pkg().get("packageManager", ""))
+    if pm.startswith("pnpm"):
+        return "pnpm"
+    if pm.startswith("yarn"):
+        return "yarn"
+    return "npm"
+
+
+def _node_run_cmd() -> list[str]:
+    """How to RUN the repo after the build. `npm start` runs the start script regardless of
+    which PM installed node_modules; fall back to a main entry so a lib without a start
+    script still executes something observable."""
+    pkg = _read_pkg()
+    scripts = pkg.get("scripts") or {}
+    if isinstance(scripts, dict) and "start" in scripts:
+        return ["npm", "start"]
+    main = pkg.get("main")
+    if isinstance(main, str) and main and os.path.exists(os.path.join(REPO_DIR, main)):
+        return ["node", main]
+    for entry in ("index.js", "server.js", "app.js", "dist/index.js", "build/index.js"):
+        if os.path.exists(os.path.join(REPO_DIR, entry)):
+            return ["node", entry]
+    return ["npm", "start"]
+
+
+def detect_project() -> tuple[str, list[str]]:
+    """Return (project_type, run_cmd). The BUILD for node is handled by adaptive_node_build();
+    python/unknown use a single install (below)."""
     j = os.path.join
     if os.path.exists(j(REPO_DIR, "package.json")):
-        # Install ALL deps (NOT --omit=dev): a TypeScript/bundled repo's build step needs
-        # devDeps (e.g. `tsc`), so omitting them dies with "tsc: not found" and the repo
-        # never builds or runs — we'd observe no runtime behavior. Installing dev deps also
-        # runs MORE lifecycle hooks (more install-time attack surface to capture). The
-        # fetch-retry flags ride out any intermittent registry hiccup.
-        return "node", ["npm", "install", "--no-audit", "--no-fund",
-                        "--fetch-retries=5", "--fetch-retry-mintimeout=2000",
-                        "--fetch-retry-maxtimeout=30000"], ["npm", "start"]
+        return "node", _node_run_cmd()
     if os.path.exists(j(REPO_DIR, "requirements.txt")):
-        return "python", ["pip", "install", "-r", "requirements.txt"], ["python", "main.py"]
+        return "python", ["python", "main.py"]
     if os.path.exists(j(REPO_DIR, "setup.py")) or os.path.exists(j(REPO_DIR, "pyproject.toml")):
-        return "python", ["pip", "install", "."], ["python", "-c", "import sys; sys.exit(0)"]
-    return "unknown", [], []
+        return "python", ["python", "-c", "import sys; sys.exit(0)"]
+    return "unknown", []
+
+
+def _pip_install() -> list[str]:
+    j = os.path.join
+    if os.path.exists(j(REPO_DIR, "requirements.txt")):
+        return ["pip", "install", "-r", "requirements.txt"]
+    return ["pip", "install", "."]
+
+
+def adaptive_node_build(budget_s: int) -> tuple[dict, list[dict], str]:
+    """Adaptive, error-DRIVEN dependency install — the decision tree a developer runs when
+    `npm install` fails, executed INSIDE the sealed microVM through the forge. No model
+    egress and no elevated trust are needed (the forge blocks everything but registries, so
+    an in-VM model agent can't run without breaking containment); this encodes the exact
+    error->flag rules a terminal-driving agent would apply, with the SAME isolation.
+
+    Ladder (stop at the first rc==0, each step gated on the PREVIOUS real error):
+      1. native install with the repo's OWN package manager (pnpm/yarn/npm from the lockfile),
+         given the FULL budget in one run — corepack serves the repo's pinned yarn/pnpm
+         version, so one command covers npm, classic yarn, yarn-berry, and pinned pnpm alike;
+         a native TIMEOUT stops honestly (a killed install can't be cleanly resumed and npm
+         can't rescue a yarn/pnpm-only repo).
+      2. pnpm 'outdated/frozen lockfile'  -> pnpm install --no-frozen-lockfile
+      3. npm ERESOLVE peer-dep conflict   -> npm install --legacy-peer-deps -> --force
+      4. universal fallback (npm can install almost any package.json, incl. yarn/pnpm-native
+         repos) -> npm --legacy-peer-deps -> --force, if not already tried
+    Returns (best_result, attempt_log, package_manager). Budget-aware: each attempt gets the
+    REMAINING time so the ladder never blows the microVM's overall run cap."""
+    pm = detect_node_pm()
+    deadline = time.time() + budget_s
+    log: list[dict] = []
+
+    def attempt(cmd: list[str], why: str) -> dict | None:
+        remaining = int(deadline - time.time())
+        if remaining < 12:  # not enough budget to meaningfully try — stop honestly
+            return None
+        r = _run(cmd, remaining, "build", observe_syscalls=False)
+        entry = {"cmd": " ".join(cmd), "why": why, "rc": r.get("rc"),
+                 "timed_out": r.get("timed_out"), "secs": r.get("secs")}
+        log.append(entry)
+        print(f"CR_BUILD_TRY [{why}] {' '.join(cmd)} -> rc={r.get('rc')} "
+              f"secs={r.get('secs')} timed_out={r.get('timed_out')}", file=sys.stderr, flush=True)
+        return r
+
+    def err_of(r: dict | None) -> str:
+        if not r:
+            return ""
+        return ((r.get("stderr_tail") or "") + " " + (r.get("stdout_tail") or "")).lower()
+
+    def tried() -> str:
+        return " | ".join(e["cmd"] for e in log)
+
+    # 1) native — the repo's OWN package manager, given the FULL budget in ONE continuous
+    #    run. corepack (enabled in the base image) makes `yarn`/`pnpm` resolve to the EXACT
+    #    version the repo pins (packageManager field / .yarn release), so a single native
+    #    command handles npm, classic yarn, yarn-berry, and every pinned pnpm alike. Two
+    #    hard-won reasons it is never capped short:
+    #      * For a yarn/pnpm-only repo the npm fallbacks below are doomed (its link:/workspace:
+    #        deps use protocols npm can't read), so the native tool is the ONE thing that can
+    #        work — cutting it off to "save budget for a retry" kills the only viable install.
+    #      * A hard-killed install can't be cleanly resumed (partial state makes the re-run
+    #        error out), so a half-run is worse than a full one. A real monorepo (react)
+    #        installs in ~1.5-3 min — it must run to the end.
+    #    npm's own failure mode (ERESOLVE) still surfaces in seconds, so an npm repo that needs
+    #    a --legacy-peer-deps retry leaves almost the whole budget for it. `yarn install` runs
+    #    WITHOUT --network-timeout: that flag is classic-yarn-only and yarn-berry rejects it as
+    #    unknown, so passing it would break every berry install corepack now enables.
+    if pm == "pnpm" and shutil.which("pnpm"):
+        native_cmd, native_why = ["pnpm", "install"], "pnpm — native (pnpm-lock.yaml)"
+    elif pm == "yarn" and shutil.which("yarn"):
+        native_cmd, native_why = ["yarn", "install"], "yarn — native (yarn.lock)"
+    else:
+        native_cmd = ["npm", "install", *NPM_FLAGS]
+        native_why = "npm — native" if pm == "npm" else f"npm — native ({pm} repo; native tool unavailable)"
+    last = attempt(native_cmd, native_why)
+    if last and last.get("rc") == 0:
+        return last, log, pm
+    # Timed out = killed mid-install; its partial state can't be cleanly resumed and npm can't
+    # help a yarn/pnpm repo, so report the timeout honestly rather than corrupt-retrying.
+    if last and last.get("timed_out"):
+        return last, log, pm
+    e = err_of(last)
+
+    # 2) pnpm lockfile drift (lockfile out of sync with package.json)
+    if pm == "pnpm" and shutil.which("pnpm") and ("lockfile" in e or "frozen" in e or "outdated" in e):
+        r = attempt(["pnpm", "install", "--no-frozen-lockfile"],
+                    "pnpm --no-frozen-lockfile (lockfile out of sync)")
+        if r and r.get("rc") == 0:
+            return r, log, pm
+        last = r or last
+        e = err_of(last)
+
+    # 3) npm ERESOLVE peer-dependency conflict — the react/react case
+    if ("eresolve" in e) or ("peer dep" in e) or ("could not resolve dependency" in e):
+        r = attempt(["npm", "install", "--legacy-peer-deps", *NPM_FLAGS],
+                    "npm --legacy-peer-deps (ERESOLVE peer conflict)")
+        if r and r.get("rc") == 0:
+            return r, log, pm
+        last = r or last
+        r = attempt(["npm", "install", "--force", *NPM_FLAGS],
+                    "npm --force (peer conflict persisted)")
+        if r and r.get("rc") == 0:
+            return r, log, pm
+        last = r or last
+        e = err_of(last)
+
+    # 4) universal fallback: npm can install almost any package.json even for a yarn/pnpm
+    #    native repo; try the peer-conflict flags if the ladder hasn't already.
+    if (not last or last.get("rc") != 0) and "--legacy-peer-deps" not in tried():
+        r = attempt(["npm", "install", "--legacy-peer-deps", *NPM_FLAGS],
+                    "npm --legacy-peer-deps (universal fallback)")
+        if r and r.get("rc") == 0:
+            return r, log, pm
+        last = r or last
+    if (not last or last.get("rc") != 0) and "--force" not in tried():
+        r = attempt(["npm", "install", "--force", *NPM_FLAGS],
+                    "npm --force (last resort)")
+        if r and r.get("rc") == 0:
+            return r, log, pm
+        last = r or last
+
+    return (last or {"ran": False, "reason": "no attempt fit the build budget"}), log, pm
 
 
 def _run(cmd: list[str], timeout: int, trace_id: str = "", observe_syscalls: bool = True) -> dict:
@@ -228,6 +417,7 @@ def main() -> int:
     udp_contained = udp_egress_contained()
     print(f"CR_CONTAINMENT tcp_contained={contained} udp_contained={udp_contained}",
           file=sys.stderr, flush=True)
+    raise_fd_limit()
     plant_decoys()
     # DIAGNOSTIC: what does the microVM resolve the registry to? (real IP = passthrough
     # path is healthy; forge IP / failure = the registry DNS forward isn't reaching us).
@@ -238,17 +428,33 @@ def main() -> int:
             print(f"CR_DNS {_h} -> {_ips}", file=sys.stderr, flush=True)
         except Exception as _e:  # noqa: BLE001
             print(f"CR_DNS {_h} FAILED: {type(_e).__name__}: {_e}", file=sys.stderr, flush=True)
-    ptype, install_cmd, run_cmd = detect_commands()
+    ptype, run_cmd = detect_project()
     # BUILD untraced (fast — the forge captures install-time network); RUN traced (cheap).
-    build = _run(install_cmd, BUILD_TIMEOUT, "build", observe_syscalls=False) if install_cmd else {"ran": False, "reason": "no install"}
+    # Node goes through ADAPTIVE recovery (detect the PM + read the real error + retry with
+    # the right flag) instead of one fixed command; python/unknown use a single install.
+    build_strategies: list[dict] = []
+    package_manager = ""
+    if ptype == "node":
+        build, build_strategies, package_manager = adaptive_node_build(BUILD_TIMEOUT)
+    elif ptype == "python":
+        build = _run(_pip_install(), BUILD_TIMEOUT, "build", observe_syscalls=False)
+    else:
+        build = {"ran": False, "reason": "no supported manifest"}
     print(f"CR_BUILD rc={build.get('rc')} timed_out={build.get('timed_out')} secs={build.get('secs')} "
+          f"pm={package_manager} attempts={len(build_strategies)} "
           f"stderr_tail={build.get('stderr_tail','')[:900]!r}", file=sys.stderr, flush=True)
     run = _run(run_cmd, RUN_TIMEOUT, "run", observe_syscalls=True) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
+    # The strategy that actually built it (transparency: the report/forensics can say
+    # "built with npm --legacy-peer-deps", never silently loosen what "built" means).
+    winning = next((s for s in build_strategies if s.get("rc") == 0), None)
     record = {
         "schema": "claude-rabbit/in-guest-observation/1",
         "project_type": ptype,
+        "package_manager": package_manager,
         "auto_build_succeeded": build.get("rc") == 0,
+        "build_strategy": (winning or {}).get("why", ""),
+        "build_attempts": build_strategies,
         "ran_without_crash": run.get("ran") and not run.get("timed_out") and run.get("rc") == 0,
         "build": build,
         "run": run,
@@ -258,7 +464,9 @@ def main() -> int:
         "t": round(time.time(), 3),
     }
     emit(record)
-    print("CR_HARNESS_DONE " + json.dumps({k: record[k] for k in ("project_type", "auto_build_succeeded", "ran_without_crash", "observed")}))
+    print("CR_HARNESS_DONE " + json.dumps({k: record[k] for k in (
+        "project_type", "package_manager", "auto_build_succeeded", "build_strategy",
+        "ran_without_crash", "observed")}))
     return 0
 
 
