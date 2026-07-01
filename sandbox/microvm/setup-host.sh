@@ -29,7 +29,7 @@ if [ -e /dev/kvm ]; then mark KVM ok; else mark KVM FAIL; echo "no /dev/kvm — 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null 2>&1
 apt-get install -y ca-certificates curl gnupg jq bc dmsetup squashfs-tools e2fsprogs \
-  iptables iproute2 git pipx zstd dnsmasq-base >/dev/null 2>&1
+  iptables iproute2 git pipx zstd dnsmasq-base thin-provisioning-tools >/dev/null 2>&1
 mark BASEPKGS $?
 
 # ── Stage 2: containerd (Docker repo build — known-good devmapper snapshotter) ───────
@@ -52,28 +52,45 @@ cat > /usr/local/sbin/cr-dm-pool.sh <<'POOL'
 #!/usr/bin/env bash
 set -e
 DM_DIR=/var/lib/containerd/devmapper; POOL=cr-devpool
-[ -f ${DM_DIR}/data ] || { touch ${DM_DIR}/data; truncate -s 100G ${DM_DIR}/data; }
-[ -f ${DM_DIR}/meta ] || { touch ${DM_DIR}/meta; truncate -s 10G ${DM_DIR}/meta; }
-# REUSE an existing loop for each backing file if one is already attached. A second
-# `losetup --find` would attach a DUPLICATE loop to the same file (a reboot ran this
-# alongside the boot attach), double-opening it and corrupting the thin-pool's
-# free-space tracking so new snapshots fail with "no data available" — the live
-# post-reboot detonation regression. Only create a loop when none exists.
-DATA_DEV=$(losetup -j ${DM_DIR}/data -O NAME -n 2>/dev/null | awk 'NR==1{print $1}')
-[ -n "${DATA_DEV}" ] || DATA_DEV=$(losetup --find --show ${DM_DIR}/data)
-META_DEV=$(losetup -j ${DM_DIR}/meta -O NAME -n 2>/dev/null | awk 'NR==1{print $1}')
-[ -n "${META_DEV}" ] || META_DEV=$(losetup --find --show ${DM_DIR}/meta)
+mkdir -p ${DM_DIR}
+# Healthy + active pool (e.g. a live re-run of setup-host.sh on a running host) → leave it
+# untouched so we never wipe a pool in use.
+if dmsetup ls 2>/dev/null | grep -q "^${POOL}" && dmsetup status ${POOL} 2>/dev/null | grep -q " rw "; then
+  exit 0
+fi
+# Otherwise — a fresh boot (dm devices don't survive a reboot) or a broken/read-only pool —
+# build a CLEAN pool from FRESH backing files. THIS IS THE CRITICAL SELF-CLEANING-HOST FIX:
+# a poweroff (which the idle-shutdown watchdog does routinely to reclaim the host) leaves the
+# loopback thin-pool metadata inconsistent — the metadata loop then throws WRITE I/O errors,
+# the pool goes read-only, and every detonation "builds nothing". Recovery via
+# thin_check/thin_repair does NOT reliably clear it. The pool only ever holds the REPRODUCIBLE
+# base image + cached clones, so resetting it fresh each boot is the robust, deterministic
+# recovery (PROVEN: fresh pool -> rebuild base -> detonation builds rc=0, contained). The base
+# image is rebuilt onto the fresh pool by cr-base-image.service.
+dmsetup remove ${POOL} 2>/dev/null || true
+for f in data meta; do
+  dev=$(losetup -j ${DM_DIR}/${f} -O NAME -n 2>/dev/null | awk 'NR==1{print $1}')
+  [ -n "${dev}" ] && losetup -d "${dev}" 2>/dev/null || true
+done
+rm -f ${DM_DIR}/data ${DM_DIR}/meta
+truncate -s 100G ${DM_DIR}/data
+truncate -s 10G ${DM_DIR}/meta
+DATA_DEV=$(losetup --find --show ${DM_DIR}/data)
+META_DEV=$(losetup --find --show ${DM_DIR}/meta)
 SECTORS=$(( $(blockdev --getsize64 -q ${DATA_DEV}) / 512 ))
-dmsetup ls | grep -q "^${POOL}" || \
-  dmsetup create "${POOL}" --table "0 ${SECTORS} thin-pool ${META_DEV} ${DATA_DEV} 128 32768"
+dmsetup create "${POOL}" --table "0 ${SECTORS} thin-pool ${META_DEV} ${DATA_DEV} 128 32768"
+touch /run/cr-pool-fresh   # signal cr-base-image.service to (re)build the base image
 POOL
 chmod +x /usr/local/sbin/cr-dm-pool.sh
 cat > /etc/systemd/system/cr-dm-pool.service <<'UNIT'
 [Unit]
 Description=Claude Rabbit devmapper thin-pool
-DefaultDependencies=no
-After=systemd-udev-settle.service
+# Must run AFTER the root fs is remounted read-write (the fresh-pool reset rm's + truncates
+# the backing files — that fails with "Read-only file system" if it runs in very early boot,
+# e.g. under DefaultDependencies=no) but BEFORE containerd opens the pool.
+After=local-fs.target systemd-udev-settle.service
 Before=containerd.service
+RequiresMountsFor=/var/lib/containerd
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/cr-dm-pool.sh
@@ -86,6 +103,48 @@ systemctl enable cr-dm-pool.service >/dev/null 2>&1
 /usr/local/sbin/cr-dm-pool.sh
 mark DMPOOL $?
 fact DMPOOL_STATE "$(dmsetup ls 2>/dev/null | grep "${POOL}" | tr '\t' ' ' || echo MISSING)"
+
+# ── Stage 3b: base-image rebuild service (pairs with the fresh-pool reset) ────────────
+# cr-dm-pool resets the pool fresh on every boot (see above), so the base detonation image
+# (a pool snapshot) is gone after a restart. This boot service rebuilds it onto the fresh
+# pool from the committed /opt/cr/microvm code, so a host that the watchdog stopped and that
+# is later restarted (by provision-host.sh OR a bare `instances start`) always has a valid
+# base image before the first detonation. Idempotent: skips the rebuild if the pool wasn't
+# reset and the image is already present.
+cat > /usr/local/sbin/cr-base-image.sh <<'BI'
+#!/usr/bin/env bash
+set -uo pipefail
+NERDCTL=/usr/local/bin/nerdctl
+BUILD=/opt/cr/microvm/build-detonation-base.sh
+CA=/root/.mitmproxy/mitmproxy-ca-cert.pem
+[ -x "$BUILD" ] || { echo "cr-base-image: $BUILD missing (deploy code first)"; exit 0; }
+need=0
+[ -f /run/cr-pool-fresh ] && need=1
+"$NERDCTL" images cr-detonation-base --format '{{.Repository}}' 2>/dev/null | grep -q cr-detonation-base || need=1
+if [ "$need" = 1 ]; then
+  echo "cr-base-image: (re)building base image onto the fresh pool"
+  "$NERDCTL" rmi -f cr-detonation-base:latest >/dev/null 2>&1 || true
+  CR_FORGE_CA="$CA" bash "$BUILD" && rm -f /run/cr-pool-fresh
+else
+  echo "cr-base-image: base image present, pool not reset — nothing to do"
+fi
+BI
+chmod +x /usr/local/sbin/cr-base-image.sh
+cat > /etc/systemd/system/cr-base-image.service <<'UNIT'
+[Unit]
+Description=Claude Rabbit detonation base-image (re)build after a fresh pool
+After=buildkit.service containerd.service network-online.target
+Wants=buildkit.service network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cr-base-image.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable cr-base-image.service >/dev/null 2>&1
+mark BASEIMGSVC $?
 
 # ── Stage 4: Kata Containers static ──────────────────────────────────────────────────
 # Kata static is zstd-compressed (.tar.zst), named with amd64 (not x86_64).
@@ -167,5 +226,58 @@ systemctl enable --now buildkit >/dev/null 2>&1 || true
 sleep 1
 fact BUILDKITD "$(systemctl is-active buildkit 2>/dev/null || (command -v buildkitd >/dev/null && echo present) || echo MISSING)"
 mark BUILDKIT ok
+
+# ── Stage 8: idle auto-shutdown watchdog (COST SAFETY RAIL) ──────────────────────────
+# A detonation host must NEVER bleed credit unattended. An interrupted session once left
+# this n2 running for ~2 days (real credit burned) because nothing reclaimed it. This
+# watchdog powers the host OFF after CR_IDLE_MIN minutes with (a) no fresh detonation
+# heartbeat, (b) nobody logged in, and (c) no detonation process in flight — so it reclaims
+# a genuinely abandoned host WITHOUT ever killing an in-progress scan. orchestrate-microvm.sh
+# refreshes /run/cr-activity on every scan; a running orchestrator/ctr/firecracker/mitmproxy/
+# opencode also counts as activity. Poweroff (STOP) reclaims the expensive running compute;
+# the host is restarted by provision-host.sh when work resumes.
+cat > /usr/local/sbin/cr-idle-shutdown.sh <<'WD'
+#!/usr/bin/env bash
+set -uo pipefail
+IDLE_MIN="${CR_IDLE_MIN:-30}"
+HB=/run/cr-activity
+now=$(date +%s)
+# self-seed once per boot (/run is tmpfs) so idle is measured from boot, not the epoch
+[ -f "$HB" ] || { : > "$HB"; echo "cr-idle: seeded heartbeat at boot"; exit 0; }
+last=$(stat -c %Y "$HB" 2>/dev/null || echo 0)
+if who 2>/dev/null | grep -q . \
+   || pgrep -f 'orchestrate-microvm\.sh|ctr run|firecracker|mitmdump|opencode run' >/dev/null 2>&1; then
+  last=$now; touch "$HB"           # active login or detonation in flight → reset the clock
+fi
+idle=$(( (now - last) / 60 ))
+echo "cr-idle: idle=${idle}m threshold=${IDLE_MIN}m"
+if [ "$idle" -ge "$IDLE_MIN" ]; then
+  echo "cr-idle: idle>=${IDLE_MIN}m — powering off to reclaim the host (cost rail)"
+  ${CR_IDLE_DRYRUN:+echo DRYRUN-would:} /sbin/poweroff
+fi
+WD
+chmod +x /usr/local/sbin/cr-idle-shutdown.sh
+cat > /etc/systemd/system/cr-idle-shutdown.service <<'UNIT'
+[Unit]
+Description=Claude Rabbit idle auto-shutdown (cost rail)
+[Service]
+Type=oneshot
+Environment=CR_IDLE_MIN=30
+ExecStart=/usr/local/sbin/cr-idle-shutdown.sh
+UNIT
+cat > /etc/systemd/system/cr-idle-shutdown.timer <<'UNIT'
+[Unit]
+Description=Periodic Claude Rabbit idle auto-shutdown check
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now cr-idle-shutdown.timer >/dev/null 2>&1
+mark IDLEWATCHDOG $?
+fact IDLE_TIMER "$(systemctl is-active cr-idle-shutdown.timer 2>/dev/null || echo inactive)"
 
 echo "CR_SETUP_DONE $(date -u +%FT%TZ)"

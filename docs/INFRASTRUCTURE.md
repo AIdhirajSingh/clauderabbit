@@ -126,6 +126,38 @@ supabase secrets list      # shows names + digests only, never values
 
 ---
 
+## 8b. Detonation host lifecycle (the sandbox VM) — reproducible + self-cleaning
+
+The dynamic-sandbox host is a single GCP VM (`cr-host-build`, n2-standard-4, nested-virt,
+Ubuntu 24.04) running Kata + Firecracker microVMs + the deceptive forge. It is **fully
+reproducible from committed code** — nothing on it is hand-tuned that isn't in a script:
+
+- **Stand it up / resume it:** `bash sandbox/microvm/provision-host.sh` (add `--recreate`
+  to delete + rebuild). Idempotent: creates the VM if absent, starts it if stopped, deploys
+  `/opt/cr/{microvm,agent}` + `/opt/supabase/functions/_shared`, runs `setup-host.sh`,
+  installs deno + OpenCode (+ `~/.config/opencode/opencode.json` = google-vertex@global),
+  builds the base image, verifies. n2 nested-virt zones stock out transiently, so it tries a
+  **zone fallback list** and prints `CR_HOST_ZONE=<zone>` at the end.
+- **Set the zone to match:** put the landed zone in `.env.local` as `CR_SANDBOX_ZONE` so
+  `/api/deep` SSHes to the right place (the app reaches the host over `gcloud compute ssh`).
+  As of the last provision the host is in **`us-east1-b`** (us-central1 was stocked out).
+- **Cost rails (the host must never bleed credit unattended — it once ran ~2 days after an
+  interrupted session):** an **idle auto-shutdown watchdog** (`setup-host.sh` Stage 8:
+  systemd timer, `cr-idle-shutdown.sh`) powers the host **OFF after ~30 min** with no
+  detonation heartbeat + nobody logged in + no detonation in flight; and a **max-run-duration
+  backstop** (12h → STOP) reclaims a host even if the watchdog dies. `orchestrate-microvm.sh`
+  refreshes `/run/cr-activity` each scan so a busy host never self-stops mid-work.
+- **Survives its own stop/start:** an unclean poweroff corrupts the loopback devmapper
+  thin-pool, so on every boot `cr-dm-pool.service` rebuilds a **fresh** pool and
+  `cr-base-image.service` rebuilds the base image onto it (the pool only holds reproducible
+  artifacts). A watchdog-stopped host that is later `provision-host.sh`-started (or bare
+  `instances start`-ed) is detonation-ready with no manual fixups.
+- **Tear it down:** `bash sandbox/microvm/teardown-host.sh [stop|delete]` at session end
+  (belt to the watchdog). `stop` reclaims the running compute + keeps the disk; `delete`
+  removes it (provision-host.sh rebuilds it from scratch).
+
+---
+
 ## 9. State at last update
 
 - GCP project set, billing live ($300 credit, expires 24 Sep 2026), `aiplatform` + `compute` APIs enabled.
