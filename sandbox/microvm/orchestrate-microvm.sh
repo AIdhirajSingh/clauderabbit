@@ -11,8 +11,9 @@
 # Flow: reuse/clone the pinned repo -> build the per-scan detonation image (base + repo)
 #   -> forge-up (per-run netns + deceptive egress) -> detonate the repo in a Firecracker
 #   microVM through the forge -> assemble forensics from the forge capture -> forge-down
-#   (zero orphans). Containment: the microVM has NO route out but the forge; no real packet
-#   leaves; decoy creds only; per-run reset.
+#   (zero orphans). Containment: the microVM has NO route out but the forge; every C2/exfil
+#   flow is forged (no packet reaches its target), non-TCP egress is dropped, and only
+#   allowlisted package registries egress (NATed + logged); decoy creds only; per-run reset.
 set -uo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 NERDCTL="${CR_NERDCTL:-/usr/local/bin/nerdctl}"
@@ -44,9 +45,15 @@ WORK="/tmp/cr-scan-${ID}"; REPO_DIR="$WORK/repo"
 # Full ref: nerdctl/buildkit store images under docker.io/library/<name>; `ctr run`
 # resolves only the fully-qualified ref, not the short name.
 IMG="docker.io/library/cr-det-${ID}:latest"
+# Heartbeat for the idle-shutdown watchdog (setup-host.sh Stage 8): a scan just started,
+# so reset the host's idle clock. Refreshed again at scan end so the ~30-min reclaim timer
+# runs from the LAST scan, not the first — a busy host never powers off mid-work, an
+# abandoned one still reclaims itself.
+touch /run/cr-activity 2>/dev/null || true
 cleanup() { bash "$HERE/forge/forge-down.sh" "$ID" >/dev/null 2>&1 || true
             "$NERDCTL" rmi -f "$IMG" >/dev/null 2>&1 || true
-            rm -rf "$WORK" 2>/dev/null || true; }
+            rm -rf "$WORK" 2>/dev/null || true
+            touch /run/cr-activity 2>/dev/null || true; }
 trap cleanup EXIT
 
 # 0) ensure the base image exists (build once)
@@ -88,6 +95,16 @@ printf 'FROM cr-detonation-base:latest\nCOPY . /repo\n' > "$WORK/Dockerfile"
 log "staging harness"
 wait "$FORGE_PID" || die "forge-up failed"
 grep -q "CR_FORGE_MITM ok" /tmp/cr-forge-up-${ID}.log || log "forge proxy warning (see log)"
+# Surface the forge-up failure markers (review M3): a silently-missing uplink or dnsmasq is
+# EXACTLY the "registry can't resolve -> npm dies -> did not build" failure mode. forge-up
+# emits these but continues (the forge itself is up); the orchestrator must not treat that as
+# healthy. Warn loudly so a degraded build is diagnosable, not a false "did not build".
+if grep -q "CR_FORGE_UPLINK_FAIL" /tmp/cr-forge-up-${ID}.log; then
+  log "WARNING: forge registry uplink FAILED — registry passthrough degraded, build may not fetch deps"
+fi
+if grep -q "CR_FORGE_DNSMASQ_FAIL" /tmp/cr-forge-up-${ID}.log; then
+  log "WARNING: forge dnsmasq did NOT bind — guest has no resolver, registry lookups will fail"
+fi
 log "build proxy healthy: forge active"
 ph build_and_forge
 
@@ -127,7 +144,7 @@ AGENTIC_PID=""
       python3 /opt/cr/agent/parallel_agents.py --engine opencode --explore-only \
         --repo-dir "$REPO_DIR" --graph "$KG" --commit-sha "$REF" --name "ag-${ID}" \
         --trap-ip 10.200.0.1 --results-dir "$AGENT_WORK/results" \
-        --time-budget-s 180 --token-budget 60000 \
+        --time-budget-s 90 --token-budget 40000 --max-targets 6 \
         --project "${CR_GCP_PROJECT:-gen-lang-client-0062239756}" --location global \
         --out "$AGENTIC_JSON" 1>/dev/null \
       || log "agentic pass degraded"
@@ -144,7 +161,7 @@ log "=== BUILD phase: installing deps + running under the forge ==="
 timeout 240 ctr run --with-ns "network:/var/run/netns/cr-run-${ID}" --snapshotter devmapper \
   --runtime io.containerd.run.kata-fc.v2 --rm "$IMG" "det-${ID}" \
   python3 /opt/cr/detonate.py >/tmp/cr-run-${ID}.log 2>&1 || true
-log "containment confirmed: no real packet left the host (forge intercepted all egress)"
+log "detonation complete: forge intercepted all guest TCP egress, non-TCP egress dropped; only allowlisted registry traffic egressed (NATed + logged). Positive containment evidence is the in-guest probe folded into forensics."
 log "=== RUN phase complete ==="
 # Join the agentic pass (it writes $AGENTIC_JSON, which forensics assembly reads). It
 # usually finished while the detonation ran; this just guarantees the file is complete.
