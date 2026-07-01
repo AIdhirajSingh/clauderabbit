@@ -1172,6 +1172,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // forensics are captured + attached, to a genuine "Sandbox run".
           if (report.deep && !report.forensics && report.commit_sha) {
             const sha = report.commit_sha;
+            // Use the CANONICAL owner/repo the report is actually stored under, NOT the
+            // user-typed input. GitHub redirects a renamed/transferred repo (e.g. the
+            // user types facebook/react but the canonical is react/react), and the
+            // fast-path stores the report + the sha under the canonical login. Passing
+            // the typed owner would make BOTH the /api/deep attach and the read-after-
+            // write re-fetch look up a (owner, repo, sha) row that doesn't exist → a 404
+            // "Report not found" → the detonation runs but never earns "Sandbox run".
+            const dOwner = report.owner;
+            const dRepo = report.name;
             // Record WHY it escalated as an honest completed chapter, flip the
             // timeline into deep mode, then let the deep stream drive the rest.
             procStagesRef.current = [
@@ -1190,7 +1199,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               procActiveCh: "Spawning sealed sandbox VM",
             });
 
-            const deep = await runDeepScan({ owner, repo, sha, onStage });
+            const deep = await runDeepScan({ owner: dOwner, repo: dRepo, sha, onStage });
             if (token !== liveScanToken.current) return;
 
             // Re-fetch the (now forensics-bearing) row, retrying a few times for
@@ -1202,8 +1211,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 const rep = await fetchLatestReportRest(
                   SUPABASE_URL,
                   SUPABASE_ANON_KEY,
-                  owner,
-                  repo,
+                  dOwner,
+                  dRepo,
                 );
                 if (rep?.forensics) {
                   updated = rep;
