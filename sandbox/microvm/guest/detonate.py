@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -77,6 +78,38 @@ def containment_probe() -> bool:
             return '"ok":true' in body or '"status":"ok"' in body
     except Exception:  # noqa: BLE001 — a blocked/forged probe (no real internet) is contained
         return True
+
+
+def udp_egress_contained() -> bool:
+    """POSITIVE evidence that NON-TCP egress is contained. The forge's interception is the
+    TCP REDIRECT — it does NOT touch UDP. So we fire a REAL UDP DNS query straight at
+    8.8.8.8:53 (bypassing the forge's dnsmasq): if a genuine DNS answer comes back, UDP
+    escaped the sandbox and containment is BROKEN; if it times out / errors, the forge
+    netns dropped it (ip_forward=0 + FORWARD DROP) and non-TCP egress is contained.
+    Returns True iff contained (no real answer). Pairs with the TCP containment_probe."""
+    import struct
+    # a minimal well-formed DNS A-query for example.com (id 0x1234, RD set)
+    query = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+    for label in (b"example", b"com"):
+        query += bytes([len(label)]) + label
+    query += b"\x00" + struct.pack(">HH", 1, 1)  # QTYPE=A, QCLASS=IN
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(4)
+        s.sendto(query, ("8.8.8.8", 53))
+        data, _ = s.recvfrom(512)
+        # A real resolver echoes our id (0x1234) with QR set → that is a LEAK.
+        leaked = bool(data) and len(data) >= 2 and data[0] == 0x12 and data[1] == 0x34
+        return not leaked
+    except Exception:  # noqa: BLE001 — dropped / no answer → contained
+        return True
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
 
 
 def plant_decoys() -> None:
@@ -189,8 +222,12 @@ def emit(record: dict) -> None:
 def main() -> int:
     configure_egress()
     # POSITIVE containment evidence BEFORE the untrusted code runs: confirm the forge
-    # intercepts a direct-to-IP egress attempt (not default-true).
+    # intercepts a direct-to-IP TCP egress attempt AND that a direct UDP egress attempt is
+    # dropped (the forge only redirects TCP — UDP must be blocked by the netns FORWARD DROP).
     contained = containment_probe()
+    udp_contained = udp_egress_contained()
+    print(f"CR_CONTAINMENT tcp_contained={contained} udp_contained={udp_contained}",
+          file=sys.stderr, flush=True)
     plant_decoys()
     # DIAGNOSTIC: what does the microVM resolve the registry to? (real IP = passthrough
     # path is healthy; forge IP / failure = the registry DNS forward isn't reaching us).
@@ -217,6 +254,7 @@ def main() -> int:
         "run": run,
         "observed": obs,
         "containment_probe_contained": contained,
+        "udp_egress_contained": udp_contained,
         "t": round(time.time(), 3),
     }
     emit(record)

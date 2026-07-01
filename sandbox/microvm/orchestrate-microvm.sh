@@ -45,9 +45,15 @@ WORK="/tmp/cr-scan-${ID}"; REPO_DIR="$WORK/repo"
 # Full ref: nerdctl/buildkit store images under docker.io/library/<name>; `ctr run`
 # resolves only the fully-qualified ref, not the short name.
 IMG="docker.io/library/cr-det-${ID}:latest"
+# Heartbeat for the idle-shutdown watchdog (setup-host.sh Stage 8): a scan just started,
+# so reset the host's idle clock. Refreshed again at scan end so the ~30-min reclaim timer
+# runs from the LAST scan, not the first — a busy host never powers off mid-work, an
+# abandoned one still reclaims itself.
+touch /run/cr-activity 2>/dev/null || true
 cleanup() { bash "$HERE/forge/forge-down.sh" "$ID" >/dev/null 2>&1 || true
             "$NERDCTL" rmi -f "$IMG" >/dev/null 2>&1 || true
-            rm -rf "$WORK" 2>/dev/null || true; }
+            rm -rf "$WORK" 2>/dev/null || true
+            touch /run/cr-activity 2>/dev/null || true; }
 trap cleanup EXIT
 
 # 0) ensure the base image exists (build once)
