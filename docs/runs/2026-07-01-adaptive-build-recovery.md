@@ -106,6 +106,26 @@ design. That is the honest, rare, rail-preserving edge — not a common dependen
   watchdog dry-run returns "exempt … cost bounded by the 12h max-run backstop"; max-run 43200s
   STOP present. The host is NOT stopped manually — only the 12h backstop may stop it.
 
+## Discovered downstream (flagged, NOT silently changed): scoring treats benign build-time dep-fetches as "attack egress"
+A correct build has a side effect worth surfacing honestly. Now that a repo's install runs far
+enough to fetch its real dependencies, the sandbox *observes* fetches to non-registry hosts
+(github, sourceforge) that a truncated build never reached. The forensic scorer
+(`assemble-forensics.py:189`) sets `attack = cred_exfil or cred_reads > 0 or any_egress` and docks
+−35 for `captured_intent`, so **any** intercepted non-registry egress — including a benign, failed
+dependency fetch during BUILD — is scored as a caught attack. Effect: `react/react` (which pulls a
+dep from `downloads.sourceforge.net` during `yarn install`) now scores **25 / "Malicious"** — a
+false positive on the world's most-trusted UI library.
+
+This is a real, PRE-EXISTING scoring-calibration issue the build fix made visible on a flagship
+repo. It is **not changed in this commit** on purpose: it is a security-sensitive subsystem (an
+install script fetching a second-stage payload from github IS a genuine supply-chain vector, so
+this cannot be blindly loosened) and a severity judgment. Recommended fix (own focused session):
+classify BUILD-phase dependency fetches to software-distribution hosts as a supply-chain *caution*,
+reserve "caught attack" (Dangerous/Malicious) for real indicators — canary/credential exfil,
+run-phase C2 beacon, refused-pinned/mTLS handshakes — and re-verify the `exfil-beacon` fixture is
+STILL caught and `clawdcursor` is unchanged. Tracked as a follow-up; this local `react` report is a
+dev-DB artifact, not public.
+
 ## Gates
 tsc 0 · eslint 0 · node tests 72/72. Changed files: `sandbox/microvm/guest/detonate.py`,
 `sandbox/microvm/orchestrate-microvm.sh`, `sandbox/microvm/detonation-base.Dockerfile`,
