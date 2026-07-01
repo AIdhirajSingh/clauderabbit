@@ -441,12 +441,26 @@ export function buildReportView(r: Report): RepoView {
   // The honest signal: the sandbox ran iff it produced a forensic record. The
   // `deep`/`scan_path` flags only record that escalation was decided.
   const ranSandbox = !!forensicsView;
+  // Stored-summary policy: the fast path writes the static summary; a SUCCESSFUL
+  // escalation overwrites it with a runtime-first summary (both correct as stored).
+  // The one case that needs reconciling at render is an ESCALATED-BUT-INCOMPLETE
+  // repo (deep, no forensics): the fast-path model summary can still carry the
+  // static "runtime was not executed in a sandbox on this pass" clause, which
+  // contradicts the "Sandbox run incomplete" badge + the "the sandbox run did not
+  // complete" final note. Replace only that exact clause with the honest incomplete
+  // phrasing so summary, badge, and verdict agree. Bounded + anchored: no match →
+  // summary unchanged; a pure function of the row → determinism (fresh==cached) holds.
+  const summary =
+    r.deep && !forensicsView
+      ? r.summary.replace(
+          /(?:full\s+)?runtime\s+(?:behavior\s+)?was\s+not\s+executed\s+in\s+a\s+sandbox\s+on\s+this\s+pass/gi,
+          "the sandbox run did not complete on this pass",
+        )
+      : r.summary;
   return {
     ...r,
     verdict,
-    // The stored `summary` is authoritative: the fast path writes the static
-    // summary; the escalation/attach path (U1) overwrites it with a runtime-first,
-    // hedge-free summary. Either way it is correct as stored — no render-time edit.
+    summary,
     ...(forensicsView ? { _forensics: forensicsView } : {}),
     _ranSandbox: ranSandbox,
     _color: bandColor(r.score),

@@ -168,9 +168,29 @@ test("a STATIC report STILL keeps its honest 'could not verify' list (the refram
   );
 });
 
-test("without forensics the stored summary is returned verbatim (no surprise edits)", () => {
+test("a NEVER-escalated summary is returned verbatim (no surprise edits)", () => {
   const stored = "Project Y. Runtime was not executed in a sandbox on this pass.";
-  const v = buildReportView(makeReport({ score: 70, deep: true, summary: stored, forensics_json: null }));
+  const v = buildReportView(makeReport({ score: 70, deep: false, summary: stored, forensics_json: null }));
   assert.equal(v._ranSandbox, false);
-  assert.equal(v.summary, stored, "static report keeps its summary unchanged");
+  assert.equal(v.summary, stored, "a never-escalated (static-only) report keeps its summary unchanged");
+});
+
+test("an escalated-but-incomplete summary reconciles the stale 'not executed' clause with the badge/verdict", () => {
+  // deep=true + no forensics: the fast-path model summary can still carry the static
+  // 'runtime ... was not executed in a sandbox' clause, which contradicts the
+  // 'Sandbox run incomplete' badge + 'the sandbox run did not complete' final note.
+  const stored =
+    "The repository is an industry-standard project. No malicious behavior was observed in our static read; full runtime behavior was not executed in a sandbox on this pass.";
+  const v = buildReportView(makeReport({ score: 35, deep: true, summary: stored, forensics_json: null }));
+  assert.equal(v._ranSandbox, false);
+  assert.ok(
+    /sandbox run did not complete on this pass/i.test(v.summary),
+    "summary now says the run did not complete: " + v.summary,
+  );
+  assert.ok(
+    !/was not executed in a sandbox on this pass/i.test(v.summary),
+    "summary no longer carries the never-escalated 'not executed' clause: " + v.summary,
+  );
+  // The descriptive part of the summary is preserved (only the stale clause changed).
+  assert.ok(/industry-standard project/i.test(v.summary), "descriptive text preserved: " + v.summary);
 });
