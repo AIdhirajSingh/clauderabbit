@@ -123,6 +123,8 @@ interface State {
   toastColor: string;
   profileName: string;
   profileEmail: string;
+  /** The signed-in user's real avatar URL (Google/GitHub OAuth), or "" for none. */
+  profileImage: string;
   editName: boolean;
   editDraft: string;
   focused: boolean;
@@ -195,13 +197,16 @@ const initialState: State = {
   // auth effect in AppProvider); empty until then.
   profileName: "",
   profileEmail: "",
+  profileImage: "",
   editName: false,
   editDraft: "",
   focused: false,
-  // Pre-seed history with two real cached scans (keys in lib/demo-data REPOS),
-  // so the dashboard/sidebar history is non-empty with real repos on first load.
-  scannedIds: ["expressjs/express", "pallets/flask"],
-  stage1Used: 1,
+  // Personal scan history + usage start EMPTY. A signed-in user's real history is
+  // hydrated from the user-scoped `scans` table on sign-in (loadUserHistory), so a
+  // fresh account shows a genuinely empty state and a returning user's own history
+  // reloads after a refresh — no demo/phantom rows bleeding across sessions/users.
+  scannedIds: [],
+  stage1Used: 0,
   dynamicUsed: 0,
   lbReturn: "home",
   pendingRepo: null,
@@ -442,22 +447,36 @@ function nameFromSession(session: Session): string {
   return local || "Account";
 }
 
+/** Derive the avatar URL from a Supabase session — Google exposes `avatar_url`
+ * (and sometimes `picture`); GitHub uses `avatar_url`. Empty string when none. */
+function imageFromSession(session: Session): string {
+  const meta = (session.user.user_metadata ?? {}) as Record<string, unknown>;
+  const url =
+    (typeof meta.avatar_url === "string" && meta.avatar_url) ||
+    (typeof meta.picture === "string" && meta.picture) ||
+    "";
+  // Only trust an https URL (the CSP img-src allows https:); never a data:/js: value.
+  return /^https:\/\//i.test(url) ? url : "";
+}
+
 /** The auth-derived fields the SPA mirrors into reducer state on sign-in. */
 interface AuthProfile {
   loggedIn: boolean;
   profileName: string;
   profileEmail: string;
+  profileImage: string;
 }
 
 /** Build the reducer patch for a session (or the signed-out defaults when null). */
 function profileFromSession(session: Session | null): AuthProfile {
   if (!session) {
-    return { loggedIn: false, profileName: "", profileEmail: "" };
+    return { loggedIn: false, profileName: "", profileEmail: "", profileImage: "" };
   }
   return {
     loggedIn: true,
     profileName: nameFromSession(session),
     profileEmail: session.user.email ?? "",
+    profileImage: imageFromSession(session),
   };
 }
 
@@ -645,6 +664,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // before the await) dedupes concurrent ensureActiveReport calls — including a
   // React StrictMode double-mount — without waiting for an async reducer commit.
   const reportFetchRef = useRef<string | null>(null);
+  // The user id whose scan history has already been hydrated this mount, so a
+  // SIGNED_IN re-fire on tab-focus doesn't re-fetch it. Reset on sign-out.
+  const historyUidRef = useRef<string | undefined>(undefined);
 
   // The browser Supabase client — a stable single instance (useRef, NOT useMemo)
   // so we never spawn multiple GoTrueClient instances fighting over the auth
@@ -779,6 +801,74 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
     };
 
+    // Hydrate the signed-in user's OWN scan history from the user-scoped `scans`
+    // table (RLS: auth.uid() = user_id → never another user's rows), so the sidebar
+    // history + counts survive a page refresh instead of vanishing. Full public
+    // reports are fetched per repo via the anon reports read (reports are public;
+    // this also avoids the authenticated reports-read hang) and MERGED into
+    // liveReports without clobbering a scan the user just ran this session. Deferred
+    // out of the auth-lock callback; a mid-fetch sign-out/user-switch drops the stale
+    // hydrate. Never throws — history simply stays empty on any error.
+    const loadUserHistory = (session: Session) => {
+      const uid = session.user.id;
+      void (async () => {
+        try {
+          const { data, error } = await supabase
+            .from("scans")
+            .select("owner_login,repo_name,is_dynamic,created_at")
+            .order("created_at", { ascending: false })
+            .limit(200);
+          if (error || !Array.isArray(data) || data.length === 0) return;
+          if (sessionRef.current?.user.id !== uid) return; // signed out / switched
+          const rows = data as Array<{ owner_login: string; repo_name: string; is_dynamic: boolean }>;
+          let s1 = 0;
+          let dyn = 0;
+          const seen = new Set<string>();
+          const idsNewestFirst: string[] = [];
+          for (const r of rows) {
+            if (r.is_dynamic) dyn++;
+            else s1++;
+            const id = `${r.owner_login}/${r.repo_name}`;
+            if (!seen.has(id)) {
+              seen.add(id);
+              if (idsNewestFirst.length < 40) idsNewestFirst.push(id);
+            }
+          }
+          const reports =
+            SUPABASE_URL && SUPABASE_ANON_KEY
+              ? await Promise.all(
+                  idsNewestFirst.map((id) => {
+                    const slash = id.indexOf("/");
+                    return fetchLatestReportRest(
+                      SUPABASE_URL,
+                      SUPABASE_ANON_KEY,
+                      id.slice(0, slash),
+                      id.slice(slash + 1),
+                    );
+                  }),
+                )
+              : [];
+          if (sessionRef.current?.user.id !== uid) return;
+          const cur = stateRef.current;
+          const nextLive = { ...cur.liveReports };
+          // Oldest-first, to match the append/reverse ordering the history memo uses.
+          const dbChrono: string[] = [];
+          for (let i = idsNewestFirst.length - 1; i >= 0; i--) {
+            const id = idsNewestFirst[i];
+            const rep = reports[i];
+            if (!id || !rep) continue;
+            if (!nextLive[id]) nextLive[id] = rep; // never clobber an in-session scan
+            dbChrono.push(id);
+          }
+          const merged = [...dbChrono];
+          for (const id of cur.scannedIds) if (!merged.includes(id)) merged.push(id);
+          patch({ scannedIds: merged, liveReports: nextLive, stage1Used: s1, dynamicUsed: dyn });
+        } catch {
+          /* history stays as-is on any error */
+        }
+      })();
+    };
+
     /**
      * Land a freshly-signed-in user on the dashboard, restoring the repo they
      * were about to scan when the login gate fired (persisted across the
@@ -807,6 +897,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (session && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
         // Defer the profile-row read out of the auth-lock callback.
         setTimeout(() => applyProfileRow(session), 0);
+        // Hydrate this user's own history once per mount (a SIGNED_IN re-fire on
+        // tab focus must not re-fetch it).
+        if (historyUidRef.current !== session.user.id) {
+          historyUidRef.current = session.user.id;
+          const s = session;
+          setTimeout(() => loadUserHistory(s), 0);
+        }
       }
 
       // A real sign-in lands on the dashboard. This is SIGNED_IN for a same-tab
@@ -859,8 +956,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (event === "SIGNED_OUT") {
         landedUserRef.current = undefined;
+        historyUidRef.current = undefined;
+        // Invalidate any in-flight scan so its resolution can't repopulate the
+        // just-cleared personal state for a signed-out user.
+        liveScanToken.current++;
         clearNavSnapshot();
-        patch({ screen: "home", editName: false });
+        // Clear ALL personal, user-scoped state so nothing bleeds into the next
+        // (or anonymous) session — history, cached live reports, usage counts, and
+        // the avatar. Public/board state is untouched.
+        patch({
+          screen: "home",
+          editName: false,
+          scannedIds: [],
+          liveReports: {},
+          stage1Used: 0,
+          dynamicUsed: 0,
+          scanCount: 0,
+          profileImage: "",
+        });
       }
     });
 
