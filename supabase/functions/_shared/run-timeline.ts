@@ -105,6 +105,7 @@ export const DEEP_RUN_CHAPTERS: ReadonlySet<string> = new Set([
   "Boot the microVM",
   "Detonate through the forge",
   "Build under containment",
+  "Three agents read the code",
   "Capture + reset",
   "Compute verdict",
   "Sandbox run",

@@ -37,6 +37,15 @@ export function Avatar({
   fontSize: number;
 }) {
   const [broken, setBroken] = useState(false);
+  // Reset the error state when the avatar URL changes (e.g. a TOKEN_REFRESHED that
+  // swaps avatar_url in-session), so a prior 404 never suppresses a now-valid photo.
+  // The React-idiomatic "adjust state during render when a prop changes" pattern —
+  // no effect, no cascading re-render.
+  const [prevImage, setPrevImage] = useState(image);
+  if (image !== prevImage) {
+    setPrevImage(image);
+    setBroken(false);
+  }
   const showImg = !!image && !broken;
   return (
     <div
