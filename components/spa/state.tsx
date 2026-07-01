@@ -862,7 +862,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           const merged = [...dbChrono];
           for (const id of cur.scannedIds) if (!merged.includes(id)) merged.push(id);
-          patch({ scannedIds: merged, liveReports: nextLive, stage1Used: s1, dynamicUsed: dyn });
+          // max(local, db): never clobber DOWN a counter a just-completed in-session scan
+          // already incremented but whose row isn't in this DB read yet (read-after-write).
+          patch({
+            scannedIds: merged,
+            liveReports: nextLive,
+            stage1Used: Math.max(cur.stage1Used, s1),
+            dynamicUsed: Math.max(cur.dynamicUsed, dyn),
+          });
         } catch {
           /* history stays as-is on any error */
         }
