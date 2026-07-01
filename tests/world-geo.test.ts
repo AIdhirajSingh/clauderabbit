@@ -14,6 +14,7 @@ import {
   MAP_H,
   MAP_W,
   centroidForCountry,
+  clusterOffsets,
   project,
   resolveLocation,
 } from "../lib/world-geo.ts";
@@ -118,4 +119,45 @@ test("resolveLocation prefers a major non-US city over an ambiguous 2-letter cod
   // "Toronto, CA" — CA is both California's code and Canada's ISO2; the city wins.
   const toronto = resolveLocation("Toronto, CA");
   assert.ok(toronto && Math.abs(toronto.lat - 43.65) < 0.5, "Toronto resolves to Toronto, not the US/Canada centroid");
+});
+
+// clusterOffsets: fan co-located dots so the same city never becomes one blob.
+
+test("clusterOffsets leaves a lone dot unmoved", () => {
+  const slots = clusterOffsets([{ x: 100, y: 50 }]);
+  assert.equal(slots.length, 1);
+  assert.deepEqual(slots[0], { indexInCluster: 0, clusterSize: 1, dx: 0, dy: 0 });
+});
+
+test("clusterOffsets fans every co-located dot off-center, each a distinct offset", () => {
+  // Five repos at the SAME San Francisco centroid (the classic blob case).
+  const sf = { x: 37.77 + 180, y: 90 - 37.77 };
+  const slots = clusterOffsets([sf, sf, sf, sf, sf]);
+  assert.equal(slots.length, 5);
+  for (const s of slots) {
+    assert.equal(s.clusterSize, 5);
+    // Each is moved off the shared center (no two dots overlap exactly).
+    assert.ok(Math.hypot(s.dx, s.dy) > 0.1, "fanned dot must be offset from center");
+  }
+  // Offsets are pairwise distinct (no two dots land on the same point).
+  const seen = new Set(slots.map((s) => `${s.dx.toFixed(3)},${s.dy.toFixed(3)}`));
+  assert.equal(seen.size, 5, "every fanned dot has a unique offset");
+});
+
+test("clusterOffsets groups by location, not globally — far-apart dots stay put", () => {
+  const sf = { x: 57.6, y: 52.2 };
+  const tokyo = { x: 319.7, y: 54.3 };
+  const slots = clusterOffsets([sf, tokyo]);
+  // Two different cities → each is a cluster of one → unmoved.
+  assert.deepEqual(slots[0], { indexInCluster: 0, clusterSize: 1, dx: 0, dy: 0 });
+  assert.deepEqual(slots[1], { indexInCluster: 0, clusterSize: 1, dx: 0, dy: 0 });
+});
+
+test("clusterOffsets is index-aligned with its input", () => {
+  const a = { x: 10, y: 10 };
+  const b = { x: 200, y: 80 };
+  const slots = clusterOffsets([a, b, a]); // a, b, a
+  assert.equal(slots[0]!.clusterSize, 2, "first 'a' shares a cluster");
+  assert.equal(slots[1]!.clusterSize, 1, "'b' is alone");
+  assert.equal(slots[2]!.clusterSize, 2, "second 'a' shares a cluster");
 });

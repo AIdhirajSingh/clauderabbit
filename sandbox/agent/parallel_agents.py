@@ -206,6 +206,36 @@ def partition_graph(graph: dict, lenses: tuple[AgentLens, ...] = LENSES) -> dict
     return buckets
 
 
+def trim_graph_to_top(graph: dict, max_targets: int) -> dict:
+    """Focus the agents' budget on the TOP `max_targets` most-suspicious targets. The
+    knowledge graph already ranks hotspots by suspicion, so we keep the top hotspots
+    (plus a few entry points up to the cap) as the agents' work-list and clear
+    is_entry_point on the rest. This bounds wall-clock (fewer OpenCode calls → ~30s)
+    AND keeps the report high-signal (the agents analyze the suspicious files, not
+    every benign utility file). The FULL file set is preserved for read_file context
+    and the detonator allow-list — only the work-list (what gets proactively analyzed)
+    is trimmed."""
+    if max_targets <= 0:
+        return graph
+    hotspots = list(graph.get("hotspots", []))[:max_targets]
+    keep = {h.get("path") for h in hotspots if h.get("path")}
+    budget_left = max(0, max_targets - len(keep))
+    files, entries_kept = [], 0
+    for f in graph.get("files", []):
+        if not isinstance(f, dict):
+            continue
+        nf = dict(f)
+        path = nf.get("path")
+        if path in keep:
+            pass  # a top hotspot — keep its flags (it stays in the work-list)
+        elif nf.get("is_entry_point") and entries_kept < budget_left:
+            entries_kept += 1  # an entry point within the remaining budget — keep
+        else:
+            nf["is_entry_point"] = False  # drop from the work-list (still readable)
+        files.append(nf)
+    return {**graph, "hotspots": hotspots, "files": files}
+
+
 # --- one agent, event-wrapped ------------------------------------------------
 
 def _wrap_model_call(inner: Callable, sink: _EventSink, lens: AgentLens,
@@ -467,6 +497,10 @@ def main(argv: list[str]) -> int:
                     help="agents read+reason+cross-verify only; per-target detonation is "
                          "deferred to the whole-repo forge detonation (which provides the "
                          "verified facts). Agent findings are honest inferences, not facts.")
+    ap.add_argument("--max-targets", type=int, default=6,
+                    help="cap the agents' work-list to the top-N most-suspicious targets "
+                         "(0 = no cap). Bounds wall-clock toward ~30s and keeps the report "
+                         "high-signal. Default 6.")
     args = ap.parse_args(argv)
 
     # --name is interpolated into scratch dir paths (/tmp/cr-oc-<name>-<lens>) created on
@@ -482,6 +516,9 @@ def main(argv: list[str]) -> int:
 
     with open(args.graph, "r", encoding="utf-8") as fh:
         graph = json.load(fh)
+    # Focus the agents on the top-N most-suspicious targets (bounds wall-clock + keeps
+    # the report high-signal). The graph ranks hotspots by suspicion.
+    graph = trim_graph_to_top(graph, args.max_targets)
 
     from agent_loop import SYSTEM_PROMPT
     base_system = SYSTEM_PROMPT
