@@ -189,9 +189,17 @@ Managed Instance Group (MIG) with a **standby pool**. All reproducible from comm
   the reconciler keeps `targetSize` members RUNNING, so a member that self-poweroffs is
   restarted within ~25s (VERIFIED live). So pool members **mask the watchdog on boot** via the
   template startup-script `sandbox/microvm/pool-member-startup.sh`, and reclaim is done by
-  `/api/deep` resizing `targetSize` DOWN as scans drain (`scalePoolInIfIdle`) back to a warm
-  baseline (`CR_POOL_BASELINE`, default 1). Surplus running hosts return to the disk-only stopped
-  pool; an idle pool rests at (1 running + 2 stopped).
+  `/api/deep` as scans drain (`scalePoolInIfIdle`) back to a warm baseline (`CR_POOL_BASELINE`,
+  default 1). **Reclaim stops SPECIFIC idle members by name, it does NOT bare-resize down:** a
+  MIG `resize --size N` DOWN *deletes* members the group picks in arbitrary order (VERIFIED live
+  2026-07-02: resizing `cr-detonation-pool` 1→0 immediately DELETED the running member, it did
+  not park it), which could destroy a host mid-detonation — and GCP exposes no per-instance
+  scale-in-protection flag for a non-autoscaled MIG (`deletionProtection` can't even be set on a
+  MIG member). So `scalePoolInIfIdle` picks only hosts the in-process slot ledger shows IDLE and
+  runs `instance-groups managed stop-instances --instances=<names> --force` (VERIFIED live: this
+  parks the named member into the disk-only STOPPED standby pool — action STOPPING, not DELETING),
+  then lowers `targetSize` to match so the reconciler doesn't restart it. Surplus running hosts
+  return to the disk-only stopped pool; an idle pool rests at (1 running + 2 stopped).
 - **Benchmarks (VERIFIED 2026-07-02, wall-clock to detonation-ready = SSH + /dev/kvm +
   containerd + `cr-detonation-base` present, from the golden image):**
   **cold create-from-image ≈ 88 s · start-from-stopped ≈ 44 s · resume-from-suspended ≈ 21 s.**
