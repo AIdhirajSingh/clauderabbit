@@ -136,7 +136,7 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
 
         {/* stats row */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, margin: "36px 0" }}>
-          <StatCard label="Lines of code">
+          <StatCard label="Repository size">
             <span className="serif tnum" style={{ fontSize: 26, color: "var(--t1)", lineHeight: 1 }}>
               {r.stats.loc}
             </span>
