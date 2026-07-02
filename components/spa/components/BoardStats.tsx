@@ -2,9 +2,11 @@
 
 /**
  * The danger-board live-counts strip — REAL figures from the DB (the
- * `v_board_stats` view via `state.board.stats`). Each figure is a precise,
- * defensible fact about the accumulating reports cache; counters with no honest
- * source (e.g. concurrent VMs running) are simply not shown rather than faked.
+ * `v_board_stats` view via `state.board.stats`). Each figure is a real,
+ * defensible fact about the accumulating reports cache — rendered human-readable
+ * (formatCount abbreviates large counts, e.g. "12.3K") rather than as a raw
+ * digit string; counters with no honest source (e.g. concurrent VMs running)
+ * are simply not shown rather than faked.
  *
  * Honest states:
  *   - while the bundle is loading → a muted "Counting…" placeholder (NOT zeros).
@@ -14,6 +16,7 @@
  */
 
 import type { BoardStats } from "@/lib/board-data";
+import { formatCount } from "@/lib/format";
 
 interface BoardStatsStripProps {
   stats: BoardStats | null;
@@ -90,7 +93,7 @@ export function BoardStatsStrip({ stats, loading, loaded }: BoardStatsStripProps
             className="serif tnum"
             style={{ fontSize: 34, lineHeight: 1, color: it.color }}
           >
-            {it.value.toLocaleString()}
+            {formatCount(it.value)}
           </span>
           <span
             style={{
