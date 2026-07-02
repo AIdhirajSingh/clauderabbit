@@ -41,10 +41,11 @@ const nextConfig: NextConfig = {
       { key: "X-DNS-Prefetch-Control", value: "on" },
     ];
     // A functional CSP: self + the inline styles the design uses + Supabase for the
-    // anon REST/auth reads + data/https images. The shipped Claude Design loads its two
-    // typefaces (Instrument Serif + Geist) from Google Fonts, so the fonts.googleapis.com
-    // stylesheet (style-src) and the fonts.gstatic.com font files (font-src) MUST be
-    // allowed — otherwise the CSP silently breaks the design's typography on a cold cache.
+    // anon REST/auth reads + data/https images. The two typefaces (Instrument Serif +
+    // Geist) are self-hosted via next/font — their files are served from our own origin
+    // and the @font-face CSS is inlined — so no external font host needs to be allowed;
+    // `font-src 'self'` covers the self-hosted woff2 files. This is strictly tighter than
+    // allowing fonts.googleapis.com / fonts.gstatic.com.
     // frame-ancestors 'none' clickjack-proofs the app (the badge route below re-opens framing).
     const csp = [
       "default-src 'self'",
@@ -53,8 +54,8 @@ const nextConfig: NextConfig = {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "img-src 'self' data: https:",
-      "font-src 'self' data: https://fonts.gstatic.com",
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' data:",
+      "style-src 'self' 'unsafe-inline'",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "connect-src 'self' https://*.supabase.co https://*.supabase.in",
     ].join("; ");
