@@ -116,6 +116,17 @@ const releaseSlot = (host: string): void => {
   else slotsInUse.set(host, n);
 };
 
+// Hosts currently mid-`stop-instances` (scale-in reclaim). A host being force-stopped shows 0
+// slots in the ledger, so without this marker resolveTargetHost's idle-candidate selection could
+// pick it and dispatch a live scan moments before the async stop lands — a TOCTOU race between
+// scale-in selection and scan dispatch. scalePoolInIfIdle SETS a hostname here SYNCHRONOUSLY,
+// BEFORE issuing the async stop call, and resolveTargetHost EXCLUDES reserved hosts from its
+// candidate pool. The marker is CLEARED once the stop call resolves (success OR failure): on
+// success the host is STOPPED (listRunningPoolHosts drops it anyway); on failure it is still
+// RUNNING and must return to being a normal, dispatchable candidate on the next cycle. Same
+// single-process authority as slotsInUse — this route only runs in one local-controller process.
+const reclaiming = new Set<string>();
+
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -215,6 +226,16 @@ const POOL_BASELINE = Math.max(0, Number(process.env.CR_POOL_BASELINE ?? "1") ||
  * We only ever choose hosts the in-process slot ledger shows as IDLE (0 slots), so a host with a
  * live scan can never be selected. We stop those idle hosts FIRST, then lower targetSize to match
  * so the reconciler's running target agrees and it does not immediately restart them.
+ *
+ * Two additional guards make the reclaim race-safe and non-silent:
+ *  - A chosen host is added to `reclaiming` SYNCHRONOUSLY before its async stop is issued and
+ *    excluded from resolveTargetHost's candidates, closing the TOCTOU window where a concurrent
+ *    dispatch could land a live scan on a host about to be force-stopped. The marker clears once
+ *    the stop resolves (success → host is stopped anyway; failure → host is eligible again).
+ *  - Every gcloud call's exit code is checked. targetSize is lowered by the count of hosts
+ *    CONFIRMED stopped (not merely attempted); if no stop succeeded we do NOT resize down (a
+ *    resize outrunning a failed stop would let the MIG delete an arbitrary member). Both failure
+ *    modes log a warning rather than failing silently.
  */
 async function scalePoolInIfIdle(): Promise<void> {
   if (!POOL_MIG) return;
@@ -226,25 +247,61 @@ async function scalePoolInIfIdle(): Promise<void> {
   const surplus = running.length - desired;
   if (surplus <= 0) return;
 
-  // Only IDLE running hosts (0 slots in the ledger) are eligible — never a host serving a scan.
-  const idleHosts = running.filter((h) => usedOn(h) === 0);
+  // Only IDLE running hosts (0 slots in the ledger) that are NOT already being reclaimed are
+  // eligible — never a host serving a scan, never one another drain is mid-stopping.
+  const idleHosts = running.filter((h) => usedOn(h) === 0 && !reclaiming.has(h));
   const toStop = idleHosts.slice(0, surplus);
-  if (!toStop.length) return; // all surplus hosts are still busy; reclaim on the next drain.
+  if (!toStop.length) return; // all surplus hosts are still busy/reclaiming; reclaim on next drain.
 
-  // Stop the SPECIFIC idle hosts by name (deterministic — the MIG never picks the victim). Under
-  // scale-out-pool this parks them in the disk-only stopped standby pool rather than deleting them.
-  await runBash(
-    `gcloud compute instance-groups managed stop-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
-      `--instances=${toStop.join(",")} --force`,
-    120_000,
-  );
-  // Then lower the running target so the reconciler agrees (won't restart what we just parked).
-  // Never below baseline; clamp to the count we actually have left running.
-  const newTarget = Math.max(POOL_BASELINE, running.length - toStop.length);
-  await runBash(
+  // Reserve these hosts SYNCHRONOUSLY, before any async stop call, so resolveTargetHost cannot
+  // pick one as a live-scan candidate during the (up-to-120s) stop window (Gap-1 TOCTOU fix).
+  for (const h of toStop) reclaiming.add(h);
+
+  // Stop each idle host by name (deterministic — the MIG never picks the victim). Under
+  // scale-out-pool this parks it in the disk-only stopped standby pool rather than deleting it.
+  // We stop them ONE AT A TIME so we know EXACTLY which hosts were confirmed stopped: the resize
+  // target below must reflect only confirmed stops, never merely-attempted ones (Gap-2 fix). A
+  // resize that outran a failed stop would reintroduce the "MIG deletes an arbitrary member"
+  // risk the by-name stop exists to prevent.
+  const stopped: string[] = [];
+  for (const h of toStop) {
+    const { code, stderr } = await runBash(
+      `gcloud compute instance-groups managed stop-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
+        `--instances=${h} --force`,
+      120_000,
+    );
+    // Clear the reservation as soon as this host's stop resolves (success OR failure): on success
+    // the host is STOPPED and listRunningPoolHosts drops it anyway; on failure it is still RUNNING
+    // and must go back to being a normal candidate for the next scale-in/scale-out cycle.
+    reclaiming.delete(h);
+    if (code === 0) {
+      stopped.push(h);
+    } else {
+      // Silent failure here is dangerous: it would let the resize below delete an arbitrary member.
+      console.warn(
+        `[deep/pool] scale-in: stop-instances FAILED for host ${h} (code ${code}) — leaving it running and NOT counting it toward the resize-down. stderr: ${stderr.trim().slice(0, 300)}`,
+      );
+    }
+  }
+
+  // If nothing actually stopped, do NOT lower targetSize — a resize-down now would let the MIG's
+  // reconciler pick and delete an arbitrary (possibly-busy) member to reconcile down. Bail.
+  if (!stopped.length) return;
+
+  // Lower the running target so the reconciler agrees (won't restart what we just parked), keyed
+  // to the hosts CONFIRMED stopped — never below baseline, never below what is still running.
+  const newTarget = Math.max(POOL_BASELINE, running.length - stopped.length);
+  const { code: resizeCode, stderr: resizeErr } = await runBash(
     `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${newTarget}`,
     60_000,
   );
+  if (resizeCode !== 0) {
+    // stop succeeded but targetSize stayed high → this MIG's reconciler auto-restarts the
+    // stopped-but-still-targeted host (~25s), wasting the stop and thrashing. Surface it.
+    console.warn(
+      `[deep/pool] scale-in: resize to ${newTarget} FAILED (code ${resizeCode}) after stopping ${stopped.join(",")} — targetSize stays high, the reconciler may auto-restart the parked host(s). stderr: ${resizeErr.trim().slice(0, 300)}`,
+    );
+  }
 }
 
 type HostPick =
@@ -280,7 +337,9 @@ async function resolveTargetHost(): Promise<HostPick> {
   const running = await listRunningPoolHosts();
   if (running.length) {
     const candidate = running
-      .filter((h) => usedOn(h) < SLOTS_PER_HOST)
+      // Exclude hosts being reclaimed (mid-`stop-instances`): they read as idle in the ledger but
+      // are about to be force-stopped, so dispatching a live scan to one is the Gap-1 TOCTOU race.
+      .filter((h) => usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h))
       .sort((a, b) => usedOn(a) - usedOn(b))[0];
     if (candidate) {
       acquireSlot(candidate);            // synchronous check-then-acquire (no await between)
@@ -305,11 +364,12 @@ async function resolveTargetHost(): Promise<HostPick> {
     await new Promise((r) => setTimeout(r, 5000));
     const now = await listRunningPoolHosts();
     // Prefer a freshly-activated host, but also accept any running host that has since freed a slot.
-    const fresh = now.filter((h) => !before.has(h) && usedOn(h) < SLOTS_PER_HOST);
-    const freed = now.filter((h) => usedOn(h) < SLOTS_PER_HOST);
+    // Exclude reclaiming hosts in both sets (same Gap-1 TOCTOU reason as the fast path above).
+    const fresh = now.filter((h) => !before.has(h) && usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h));
+    const freed = now.filter((h) => usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h));
     for (const h of [...fresh, ...freed]) {
       if (await hostDetonationReady(h)) {
-        if (usedOn(h) < SLOTS_PER_HOST) {   // re-check under the sync section (map may have changed)
+        if (usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h)) {   // re-check under the sync section (map may have changed)
           acquireSlot(h);
           return { ok: true, host: h };
         }
