@@ -1431,7 +1431,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void supabase.auth
         .signInWithOAuth({
           provider,
-          options: { redirectTo: authRedirectUrl() },
+          options: {
+            redirectTo: authRedirectUrl(),
+            queryParams: { prompt: "select_account" },
+          },
         })
         .then(({ error }) => {
           if (error) toast(`Could not start ${label} sign-in.`, "var(--amber)");
@@ -1484,7 +1487,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // the UI flips even if the network sign-out is slow, then confirm.
     patch({ loggedIn: false, screen: "home", editName: false });
     toast("Signed out.");
-    if (supabase) void supabase.auth.signOut();
+    if (supabase) void supabase.auth.signOut({ scope: "global" });
   }, [getSupabase, patch, toast]);
 
   const exportPDF = useCallback(() => {
