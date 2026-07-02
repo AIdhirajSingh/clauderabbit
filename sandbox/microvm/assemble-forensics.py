@@ -17,6 +17,17 @@ route to the real internet except the forge, which forges every non-registry des
 so no real packet can reach any C2/exfil target. external_monitor_saw_egress reflects the
 host-side forge capture; in_vm_saw_egress reflects the guest's own connect() observations.
 
+PHASE-AWARE CLASSIFICATION: not every intercepted non-registry attempt is equally serious.
+Using the guest's install-end/run-start beacon (detonate.py `emit_phase_marker`, captured at
+PHASE_MARKER_PATH with the SAME host clock as everything else), a BUILD-phase fetch to a
+recognized software-distribution host (github.com, sourceforge.net, ...) with no credential
+involvement is classified as a supply-chain CAUTION (`verdict.supply_chain_egress`) rather
+than a confirmed attack — it is deliberately excluded from `captured_network_intent` /
+`attack_egress_intercepted` so a benign dependency fetch never reads as "Malicious". A
+credential/canary exfil, an actual credential-file read, any RUN-phase attempt, a fetch to
+an unrecognized host, or a refused pinned/mTLS handshake all keep FULL weight regardless of
+phase — this narrows ONE specific false-positive, it does not soften real attack detection.
+
 Usage: assemble-forensics.py <capture.jsonl> [--owner O --repo R --sha S] > forensics.json
 Every field traces to a real capture line or observation — never a template.
 """
@@ -29,7 +40,17 @@ import sys
 CANARY = "CR-CANARY-DO-NOT-EXFIL-deadbeef0123456789"
 TELEMETRY_HOST = "cr-harness.cr.internal"
 PROBE_PATH = "/cr-containment-probe"  # OUR containment probe — never the malware's intent
+PHASE_MARKER_PATH = "/cr-phase-marker"  # the guest's install-end/run-start beacon (detonate.py)
 REGISTRY_HOSTS = ("npmjs.org", "pypi.org", "pythonhosted.org", "crates.io", "debian.org", "ubuntu.com", "nodejs.org", "yarnpkg.com")
+# Recognized software-DISTRIBUTION hosts: legitimate places a normal build/install step
+# fetches an artifact from OUTSIDE the primary package registry — a git dependency, a
+# vendored release tarball, a devDependency's own installer pulling a binary. A capture
+# to one of these hosts DURING THE BUILD PHASE, with no credential involvement, is a real
+# supply-chain signal worth surfacing, but is not on its own evidence of an attack (see the
+# classification loop in `assemble()`). This does NOT soften anything at RUN phase, nor a
+# credential read/exfil at ANY phase, nor a refused pinned/mTLS handshake at any phase —
+# only a clean build-time fetch to one of these specific hosts.
+SOFTWARE_DISTRIBUTION_HOSTS = ("github.com", "githubusercontent.com", "sourceforge.net", "gitlab.com", "bitbucket.org")
 
 
 def _is_registry(host: str) -> bool:
@@ -40,6 +61,14 @@ def _is_registry(host: str) -> bool:
     return any(h == r or h.endswith("." + r) for r in REGISTRY_HOSTS)
 
 
+def _is_software_distribution_host(host: str) -> bool:
+    # Same ANCHORED suffix match as `_is_registry`, for the same reason: a loose
+    # `endswith` would match `evilgithub.com` and misclassify a spoofed C2 host as
+    # benign supply-chain traffic.
+    h = (host or "").lower()
+    return any(h == d or h.endswith("." + d) for d in SOFTWARE_DISTRIBUTION_HOSTS)
+
+
 def _b64body(rec: dict) -> str:
     try:
         return base64.b64decode(rec.get("body_b64", "")).decode("utf-8", "replace")
@@ -47,10 +76,18 @@ def _b64body(rec: dict) -> str:
         return ""
 
 
-def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
-    """Return (c2_http_requests, in_guest_observation, refused_tls)."""
+def load(path: str) -> tuple[list[dict], dict | None, list[dict], float | None]:
+    """Return (c2_http_requests, in_guest_observation, refused_tls, phase_boundary_t).
+
+    phase_boundary_t is the HOST-side capture timestamp (the same forge wall clock every
+    other captured line is stamped with — see forge_addon.py's `_emit()`) of the guest's
+    install-end/run-start beacon, or None when the guest never got the beacon through
+    (older captures, or a lost telemetry POST). Callers MUST treat None as "phase
+    unknown" and NOT downgrade any attempt in that case — a missing marker fails toward
+    the STRONGER classification, never a softer one."""
     c2, refused = [], []
     observation: dict | None = None
+    phase_boundary_t: float | None = None
     try:
         lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
     except OSError:
@@ -70,6 +107,11 @@ def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
         if kind != "http_request":
             continue
         if host == TELEMETRY_HOST:
+            if r.get("path") == PHASE_MARKER_PATH:
+                t = r.get("t")
+                if isinstance(t, (int, float)):
+                    phase_boundary_t = float(t)
+                continue
             try:
                 observation = json.loads(_b64body(r))
             except ValueError:
@@ -80,7 +122,7 @@ def load(path: str) -> tuple[list[dict], dict | None, list[dict]]:
         if r.get("path") == PROBE_PATH:
             continue  # our own containment probe — not the malware's network intent
         c2.append(r)
-    return c2, observation, refused
+    return c2, observation, refused, phase_boundary_t
 
 
 def load_agentic(path: str | None) -> dict:
@@ -132,15 +174,24 @@ def _agentic_findings(agentic: dict) -> tuple[list[dict], dict]:
 
 
 def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: str | None = None) -> dict:
-    c2, obs, refused = load(capture_path)
+    c2, obs, refused, phase_boundary_t = load(capture_path)
     obs = obs or {}
     agentic = load_agentic(agentic_path)
     agentic_code_findings, agentic_summary = _agentic_findings(agentic)
     observed = obs.get("observed", {}) if isinstance(obs, dict) else {}
 
     # ── network intent: one ATTEMPT row per captured C2/exfil request ──────────────
+    # Two buckets, kept STRUCTURALLY separate (never merged): `dest_hosts` is
+    # ATTACK-GRADE captured intent (drives the score penalty + attack_egress_intercepted
+    # + the report's "caught an attack" framing); `supply_chain_hosts` is a build-time
+    # fetch to a recognized software-distribution host with no credential involvement —
+    # a real, honestly-surfaced signal, but explicitly NOT treated as a confirmed attack.
+    # `attempts` (the raw evidence list rendered in the report's network-intent table)
+    # stays FULL and UNFILTERED either way — this is a SCORING classification, not a
+    # visibility filter; the report still shows every captured attempt.
     attempts: list[dict] = []
     dest_hosts: dict[str, list[str]] = {}
+    supply_chain_hosts: dict[str, list[str]] = {}
     cred_exfil = False
     decoded_payloads: list[dict] = []
     for r in c2:
@@ -150,6 +201,25 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
                     or "BEGIN OPENSSH PRIVATE KEY" in body or "_authToken" in body)
         if is_exfil:
             cred_exfil = True
+        # Phase classification: an attempt is BUILD-phase only when we have a POSITIVE
+        # phase-boundary beacon AND its capture timestamp precedes it. No beacon (older
+        # capture, or the guest's beacon POST was lost) means phase is UNKNOWN — and an
+        # unknown phase is treated as run-phase (full weight), never downgraded. This is
+        # the fail-safe direction: a missing marker can only make classification
+        # STRICTER, never softer.
+        t = r.get("t")
+        is_build_phase = (
+            phase_boundary_t is not None
+            and isinstance(t, (int, float))
+            and t < phase_boundary_t
+        )
+        # A real credential/canary exfil is ALWAYS attack-grade regardless of phase or
+        # host — a benign build never sends the planted canary. Only a BUILD-phase
+        # fetch to a recognized software-distribution host, with NO credential
+        # involvement, is downgraded to a supply-chain caution. A RUN-phase attempt (the
+        # code is executing, not installing), a BUILD-phase fetch to an unrecognized
+        # host, or an attempt with unknown phase all keep FULL weight, unchanged.
+        is_supply_chain_only = (not is_exfil) and is_build_phase and _is_software_distribution_host(host)
         attempts.append({
             "intended_host": host,
             "sni": r.get("sni"),
@@ -163,7 +233,10 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             "payload_len": r.get("body_len", len(body)),
             "captured_at": None,
         })
-        dest_hosts.setdefault(host, [])
+        if is_supply_chain_only:
+            supply_chain_hosts.setdefault(host, [])
+        else:
+            dest_hosts.setdefault(host, [])
         if body.strip():
             decoded_payloads.append({
                 "host": host,
@@ -183,10 +256,16 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
         })
         dest_hosts.setdefault(sni, [])
 
-    captured_intent = sorted(dest_hosts.keys())
+    captured_intent = sorted(dest_hosts.keys())              # ATTACK-GRADE hosts only
+    supply_chain_intent = sorted(supply_chain_hosts.keys())   # caution-only, NOT an attack signal
+    # ALL captured hosts (attack-grade + supply-chain), for the containment narrative
+    # below — that section is a NEUTRAL fact about what the forge intercepted, not a
+    # verdict about intent, so it must list every capture regardless of classification.
+    all_captured_hosts = sorted(set(dest_hosts) | set(supply_chain_hosts))
     cred_reads = len(observed.get("credential_reads", []) or [])
-    any_egress = len(attempts) > 0
-    attack = cred_exfil or cred_reads > 0 or any_egress
+    any_egress = len(attempts) > 0                  # ANY captured attempt (unfiltered; containment-only)
+    attack_intent_present = len(captured_intent) > 0  # ATTACK-GRADE only — drives scoring below
+    attack = cred_exfil or cred_reads > 0 or attack_intent_present
 
     # ── containment proof — POSITIVELY evidenced by the in-guest control probe ──────
     # The probe attempts a direct-to-IP egress before the untrusted code runs; if the
@@ -210,7 +289,7 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
                  "bypassing the forge's TCP interception. Treat this run as UNCONTAINED.")
     elif fully_contained and any_egress:
         notes = (f"The forge intercepted {len(attempts)} outbound attempt(s) "
-                 f"({', '.join(captured_intent[:4])}); each was answered by the forge and "
+                 f"({', '.join(all_captured_hosts[:4])}); each was answered by the forge and "
                  f"no real packet reached its destination. A control probe confirmed the "
                  f"interception{non_tcp_phrase}, and the in-VM trace corroborated the egress.")
     elif fully_contained:
@@ -235,8 +314,14 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
         score -= 55
     elif cred_reads > 0:
         score -= 45
-    if captured_intent and not cred_exfil:
+    if attack_intent_present and not cred_exfil:
         score -= 35
+    elif supply_chain_intent and not cred_exfil:
+        # A build-time fetch to a recognized software-distribution host (github,
+        # sourceforge, ...) with no credential involvement: real, honestly surfaced, but
+        # explicitly NOT weighted as a confirmed attack — see attack_egress_intercepted
+        # and supply_chain_egress below. Much smaller than the attack penalty on purpose.
+        score -= 10
     if refused:
         score -= 20
     score = max(1, min(100, score))
@@ -307,6 +392,11 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             "captured_network_intent": captured_intent,
             "egress_intercepted_count": len(attempts),
             "attack_egress_intercepted": attack,
+            # Build-time fetches to a recognized software-distribution host (github,
+            # sourceforge, ...) with no credential involvement — real, surfaced plainly,
+            # but deliberately EXCLUDED from captured_network_intent/attack_egress_intercepted
+            # so a benign dependency fetch never reads as a confirmed attack.
+            "supply_chain_egress": supply_chain_intent,
             "not_verified": [],
         },
         "honesty": {"possibly_dormant_unverified": dormant_unverified, "notes": honesty_notes},
