@@ -152,6 +152,14 @@ interface State {
   /** The stage currently running (its `active` event arrived, `done` has not). */
   procActiveCh: string | null;
   /**
+   * The `lines` carried by the CURRENTLY-ACTIVE stage (if any). Most active stages
+   * carry none (just a title + spinner), but the "Queue" stage streams a live
+   * "Queued — position N of M, ~X min" line that must stay visible WHILE waiting —
+   * so the active chapter renders these rather than only its title. Cleared when
+   * the stage completes or a new active stage without lines arrives.
+   */
+  procActiveLines: string[];
+  /**
    * The danger-board bundle (real DB data: ranked caught repos, map dots, live
    * counts, score histogram). Lazily fetched on first board navigation — never
    * on the homepage — so the marketing/SEO surface stays cheap. Starts empty
@@ -216,6 +224,7 @@ const initialState: State = {
   procLive: false,
   procStages: [],
   procActiveCh: null,
+  procActiveLines: [],
   board: EMPTY_BOARD_DATA,
   boardLoading: false,
   boardPage: 0,
@@ -1116,6 +1125,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // immediately — a fast cache hit (no streamed stages) never flashes a
         // blank timeline before navigating to the report.
         procActiveCh: "Starting scan",
+        procActiveLines: [],
       });
 
       if (procTimer.current) clearInterval(procTimer.current);
@@ -1125,7 +1135,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const onStage = (stage: ScanStage): void => {
         if (token !== liveScanToken.current) return;
         if (stage.status === "active") {
-          patch({ procActiveCh: stage.ch });
+          // Carry the active stage's lines so a live "Queued — position N of M,
+          // ~X min" line stays visible WHILE waiting (most active stages send none,
+          // in which case the chapter shows just its title + spinner as before).
+          patch({
+            procActiveCh: stage.ch,
+            procActiveLines: (stage.lines ?? []).filter((l) => l.length > 0),
+          });
           return;
         }
         // done → append the completed chapter with its REAL lines. Validate the
@@ -1136,7 +1152,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ...procStagesRef.current,
           { ch: stage.ch, kind, lines: stage.lines ?? [] },
         ];
-        patch({ procStages: procStagesRef.current, procActiveCh: null });
+        patch({ procStages: procStagesRef.current, procActiveCh: null, procActiveLines: [] });
       };
 
       // Always send the deviceId (limits are tracked by login AND device) plus
@@ -1197,6 +1213,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               procDeep: true,
               procStages: procStagesRef.current,
               procActiveCh: "Spawning sealed sandbox VM",
+              procActiveLines: [],
             });
 
             const deep = await runDeepScan({ owner: dOwner, repo: dRepo, sha, onStage });
@@ -1773,7 +1790,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         out.push(mk(l, "done", !hasActive && i === state.procStages.length - 1));
       });
       if (state.procActiveCh != null) {
-        out.push(mk({ ch: state.procActiveCh, kind: "ok", lines: [] }, "active", true));
+        // The active chapter normally shows just its title + spinner; when the
+        // active stage carried lines (the live "Queued — position N of M" line),
+        // render them so the user sees their real, updating queue position.
+        out.push(
+          mk({ ch: state.procActiveCh, kind: "ok", lines: state.procActiveLines }, "active", true),
+        );
       }
       return out;
     }
@@ -1786,7 +1808,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         i >= procLogs.length - 1,
       ),
     );
-  }, [state.procLive, state.procStages, state.procActiveCh, procLogs, state.procStep]);
+  }, [state.procLive, state.procStages, state.procActiveCh, state.procActiveLines, procLogs, state.procStep]);
 
   // For a live scan the repo name comes from the pending id; otherwise the demo repo.
   const procName = procDemoRepo
