@@ -195,7 +195,16 @@ const LOW_CONFIDENCE_THRESHOLD = 0.7;
 /** Escalation reservation: when the gate escalated but no dynamic run has yet
  * confirmed clean, hold back points — the repo is unresolved, not cleared. Small,
  * because the specific signals that caused escalation already carry their own
- * penalties; this only prevents an escalated-but-otherwise-quiet repo scoring high. */
+ * penalties; this only prevents an escalated-but-otherwise-quiet repo scoring high.
+ *
+ * FAIRNESS GATE: this reservation applies ONLY when the escalation coincided with
+ * at least one real negative code/behavior signal (see `hasRealCodeSignal` in
+ * `codeDeltas`). A repo that escalates PURELY because the static read's own
+ * confidence fell below threshold (or the model asked for a second look) on an
+ * otherwise clean read gets no code/behavior signal to name here — charging it
+ * the same flat penalty as a genuinely suspicious repo would be unearned. That
+ * repo still pays `low_confidence` above when applicable; it just does not ALSO
+ * pay a second, redundant "unresolved" tax with nothing concrete behind it. */
 const W_ESCALATION_PENDING = -6;
 
 // -- Dynamic/forensic outcome (deep path only — OBSERVED behavior, strongest) --
@@ -242,8 +251,23 @@ const SENT_POSITIVE = 70;
 const SENT_NEGATIVE = 35;
 
 /** Hard bounds on the TOTAL reputation contribution. Reputation may move the
- * score by at most +REP_MAX / REP_MIN points — it can nudge, never decide. */
-const REP_MAX = 14;
+ * score by at most +REP_MAX / REP_MIN points — it can nudge, never decide.
+ *
+ * REP_MAX is 20, not the true maximum simultaneous raw total (established +8 +
+ * many_stars +6 + good_sentiment +4 = +18): at 14 the cap was clipping even that
+ * fully-maximal, decade-old/high-star/positive-sentiment case, so the single
+ * strongest reputation a repo can have was worth NO MORE than a middling one
+ * (established + some_stars = +11, or established + many_stars alone = +14) —
+ * reputation could never distinguish its own best case from its merely-good
+ * case. 20 lets the true +18 maximum pass through unclipped for the first time
+ * while staying far below what any single code penalty can do (smallest is -6
+ * `network`; a lone `install_hook` is -8; real malware combinations are -60 to
+ * over -100), so it still cannot rescue dangerous code — it only lets a
+ * genuinely stellar reputation mean more than a merely good one. REP_MIN is
+ * UNCHANGED at -18: this fix does not touch the negative side, and does not
+ * touch any penalty tied to real malicious/suspicious code or runtime signals —
+ * those remain a separate axis, at their existing weights. */
+const REP_MAX = 20;
 const REP_MIN = -18;
 
 // --- Pure helpers ------------------------------------------------------------
@@ -356,15 +380,41 @@ function codeDeltas(inputs: ScoringInputs): ScoreDelta[] {
     });
   }
 
-  // Escalation reservation — only when escalated AND no dynamic run has resolved
-  // it yet. A completed dynamic run supplies its own (stronger) deltas below.
+  // Escalation reservation — only when escalated, no dynamic run has resolved it
+  // yet, AND escalation coincided with a REAL negative code/behavior signal. A
+  // completed dynamic run supplies its own (stronger) deltas below.
+  //
+  // `hasRealCodeSignal` mirrors every code-grounded reason `decideEscalation` (in
+  // scan/index.ts) can escalate on: obfuscation, credential access, install-time
+  // network, an embedded secret, a typosquat hint, plain (non-install-time)
+  // network capability, an install hook, or at least one net-negative model
+  // `risky` finding. `s.network` is included deliberately — `decideEscalation`'s
+  // new-owner+signal branch treats plain network as a qualifying signal, so this
+  // gate must too, or a new-owner+network escalation would be wrongly treated as
+  // signal-free. What is EXCLUDED: escalating purely because read confidence fell
+  // below threshold, or purely because the model set its own opaque `escalate`
+  // flag, with a fully clean static read and zero risky findings. That case still
+  // pays `low_confidence` above when applicable — it just does not also pay a
+  // second, unnamed "unresolved" tax with no concrete signal behind it.
   if (inputs.escalated && !inputs.dynamic) {
-    deltas.push({
-      factor: "escalation_pending",
-      delta: W_ESCALATION_PENDING,
-      detail: "Escalated to the dynamic sandbox; not yet cleared by a runtime observation.",
-      group: "code",
-    });
+    // Reuses `riskySum` (computed just above) rather than re-deriving it, so the
+    // two can never drift apart.
+    const hasRealCodeSignal = s.installHook ||
+      s.obfuscation ||
+      s.credAccess ||
+      inputs.installTimeNetwork ||
+      s.embeddedSecret ||
+      s.typosquat ||
+      s.network ||
+      riskySum < 0;
+    if (hasRealCodeSignal) {
+      deltas.push({
+        factor: "escalation_pending",
+        delta: W_ESCALATION_PENDING,
+        detail: "Escalated to the dynamic sandbox; not yet cleared by a runtime observation.",
+        group: "code",
+      });
+    }
   }
 
   // Dynamic/forensic outcome — observed behavior from a real sandbox run.
