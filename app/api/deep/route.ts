@@ -64,6 +64,14 @@ const POOL_MAX_HOSTS = Math.max(1, Number(process.env.CR_POOL_MAX_HOSTS ?? "6") 
 const REMOTE_ORCH = process.env.CR_REMOTE_ORCH ?? "/opt/cr/microvm/orchestrate-microvm.sh";
 // Seconds to wait for a freshly-activated standby to reach detonation-ready before giving up.
 const POOL_ACTIVATE_TIMEOUT_S = Math.max(30, Number(process.env.CR_POOL_ACTIVATE_TIMEOUT_S ?? "150") || 150);
+// Hard ceiling on a single detonation's wall-clock. A full deep scan runs ~10-13 min end-to-end
+// (docs 8b/8c), so 30 min is generous headroom for a slow build yet bounded. Without it a child
+// that hangs forever leaks its slot — and in POOL mode a leaked slot ALSO pins the host running
+// forever, because scalePoolInIfIdle keys off the slot count and never reclaims a "busy" host.
+// On expiry we SIGTERM the child (orchestrate's EXIT trap + dead-man's-switch then tear down any
+// microVM, so no orphans), release the slot, and report a clean error — mirroring runBash's
+// timeout-and-release pattern. The host's own 12h max-run backstop is the last-resort net below.
+const DEEP_SCAN_TIMEOUT_MS = Math.max(60_000, Number(process.env.CR_DEEP_SCAN_TIMEOUT_MS ?? "1800000") || 1_800_000);
 
 // The dev/controller process may be launched with a narrower PATH than an
 // interactive shell (e.g. the preview runner), so the `bash` + `gcloud` the moat
@@ -144,15 +152,16 @@ async function listRunningPoolHosts(): Promise<string[]> {
   return stdout.split(/\r?\n/).map((s) => s.trim()).filter((s) => /^[a-z0-9-]{1,63}$/.test(s));
 }
 
-/** Total members (any state) — the ceiling we must not resize past. */
-async function poolMemberCount(): Promise<number> {
-  if (!POOL_MIG) return 0;
-  const cmd =
-    `gcloud compute instance-groups managed list-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
-    `--format="value(instance.basename())"`;
+/** The MIG's current targetSize — the RUNNING-member target the reconciler drives toward.
+ *  This (NOT the total member count, which includes stopped standbys) is what a resize sets,
+ *  so it is the correct base for a "warm exactly one more" scale-out. -1 on any failure. */
+async function poolTargetSize(): Promise<number> {
+  if (!POOL_MIG) return -1;
+  const cmd = `gcloud compute instance-groups managed describe ${POOL_MIG} --zone ${POOL_ZONE} --format="value(targetSize)"`;
   const { code, stdout } = await runBash(cmd, 30_000);
-  if (code !== 0) return 0;
-  return stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).length;
+  if (code !== 0) return -1;
+  const n = Number(stdout.trim());
+  return Number.isFinite(n) ? n : -1;
 }
 
 /** Is a host detonation-ready? SSH up + /dev/kvm + containerd active + base image present —
@@ -169,12 +178,16 @@ async function hostDetonationReady(host: string): Promise<boolean> {
   return /CR_READY/.test(stdout);
 }
 
-/** Resize the MIG up by one so scale-out-pool activates a standby. Returns the new size, or
- *  -1 if we're already at the soft ceiling / the resize failed. */
+/** Resize the MIG up by exactly one RUNNING member so scale-out-pool activates a single standby.
+ *  Bases the "+1" on the current targetSize (the running-member target a resize actually sets) —
+ *  NOT on total members (which counts the stopped standbys too, so a +1 there would jump targetSize
+ *  from 1 straight past every standby, activating them all at once and over-billing). Returns the
+ *  new targetSize, or -1 if we're already at the soft ceiling / could not read state / resize failed. */
 async function resizePoolUp(): Promise<number> {
-  const total = await poolMemberCount();
-  if (total >= POOL_MAX_HOSTS) return -1;
-  const next = total + 1;
+  const current = await poolTargetSize();
+  if (current < 0) return -1;
+  if (current >= POOL_MAX_HOSTS) return -1;
+  const next = current + 1;
   const cmd = `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${next}`;
   const { code } = await runBash(cmd, 60_000);
   return code === 0 ? next : -1;
@@ -188,22 +201,48 @@ const POOL_BASELINE = Math.max(0, Number(process.env.CR_POOL_BASELINE ?? "1") ||
 /**
  * App-driven idle reclaim (pool mode): a MIG member cannot self-poweroff (the reconciler
  * restarts it — masked via pool-member-startup.sh), so the CONTROLLER reclaims surplus running
- * hosts by lowering targetSize. Target size we want = max(POOL_BASELINE, hosts needed for the
- * scans still in flight). Called (fire-and-forget) as scans drain. Never scales below baseline.
+ * hosts as scans drain. Target running count = max(POOL_BASELINE, hosts needed for the scans
+ * still in flight). Called (fire-and-forget) as scans drain. Never scales below baseline.
+ *
+ * SCALE-IN SAFETY (the load-bearing part): a bare `resize --size N` down is UNSAFE here — a MIG
+ * resize-down DELETES members the group picks in ARBITRARY order (VERIFIED live: resizing this MIG
+ * from 1→0 immediately DELETED the running member, it did not gracefully park it), so it could
+ * destroy a host mid-detonation. GCP has no per-instance "scale-in protection" flag for a
+ * non-autoscaled MIG, and `deletionProtection` cannot even be set on a MIG member. The correct,
+ * supported control is to name the victims ourselves: `stop-instances --instances=<names>` stops
+ * EXACTLY the hosts we choose and, under the scale-out-pool standby policy, parks them in the
+ * disk-only STOPPED standby pool (not deleted — VERIFIED live) so they stay warm-ish for reuse.
+ * We only ever choose hosts the in-process slot ledger shows as IDLE (0 slots), so a host with a
+ * live scan can never be selected. We stop those idle hosts FIRST, then lower targetSize to match
+ * so the reconciler's running target agrees and it does not immediately restart them.
  */
 async function scalePoolInIfIdle(): Promise<void> {
   if (!POOL_MIG) return;
+  const running = await listRunningPoolHosts();
+  if (!running.length) return;
   const activeSlots = Array.from(slotsInUse.values()).reduce((a, b) => a + b, 0);
   const hostsForLoad = Math.ceil(activeSlots / SLOTS_PER_HOST);
   const desired = Math.max(POOL_BASELINE, hostsForLoad);
-  // Only shrink; growth is handled by resolveTargetHost's resizePoolUp.
-  const cmd = `gcloud compute instance-groups managed describe ${POOL_MIG} --zone ${POOL_ZONE} --format="value(targetSize)"`;
-  const { code, stdout } = await runBash(cmd, 30_000);
-  if (code !== 0) return;
-  const current = Number(stdout.trim());
-  if (!Number.isFinite(current) || current <= desired) return;
+  const surplus = running.length - desired;
+  if (surplus <= 0) return;
+
+  // Only IDLE running hosts (0 slots in the ledger) are eligible — never a host serving a scan.
+  const idleHosts = running.filter((h) => usedOn(h) === 0);
+  const toStop = idleHosts.slice(0, surplus);
+  if (!toStop.length) return; // all surplus hosts are still busy; reclaim on the next drain.
+
+  // Stop the SPECIFIC idle hosts by name (deterministic — the MIG never picks the victim). Under
+  // scale-out-pool this parks them in the disk-only stopped standby pool rather than deleting them.
   await runBash(
-    `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${desired}`,
+    `gcloud compute instance-groups managed stop-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
+      `--instances=${toStop.join(",")} --force`,
+    120_000,
+  );
+  // Then lower the running target so the reconciler agrees (won't restart what we just parked).
+  // Never below baseline; clamp to the count we actually have left running.
+  const newTarget = Math.max(POOL_BASELINE, running.length - toStop.length);
+  await runBash(
+    `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${newTarget}`,
     60_000,
   );
 }
@@ -556,6 +595,12 @@ export async function POST(req: Request): Promise<Response> {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      // Hard dead-man's-switch on the child. Without it a hung SSH/orchestrator child would leak
+      // its slot forever — and in pool mode a leaked slot also pins the host RUNNING forever
+      // (scalePoolInIfIdle treats it as busy and never reclaims it), bleeding cost. Cleared in
+      // finish() (the single teardown funnel), same shape as runBash's timeout-and-release.
+      let scanTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearScanTimer = () => { if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; } };
       const emit = (obj: unknown) => {
         if (closed) return;
         try {
@@ -572,6 +617,7 @@ export async function POST(req: Request): Promise<Response> {
       const finish = () => {
         if (closed) return;
         closed = true;
+        clearScanTimer();
         try {
           controller.close();
         } catch {
@@ -616,6 +662,18 @@ export async function POST(req: Request): Promise<Response> {
         finish();
         return;
       }
+
+      // Arm the hard wall-clock timeout: on expiry SIGTERM the child (its EXIT trap +
+      // dead-man's-switch tear down any microVM, so no orphans), report a clean error, and
+      // finish() — which clears this timer and releases the slot (unblocking pool scale-in).
+      scanTimer = setTimeout(() => {
+        emit({
+          t: "error",
+          error: `sandbox run exceeded the ${Math.round(DEEP_SCAN_TIMEOUT_MS / 60_000)}-minute hard timeout — aborted`,
+        });
+        killChild();
+        finish();
+      }, DEEP_SCAN_TIMEOUT_MS);
 
       child.on("error", (e) => {
         emit({ t: "error", error: `orchestrator spawn error: ${msg(e)}` });
