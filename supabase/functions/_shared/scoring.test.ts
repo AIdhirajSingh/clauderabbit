@@ -302,11 +302,14 @@ Deno.test("fairness: new-owner + plain-network-only escalation still pays escala
   // Arrange — mirrors scan/index.ts decideEscalation's `newOwner && anySignal`
   // branch, where `anySignal` includes plain `scan.signals.network`. This is a
   // genuine signal-driven escalation (new owner + network capability), not a
-  // confidence-only one, so it must still be penalized.
+  // confidence-only one, so it must still be penalized. `wasNewOwner: true`
+  // mirrors decideEscalation actually having taken that branch (see the
+  // dedicated gap-fix tests below for the full before/after of this flag).
   const inputs = baseInputs({
     signals: { ...CLEAN_SIGNALS, network: true },
     confidence: 0.9, // confident read — escalation is NOT due to low confidence
     escalated: true,
+    wasNewOwner: true,
     reputation: { established: false, ageDays: 10, sentScore: -1, stars: 0 },
   });
 
@@ -320,6 +323,90 @@ Deno.test("fairness: new-owner + plain-network-only escalation still pays escala
     "new-owner + plain-network escalation is signal-driven and must still pay escalation_pending",
   );
   assertEquals(pending.delta, -6);
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness gap fix: established owner + plain network + low-confidence escalation does NOT pay escalation_pending", () => {
+  // Arrange — the exact scenario the independent adversarial review reproduced:
+  // an established, highly-reputable owner (ageDays 3650, 50k stars, sentiment
+  // 85) whose code merely has ordinary network capability (fetch/axios/
+  // child_process — ubiquitous, and W_NETWORK's own comment calls this "normal
+  // for most apps"). The repo escalates ONLY because confidence (0.65) fell
+  // below the 0.7 threshold — `decideEscalation` would NEVER escalate an
+  // established owner on plain network alone (that only matters inside the
+  // `newOwner && anySignal` branch), so `wasNewOwner` is correctly false here.
+  // Before the fix, `hasRealCodeSignal` counted `s.network` unconditionally,
+  // so this repo wrongly paid the flat -6 escalation_pending penalty and
+  // landed at 78 ("Caution") instead of the fair "Likely safe"/"Trusted" band.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, network: true },
+    risky: [],
+    confidence: 0.65,
+    escalated: true,
+    wasNewOwner: false, // established owner — decideEscalation never escalated on network here
+    reputation: { ...ESTABLISHED_REP }, // ageDays 3650, stars 50k, sentiment 85
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — escalation_pending must NOT fire: network on an established owner
+  // was never decideEscalation's actual reason to escalate, so scoring must not
+  // invent one. low_confidence still applies (confidence 0.65 < 0.7 is real).
+  // W_NETWORK's own independent delta (-6, a SEPARATE code-group delta wired
+  // through the earlier `if (s.network && !inputs.installTimeNetwork)` block)
+  // is untouched by this fix and still applies on its own merits.
+  assertEquals(
+    result.breakdown.find((d) => d.factor === "escalation_pending"),
+    undefined,
+    "established owner + plain network + low-confidence-only escalation must NOT pay escalation_pending",
+  );
+  const lowConf = result.breakdown.find((d) => d.factor === "low_confidence");
+  assert(lowConf, "low_confidence must still apply — confidence 0.65 < 0.7 is real");
+  const netDelta = result.breakdown.find((d) => d.factor === "network");
+  assert(netDelta, "network's own independent delta must still apply, untouched by this fix");
+  assertEquals(netDelta.delta, -6, "W_NETWORK's own weight is unchanged by this fix");
+  // Fair math: 82 baseline - 10 low_confidence - 6 network + 18 reputation
+  // (established +8, many_stars +6, good_sentiment +4 = +18, unclipped under
+  // the +20 cap) = 84 -> "Likely safe" band (>= 80), not "Caution".
+  assertEquals(result.score, 84, "82 - 10 (low_confidence) - 6 (network) + 18 (reputation) = 84");
+  assert(
+    result.score >= 80,
+    `expected a fair (>=80, "Likely safe" or better) score, got ${result.score}`,
+  );
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness gap fix: new-owner + network + low-confidence escalation STILL pays escalation_pending (opposite case, untouched)", () => {
+  // Arrange — the mirror-image case that must NOT regress: a brand-new owner
+  // (ageDays 10) with plain network capability, escalating on low confidence.
+  // Here `decideEscalation`'s `newOwner && anySignal` branch WOULD itself have
+  // fired on this exact combination (new owner + network is a genuine,
+  // signal-driven escalation reason), so `wasNewOwner` is true and the network
+  // signal correctly still counts as a real code signal justifying the
+  // escalation_pending reservation — this fix must not weaken that case.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, network: true },
+    risky: [],
+    confidence: 0.65,
+    escalated: true,
+    wasNewOwner: true, // new owner — decideEscalation's newOwner+anySignal branch would fire here
+    reputation: { established: false, ageDays: 10, sentScore: -1, stars: 0 },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — escalation_pending DOES fire: network + new owner is a genuine
+  // signal-driven reason to escalate, matching decideEscalation exactly.
+  const pending = result.breakdown.find((d) => d.factor === "escalation_pending");
+  assert(
+    pending,
+    "new-owner + network + low-confidence escalation is signal-driven and must still pay escalation_pending",
+  );
+  assertEquals(pending.delta, -6);
+  const lowConf = result.breakdown.find((d) => d.factor === "low_confidence");
+  assert(lowConf, "low_confidence must also apply — confidence 0.65 < 0.7");
   assertBreakdownConsistent(result);
 });
 

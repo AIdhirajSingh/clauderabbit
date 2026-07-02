@@ -90,6 +90,19 @@ export interface ScoringInputs {
   confidence: number;
   /** Whether the escalation gate decided to escalate this repo. */
   escalated: boolean;
+  /** Whether the owner was classified as "new" (per decideEscalation's own
+   * NEW_OWNER_AGE_DAYS threshold in scan/index.ts) AT THE TIME of the escalation
+   * decision. Needed because `decideEscalation` only treats plain `network`
+   * (via its `anySignal` check) as an escalation-worthy signal INSIDE the
+   * `newOwner && anySignal` branch — for an established/non-new owner, network
+   * alone never triggers escalation there (only low confidence or the model's
+   * own opaque `escalate` flag do). Scoring only receives the boolean
+   * `escalated`, not the reason, so it needs this flag to tell those cases
+   * apart in `hasRealCodeSignal` below. Defaults to `false` (the safer
+   * assumption: without this flag, plain network is NOT treated as a
+   * qualifying signal) so existing callers that do not pass it keep the
+   * fairer, narrower behavior rather than silently reverting to the bug. */
+  wasNewOwner?: boolean;
   /** Dynamic-run outcome, present only when the deep path actually ran. */
   dynamic?: ScoringDynamicOutcome;
 }
@@ -386,14 +399,21 @@ function codeDeltas(inputs: ScoringInputs): ScoreDelta[] {
   //
   // `hasRealCodeSignal` mirrors every code-grounded reason `decideEscalation` (in
   // scan/index.ts) can escalate on: obfuscation, credential access, install-time
-  // network, an embedded secret, a typosquat hint, plain (non-install-time)
-  // network capability, an install hook, or at least one net-negative model
-  // `risky` finding. `s.network` is included deliberately — `decideEscalation`'s
-  // new-owner+signal branch treats plain network as a qualifying signal, so this
-  // gate must too, or a new-owner+network escalation would be wrongly treated as
-  // signal-free. What is EXCLUDED: escalating purely because read confidence fell
-  // below threshold, or purely because the model set its own opaque `escalate`
-  // flag, with a fully clean static read and zero risky findings. That case still
+  // network, an embedded secret, a typosquat hint, an install hook, at least one
+  // net-negative model `risky` finding, or plain (non-install-time) network
+  // capability — but that last one is CONDITIONAL, not automatic.
+  // `decideEscalation` only treats plain network as a qualifying signal INSIDE
+  // its `newOwner && anySignal` branch; for an established/non-new owner,
+  // network alone never triggers escalation there (only low confidence, or the
+  // model's own opaque `escalate` flag, can). Scoring only receives the boolean
+  // `escalated`, not the reason, so `wasNewOwner` is threaded through
+  // `ScoringInputs` to let this gate tell the two cases apart: `s.network` only
+  // counts as a real code signal when `wasNewOwner` is also true, matching
+  // `decideEscalation` exactly. Without that flag (or on an established owner),
+  // plain network no longer justifies this penalty on its own. What is
+  // EXCLUDED, as before: escalating purely because read confidence fell below
+  // threshold, or purely because the model set its own opaque `escalate` flag,
+  // with a fully clean static read and zero risky findings. That case still
   // pays `low_confidence` above when applicable — it just does not also pay a
   // second, unnamed "unresolved" tax with no concrete signal behind it.
   if (inputs.escalated && !inputs.dynamic) {
@@ -405,7 +425,7 @@ function codeDeltas(inputs: ScoringInputs): ScoreDelta[] {
       inputs.installTimeNetwork ||
       s.embeddedSecret ||
       s.typosquat ||
-      s.network ||
+      (s.network && inputs.wasNewOwner === true) ||
       riskySum < 0;
     if (hasRealCodeSignal) {
       deltas.push({
