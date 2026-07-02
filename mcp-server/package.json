@@ -1,0 +1,28 @@
+{
+  "name": "claude-rabbit-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server for Claude Rabbit — lets AI coding tools scan a public GitHub repo or check for an existing safety report before installing/using it.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "claude-rabbit-mcp": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test:smoke": "node dist/test/smoke.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
