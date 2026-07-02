@@ -54,7 +54,7 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
 - **$300 / ₹28,710 free-trial Welcome credit, active.** Expires **24 September 2026** (90 days).
 - **What the credit covers:** any GCP service, **including the Vertex AI Gemini API** and Compute Engine sandbox VMs — one pool covers both.
 - **What the credit does NOT cover:** the Gemini **Developer API (AI Studio)** — that is explicitly excluded from the $300 trial. This is the core reason Gemini is called via **Vertex**, not AI Studio (see §6).
-- **Free-trial restrictions in force** (non-billable trial account): no GPUs on VMs, max 8 Compute Engine cores at once, no Windows Server VM images, no quota-increase requests. None of these block the V1 sandbox (Linux, no GPU, default quota). Upgrading to a paid account lifts these and keeps the remaining credit.
+- **Compute quota (VERIFIED 2026-07-02 via `gcloud compute regions describe us-east1`, NOT re-derived):** the old "max 8 Compute Engine cores" claim was STALE — the billing account is open/enabled (`billingEnabled: true`) and the real region quota in **us-east1** is **`N2_CPUS` limit = 200, `CPUS` limit = 200** (usage 0). So the detonation pool's real ceiling today is ~**50 × n2-standard-4 hosts = ~100 concurrent deep scans** (2 slots/host) with no quota-increase request. Two other real caps to respect: **`INSTANCES` limit = 24 per region** (the binding ceiling before N2_CPUS — ~24 running hosts = ~48 concurrent scans without raising it), and **`PREEMPTIBLE_CPUS` limit = 0** (spot/preemptible VMs are NOT available on this account — the sandbox must use standard N2, never spot). Reaching literal "hundreds of concurrent scans" needs a quota increase on `INSTANCES` (and eventually `N2_CPUS`) — an account-config action, not code. No GPUs / no Windows Server images still apply but don't affect the Linux/no-GPU sandbox.
 
 ---
 
@@ -155,6 +155,61 @@ reproducible from committed code** — nothing on it is hand-tuned that isn't in
 - **Tear it down:** `bash sandbox/microvm/teardown-host.sh [stop|delete]` at session end
   (belt to the watchdog). `stop` reclaims the running compute + keeps the disk; `delete`
   removes it (provision-host.sh rebuilds it from scratch).
+
+`cr-host-build` remains the **manual single-host fallback** and honours `CR_SANDBOX_HOST` in
+`/api/deep`. When that env var is set (or neither pool nor host var is set), the app dispatches
+to exactly this one host at cap 2 — the original, always-working path. The on-demand pool below
+is the scale-out layer that runs when `CR_POOL_MIG` is set instead.
+
+---
+
+## 8c. On-demand detonation compute pool (scale-out beyond one host)
+
+One host has a hard 4-vCPU ceiling → at most **2 concurrent deep scans**. Scaling to "many
+concurrent isolated runs" is a **compute-provisioning** problem, solved with a golden image + a
+Managed Instance Group (MIG) with a **standby pool**. All reproducible from committed scripts in
+`sandbox/microvm/`; nothing hand-tuned in the console.
+
+- **Golden image — `bash sandbox/microvm/bake-golden-image.sh`.** Captures a fully-provisioned
+  `cr-host-build` as GCE image family **`cr-detonation-golden`** (Kata + Firecracker +
+  containerd/devmapper + buildkit + mitmproxy CA + deno + OpenCode + the `cr-dm-pool` /
+  `cr-base-image` / `cr-idle-shutdown` units). It avoids re-running `setup-host.sh`'s slow
+  install on every boot. **Compatible with the "fresh pool every boot" rule:** the baked-in
+  `cr-dm-pool.service` + `cr-base-image.service` rebuild a clean loopback thin-pool and the base
+  detonation image on EVERY boot regardless of source disk (VERIFIED: a pool member booted from
+  the image reaches "base image present" via these services). Current image: `cr-detonation-golden-v1`.
+- **The pool — `bash sandbox/microvm/create-pool.sh`.** Builds a version-stamped instance
+  template from the golden image (nested-virt N2, vertex SA) and a zonal MIG
+  **`cr-detonation-pool`** (us-east1-b) with `targetSize=1` running + a **stopped standby pool**
+  (`--standby-policy-mode=scale-out-pool`, `--stopped-size=2`). On a resize-up the MIG **starts a
+  stopped standby first** (VERIFIED live) then replenishes the pool. Stopped standbys cost **disk
+  only**, not vCPU. Conservative defaults; raise via `CR_POOL_TARGET` / `CR_POOL_STOPPED`.
+- **Idle reclaim in a MIG is app-driven, NOT the watchdog.** The golden image's
+  `cr-idle-shutdown` watchdog reclaims the *standalone* host, but in a MIG it FIGHTS the group:
+  the reconciler keeps `targetSize` members RUNNING, so a member that self-poweroffs is
+  restarted within ~25s (VERIFIED live). So pool members **mask the watchdog on boot** via the
+  template startup-script `sandbox/microvm/pool-member-startup.sh`, and reclaim is done by
+  `/api/deep` resizing `targetSize` DOWN as scans drain (`scalePoolInIfIdle`) back to a warm
+  baseline (`CR_POOL_BASELINE`, default 1). Surplus running hosts return to the disk-only stopped
+  pool; an idle pool rests at (1 running + 2 stopped).
+- **Benchmarks (VERIFIED 2026-07-02, wall-clock to detonation-ready = SSH + /dev/kvm +
+  containerd + `cr-detonation-base` present, from the golden image):**
+  **cold create-from-image ≈ 88 s · start-from-stopped ≈ 44 s · resume-from-suspended ≈ 21 s.**
+  Suspend/resume **works with nested virt** on n2-standard-4 and is fastest, but keeps RAM in
+  paid storage and bypasses the fresh-boot pool rebuild, so the default standby type is
+  **stopped** (cheapest, always-clean); suspended standbys are opt-in via `CR_POOL_SUSPENDED`.
+- **How `/api/deep` uses the pool:** with `CR_POOL_MIG` (+ `CR_POOL_ZONE`) set, it lists RUNNING
+  members by name, spreads scans across them (2 slots/host, least-loaded first), and when every
+  live host is full resizes the MIG up (activating a standby) and waits for it to reach
+  detonation-ready before dispatching. N live hosts → **2N concurrent scans**. Soft-capped by
+  `CR_POOL_MAX_HOSTS` (default 6). Env override `CR_SANDBOX_HOST` still forces the single-host
+  fallback path unchanged.
+- **Real ceiling today:** bound by the `INSTANCES=24`/region quota (≈24 hosts ≈ **48 concurrent
+  scans**) before `N2_CPUS=200` (≈50 hosts ≈ 100 scans) binds. Literal "hundreds" needs a quota
+  increase on `INSTANCES`/`N2_CPUS` — an account-config action, not code (see §4).
+- **Tear the pool down:** `gcloud compute instance-groups managed delete cr-detonation-pool
+  --zone us-east1-b` then delete the template + golden image if not keeping them. The pool is
+  fully rebuildable from `bake-golden-image.sh` + `create-pool.sh`.
 
 ---
 

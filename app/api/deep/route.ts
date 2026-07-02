@@ -40,12 +40,29 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 // x-runner-key for the function. Missing the anon header → gateway 401, no attach.
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 const REPO_ROOT = process.cwd();
-// The NEW substrate runs on a persistent host VM (one host + Kata/Firecracker microVMs +
-// the deceptive forge). /api/deep SSHes to that host and runs the per-scan orchestrator
-// there, streaming its [orch] milestones back over stderr and reading the forensic record
-// from stdout. (The old two-VM `sandbox/orchestrate.sh` ran locally and is retired.)
-const SANDBOX_HOST = process.env.CR_SANDBOX_HOST ?? "cr-host-build";
+// The NEW substrate runs on persistent host VMs (Kata/Firecracker microVMs + the deceptive
+// forge). /api/deep SSHes to a host and runs the per-scan orchestrator there, streaming its
+// [orch] milestones back over stderr and reading the forensic record from stdout.
+//
+// COMPUTE PROVISIONING — two modes, selected at request time by resolveTargetHost():
+//   1. Single-host override: CR_SANDBOX_HOST set -> always dispatch to that one named host
+//      (the original behaviour; the manual fallback that must never break). Concurrency cap 2.
+//   2. On-demand pool: CR_POOL_MIG set (+ CR_POOL_ZONE) -> a Managed Instance Group of golden-
+//      image hosts with a stopped standby pool (sandbox/microvm/create-pool.sh). We discover
+//      the RUNNING members by name, spread scans across them (2 slots each), and when every
+//      live host is full we resize the MIG up so its scale-out-pool standby policy activates a
+//      warm standby (measured ~44s stopped / ~21s suspended to detonation-ready). N live hosts
+//      -> 2N concurrent scans, not a hardcoded 2.
+// If neither is set, we fall back to the historical default single host `cr-host-build`.
+const SANDBOX_HOST_OVERRIDE = process.env.CR_SANDBOX_HOST ?? "";
+const POOL_MIG = process.env.CR_POOL_MIG ?? "";
+const POOL_ZONE = process.env.CR_POOL_ZONE ?? process.env.CR_SANDBOX_ZONE ?? ZONE;
+// Cap the pool from ballooning cost/quota on a real billing account. 24 INSTANCES/region is
+// the hard GCP ceiling in us-east1 today; this soft cap keeps a runaway resize well under it.
+const POOL_MAX_HOSTS = Math.max(1, Number(process.env.CR_POOL_MAX_HOSTS ?? "6") || 6);
 const REMOTE_ORCH = process.env.CR_REMOTE_ORCH ?? "/opt/cr/microvm/orchestrate-microvm.sh";
+// Seconds to wait for a freshly-activated standby to reach detonation-ready before giving up.
+const POOL_ACTIVATE_TIMEOUT_S = Math.max(30, Number(process.env.CR_POOL_ACTIVATE_TIMEOUT_S ?? "150") || 150);
 
 // The dev/controller process may be launched with a narrower PATH than an
 // interactive shell (e.g. the preview runner), so the `bash` + `gcloud` the moat
@@ -73,13 +90,193 @@ const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 // into `git fetch origin "$REF"` downstream — a leading dash would smuggle a flag).
 const SHA_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 
-// orchestrate budget: trap(2 cores) + detonation(2 cores) = 4 cores/run, 8-core
-// cap → at most 2 concurrent deep runs. Enforced in-process (single dev server).
-const MAX_CONCURRENT = 2;
-let inFlight = 0;
+// Per-HOST orchestrate budget: trap(2 cores) + detonation(2 cores) = 4 cores/run on a 4-vCPU
+// n2-standard-4 host -> at most 2 concurrent deep runs PER HOST. With the pool this is no
+// longer a single global cap: total concurrency = (live host count) x SLOTS_PER_HOST.
+const SLOTS_PER_HOST = Math.max(1, Number(process.env.CR_SLOTS_PER_HOST ?? "2") || 2);
+// In-process slot ledger: host name -> slots currently in flight on that host. This route
+// only ever runs in ONE local-controller Node process (Vercel has it inert via the
+// CR_ALLOW_LOCAL_DEEP gate), so a plain in-memory map is a correct authority — same
+// single-process assumption the old scalar `inFlight` relied on, generalised to N hosts.
+const slotsInUse = new Map<string, number>();
+const usedOn = (host: string): number => slotsInUse.get(host) ?? 0;
+const acquireSlot = (host: string): void => { slotsInUse.set(host, usedOn(host) + 1); };
+const releaseSlot = (host: string): void => {
+  const n = usedOn(host) - 1;
+  if (n <= 0) slotsInUse.delete(host);
+  else slotsInUse.set(host, n);
+};
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Run a bash command as a child, resolving { code, stdout, stderr }. Injection boundary:
+ *  callers pass a FIXED command string or one built only from validated identifiers. */
+function runBash(cmd: string, timeoutMs = 60_000): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (code: number) => { if (!done) { done = true; resolve({ code, stdout, stderr }); } };
+    try {
+      const p = spawn(BASH, ["-c", cmd], { stdio: ["ignore", "pipe", "pipe"], shell: false, env: childEnv() });
+      const timer = setTimeout(() => { try { p.kill("SIGTERM"); } catch { /* gone */ } finish(124); }, timeoutMs);
+      p.stdout?.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+      p.stderr?.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
+      p.on("error", () => { clearTimeout(timer); finish(-1); });
+      p.on("close", (code) => { clearTimeout(timer); finish(code ?? -1); });
+    } catch {
+      finish(-1);
+    }
+  });
+}
+
+/** List RUNNING members of the MIG by short name. Empty on any failure (caller falls back). */
+async function listRunningPoolHosts(): Promise<string[]> {
+  if (!POOL_MIG) return [];
+  const cmd =
+    `gcloud compute instance-groups managed list-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
+    `--filter=instanceStatus=RUNNING --format="value(instance.basename())"`;
+  const { code, stdout } = await runBash(cmd, 30_000);
+  if (code !== 0) return [];
+  return stdout.split(/\r?\n/).map((s) => s.trim()).filter((s) => /^[a-z0-9-]{1,63}$/.test(s));
+}
+
+/** Total members (any state) — the ceiling we must not resize past. */
+async function poolMemberCount(): Promise<number> {
+  if (!POOL_MIG) return 0;
+  const cmd =
+    `gcloud compute instance-groups managed list-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
+    `--format="value(instance.basename())"`;
+  const { code, stdout } = await runBash(cmd, 30_000);
+  if (code !== 0) return 0;
+  return stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).length;
+}
+
+/** Is a host detonation-ready? SSH up + /dev/kvm + containerd active + base image present —
+ *  the exact state orchestrate-microvm.sh needs. Host name is validated before it reaches here. */
+async function hostDetonationReady(host: string): Promise<boolean> {
+  const remote =
+    `[ -e /dev/kvm ] && systemctl is-active --quiet containerd && ` +
+    `sudo /usr/local/bin/nerdctl images cr-detonation-base --format '{{.Repository}}' 2>/dev/null | grep -q cr-detonation-base && echo CR_READY`;
+  // Auto-accept the host key: MIG members are ephemeral and legitimately present new keys, so
+  // gcloud/plink's cached-key check must not block. `printf 'y\n' |` feeds the prompt; `host`
+  // is validated /^[a-z0-9-]+$/ and the remote string is fixed text, so this is injection-free.
+  const cmd = `printf 'y\\n' | gcloud compute ssh ${host} --zone ${POOL_ZONE} --quiet --command ${JSON.stringify(remote)} 2>/dev/null`;
+  const { stdout } = await runBash(cmd, 30_000);
+  return /CR_READY/.test(stdout);
+}
+
+/** Resize the MIG up by one so scale-out-pool activates a standby. Returns the new size, or
+ *  -1 if we're already at the soft ceiling / the resize failed. */
+async function resizePoolUp(): Promise<number> {
+  const total = await poolMemberCount();
+  if (total >= POOL_MAX_HOSTS) return -1;
+  const next = total + 1;
+  const cmd = `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${next}`;
+  const { code } = await runBash(cmd, 60_000);
+  return code === 0 ? next : -1;
+}
+
+// The warm running baseline the pool rests at when there is no load (0 = maximal thrift, first
+// scan pays a cold-start; 1 = one host always warm for an instant first scan). Idle running
+// hosts above (baseline + in-flight demand) are scaled back into the disk-only stopped pool.
+const POOL_BASELINE = Math.max(0, Number(process.env.CR_POOL_BASELINE ?? "1") || 0);
+
+/**
+ * App-driven idle reclaim (pool mode): a MIG member cannot self-poweroff (the reconciler
+ * restarts it — masked via pool-member-startup.sh), so the CONTROLLER reclaims surplus running
+ * hosts by lowering targetSize. Target size we want = max(POOL_BASELINE, hosts needed for the
+ * scans still in flight). Called (fire-and-forget) as scans drain. Never scales below baseline.
+ */
+async function scalePoolInIfIdle(): Promise<void> {
+  if (!POOL_MIG) return;
+  const activeSlots = Array.from(slotsInUse.values()).reduce((a, b) => a + b, 0);
+  const hostsForLoad = Math.ceil(activeSlots / SLOTS_PER_HOST);
+  const desired = Math.max(POOL_BASELINE, hostsForLoad);
+  // Only shrink; growth is handled by resolveTargetHost's resizePoolUp.
+  const cmd = `gcloud compute instance-groups managed describe ${POOL_MIG} --zone ${POOL_ZONE} --format="value(targetSize)"`;
+  const { code, stdout } = await runBash(cmd, 30_000);
+  if (code !== 0) return;
+  const current = Number(stdout.trim());
+  if (!Number.isFinite(current) || current <= desired) return;
+  await runBash(
+    `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${desired}`,
+    60_000,
+  );
+}
+
+type HostPick =
+  | { ok: true; host: string }               // a slot was ACQUIRED on this host (caller must release)
+  | { ok: false; status: number; error: string };
+
+/**
+ * Pick a host with a free detonation slot and ACQUIRE that slot atomically, or fail.
+ *
+ * - Single-host mode (CR_SANDBOX_HOST set, or neither var set -> default host): exactly the
+ *   old behaviour — one host, cap SLOTS_PER_HOST.
+ * - Pool mode (CR_POOL_MIG set): find a RUNNING member with spare capacity; if all live hosts
+ *   are full, resize the MIG up (scale-out-pool activates a standby), wait for it to reach
+ *   detonation-ready, and place the scan there. Bounded by POOL_MAX_HOSTS.
+ *
+ * The slot check-and-acquire is a SYNCHRONOUS critical section (no await between reading
+ * `usedOn` and calling `acquireSlot`), so the single-process ledger can never oversubscribe.
+ */
+async function resolveTargetHost(): Promise<HostPick> {
+  // ── single-host modes ────────────────────────────────────────────────────────────
+  if (SANDBOX_HOST_OVERRIDE || !POOL_MIG) {
+    const host = SANDBOX_HOST_OVERRIDE || "cr-host-build";
+    if (usedOn(host) >= SLOTS_PER_HOST) {
+      return { ok: false, status: 429, error: `sandbox host ${host} at capacity (max ${SLOTS_PER_HOST} concurrent deep runs); retry shortly` };
+    }
+    acquireSlot(host);
+    return { ok: true, host };
+  }
+
+  // ── pool mode ────────────────────────────────────────────────────────────────────
+  // 1) Try to place on an already-RUNNING member with a free slot (least-loaded first so we
+  //    pack onto warm hosts before activating more capacity).
+  const running = await listRunningPoolHosts();
+  if (running.length) {
+    const candidate = running
+      .filter((h) => usedOn(h) < SLOTS_PER_HOST)
+      .sort((a, b) => usedOn(a) - usedOn(b))[0];
+    if (candidate) {
+      acquireSlot(candidate);            // synchronous check-then-acquire (no await between)
+      return { ok: true, host: candidate };
+    }
+  }
+
+  // 2) Every live host is full (or none up). Activate a standby by resizing the MIG up.
+  const globalUsed = Array.from(slotsInUse.values()).reduce((a, b) => a + b, 0);
+  if (globalUsed >= POOL_MAX_HOSTS * SLOTS_PER_HOST) {
+    return { ok: false, status: 429, error: `pool at capacity (${globalUsed}/${POOL_MAX_HOSTS * SLOTS_PER_HOST} slots across up to ${POOL_MAX_HOSTS} hosts); retry shortly` };
+  }
+  const newSize = await resizePoolUp();
+  if (newSize < 0) {
+    return { ok: false, status: 503, error: `pool is full and cannot grow (at the ${POOL_MAX_HOSTS}-host soft cap or resize failed); retry shortly` };
+  }
+
+  // 3) Wait for a newly-RUNNING member (not previously seen) to reach detonation-ready.
+  const before = new Set(running);
+  const deadline = Date.now() + POOL_ACTIVATE_TIMEOUT_S * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const now = await listRunningPoolHosts();
+    // Prefer a freshly-activated host, but also accept any running host that has since freed a slot.
+    const fresh = now.filter((h) => !before.has(h) && usedOn(h) < SLOTS_PER_HOST);
+    const freed = now.filter((h) => usedOn(h) < SLOTS_PER_HOST);
+    for (const h of [...fresh, ...freed]) {
+      if (await hostDetonationReady(h)) {
+        if (usedOn(h) < SLOTS_PER_HOST) {   // re-check under the sync section (map may have changed)
+          acquireSlot(h);
+          return { ok: true, host: h };
+        }
+      }
+    }
+  }
+  return { ok: false, status: 504, error: `activated a standby host but it did not become detonation-ready within ${POOL_ACTIVATE_TIMEOUT_S}s; retry shortly` };
 }
 
 function json(body: unknown, status: number): Response {
@@ -320,11 +517,14 @@ export async function POST(req: Request): Promise<Response> {
     return json({ error: "deep path needs gcloud on the sandbox controller" }, 501);
   }
 
-  // 5. concurrency cap — check + increment with NO await between (no race).
-  if (inFlight >= MAX_CONCURRENT) {
-    return json({ error: "sandbox at capacity (max 2 concurrent deep runs); retry shortly" }, 429);
+  // 5. pick a host with a free detonation slot (single host OR pool) + ACQUIRE that slot.
+  //    resolveTargetHost may resize the pool up + wait for a standby to warm — so this can
+  //    take tens of seconds when the whole pool is saturated (bounded by POOL_ACTIVATE_TIMEOUT_S).
+  const pick = await resolveTargetHost();
+  if (!pick.ok) {
+    return json({ error: pick.error }, pick.status);
   }
-  inFlight++;
+  const host = pick.host;
 
   const slug = buildSlug(owner, repo);
   let stdoutBuf = ""; // accumulates the orchestrator's forensic-record JSON (its stdout)
@@ -333,7 +533,11 @@ export async function POST(req: Request): Promise<Response> {
   const release = () => {
     if (!released) {
       released = true;
-      inFlight = Math.max(0, inFlight - 1);
+      releaseSlot(host);   // free the slot on the exact host this scan ran on
+      // Pool mode: after a scan drains, reclaim surplus running capacity back to the disk-only
+      // stopped standby pool (a MIG member can't self-poweroff — the reconciler restarts it).
+      // Fire-and-forget so tearing down never blocks the client response.
+      if (POOL_MIG) void scalePoolInIfIdle();
     }
   };
 
@@ -386,12 +590,16 @@ export async function POST(req: Request): Promise<Response> {
       });
 
       try {
-        // Run the per-scan orchestrator ON the sandbox host over SSH. We invoke gcloud
+        // Run the per-scan orchestrator ON the chosen host over SSH. We invoke gcloud
         // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
-        // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
-        // so interpolating them into the remote command is injection-free.
+        // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters)
+        // and `host` is a resolved instance name (validated /^[a-z0-9-]+$/ in pool mode, or a
+        // fixed env/default in single-host mode), so interpolating them is injection-free.
+        // `printf 'y\n' |` auto-accepts the host-key cache prompt (same pattern provision-host.sh
+        // uses): pool members are ephemeral MIG instances that legitimately present new SSH host
+        // keys on (re)activation, which the plink cache check would otherwise block on.
         const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
-        const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
+        const gcloudCmd = `printf 'y\\n' | gcloud compute ssh ${host} --zone ${POOL_ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
         child = spawn(BASH, ["-c", gcloudCmd], {
           cwd: REPO_ROOT,
           stdio: ["ignore", "pipe", "pipe"],
