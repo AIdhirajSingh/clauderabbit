@@ -140,11 +140,24 @@ const NETWORK_TOKENS = /\b(fetch|axios|http\.request|https\.request|net\.connect
  * while still surfacing repeated dangerous instances to the read model). */
 const MAX_MATCHES_PER_PATTERN = 3;
 
+/**
+ * Scan `content` for `patterns`, recording a flagged region for each match.
+ *
+ * Returns whether any pattern matched — the caller uses this to set the binary
+ * code SIGNAL — EXCEPT when `docFile` is true. In a documentation/prose file a
+ * match is a MENTION of a credential path / secret format / network literal /
+ * code-exec primitive, not executable behavior, so it is still surfaced as a
+ * region (for the read model and the report), but this returns `false` so it
+ * never sets the binary signal that drives the deterministic penalty. The region
+ * reason is prefixed to make that distinction explicit in the report. This is the
+ * same "region, no binary signal" shape already used for DYNAMIC_CODE_PATTERNS.
+ */
 function scanText(
   file: string,
   content: string,
   patterns: Array<{ re: RegExp; label: string }>,
   regions: FlaggedRegion[],
+  docFile = false,
 ): boolean {
   let hit = false;
   for (const { re, label } of patterns) {
@@ -156,14 +169,18 @@ function scanText(
       count++;
       regions.push({
         file,
-        reason: label,
+        reason: docFile
+          ? `mentioned in documentation/prose — ${label} (not an executable access)`
+          : label,
         snippet: snippetAround(content, m.index),
       });
       // Guard against zero-width matches causing an infinite loop.
       if (m.index === re.lastIndex) re.lastIndex++;
     }
   }
-  return hit;
+  // A match inside a documentation/prose file is a MENTION, not a behavior: keep
+  // the region for context but never let it set the binary code signal.
+  return docFile ? false : hit;
 }
 
 function analyzePackageJson(
@@ -247,6 +264,73 @@ function basename(path: string): string {
   return i === -1 ? path : path.slice(i + 1);
 }
 
+/**
+ * Documentation / prose files whose CONTENT is text ABOUT code, not executable
+ * code. This is the doc-vs-code distinction that prevents a false "credential
+ * access" (or embedded-secret / network / obfuscation) signal firing merely
+ * because a README, changelog, or guide MENTIONS a credential-shaped path,
+ * command, or key format in prose.
+ *
+ * WHY THIS EXISTS: the content patterns below (credential paths, secret formats,
+ * network literals, obfuscation primitives) are byte-level regexes. In a source
+ * file a `.npmrc` / `~/.ssh/id_rsa` literal is (near-always) part of code that
+ * READS that path at runtime — a real behavior. In a README the SAME literal is
+ * almost always documentation: "put your auth token in `.npmrc`", "we never read
+ * `~/.ssh`", an example config, or a security note. A prose MENTION is not a
+ * runtime access, and scoring a Google-owned, 24k-star docs repo as "Dangerous"
+ * (-40) because its README describes `.npmrc` registry configuration is exactly
+ * the false-"Dangerous" this product cannot afford — as damaging to trust as a
+ * false "Safe".
+ *
+ * We do NOT drop these matches silently: a match in a doc file is still surfaced
+ * as a flagged REGION (so the read model inspects it and the report can cite it),
+ * it simply does NOT set the binary code SIGNAL that drives the deterministic
+ * penalty. This mirrors the existing `DYNAMIC_CODE_PATTERNS` treatment (region,
+ * no binary signal) already used for legitimate `new Function('…')`.
+ *
+ * This is precise, not lax: an executable source file that genuinely reads a
+ * credential path, embeds a live key, or hides an eval-of-decoded payload still
+ * trips the full-severity signal, because those files are not documentation.
+ */
+const DOC_EXTENSIONS = new Set([
+  "md", "markdown", "mdx", "mdown", "mkd",
+  "rst", "txt", "text", "adoc", "asciidoc",
+]);
+
+/** Base filenames that are prose/legal even without one of the doc extensions. */
+const DOC_BASENAMES = new Set([
+  "readme", "license", "licence", "notice", "changelog", "changes",
+  "contributing", "authors", "copying", "code_of_conduct", "security",
+  "codeowners",
+]);
+
+/**
+ * True when a file's CONTENT is prose/documentation about code rather than
+ * executable source. Matches by extension, by well-known base name (with or
+ * without extension), or by living under a docs/-style directory.
+ */
+function isDocumentationFile(path: string): boolean {
+  const lowerPath = path.toLowerCase();
+  const name = basename(lowerPath);
+
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1) : "";
+  if (ext && DOC_EXTENSIONS.has(ext)) return true;
+
+  // Base name without extension (e.g. "README", "LICENSE", "README.foo").
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  if (DOC_BASENAMES.has(stem)) return true;
+  // Extensionless well-known files (e.g. a bare "LICENSE" or "NOTICE").
+  if (!ext && DOC_BASENAMES.has(name)) return true;
+
+  // Files that live in a documentation directory are prose regardless of ext,
+  // e.g. `docs/setup.txt`, `documentation/config`, `doc/guide`. Anchored to a
+  // path segment so it never matches a substring like `src/adoctor.js`.
+  if (/(^|\/)(docs?|documentation)\//.test(lowerPath)) return true;
+
+  return false;
+}
+
 /** Run the static scan over the fetched files. Pure, no I/O. */
 export function staticScan(files: FetchedFile[]): StaticScanResult {
   const regions: FlaggedRegion[] = [];
@@ -279,20 +363,29 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     const isInstallScript = /\.(sh|ps1)$/i.test(name) ||
       /(^|\/)(install|setup|postinstall|bootstrap)\./i.test(f.path);
 
-    if (scanText(f.path, f.content, OBFUSCATION_PATTERNS, regions)) {
+    // Documentation/prose files (README, LICENSE, *.md, docs/…) contain text
+    // ABOUT code, not executable code. A credential-path / secret / network /
+    // obfuscation literal in prose is a MENTION, not a runtime behavior, so the
+    // content patterns below surface a region for the read model but must NOT set
+    // the binary code signals that drive the deterministic penalties. Without
+    // this, a README merely describing `.npmrc` registry config trips a -40
+    // credential-access penalty — a product-breaking false "Dangerous".
+    const isDocFile = isDocumentationFile(f.path);
+
+    if (scanText(f.path, f.content, OBFUSCATION_PATTERNS, regions, isDocFile)) {
       signals.obfuscation = true;
     }
     // Region-only: surface dynamic-code use for the read model to judge in
     // context, but set NO binary signal (no auto-escalation, no score penalty on
     // its own). Legitimate metaprogramming must not read as malware.
-    scanText(f.path, f.content, DYNAMIC_CODE_PATTERNS, regions);
-    if (scanText(f.path, f.content, CRED_PATH_PATTERNS, regions)) {
+    scanText(f.path, f.content, DYNAMIC_CODE_PATTERNS, regions, isDocFile);
+    if (scanText(f.path, f.content, CRED_PATH_PATTERNS, regions, isDocFile)) {
       signals.credAccess = true;
     }
-    if (scanText(f.path, f.content, SECRET_PATTERNS, regions)) {
+    if (scanText(f.path, f.content, SECRET_PATTERNS, regions, isDocFile)) {
       signals.embeddedSecret = true;
     }
-    if (scanText(f.path, f.content, NETWORK_PATTERNS, regions)) {
+    if (scanText(f.path, f.content, NETWORK_PATTERNS, regions, isDocFile)) {
       signals.network = true;
       if (isInstallScript) installTimeNetwork = true;
     }

