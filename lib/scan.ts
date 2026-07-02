@@ -36,6 +36,7 @@ import type {
   Severity,
 } from "./types";
 import { enforceVerdict } from "./report-view";
+import { normalizeLocDisplay } from "./format";
 
 /** A successful scan returns a normalized `Report`; a failure carries a message. */
 export type ScanResult =
@@ -399,7 +400,12 @@ export function normalizeReport(raw: unknown): Report {
       sentScore: Math.round(num(reputationRaw.sentScore, 0)),
     },
     stats: {
-      loc: str(statsRaw.loc, "—"),
+      // `loc` arrives as a pre-formatted string from the model (e.g. "9880 KB").
+      // There is no code-side enforcement of that formatting, so defensively
+      // re-format it here if it looks like a raw, unformatted integer — the
+      // one failure mode where the model's own formatting slips (see
+      // `normalizeLocDisplay`). Already-formatted strings pass through as-is.
+      loc: normalizeLocDisplay(str(statsRaw.loc, "—")),
       packages: Math.round(num(statsRaw.packages, 0)),
       stars: str(statsRaw.stars, "—"),
       created: str(statsRaw.created, "unknown"),

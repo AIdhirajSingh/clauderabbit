@@ -12,6 +12,7 @@
  */
 
 import type { ScoreDistribution } from "@/lib/board-data";
+import { formatCount } from "@/lib/format";
 
 interface ScoreChartProps {
   distribution: ScoreDistribution;
@@ -61,7 +62,7 @@ export function ScoreChart({ distribution, loaded }: ScoreChartProps) {
           Score distribution
         </span>
         <span className="tnum" style={{ fontSize: 12, color: "var(--t4)" }}>
-          {loaded ? `${total.toLocaleString()} repos` : "loading…"}
+          {loaded ? `${formatCount(total)} repos` : "loading…"}
         </span>
       </div>
 

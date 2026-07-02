@@ -28,7 +28,21 @@ const eslintConfig = [
     },
   },
   {
-    ignores: ["design-source/**", "supabase/functions/**", ".next/**"],
+    // The Next.js app lint scope is the TypeScript web layer only. The other trees
+    // are different runtimes/artifacts and are not linted here: supabase/functions
+    // is Deno, design-source is the raw design export, and sandbox is the host's
+    // Python/bash orchestration plus intentional CommonJS malware fixtures.
+    // `.claude/**` is the (gitignored) Claude Code harness dir — it can contain
+    // sibling worktree checkouts of this very repo (each with its own nested
+    // sandbox/), so it must be ignored too or ESLint recurses into their fixtures.
+    ignores: [
+      "design-source/**",
+      "supabase/functions/**",
+      "sandbox/**",
+      "**/sandbox/**",
+      ".claude/**",
+      ".next/**",
+    ],
   },
 ];
 

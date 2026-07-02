@@ -68,7 +68,18 @@ export interface ScoringReputation {
 export interface ScoringDynamicOutcome {
   /** A high-value credential (ssh key, aws creds, .npmrc) was read at runtime. */
   credentialReadObserved: boolean;
-  /** The sandbox intercepted real outbound egress the code attempted. */
+  /**
+   * The sandbox intercepted real outbound egress the code attempted — PHASE-AWARE:
+   * true for a run-phase network attempt, a build-phase attempt to an unrecognized
+   * host, or any attempt whose phase could not be determined. A BUILD-phase fetch to
+   * a recognized software-distribution host (github, sourceforge, ...) with no
+   * credential involvement is a supply-chain caution, not an attack, and must be
+   * EXCLUDED here (see assemble-forensics.py's phase-aware classification and
+   * attach-forensics/index.ts's `extractRuntime`, which is the live producer of this
+   * value today). Never derive this from "any captured host at all" — that conflation
+   * is exactly the false-positive this contract prevents (a benign dependency fetch
+   * scoring as a confirmed attack).
+   */
   egressIntercepted: boolean;
   /** The repo cloned, built and ran unattended (a healthiness signal). */
   autoBuildSucceeded: boolean;
@@ -643,11 +654,22 @@ const ESC_STATIC_RESIDUAL_FLOOR = -18;
  * findings + reputation as the bounded adjustments. Pure: no forensic-JSON
  * coupling here, so this stays deterministic + unit-testable. */
 export interface ScoringEscalatedInputs {
-  /** The runtime assessment from verdict.py (`forensics.verdict.dynamic_score`). */
+  /** The runtime assessment from assemble-forensics.py (`forensics.verdict.dynamic_score`). */
   dynamicScore: number;
   /** The repo BOTH built and ran without crashing (auto_build_succeeded && ran_without_crash). */
   exercised: boolean;
-  /** The run was caught attempting egress / credential theft / reached a captured C2 host. */
+  /**
+   * The run was caught attempting REAL credential theft or C2/exfil egress — a
+   * credential-file read, a canary exfil, a RUN-phase network attempt, a BUILD-phase
+   * attempt to an unrecognized host, or a refused pinned/mTLS handshake. PHASE-AWARE:
+   * a BUILD-phase dependency fetch to a recognized software-distribution host (github,
+   * sourceforge, ...) with no credential involvement is a supply-chain caution, not an
+   * attack, and must be false here (see assemble-forensics.py's classification and
+   * attach-forensics/index.ts's `extractRuntime`, the live producer of this value).
+   * This hard-caps the score at ESC_CAUGHT_ATTACK_CEILING below — getting its
+   * semantics wrong either lets a real attack score clean, or false-flags a benign
+   * repo as Malicious (the exact bug this contract exists to prevent).
+   */
   caughtAttack: boolean;
   /** Stage-1 code/behavior findings — residual static concern the run did not resolve. */
   codeRisky: ScoringRiskyItem[];
