@@ -717,14 +717,23 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // which would otherwise drain the shared GitHub token and the model budget. A
   // human or a CLI/MCP agent making occasional real scans never reaches the cap.
   //
-  // Keyed by the trustworthy (gateway-appended) client IP AND the hashed device
-  // id, whichever trips first — so a flood is caught whether it rotates device
-  // ids (IP bucket catches it) or hides behind a NAT/proxy pool with one device
-  // fingerprint (device bucket catches it). The limiter fails OPEN on any DB
-  // error and when no identity is derivable, so it can never take the endpoint
-  // down or block the free first scan.
+  // Keyed by the trustworthy client IP (cf-connecting-ip / leftmost XFF — see
+  // clientIpFromRequest for the empirical reason the earlier rightmost-hop
+  // derivation was broken for Supabase's edge topology) AND the hashed device id,
+  // whichever trips first — so a flood is caught whether it rotates device ids
+  // (IP bucket catches it) or hides behind a NAT/proxy pool with one device
+  // fingerprint (device bucket catches it). For ANONYMOUS traffic (no user
+  // session and no device id) a coarse system-wide circuit breaker also applies,
+  // so a flood spread across many real IPs with no deviceId is still bounded in
+  // aggregate. The limiter fails OPEN on any DB error, so it can never take the
+  // endpoint down or block the free first scan.
   const clientIp = clientIpFromRequest(req);
-  const burst = await checkBurstLimit(db, { ip: clientIp, deviceIdHash: deviceId });
+  const isAnonymous = userId === null && deviceId === null;
+  const burst = await checkBurstLimit(db, {
+    ip: clientIp,
+    deviceIdHash: deviceId,
+    isAnonymous,
+  });
   if (!burst.allowed) {
     console.error(
       `rate limited (${burst.trippedBy}) ip=${clientIp ?? "none"} retryAfter=${burst.retryAfter}s`,
