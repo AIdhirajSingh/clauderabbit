@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "claude-rabbit",
+  "displayName": "Claude Rabbit",
+  "version": "0.1.0",
+  "description": "Scan a GitHub repo, fork, or npm/pip package for safety before you install or clone it. Runs the code in an isolated sandbox and returns an honest 0-100 safety score — never a bare \"Safe\".",
+  "author": {
+    "name": "Adhiraj Singh",
+    "url": "https://github.com/AIdhirajSingh"
+  },
+  "homepage": "https://github.com/AIdhirajSingh/clauderabbit",
+  "repository": "https://github.com/AIdhirajSingh/clauderabbit",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "supply-chain",
+    "sandbox",
+    "scan",
+    "malware",
+    "dependency-safety",
+    "pre-install"
+  ]
+}
