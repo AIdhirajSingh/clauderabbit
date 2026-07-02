@@ -25,6 +25,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { MAP_H, MAP_W, clusterOffsets } from "@/lib/world-geo";
 import { WORLD_COUNTRIES, WORLD_GRATICULE } from "@/lib/world-geo-data";
 import type { BoardDot } from "@/lib/board-data";
+import { formatCount } from "@/lib/format";
 
 interface WorldMapProps {
   dots: BoardDot[];
@@ -175,7 +176,7 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
           Where scanned code comes from
         </span>
         <span className="tnum" style={{ fontSize: 12, color: "var(--t4)" }}>
-          {loaded ? `${dots.length.toLocaleString()} repo${dots.length === 1 ? "" : "s"} mapped` : "loading…"}
+          {loaded ? `${formatCount(dots.length)} repo${dots.length === 1 ? "" : "s"} mapped` : "loading…"}
         </span>
       </div>
 
