@@ -43,6 +43,7 @@
     "design-source",
     "supabase/functions",
     "sandbox",
-    "mcp-server"
+    "mcp-server",
+    "cli"
   ]
 }
