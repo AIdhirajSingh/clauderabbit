@@ -35,6 +35,7 @@
  * argv array (never an interpolated shell string), so they cannot inject commands.
  */
 
+import { existsSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   deepScanQueue,
@@ -49,7 +50,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // ── server-only config (NEVER NEXT_PUBLIC for the runner key / zone) ────────────
-const ZONE = process.env.CR_SANDBOX_ZONE ?? "us-central1-a";
 const RUNNER_KEY = process.env.CR_DEEP_RUNNER_KEY ?? "";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 // The publishable (anon) key — PUBLIC, fine server-side. attach-forensics sits
@@ -67,13 +67,47 @@ const SANDBOX_HOST = process.env.CR_SANDBOX_HOST ?? "cr-host-build";
 const REMOTE_ORCH = process.env.CR_REMOTE_ORCH ?? "/opt/cr/microvm/orchestrate-microvm.sh";
 
 // The dev/controller process may be launched with a narrower PATH than an
-// interactive shell (e.g. the preview runner), so the `bash` + `gcloud` the moat
-// needs may not resolve. These let the operator point at the absolute bash and
-// prepend the tool dirs (gcloud SDK bin, git bin) onto the child PATH — sourced
-// from machine-specific config (.env.local), never hardcoded. Both default to the
-// inherited environment, so a controller with a complete PATH needs neither.
-const BASH = process.env.CR_BASH || "bash";
-const PATH_PREPEND = process.env.CR_SANDBOX_PATH_PREPEND || "";
+// interactive shell — this repo is checked out into many separate worktrees, each
+// with its OWN gitignored .env.local, so a fix recorded as "set CR_BASH in
+// .env.local" silently regresses in every checkout that doesn't happen to have
+// that line. CR_BASH / CR_SANDBOX_PATH_PREPEND remain a supported override for an
+// unusual machine, but the real fix has to work with NEITHER set: probe the
+// standard install locations directly (verified to exist on disk) before ever
+// falling back to a bare command name that depends on the inherited PATH.
+const WIN32_BASH_CANDIDATES = [
+  "C:\\Program Files\\Git\\bin\\bash.exe",
+  "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+];
+
+function resolveBash(): string {
+  if (process.env.CR_BASH) return process.env.CR_BASH;
+  if (process.platform === "win32") {
+    for (const candidate of WIN32_BASH_CANDIDATES) {
+      try {
+        if (existsSync(candidate)) return candidate;
+      } catch {
+        /* keep probing */
+      }
+    }
+  }
+  return "bash";
+}
+
+function resolvePathPrepend(): string {
+  if (process.env.CR_SANDBOX_PATH_PREPEND) return process.env.CR_SANDBOX_PATH_PREPEND;
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    const candidate = `${process.env.LOCALAPPDATA}\\Google\\Cloud SDK\\google-cloud-sdk\\bin`;
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      /* fall through */
+    }
+  }
+  return "";
+}
+
+const BASH = resolveBash();
+const PATH_PREPEND = resolvePathPrepend();
 
 /** Child env with the configured tool dirs prepended to PATH (or the inherited env). */
 function childEnv(): NodeJS.ProcessEnv {
@@ -180,6 +214,50 @@ function hasGcloud(): Promise<boolean> {
       resolve(false);
     }
   });
+}
+
+// The host's zone is live GCP state, not machine config — provision-host.sh's own
+// documented zone-fallback list already means a recreation can land cr-host-build
+// in a different zone than last time (observed for real twice this session). A
+// static CR_SANDBOX_ZONE env var requires that new zone to be hand-copied into
+// every checkout's .env.local, which is exactly the kind of drift that caused this
+// bug. Resolve it live from GCP instead, falling back to the env var (then a
+// last-resort default) only if the discovery call itself fails.
+const ZONE_CACHE_MS = 5 * 60_000;
+let cachedZone: { zone: string; at: number } | null = null;
+
+function discoverZone(): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      const p = spawn(
+        BASH,
+        ["-c", `gcloud compute instances list --filter="name=${SANDBOX_HOST}" --format="value(zone)"`],
+        { stdio: ["ignore", "pipe", "ignore"], shell: false, env: childEnv() },
+      );
+      let out = "";
+      p.stdout?.on("data", (chunk: Buffer) => {
+        out += chunk.toString("utf8");
+      });
+      p.on("error", () => resolve(null));
+      p.on("close", (code) => {
+        if (code !== 0) return resolve(null);
+        const zone = out.trim().split(/\s+/)[0];
+        resolve(zone || null);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function resolveZone(): Promise<string> {
+  if (cachedZone && Date.now() - cachedZone.at < ZONE_CACHE_MS) return cachedZone.zone;
+  const discovered = await discoverZone();
+  if (discovered) {
+    cachedZone = { zone: discovered, at: Date.now() };
+    return discovered;
+  }
+  return process.env.CR_SANDBOX_ZONE || "us-central1-a";
 }
 
 interface Stage {
@@ -445,7 +523,7 @@ export async function POST(req: Request): Promise<Response> {
        * pre-queue path: same gcloud-over-bash dispatch, same milestone parsing,
        * same forensics-attach + release semantics.
        */
-      const startDetonation = () => {
+      const startDetonation = async () => {
         // Best-effort: mark the queue row active for observability (never blocks).
         void setStatus(slug, "active");
         // M4: flush an initial stage immediately so the client sees life at once.
@@ -460,8 +538,9 @@ export async function POST(req: Request): Promise<Response> {
           // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
           // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
           // so interpolating them into the remote command is injection-free.
+          const zone = await resolveZone();
           const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
-          const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
+          const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${zone} --quiet --command ${JSON.stringify(remoteCmd)}`;
           child = spawn(BASH, ["-c", gcloudCmd], {
             cwd: REPO_ROOT,
             stdio: ["ignore", "pipe", "pipe"],
@@ -555,7 +634,7 @@ export async function POST(req: Request): Promise<Response> {
         inFlight++;
         acquiredSlot = true;
         deepScanQueue.remove(slug); // leave the FIFO line; we're running now
-        startDetonation();
+        void startDetonation();
         return true;
       };
 
