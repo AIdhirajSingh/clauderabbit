@@ -13,18 +13,58 @@
  */
 
 import { useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import { AppProvider, useApp } from "./state";
 import { Background } from "./components/Background";
 import { Sidebar } from "./components/Sidebar";
 import { Toast } from "./components/Toast";
 import { LogsOverlay } from "./components/LogsOverlay";
 import { HomeScreen } from "./screens/HomeScreen";
-import { ProcessingScreen } from "./screens/ProcessingScreen";
-import { ReportScreen } from "./screens/ReportScreen";
-import { LeaderboardScreen } from "./screens/LeaderboardScreen";
-import { LoginScreen } from "./screens/LoginScreen";
-import { DashboardScreen } from "./screens/DashboardScreen";
-import { ProfileScreen } from "./screens/ProfileScreen";
+import { ScreenFallback } from "./components/ScreenFallback";
+
+/**
+ * Code-splitting: only HomeScreen is needed for the first paint. Every other
+ * screen is reached only after a user interaction (scan a repo, open the board,
+ * sign in, …), so each is loaded lazily via next/dynamic. This keeps the heavy,
+ * first-paint-irrelevant code out of the homepage's initial JS bundle.
+ *
+ * The biggest win is the leaderboard: LeaderboardScreen → WorldMap pulls in the
+ * ~138 KB baked Natural Earth country-path dataset (lib/world-geo-data). Statically
+ * imported it landed in the main app chunk and shipped on the homepage even though
+ * the board is never shown until the user opens it. Deferred here, that dataset is
+ * fetched only when the board is actually opened.
+ *
+ * `ssr: false` is correct: these are all "use client" screens rendered inside the
+ * client-only SPA shell (page.tsx mounts <AppRoot/> as a client component), so
+ * there is no server render of them to preserve — and it avoids bundling their code
+ * into the server output too. Each shows a lightweight themed fallback while its
+ * chunk loads; screen transitions were already async-feeling in the SPA, so a brief
+ * fallback is faithful, not a regression.
+ */
+const ProcessingScreen = dynamic(
+  () => import("./screens/ProcessingScreen").then((m) => m.ProcessingScreen),
+  { ssr: false, loading: () => <ScreenFallback /> },
+);
+const ReportScreen = dynamic(
+  () => import("./screens/ReportScreen").then((m) => m.ReportScreen),
+  { ssr: false, loading: () => <ScreenFallback /> },
+);
+const LeaderboardScreen = dynamic(
+  () => import("./screens/LeaderboardScreen").then((m) => m.LeaderboardScreen),
+  { ssr: false, loading: () => <ScreenFallback /> },
+);
+const LoginScreen = dynamic(
+  () => import("./screens/LoginScreen").then((m) => m.LoginScreen),
+  { ssr: false, loading: () => <ScreenFallback /> },
+);
+const DashboardScreen = dynamic(
+  () => import("./screens/DashboardScreen").then((m) => m.DashboardScreen),
+  { ssr: false, loading: () => <ScreenFallback /> },
+);
+const ProfileScreen = dynamic(
+  () => import("./screens/ProfileScreen").then((m) => m.ProfileScreen),
+  { ssr: false, loading: () => <ScreenFallback /> },
+);
 
 function CurrentScreen() {
   const { state } = useApp();
