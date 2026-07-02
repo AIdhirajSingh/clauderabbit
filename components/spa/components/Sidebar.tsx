@@ -8,12 +8,80 @@
  * collapse/expand behavior comes from `onSidebarClick`.
  */
 
+import { useState } from "react";
 import { onActivate, useApp } from "../state";
 import styles from "../spa.module.css";
 import { RabbitMark, ThemeIcon } from "./glyphs";
 
 const AVATAR_GRADIENT = "linear-gradient(135deg, oklch(0.62 0.16 25), oklch(0.55 0.15 320))";
 const AVATAR_SHADOW = "0 2px 8px oklch(0.55 0.15 320 / 0.4)";
+
+/**
+ * The signed-in user's avatar: their real Google/GitHub photo when present,
+ * falling back to the gradient initial. The photo is a raw <img> (external OAuth
+ * avatar CDNs — googleusercontent, avatars.githubusercontent — are permitted by the
+ * CSP `img-src https:`; a remotePatterns allowlist for arbitrary avatar hosts would
+ * be brittle). `referrerPolicy="no-referrer"` avoids leaking the app origin to the
+ * CDN, and a load error falls back to the initial so a dead URL never shows a broken
+ * image icon.
+ */
+export function Avatar({
+  image,
+  initial,
+  size,
+  fontSize,
+}: {
+  image: string;
+  initial: string;
+  size: number;
+  fontSize: number;
+}) {
+  const [broken, setBroken] = useState(false);
+  // Reset the error state when the avatar URL changes (e.g. a TOKEN_REFRESHED that
+  // swaps avatar_url in-session), so a prior 404 never suppresses a now-valid photo.
+  // The React-idiomatic "adjust state during render when a prop changes" pattern —
+  // no effect, no cascading re-render.
+  const [prevImage, setPrevImage] = useState(image);
+  if (image !== prevImage) {
+    setPrevImage(image);
+    setBroken(false);
+  }
+  const showImg = !!image && !broken;
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: showImg ? "var(--s3)" : AVATAR_GRADIENT,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize,
+        fontWeight: 600,
+        color: "#fff",
+        flexShrink: 0,
+        boxShadow: AVATAR_SHADOW,
+        overflow: "hidden",
+      }}
+    >
+      {showImg ? (
+        // eslint-disable-next-line @next/next/no-img-element -- external OAuth avatar CDN; next/image remotePatterns for arbitrary avatar hosts is brittle
+        <img
+          src={image}
+          alt=""
+          width={size}
+          height={size}
+          referrerPolicy="no-referrer"
+          onError={() => setBroken(true)}
+          style={{ width: size, height: size, objectFit: "cover", display: "block" }}
+        />
+      ) : (
+        initial
+      )}
+    </div>
+  );
+}
 
 export function Sidebar() {
   const app = useApp();
@@ -242,24 +310,7 @@ export function Sidebar() {
                 transition: "background .14s var(--ease)",
               }}
             >
-              <div
-                style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: "50%",
-                  background: AVATAR_GRADIENT,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: "#fff",
-                  flexShrink: 0,
-                  boxShadow: AVATAR_SHADOW,
-                }}
-              >
-                {profileInitial}
-              </div>
+              <Avatar image={state.profileImage} initial={profileInitial} size={34} fontSize={14} />
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div
                   style={{
@@ -438,23 +489,7 @@ export function Sidebar() {
               transition: "transform .14s var(--ease)",
             }}
           >
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: "50%",
-                background: AVATAR_GRADIENT,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 14,
-                fontWeight: 600,
-                color: "#fff",
-                boxShadow: AVATAR_SHADOW,
-              }}
-            >
-              {profileInitial}
-            </div>
+            <Avatar image={state.profileImage} initial={profileInitial} size={34} fontSize={14} />
           </button>
         </div>
       )}

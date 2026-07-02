@@ -101,8 +101,18 @@ Deno.test("bounds untrusted input: stage count, line count, line length", () => 
 });
 
 Deno.test("isDeepRunChapter recognizes run chapters but not stage-1 chapters", () => {
-  // Run chapters a re-attach must drop (else duplicates compound).
-  for (const ch of ["Escalate", "Provision detonation VM", "Build under containment", "Sandbox run", " Sandbox run "]) {
+  // Run chapters a re-attach must drop (else duplicates compound). Covers the
+  // current microVM+forge names, the agentic chapter, and a retired two-VM name.
+  for (const ch of [
+    "Escalate",
+    "Boot the microVM",
+    "Detonate through the forge",
+    "Build under containment",
+    "Three agents read the code",
+    "Provision detonation VM",
+    "Sandbox run",
+    " Sandbox run ",
+  ]) {
     assert(isDeepRunChapter(ch), `${ch} is a deep-run chapter`);
   }
   // Stage-1 chapters a re-attach must KEEP (note "Clone" != the run's "Clone + pin").
