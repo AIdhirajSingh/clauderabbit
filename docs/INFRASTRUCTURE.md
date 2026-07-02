@@ -140,7 +140,11 @@ reproducible from committed code** — nothing on it is hand-tuned that isn't in
   **zone fallback list** and prints `CR_HOST_ZONE=<zone>` at the end.
 - **Set the zone to match:** put the landed zone in `.env.local` as `CR_SANDBOX_ZONE` so
   `/api/deep` SSHes to the right place (the app reaches the host over `gcloud compute ssh`).
-  As of the last provision the host is in **`us-east1-b`** (us-central1 was stocked out).
+  As of the last provision (a `--recreate` forced by a `us-east1-b` zone stockout that
+  persisted for an extended period) the host landed in **`us-east4-c`**, after the
+  fallback list tried `us-central1-a/c/b/f` and `us-east1-b` in turn, all stocked out
+  at that moment — this is real, observed, transient GCP capacity behavior, not a fixed
+  zone assignment; a future provision may land somewhere else in the list.
 - **Cost rails (the host must never bleed credit unattended — it once ran ~2 days after an
   interrupted session):** an **idle auto-shutdown watchdog** (`setup-host.sh` Stage 8:
   systemd timer, `cr-idle-shutdown.sh`) powers the host **OFF after ~30 min** with no
