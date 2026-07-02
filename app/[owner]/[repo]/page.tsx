@@ -21,6 +21,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { buildReportView, logColor } from "@/lib/report-view";
 import { fetchLatestReport } from "@/lib/report-fetch";
+import { safeJsonLd } from "@/lib/json-ld";
 import { ReportBody } from "@/components/spa/components/ReportBody";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import type { Report } from "@/lib/types";
@@ -117,10 +118,17 @@ function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
     },
     author: { "@type": "Organization", name: "Claude Rabbit", url: SITE_URL },
   };
+  // `view.summary` (→ `ld.reviewBody`) is LLM-generated and can echo
+  // attacker-influenced text (repo name/README, or a sandbox-captured hostname).
+  // `JSON.stringify` does NOT escape `<`/`>`, so a summary containing
+  // `</script>…` would break out of this inline script and execute — stored XSS
+  // on a public, SEO-indexed page. `safeJsonLd` escapes those bytes so the
+  // breakout can't survive HTML tokenization, while the JSON-LD stays valid for
+  // Google's parser (it decodes `<` back to `<`).
   return (
     <script
       type="application/ld+json"
-      dangerouslySetInnerHTML={{ __html: JSON.stringify(ld) }}
+      dangerouslySetInnerHTML={{ __html: safeJsonLd(ld) }}
     />
   );
 }
