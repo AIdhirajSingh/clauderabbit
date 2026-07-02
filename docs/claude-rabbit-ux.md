@@ -138,4 +138,6 @@ Quiet interactions that make it feel effortless:
 
 ## Out of scope (do not build)
 
-No subscriptions or pricing screens, no code-quality / refactoring review, no accounts beyond the simple login, no Hugging Face / model scanning, no CLI or settings suite, no leaderboard moderation tooling. Login and Dashboard exist as specified here; nothing more elaborate.
+No subscriptions or pricing screens, no code-quality / refactoring review, no accounts beyond the simple login, no Hugging Face / model scanning, no settings suite, no leaderboard moderation tooling. Login and Dashboard exist as specified here; nothing more elaborate.
+
+Note: this document governs the **web app's eight screens** only. The CLI, MCP server, and Claude Code plugin that ship alongside it (`cli/`, `mcp-server/`, `plugins/claude-rabbit/`) are separate distribution surfaces with no web UI — they are real and in the repo, but they are terminal/agent surfaces, not screens, so they are simply outside this document's remit rather than out of the product's scope.

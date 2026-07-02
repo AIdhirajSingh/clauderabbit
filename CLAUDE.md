@@ -110,7 +110,9 @@ Two numbers prove or kill the moat and must be measured on real runs, not estima
 
 **Login / limits / ads:** first scan free, no login, no ad. After that, login is required and a 15-second rewarded ad gates each result — every fresh scan and every cached report view alike. Daily limits tracked by login + device: 3 stage-1 scans/day, 1 dynamic scan/day. "Unlimited" means unlimited cached views (each still ad-gated after the first scan) and generously rate-limited fresh deep scans — never unlimited unmetered deep scans.
 
-**Not in V1 (do not build, do not drift into):** no code-quality/refactoring review, no subscriptions, no accounts/dashboards beyond simple login, no Hugging Face/model scanning, no CLI or MCP surface, no leaderboard moderation tooling beyond basic display. These are roadmap, not V1.
+**Distribution surfaces — shipped, now real (scope expansion beyond the original V1 plan, authorized by direct instruction as "the primary growth channel for a free ad-free product"):** a real **MCP server** (`mcp-server/`, `scan_repo`/`get_report` tools over stdio, calling the production Supabase scan API), a real **CLI** (`cli/`, package `claude-rabbit-cli`, with `scan`/`report`/`npm-install`/`pnpm-install`/`git-clone` subcommands and opt-in shell hooks that scan before install/clone), and a real **Claude Code plugin** (`plugins/claude-rabbit/`, a `scan-repo` skill plus a `PreToolUse` Bash hook that intercepts install/clone commands). These are built, in the repo, and reuse the same server-side scan pipeline — they are not roadmap. Each honors the same rails as the web app: honest verdict, never a bare "Safe."
+
+**Not in V1 (do not build, do not drift into):** no code-quality/refactoring review, no subscriptions, no accounts/dashboards beyond simple login, no Hugging Face/model scanning, no leaderboard moderation tooling beyond basic display. These are roadmap, not V1.
 
 ---
 
