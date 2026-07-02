@@ -1,0 +1,83 @@
+/**
+ * Unit tests for the deep-queue request-shape validation (ops.ts).
+ *
+ * Run: `deno test supabase/functions/deep-queue/ops.test.ts`
+ *
+ * The function is a thin, runner-key-gated wrapper over service-role RPCs; the ONE
+ * piece of logic worth testing in isolation is that the untrusted POST body is
+ * strictly parsed into a discrete, charset-clean queue op — so a malformed or
+ * hostile body is rejected BEFORE it reaches the DB layer.
+ */
+
+import { assertEquals } from "jsr:@std/assert@1";
+import { isSegment, isSha, isStatus, isToken, parseQueueOp } from "./ops.ts";
+
+Deno.test("isToken accepts the buildSlug charset, rejects slashes/metacharacters/empties", () => {
+  assertEquals(isToken("psf-requests-abc123"), true);
+  assertEquals(isToken("scan"), true);
+  assertEquals(isToken(""), false);
+  assertEquals(isToken("has/slash"), false);
+  assertEquals(isToken("has space"), false);
+  assertEquals(isToken("a".repeat(65)), false); // > 64
+  assertEquals(isToken(42), false);
+});
+
+Deno.test("isSegment / isSha / isStatus guard their fields", () => {
+  assertEquals(isSegment("AmrDab"), true);
+  assertEquals(isSegment("clawd.cursor_v2"), true);
+  assertEquals(isSegment("bad/seg"), false);
+  assertEquals(isSha("e6585f17"), true);
+  assertEquals(isSha("main"), true);
+  assertEquals(isSha("bad sha"), false);
+  assertEquals(isStatus("queued"), true);
+  assertEquals(isStatus("timed_out"), true);
+  assertEquals(isStatus("running"), false); // not an enum member
+  assertEquals(isStatus(""), false);
+});
+
+Deno.test("parseQueueOp: a valid enqueue op round-trips its fields", () => {
+  const r = parseQueueOp({
+    op: "enqueue",
+    token: "psf-requests-abc",
+    owner: "psf",
+    repo: "requests",
+    sha: "abc123",
+  });
+  assertEquals(r.ok, true);
+  if (r.ok) {
+    assertEquals(r.value.op, "enqueue");
+    if (r.value.op === "enqueue") {
+      assertEquals(r.value.owner, "psf");
+      assertEquals(r.value.repo, "requests");
+      assertEquals(r.value.sha, "abc123");
+    }
+  }
+});
+
+Deno.test("parseQueueOp: enqueue rejects a dirty owner/token/sha", () => {
+  const bad = parseQueueOp({ op: "enqueue", token: "t", owner: "a/b", repo: "r", sha: "s" });
+  assertEquals(bad.ok, false);
+  const badTok = parseQueueOp({ op: "enqueue", token: "bad tok", owner: "a", repo: "r", sha: "s" });
+  assertEquals(badTok.ok, false);
+});
+
+Deno.test("parseQueueOp: a valid position op needs only a clean token", () => {
+  const r = parseQueueOp({ op: "position", token: "abc-123" });
+  assertEquals(r.ok, true);
+  if (r.ok) assertEquals(r.value.op, "position");
+  assertEquals(parseQueueOp({ op: "position", token: "" }).ok, false);
+});
+
+Deno.test("parseQueueOp: a valid status op requires a real enum status", () => {
+  const r = parseQueueOp({ op: "status", token: "abc-123", status: "active" });
+  assertEquals(r.ok, true);
+  if (r.ok && r.value.op === "status") assertEquals(r.value.status, "active");
+  assertEquals(parseQueueOp({ op: "status", token: "abc-123", status: "nope" }).ok, false);
+});
+
+Deno.test("parseQueueOp: unknown op and non-object bodies are rejected", () => {
+  assertEquals(parseQueueOp({ op: "delete", token: "abc-123" }).ok, false);
+  assertEquals(parseQueueOp(null).ok, false);
+  assertEquals(parseQueueOp("nope").ok, false);
+  assertEquals(parseQueueOp({}).ok, false);
+});
