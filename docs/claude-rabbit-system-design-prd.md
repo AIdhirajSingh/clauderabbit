@@ -64,10 +64,10 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
                           confident clean → SHIP VERDICT                  │
                                    ▼ suspicious / "can't tell"            │
         ┌──────────────────────── DEEP PATH (~5%) ─────────────────────────┐
-        │  6. Provision GCP sandbox VM (golden image, reset每scan)          │
+        │  6. Dispatch to the warm sandbox host (queue if both slots busy) │
         │  7. OpenCode harness + Kimi K2.7 agent(s)/swarm:                  │
         │       clone → build → run → adversarial input → observe behavior  │
-        │  8. Reimage sandbox to square-1 (abuse protection)               │
+        │  8. Reset: destroy the microVM, reimage to square-1 (abuse protect)│
         └───────────────────────────────┬──────────────────────────────────┘
                                          ▼
                        ┌───────────────────────────┐
@@ -84,7 +84,7 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 **Web layer (Next.js).** Homepage with the global input field, live activity feed, viral repos, and the dangerous-repos leaderboard. Server-rendered `/owner/repo` report pages (the SEO surface). API routes orchestrate scans and serve cached reports. URL trick: swapping the domain on any GitHub URL pulls up that repo's report.
 
-**Orchestrator (Next.js API route + queue).** Receives a scan request, runs the cache check, drives the fast path, evaluates the escalation gate, and dispatches deep scans to the sandbox pool. Returns the blended verdict.
+**Orchestrator (Next.js API route + queue).** Receives a scan request, runs the cache check, drives the fast path, evaluates the escalation gate, and dispatches deep scans to the single warm sandbox host — queuing honestly (real FIFO, live position/wait, honest timeout) when both detonation slots are busy. Returns the blended verdict.
 
 **Static scan layer.** Off-the-shelf scanners run in the cheap environment: ClamAV (signatures), Semgrep (patterns), YARA (custom rules), plus secret/install-hook detection. Output: flagged files/regions + signal, fed to the read model. Near-zero token cost.
 
@@ -94,7 +94,7 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 **Escalation gate.** A rule + confidence threshold. Escalates on: obfuscation, unexplained network calls, credential/secret access, install scripts doing too much, brand-new owner, or low read-confidence. Suspicion-triggered, not time-triggered. Tuned over time — explicitly half measured, half judgment.
 
-**Sandbox (deep path).** An **on-demand pool of Google Cloud VMs** provisioned from a committed **golden GCE image** (`cr-detonation-golden`) via a Managed Instance Group with a stopped standby pool: each host boots the common runtimes (Node, Python, C/C++), a real terminal, and the agent harness pre-installed. Idle hosts rest as disk-only stopped standbys (near-zero cost); a scan that needs capacity starts a warm standby (≈44s from stopped, ≈88s cold from image) rather than queuing behind one shared box. Each host runs two isolated detonation slots; the orchestrator (`app/api/deep`) spreads scans least-loaded-first and reclaims idle hosts to a warm baseline. Real ceiling today ≈48 concurrent scans (`INSTANCES`=24 quota), ≈100 at the `N2_CPUS`=200 cap, no quota bump. A single manually-provisioned host (`cr-host-build`, cap 2) remains as a fallback. Network egress locked down, no real credentials present, resources capped. **Reimaged to square-1 after every scan** — this reset is the abuse protection. Full lifecycle in `docs/INFRASTRUCTURE.md` §8b/§8c.
+**Sandbox (deep path).** A **single always-on Google Cloud VM** (`cr-host-build`, n2-standard-4), pre-loaded with the common runtimes (Node, Python, C/C++), a real terminal, and the agent harness. `app/api/deep` dispatches directly to it over `gcloud compute ssh`, capped at 2 simultaneous detonation slots (its 4-vCPU budget). A 3rd concurrent request no longer gets a flat 429: it joins a real FIFO queue (`lib/deep-queue.ts`, backed by a `deep_scan_queue` table + `deep-queue` edge function for observability and honest position reporting), sees a live "position N of M, ~X min" estimate, and is admitted the instant a slot frees, or times out honestly after 8 minutes. An on-demand golden-image + Managed Instance Group standby-pool architecture was built and benchmarked this session as a scale-out alternative but was reverted after real measurements showed its activation latency (21–88s to wake a host) didn't deliver the near-instant availability the product actually needs; it remains a documented future option if real traffic ever shows the 2-slot ceiling is the true bottleneck. Network egress locked down, no real credentials present, resources capped. **Reimaged to square-1 after every scan** — this reset is the abuse protection. Full lifecycle, the queue design, and the pool's preserved measurements are in `docs/INFRASTRUCTURE.md` §8b.
 
 **Dynamic brain.** **Kimi K2.7 Code** (open-weight, latest) drives the sandbox agents through OpenCode. Parallelism (swarm-like) comes from running multiple OpenCode sessions, one terminal each. Bulk reasoning can route to DeepSeek to control output-token cost; K2.7 handles final adjudication.
 
@@ -113,8 +113,8 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 3. **Rate-limit / ad gate.** The first scan is free with no login or ad. After that, each result (fresh or cached) requires login and the rewarded ad to complete, and passes a per-user/IP rate limit (generous; abuse protection, not a paywall).
 4. **Fast path.** Clone metadata + run static scanners → flagged regions. In parallel, reputation lookup (owner-cached). DeepSeek reads flagged regions, comprehends, blends, emits score + confidence.
 5. **Gate.** Confident clean → go to step 8. Suspicious / low-confidence → escalate.
-6. **Deep path.** Pull a sandbox VM from the pool. OpenCode + K2.7 clone, build, run, probe with adversarial/synthetic input, observe behavior. Capped output per agent; right-sized agent count.
-7. **Reset.** Reimage the VM to square-1. Return it to the pool.
+6. **Deep path.** Dispatch to the single warm sandbox host (queue if both detonation slots are busy). OpenCode + K2.7 clone, build, run, probe with adversarial/synthetic input, observe behavior. Capped output per agent; right-sized agent count.
+7. **Reset.** Reimage the microVM to square-1 and destroy it; the host itself stays warm for the next detonation.
 8. **Blend & emit.** Combine code comprehension, runtime behavior, static findings, reputation, owner history → one 0–100 score and the structured findings that drive the report (reputation vs code/behavior signals separated; never a bare "Safe").
 9. **Render & persist.** Generate the report on the frontend from the `design.md` spec (boilerplate cached, per-repo parts fresh). Persist keyed by SHA. Publish `/owner/repo`. Update homepage feed / leaderboard if relevant.
 
@@ -131,7 +131,7 @@ The **current shipped** model layer is all-Gemini via the Vertex AI backend, sit
 | Reputation search | Vertex-side lookup | Brave Search API (owner-cached) | owner history, account age, stars, sentiment |
 | Deep / agent brain | **`gemini-3.5-flash` via Vertex** | Kimi K2.7 Code | drives the sandbox agents |
 | Agent harness | agentic analyzer (explore + sinkhole detonate) | OpenCode (MIT) swarm | knowledge-graph explore, then detonate chosen files |
-| Sandbox | **Google Cloud — golden-image MIG + standby pool** | — | reset every scan; on-demand compute pool, see §8c of INFRASTRUCTURE |
+| Sandbox | **Google Cloud — single always-on host (`cr-host-build`) + real FIFO queue** | — | reset every scan; cap 2 concurrent detonations, 3rd queues honestly; see §8b of INFRASTRUCTURE |
 | Static signals | in-house extractor (obfuscation, install-hook, cred-access, secret, typosquat, network) with a doc-vs-code distinction | ClamAV/Semgrep/YARA | near-zero cost; prose mentions never scored as code |
 | Scoring | **code-computed deterministic formula** (`_shared/scoring.ts`) | — | the model feeds signals; code decides the cited 0–100 |
 | Storage/cache | keyed by commit SHA; reputation by owner | — | the survival mechanism |
