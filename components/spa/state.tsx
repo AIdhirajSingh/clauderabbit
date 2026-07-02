@@ -1349,8 +1349,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // yields owner/repo only; the edge function resolves the default branch. ──
     const { owner, repo } = parsed!;
     // A repo we already scanned this session: serve the live-cached report.
+    // EXCEPT when that cached copy is an escalated-but-incomplete sandbox run
+    // (deep === true, no forensics yet) — that state can arrive here from the
+    // account-history hydration (loadUserHistory reads the DB's latest row
+    // as-is) just as easily as from an in-session scan, so without this check
+    // a genuinely incomplete run would be served as "final" forever: every
+    // resubmission of the same repo would short-circuit right back to the
+    // stale "Sandbox run incomplete" badge and never reach the retry path
+    // below (startLiveProcessing -> runScan -> the deep-retry branch) that
+    // already exists specifically to finish an interrupted detonation.
     const cachedReport = stateRef.current.liveReports[id];
-    if (cachedReport && stateRef.current.scannedIds.includes(id)) {
+    const cachedIsIncompleteRun = Boolean(cachedReport?.deep && !cachedReport.forensics);
+    if (cachedReport && !cachedIsIncompleteRun && stateRef.current.scannedIds.includes(id)) {
       patch({
         activeRepoId: id,
         sourceScreen: from,
