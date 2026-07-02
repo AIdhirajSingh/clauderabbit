@@ -184,12 +184,13 @@ Deno.test("reputation deltas are bounded and separate from code deltas", () => {
   const clean = computeScore(cleanInputs);
   const dangerous = computeScore(dangerousInputs);
 
-  // Assert — reputation total is bounded.
+  // Assert — reputation total is bounded (REP_MAX raised 14 -> 20; REP_MIN
+  // unchanged at -18).
   const repDeltas = clean.breakdown.filter((d) => d.group === "reputation");
   const repTotal = repDeltas.reduce((acc, d) => acc + d.delta, 0);
   assert(
-    repTotal <= 14 && repTotal >= -18,
-    `reputation total ${repTotal} must be within [-18, 14]`,
+    repTotal <= 20 && repTotal >= -18,
+    `reputation total ${repTotal} must be within [-18, 20]`,
   );
   // Every reputation delta is tagged reputation; code deltas are tagged code.
   for (const d of repDeltas) assertEquals(d.group, "reputation");
@@ -201,6 +202,286 @@ Deno.test("reputation deltas are bounded and separate from code deltas", () => {
   );
   assertBreakdownConsistent(clean);
   assertBreakdownConsistent(dangerous);
+});
+
+// --- Escalation-fairness gate (escalation_pending only w/ a real code signal) --
+//
+// These cover the fairness fix: a repo escalated PURELY on low confidence (or an
+// opaque model `escalate` flag) with a fully clean static read and zero risky
+// findings should not eat the same flat `escalation_pending` penalty as a repo
+// escalated because of a genuine negative code/behavior signal.
+
+Deno.test("fairness: clean, high-reputation, low-confidence-escalated repo scores fairly (>=80), no escalation_pending", () => {
+  // Arrange — mirrors a google-labs-code/design.md-style scan: zero static
+  // signals, zero risky findings, escalated ONLY because confidence fell below
+  // the 0.7 threshold, but a decade-old/high-star/positive-sentiment owner.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS },
+    risky: [],
+    confidence: 0.65,
+    escalated: true,
+    reputation: { ...ESTABLISHED_REP }, // established + many_stars + good_sentiment = +18 raw
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — no escalation_pending (nothing concrete to name), low_confidence
+  // IS still present (that part of the never-bare-"Safe" rail is untouched), and
+  // the fair math (82 - 10 + 18(capped 20) = 90) lands in a fair, high band.
+  assertEquals(
+    result.breakdown.find((d) => d.factor === "escalation_pending"),
+    undefined,
+    "a clean, low-confidence-only escalation must NOT pay escalation_pending",
+  );
+  const lowConf = result.breakdown.find((d) => d.factor === "low_confidence");
+  assert(lowConf, "low_confidence must still apply — the uncertainty is real");
+  assert(
+    result.score >= 80,
+    `expected a fair (>=80) score for a clean, high-rep, low-confidence-escalated repo, got ${result.score}`,
+  );
+  assertEquals(result.score, 90, "82 baseline - 10 low_confidence + 18 reputation (now unclipped) = 90");
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness: escalation on a REAL code signal still pays escalation_pending, unaffected by the fix", () => {
+  // Arrange — obfuscation triggers escalation; this must NOT be treated as a
+  // signal-free, confidence-only escalation. Reputation is a brand-new owner
+  // (not stellar) so the assertion isolates the fairness-gate behavior itself
+  // rather than leaning on the separately-tested REP_MAX change.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, obfuscation: true },
+    confidence: 0.5,
+    escalated: true,
+    reputation: { established: false, ageDays: 5, sentScore: 0, stars: 0 },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert
+  const pending = result.breakdown.find((d) => d.factor === "escalation_pending");
+  assert(pending, "obfuscation-driven escalation must still pay escalation_pending");
+  assertEquals(pending.delta, -6);
+  assert(
+    result.score < 30,
+    `obfuscation alone must stay in the dangerous band regardless of the fairness fix, got ${result.score}`,
+  );
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness: obfuscation + escalation_pending survive even with a MAXIMAL (unclipped) reputation — the raised REP_MAX cannot rescue dangerous code", () => {
+  // Arrange — the specific interaction the reviewer flagged: does raising
+  // REP_MAX to 20 let a stellar reputation combine with the fairness gate to
+  // rescue a genuinely dangerous, signal-driven escalation? It must not.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, obfuscation: true, credAccess: true },
+    confidence: 0.4,
+    escalated: true,
+    reputation: { ...ESTABLISHED_REP }, // +18 raw, unclipped under the new +20 cap
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — escalation_pending still fires (real code signal present), and the
+  // dangerous code total (-42 -40 -6 = -88) dwarfs even the maximal +18/+20
+  // reputation nudge.
+  assert(
+    result.breakdown.find((d) => d.factor === "escalation_pending"),
+    "escalation_pending must still apply — obfuscation+credAccess are real signals",
+  );
+  assert(
+    result.score < 30,
+    `stellar reputation under the raised cap must NOT rescue obfuscation+credAccess, got ${result.score}`,
+  );
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness: new-owner + plain-network-only escalation still pays escalation_pending (matches decideEscalation's anySignal check)", () => {
+  // Arrange — mirrors scan/index.ts decideEscalation's `newOwner && anySignal`
+  // branch, where `anySignal` includes plain `scan.signals.network`. This is a
+  // genuine signal-driven escalation (new owner + network capability), not a
+  // confidence-only one, so it must still be penalized. `wasNewOwner: true`
+  // mirrors decideEscalation actually having taken that branch (see the
+  // dedicated gap-fix tests below for the full before/after of this flag).
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, network: true },
+    confidence: 0.9, // confident read — escalation is NOT due to low confidence
+    escalated: true,
+    wasNewOwner: true,
+    reputation: { established: false, ageDays: 10, sentScore: -1, stars: 0 },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert
+  const pending = result.breakdown.find((d) => d.factor === "escalation_pending");
+  assert(
+    pending,
+    "new-owner + plain-network escalation is signal-driven and must still pay escalation_pending",
+  );
+  assertEquals(pending.delta, -6);
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness gap fix: established owner + plain network + low-confidence escalation does NOT pay escalation_pending", () => {
+  // Arrange — the exact scenario the independent adversarial review reproduced:
+  // an established, highly-reputable owner (ageDays 3650, 50k stars, sentiment
+  // 85) whose code merely has ordinary network capability (fetch/axios/
+  // child_process — ubiquitous, and W_NETWORK's own comment calls this "normal
+  // for most apps"). The repo escalates ONLY because confidence (0.65) fell
+  // below the 0.7 threshold — `decideEscalation` would NEVER escalate an
+  // established owner on plain network alone (that only matters inside the
+  // `newOwner && anySignal` branch), so `wasNewOwner` is correctly false here.
+  // Before the fix, `hasRealCodeSignal` counted `s.network` unconditionally,
+  // so this repo wrongly paid the flat -6 escalation_pending penalty and
+  // landed at 78 ("Caution") instead of the fair "Likely safe"/"Trusted" band.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, network: true },
+    risky: [],
+    confidence: 0.65,
+    escalated: true,
+    wasNewOwner: false, // established owner — decideEscalation never escalated on network here
+    reputation: { ...ESTABLISHED_REP }, // ageDays 3650, stars 50k, sentiment 85
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — escalation_pending must NOT fire: network on an established owner
+  // was never decideEscalation's actual reason to escalate, so scoring must not
+  // invent one. low_confidence still applies (confidence 0.65 < 0.7 is real).
+  // W_NETWORK's own independent delta (-6, a SEPARATE code-group delta wired
+  // through the earlier `if (s.network && !inputs.installTimeNetwork)` block)
+  // is untouched by this fix and still applies on its own merits.
+  assertEquals(
+    result.breakdown.find((d) => d.factor === "escalation_pending"),
+    undefined,
+    "established owner + plain network + low-confidence-only escalation must NOT pay escalation_pending",
+  );
+  const lowConf = result.breakdown.find((d) => d.factor === "low_confidence");
+  assert(lowConf, "low_confidence must still apply — confidence 0.65 < 0.7 is real");
+  const netDelta = result.breakdown.find((d) => d.factor === "network");
+  assert(netDelta, "network's own independent delta must still apply, untouched by this fix");
+  assertEquals(netDelta.delta, -6, "W_NETWORK's own weight is unchanged by this fix");
+  // Fair math: 82 baseline - 10 low_confidence - 6 network + 18 reputation
+  // (established +8, many_stars +6, good_sentiment +4 = +18, unclipped under
+  // the +20 cap) = 84 -> "Likely safe" band (>= 80), not "Caution".
+  assertEquals(result.score, 84, "82 - 10 (low_confidence) - 6 (network) + 18 (reputation) = 84");
+  assert(
+    result.score >= 80,
+    `expected a fair (>=80, "Likely safe" or better) score, got ${result.score}`,
+  );
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness gap fix: new-owner + network + low-confidence escalation STILL pays escalation_pending (opposite case, untouched)", () => {
+  // Arrange — the mirror-image case that must NOT regress: a brand-new owner
+  // (ageDays 10) with plain network capability, escalating on low confidence.
+  // Here `decideEscalation`'s `newOwner && anySignal` branch WOULD itself have
+  // fired on this exact combination (new owner + network is a genuine,
+  // signal-driven escalation reason), so `wasNewOwner` is true and the network
+  // signal correctly still counts as a real code signal justifying the
+  // escalation_pending reservation — this fix must not weaken that case.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS, network: true },
+    risky: [],
+    confidence: 0.65,
+    escalated: true,
+    wasNewOwner: true, // new owner — decideEscalation's newOwner+anySignal branch would fire here
+    reputation: { established: false, ageDays: 10, sentScore: -1, stars: 0 },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — escalation_pending DOES fire: network + new owner is a genuine
+  // signal-driven reason to escalate, matching decideEscalation exactly.
+  const pending = result.breakdown.find((d) => d.factor === "escalation_pending");
+  assert(
+    pending,
+    "new-owner + network + low-confidence escalation is signal-driven and must still pay escalation_pending",
+  );
+  assertEquals(pending.delta, -6);
+  const lowConf = result.breakdown.find((d) => d.factor === "low_confidence");
+  assert(lowConf, "low_confidence must also apply — confidence 0.65 < 0.7");
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("fairness: opaque model.escalate on an otherwise-clean, confident read pays neither low_confidence nor escalation_pending", () => {
+  // Arrange — the model set `escalate: true` (surfaced to scoring purely via
+  // `inputs.escalated`) with confidence >= 0.7 and a fully clean static read and
+  // zero risky findings. Scoring has literally nothing concrete to name: not low
+  // confidence (it's 0.75), not a real code signal (all clean). This is a known,
+  // explicitly-analyzed edge of the fairness fix — documented here so the
+  // behavior is intentional and visible, not a silent side effect. Reputation is
+  // a mid-age, non-established owner (ageDays 200) so NO reputation delta fires
+  // either, isolating the escalation-gate behavior from the reputation group.
+  const inputs = baseInputs({
+    signals: { ...CLEAN_SIGNALS },
+    risky: [],
+    confidence: 0.75,
+    escalated: true,
+    reputation: { established: false, ageDays: 200, sentScore: -1, stars: 0 },
+  });
+
+  // Act
+  const result = computeScore(inputs);
+
+  // Assert — neither penalty fires; the repo scores at the plain baseline (82),
+  // same as an equivalent NON-escalated clean read would. Escalation with zero
+  // supporting signal costs nothing extra, by design of this fix: the fairness
+  // gate is symmetric — it does not matter WHY confidence/opaque-escalate fired,
+  // only whether there is a real code/behavior signal to justify the penalty.
+  assertEquals(
+    result.breakdown.find((d) => d.factor === "escalation_pending"),
+    undefined,
+    "opaque model.escalate with a clean, confident read must not pay escalation_pending",
+  );
+  assertEquals(
+    result.breakdown.find((d) => d.factor === "low_confidence"),
+    undefined,
+    "confidence 0.75 is above threshold — low_confidence must not apply",
+  );
+  assertEquals(result.score, 82, "no penalty fires; score sits at the plain baseline");
+  assertBreakdownConsistent(result);
+});
+
+Deno.test("REP_MAX boundary: the raised cap (20) lets the true maximal raw total (+18) pass through unclipped", () => {
+  // The true maximum simultaneous raw reputation total under the current weight
+  // table is established(+8) + many_stars(+6) + good_sentiment(+4) = +18. At the
+  // OLD cap (14) this was clipped — the single best reputation a repo could have
+  // was worth no more than a merely-good one (e.g. established + many_stars =
+  // +14, also clipped to 14). At the NEW cap (20) it passes through unclipped for
+  // the first time, so the fully-maximal case is finally worth MORE than the
+  // merely-good case.
+  const maxNaturalRep = computeScore(baseInputs({ reputation: { ...ESTABLISHED_REP } }));
+  const repTotal = maxNaturalRep.breakdown
+    .filter((d) => d.group === "reputation")
+    .reduce((acc, d) => acc + d.delta, 0);
+  assertEquals(repTotal, 18, "established + many_stars + good_sentiment sums to +18 raw");
+  assertEquals(
+    maxNaturalRep.breakdown.find((d) => d.factor === "reputation_cap"),
+    undefined,
+    "a raw +18 total must NOT be clipped under the new +20 cap (it WAS clipped under the old +14 cap)",
+  );
+
+  // A lone real code penalty (install_hook, -8) is completely unaffected by the
+  // reputation-cap change: raising REP_MAX only changes the reputation group's
+  // own ceiling, never a code/behavior weight.
+  const lonePenaltyStellarRep = computeScore(
+    baseInputs({
+      signals: { ...CLEAN_SIGNALS, installHook: true },
+      reputation: { ...ESTABLISHED_REP },
+    }),
+  );
+  assertEquals(
+    lonePenaltyStellarRep.score,
+    82 - 8 + 18,
+    "install_hook (-8) is untouched; the +18 raw reputation total is unclipped under the new cap",
+  );
 });
 
 Deno.test("dynamic credential read drives the score into the dangerous band", () => {
