@@ -4,10 +4,21 @@
  * When the fast path trips the escalation gate, the browser calls this route and
  * watches the warm host boot a fresh Firecracker microVM (via Kata), run the
  * unknown code with all egress forced through the deceptive forge, and destroy the
- * microVM — all within the same scan, no queue, no separate drain step. On exit the
- * captured forensic record is POSTed to the deployed `attach-forensics` edge
- * function, which flips the report row to a real "Sandbox run" (its `_ranSandbox`
- * signal becomes true) and surfaces the captured geo + the deep-run count on the board.
+ * microVM — all within the same scan. On exit the captured forensic record is
+ * POSTed to the deployed `attach-forensics` edge function, which flips the report
+ * row to a real "Sandbox run" (its `_ranSandbox` signal becomes true) and surfaces
+ * the captured geo + the deep-run count on the board.
+ *
+ * CONCURRENCY + QUEUE — the host holds at most MAX_CONCURRENT (2) simultaneous
+ * detonations (its 4-vCPU budget). A 3rd concurrent request is no longer flatly
+ * rejected: it QUEUES. The connection stays open and streams an honest
+ * `{t:"stage", ch:"Queue", ...}` line ("Queued — position N of M, ~X min") while it
+ * polls for a free slot in strict FIFO order, then proceeds through the exact same
+ * detonation path once admitted. If it cannot get a slot within QUEUE_MAX_WAIT_MS it
+ * ends with a clear, specific "sandbox was too busy" error — never a silent drop.
+ * The in-process `inFlight` counter remains the sole slot arbiter (single Node
+ * process, race-free); the `deep_scan_queue` table + `lib/deep-queue.ts` provide the
+ * FIFO ordering, honest position/estimate, and observability. See lib/deep-queue.ts.
  *
  * This route only INVOKES the host orchestrator (`orchestrate-microvm.sh`); every
  * containment invariant (disposable Firecracker microVM with no route out except the
@@ -25,6 +36,13 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import {
+  deepScanQueue,
+  isExpired,
+  queueLine,
+  type QueueStanding,
+} from "@/lib/deep-queue";
+import { enqueueRow, fetchPosition, setStatus } from "@/lib/deep-queue-client";
 
 // Privileged local capability: a real Node child process + filesystem. Never edge.
 export const runtime = "nodejs";
@@ -41,37 +59,12 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 // x-runner-key for the function. Missing the anon header → gateway 401, no attach.
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 const REPO_ROOT = process.cwd();
-// The NEW substrate runs on persistent host VMs (Kata/Firecracker microVMs + the deceptive
-// forge). /api/deep SSHes to a host and runs the per-scan orchestrator there, streaming its
-// [orch] milestones back over stderr and reading the forensic record from stdout.
-//
-// COMPUTE PROVISIONING — two modes, selected at request time by resolveTargetHost():
-//   1. Single-host override: CR_SANDBOX_HOST set -> always dispatch to that one named host
-//      (the original behaviour; the manual fallback that must never break). Concurrency cap 2.
-//   2. On-demand pool: CR_POOL_MIG set (+ CR_POOL_ZONE) -> a Managed Instance Group of golden-
-//      image hosts with a stopped standby pool (sandbox/microvm/create-pool.sh). We discover
-//      the RUNNING members by name, spread scans across them (2 slots each), and when every
-//      live host is full we resize the MIG up so its scale-out-pool standby policy activates a
-//      warm standby (measured ~44s stopped / ~21s suspended to detonation-ready). N live hosts
-//      -> 2N concurrent scans, not a hardcoded 2.
-// If neither is set, we fall back to the historical default single host `cr-host-build`.
-const SANDBOX_HOST_OVERRIDE = process.env.CR_SANDBOX_HOST ?? "";
-const POOL_MIG = process.env.CR_POOL_MIG ?? "";
-const POOL_ZONE = process.env.CR_POOL_ZONE ?? process.env.CR_SANDBOX_ZONE ?? ZONE;
-// Cap the pool from ballooning cost/quota on a real billing account. 24 INSTANCES/region is
-// the hard GCP ceiling in us-east1 today; this soft cap keeps a runaway resize well under it.
-const POOL_MAX_HOSTS = Math.max(1, Number(process.env.CR_POOL_MAX_HOSTS ?? "6") || 6);
+// The NEW substrate runs on a persistent host VM (one host + Kata/Firecracker microVMs +
+// the deceptive forge). /api/deep SSHes to that host and runs the per-scan orchestrator
+// there, streaming its [orch] milestones back over stderr and reading the forensic record
+// from stdout. (The old two-VM `sandbox/orchestrate.sh` ran locally and is retired.)
+const SANDBOX_HOST = process.env.CR_SANDBOX_HOST ?? "cr-host-build";
 const REMOTE_ORCH = process.env.CR_REMOTE_ORCH ?? "/opt/cr/microvm/orchestrate-microvm.sh";
-// Seconds to wait for a freshly-activated standby to reach detonation-ready before giving up.
-const POOL_ACTIVATE_TIMEOUT_S = Math.max(30, Number(process.env.CR_POOL_ACTIVATE_TIMEOUT_S ?? "150") || 150);
-// Hard ceiling on a single detonation's wall-clock. A full deep scan runs ~10-13 min end-to-end
-// (docs 8b/8c), so 30 min is generous headroom for a slow build yet bounded. Without it a child
-// that hangs forever leaks its slot — and in POOL mode a leaked slot ALSO pins the host running
-// forever, because scalePoolInIfIdle keys off the slot count and never reclaims a "busy" host.
-// On expiry we SIGTERM the child (orchestrate's EXIT trap + dead-man's-switch then tear down any
-// microVM, so no orphans), release the slot, and report a clean error — mirroring runBash's
-// timeout-and-release pattern. The host's own 12h max-run backstop is the last-resort net below.
-const DEEP_SCAN_TIMEOUT_MS = Math.max(60_000, Number(process.env.CR_DEEP_SCAN_TIMEOUT_MS ?? "1800000") || 1_800_000);
 
 // The dev/controller process may be launched with a narrower PATH than an
 // interactive shell (e.g. the preview runner), so the `bash` + `gcloud` the moat
@@ -99,284 +92,32 @@ const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 // into `git fetch origin "$REF"` downstream — a leading dash would smuggle a flag).
 const SHA_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 
-// Per-HOST orchestrate budget: trap(2 cores) + detonation(2 cores) = 4 cores/run on a 4-vCPU
-// n2-standard-4 host -> at most 2 concurrent deep runs PER HOST. With the pool this is no
-// longer a single global cap: total concurrency = (live host count) x SLOTS_PER_HOST.
-const SLOTS_PER_HOST = Math.max(1, Number(process.env.CR_SLOTS_PER_HOST ?? "2") || 2);
-// In-process slot ledger: host name -> slots currently in flight on that host. This route
-// only ever runs in ONE local-controller Node process (Vercel has it inert via the
-// CR_ALLOW_LOCAL_DEEP gate), so a plain in-memory map is a correct authority — same
-// single-process assumption the old scalar `inFlight` relied on, generalised to N hosts.
-const slotsInUse = new Map<string, number>();
-const usedOn = (host: string): number => slotsInUse.get(host) ?? 0;
-const acquireSlot = (host: string): void => { slotsInUse.set(host, usedOn(host) + 1); };
-const releaseSlot = (host: string): void => {
-  const n = usedOn(host) - 1;
-  if (n <= 0) slotsInUse.delete(host);
-  else slotsInUse.set(host, n);
-};
+// orchestrate budget: trap(2 cores) + detonation(2 cores) = 4 cores/run, 8-core
+// cap → at most 2 concurrent deep runs. Enforced in-process (single dev server).
+const MAX_CONCURRENT = 2;
+let inFlight = 0;
 
-// Hosts currently mid-`stop-instances` (scale-in reclaim). A host being force-stopped shows 0
-// slots in the ledger, so without this marker resolveTargetHost's idle-candidate selection could
-// pick it and dispatch a live scan moments before the async stop lands — a TOCTOU race between
-// scale-in selection and scan dispatch. scalePoolInIfIdle SETS a hostname here SYNCHRONOUSLY,
-// BEFORE issuing the async stop call, and resolveTargetHost EXCLUDES reserved hosts from its
-// candidate pool. The marker is CLEARED once the stop call resolves (success OR failure): on
-// success the host is STOPPED (listRunningPoolHosts drops it anyway); on failure it is still
-// RUNNING and must return to being a normal, dispatchable candidate on the next cycle. Same
-// single-process authority as slotsInUse — this route only runs in one local-controller process.
-const reclaiming = new Set<string>();
+// ── queue tuning (see lib/deep-queue.ts for the ordering/estimate/timeout math) ──
+// A real, measured detonation is ~76s on the 4-vCPU host (docs/runs/2026-07-01-
+// host-restart-and-concurrency.md); we use 90s as the per-detonation estimate to
+// fold in the attach + reset overhead so the quoted wait never reads too optimistic.
+const PER_DETONATION_MS = 90_000;
+// Poll cadence while queued. 1s is cheap for a single Node process and surfaces a
+// freed slot / changed position within a tick — fast enough to feel live, not busy.
+const QUEUE_POLL_MS = 1_000;
+// Max time a request may WAIT in the queue before we give up honestly. With 2 slots
+// at ~90s each, an 8-minute window lets a request sit behind ~5 detonations' worth
+// of work (well beyond the "~2-3 detonations ahead" bar) before timing out. It is
+// also comfortably under the client's 20-min DEEP_SCAN_TIMEOUT_MS, so the SERVER
+// emits the honest "too busy" timeout event rather than the client aborting blind.
+const QUEUE_MAX_WAIT_MS = 8 * 60_000;
+// How often to refresh the emitted "position N of M, ~X min" line while waiting.
+// Every 5 ticks (~5s) — frequent enough to reflect position changes, infrequent
+// enough not to spam the stream with an identical line each second.
+const POSITION_REFRESH_TICKS = 5;
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-/** Run a bash command as a child, resolving { code, stdout, stderr }. Injection boundary:
- *  callers pass a FIXED command string or one built only from validated identifiers. */
-function runBash(cmd: string, timeoutMs = 60_000): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let done = false;
-    const finish = (code: number) => { if (!done) { done = true; resolve({ code, stdout, stderr }); } };
-    try {
-      const p = spawn(BASH, ["-c", cmd], { stdio: ["ignore", "pipe", "pipe"], shell: false, env: childEnv() });
-      const timer = setTimeout(() => { try { p.kill("SIGTERM"); } catch { /* gone */ } finish(124); }, timeoutMs);
-      p.stdout?.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
-      p.stderr?.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
-      p.on("error", () => { clearTimeout(timer); finish(-1); });
-      p.on("close", (code) => { clearTimeout(timer); finish(code ?? -1); });
-    } catch {
-      finish(-1);
-    }
-  });
-}
-
-/** List RUNNING members of the MIG by short name. Empty on any failure (caller falls back). */
-async function listRunningPoolHosts(): Promise<string[]> {
-  if (!POOL_MIG) return [];
-  const cmd =
-    `gcloud compute instance-groups managed list-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
-    `--filter=instanceStatus=RUNNING --format="value(instance.basename())"`;
-  const { code, stdout } = await runBash(cmd, 30_000);
-  if (code !== 0) return [];
-  return stdout.split(/\r?\n/).map((s) => s.trim()).filter((s) => /^[a-z0-9-]{1,63}$/.test(s));
-}
-
-/** The MIG's current targetSize — the RUNNING-member target the reconciler drives toward.
- *  This (NOT the total member count, which includes stopped standbys) is what a resize sets,
- *  so it is the correct base for a "warm exactly one more" scale-out. -1 on any failure. */
-async function poolTargetSize(): Promise<number> {
-  if (!POOL_MIG) return -1;
-  const cmd = `gcloud compute instance-groups managed describe ${POOL_MIG} --zone ${POOL_ZONE} --format="value(targetSize)"`;
-  const { code, stdout } = await runBash(cmd, 30_000);
-  if (code !== 0) return -1;
-  const n = Number(stdout.trim());
-  return Number.isFinite(n) ? n : -1;
-}
-
-/** Is a host detonation-ready? SSH up + /dev/kvm + containerd active + base image present —
- *  the exact state orchestrate-microvm.sh needs. Host name is validated before it reaches here. */
-async function hostDetonationReady(host: string): Promise<boolean> {
-  const remote =
-    `[ -e /dev/kvm ] && systemctl is-active --quiet containerd && ` +
-    `sudo /usr/local/bin/nerdctl images cr-detonation-base --format '{{.Repository}}' 2>/dev/null | grep -q cr-detonation-base && echo CR_READY`;
-  // Auto-accept the host key: MIG members are ephemeral and legitimately present new keys, so
-  // gcloud/plink's cached-key check must not block. `printf 'y\n' |` feeds the prompt; `host`
-  // is validated /^[a-z0-9-]+$/ and the remote string is fixed text, so this is injection-free.
-  const cmd = `printf 'y\\n' | gcloud compute ssh ${host} --zone ${POOL_ZONE} --quiet --command ${JSON.stringify(remote)} 2>/dev/null`;
-  const { stdout } = await runBash(cmd, 30_000);
-  return /CR_READY/.test(stdout);
-}
-
-/** Resize the MIG up by exactly one RUNNING member so scale-out-pool activates a single standby.
- *  Bases the "+1" on the current targetSize (the running-member target a resize actually sets) —
- *  NOT on total members (which counts the stopped standbys too, so a +1 there would jump targetSize
- *  from 1 straight past every standby, activating them all at once and over-billing). Returns the
- *  new targetSize, or -1 if we're already at the soft ceiling / could not read state / resize failed. */
-async function resizePoolUp(): Promise<number> {
-  const current = await poolTargetSize();
-  if (current < 0) return -1;
-  if (current >= POOL_MAX_HOSTS) return -1;
-  const next = current + 1;
-  const cmd = `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${next}`;
-  const { code } = await runBash(cmd, 60_000);
-  return code === 0 ? next : -1;
-}
-
-// The warm running baseline the pool rests at when there is no load (0 = maximal thrift, first
-// scan pays a cold-start; 1 = one host always warm for an instant first scan). Idle running
-// hosts above (baseline + in-flight demand) are scaled back into the disk-only stopped pool.
-const POOL_BASELINE = Math.max(0, Number(process.env.CR_POOL_BASELINE ?? "1") || 0);
-
-/**
- * App-driven idle reclaim (pool mode): a MIG member cannot self-poweroff (the reconciler
- * restarts it — masked via pool-member-startup.sh), so the CONTROLLER reclaims surplus running
- * hosts as scans drain. Target running count = max(POOL_BASELINE, hosts needed for the scans
- * still in flight). Called (fire-and-forget) as scans drain. Never scales below baseline.
- *
- * SCALE-IN SAFETY (the load-bearing part): a bare `resize --size N` down is UNSAFE here — a MIG
- * resize-down DELETES members the group picks in ARBITRARY order (VERIFIED live: resizing this MIG
- * from 1→0 immediately DELETED the running member, it did not gracefully park it), so it could
- * destroy a host mid-detonation. GCP has no per-instance "scale-in protection" flag for a
- * non-autoscaled MIG, and `deletionProtection` cannot even be set on a MIG member. The correct,
- * supported control is to name the victims ourselves: `stop-instances --instances=<names>` stops
- * EXACTLY the hosts we choose and, under the scale-out-pool standby policy, parks them in the
- * disk-only STOPPED standby pool (not deleted — VERIFIED live) so they stay warm-ish for reuse.
- * We only ever choose hosts the in-process slot ledger shows as IDLE (0 slots), so a host with a
- * live scan can never be selected. We stop those idle hosts FIRST, then lower targetSize to match
- * so the reconciler's running target agrees and it does not immediately restart them.
- *
- * Two additional guards make the reclaim race-safe and non-silent:
- *  - A chosen host is added to `reclaiming` SYNCHRONOUSLY before its async stop is issued and
- *    excluded from resolveTargetHost's candidates, closing the TOCTOU window where a concurrent
- *    dispatch could land a live scan on a host about to be force-stopped. The marker clears once
- *    the stop resolves (success → host is stopped anyway; failure → host is eligible again).
- *  - Every gcloud call's exit code is checked. targetSize is lowered by the count of hosts
- *    CONFIRMED stopped (not merely attempted); if no stop succeeded we do NOT resize down (a
- *    resize outrunning a failed stop would let the MIG delete an arbitrary member). Both failure
- *    modes log a warning rather than failing silently.
- */
-async function scalePoolInIfIdle(): Promise<void> {
-  if (!POOL_MIG) return;
-  const running = await listRunningPoolHosts();
-  if (!running.length) return;
-  const activeSlots = Array.from(slotsInUse.values()).reduce((a, b) => a + b, 0);
-  const hostsForLoad = Math.ceil(activeSlots / SLOTS_PER_HOST);
-  const desired = Math.max(POOL_BASELINE, hostsForLoad);
-  const surplus = running.length - desired;
-  if (surplus <= 0) return;
-
-  // Only IDLE running hosts (0 slots in the ledger) that are NOT already being reclaimed are
-  // eligible — never a host serving a scan, never one another drain is mid-stopping.
-  const idleHosts = running.filter((h) => usedOn(h) === 0 && !reclaiming.has(h));
-  const toStop = idleHosts.slice(0, surplus);
-  if (!toStop.length) return; // all surplus hosts are still busy/reclaiming; reclaim on next drain.
-
-  // Reserve these hosts SYNCHRONOUSLY, before any async stop call, so resolveTargetHost cannot
-  // pick one as a live-scan candidate during the (up-to-120s) stop window (Gap-1 TOCTOU fix).
-  for (const h of toStop) reclaiming.add(h);
-
-  // Stop each idle host by name (deterministic — the MIG never picks the victim). Under
-  // scale-out-pool this parks it in the disk-only stopped standby pool rather than deleting it.
-  // We stop them ONE AT A TIME so we know EXACTLY which hosts were confirmed stopped: the resize
-  // target below must reflect only confirmed stops, never merely-attempted ones (Gap-2 fix). A
-  // resize that outran a failed stop would reintroduce the "MIG deletes an arbitrary member"
-  // risk the by-name stop exists to prevent.
-  const stopped: string[] = [];
-  for (const h of toStop) {
-    const { code, stderr } = await runBash(
-      `gcloud compute instance-groups managed stop-instances ${POOL_MIG} --zone ${POOL_ZONE} ` +
-        `--instances=${h} --force`,
-      120_000,
-    );
-    // Clear the reservation as soon as this host's stop resolves (success OR failure): on success
-    // the host is STOPPED and listRunningPoolHosts drops it anyway; on failure it is still RUNNING
-    // and must go back to being a normal candidate for the next scale-in/scale-out cycle.
-    reclaiming.delete(h);
-    if (code === 0) {
-      stopped.push(h);
-    } else {
-      // Silent failure here is dangerous: it would let the resize below delete an arbitrary member.
-      console.warn(
-        `[deep/pool] scale-in: stop-instances FAILED for host ${h} (code ${code}) — leaving it running and NOT counting it toward the resize-down. stderr: ${stderr.trim().slice(0, 300)}`,
-      );
-    }
-  }
-
-  // If nothing actually stopped, do NOT lower targetSize — a resize-down now would let the MIG's
-  // reconciler pick and delete an arbitrary (possibly-busy) member to reconcile down. Bail.
-  if (!stopped.length) return;
-
-  // Lower the running target so the reconciler agrees (won't restart what we just parked), keyed
-  // to the hosts CONFIRMED stopped — never below baseline, never below what is still running.
-  const newTarget = Math.max(POOL_BASELINE, running.length - stopped.length);
-  const { code: resizeCode, stderr: resizeErr } = await runBash(
-    `gcloud compute instance-groups managed resize ${POOL_MIG} --zone ${POOL_ZONE} --size ${newTarget}`,
-    60_000,
-  );
-  if (resizeCode !== 0) {
-    // stop succeeded but targetSize stayed high → this MIG's reconciler auto-restarts the
-    // stopped-but-still-targeted host (~25s), wasting the stop and thrashing. Surface it.
-    console.warn(
-      `[deep/pool] scale-in: resize to ${newTarget} FAILED (code ${resizeCode}) after stopping ${stopped.join(",")} — targetSize stays high, the reconciler may auto-restart the parked host(s). stderr: ${resizeErr.trim().slice(0, 300)}`,
-    );
-  }
-}
-
-type HostPick =
-  | { ok: true; host: string }               // a slot was ACQUIRED on this host (caller must release)
-  | { ok: false; status: number; error: string };
-
-/**
- * Pick a host with a free detonation slot and ACQUIRE that slot atomically, or fail.
- *
- * - Single-host mode (CR_SANDBOX_HOST set, or neither var set -> default host): exactly the
- *   old behaviour — one host, cap SLOTS_PER_HOST.
- * - Pool mode (CR_POOL_MIG set): find a RUNNING member with spare capacity; if all live hosts
- *   are full, resize the MIG up (scale-out-pool activates a standby), wait for it to reach
- *   detonation-ready, and place the scan there. Bounded by POOL_MAX_HOSTS.
- *
- * The slot check-and-acquire is a SYNCHRONOUS critical section (no await between reading
- * `usedOn` and calling `acquireSlot`), so the single-process ledger can never oversubscribe.
- */
-async function resolveTargetHost(): Promise<HostPick> {
-  // ── single-host modes ────────────────────────────────────────────────────────────
-  if (SANDBOX_HOST_OVERRIDE || !POOL_MIG) {
-    const host = SANDBOX_HOST_OVERRIDE || "cr-host-build";
-    if (usedOn(host) >= SLOTS_PER_HOST) {
-      return { ok: false, status: 429, error: `sandbox host ${host} at capacity (max ${SLOTS_PER_HOST} concurrent deep runs); retry shortly` };
-    }
-    acquireSlot(host);
-    return { ok: true, host };
-  }
-
-  // ── pool mode ────────────────────────────────────────────────────────────────────
-  // 1) Try to place on an already-RUNNING member with a free slot (least-loaded first so we
-  //    pack onto warm hosts before activating more capacity).
-  const running = await listRunningPoolHosts();
-  if (running.length) {
-    const candidate = running
-      // Exclude hosts being reclaimed (mid-`stop-instances`): they read as idle in the ledger but
-      // are about to be force-stopped, so dispatching a live scan to one is the Gap-1 TOCTOU race.
-      .filter((h) => usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h))
-      .sort((a, b) => usedOn(a) - usedOn(b))[0];
-    if (candidate) {
-      acquireSlot(candidate);            // synchronous check-then-acquire (no await between)
-      return { ok: true, host: candidate };
-    }
-  }
-
-  // 2) Every live host is full (or none up). Activate a standby by resizing the MIG up.
-  const globalUsed = Array.from(slotsInUse.values()).reduce((a, b) => a + b, 0);
-  if (globalUsed >= POOL_MAX_HOSTS * SLOTS_PER_HOST) {
-    return { ok: false, status: 429, error: `pool at capacity (${globalUsed}/${POOL_MAX_HOSTS * SLOTS_PER_HOST} slots across up to ${POOL_MAX_HOSTS} hosts); retry shortly` };
-  }
-  const newSize = await resizePoolUp();
-  if (newSize < 0) {
-    return { ok: false, status: 503, error: `pool is full and cannot grow (at the ${POOL_MAX_HOSTS}-host soft cap or resize failed); retry shortly` };
-  }
-
-  // 3) Wait for a newly-RUNNING member (not previously seen) to reach detonation-ready.
-  const before = new Set(running);
-  const deadline = Date.now() + POOL_ACTIVATE_TIMEOUT_S * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 5000));
-    const now = await listRunningPoolHosts();
-    // Prefer a freshly-activated host, but also accept any running host that has since freed a slot.
-    // Exclude reclaiming hosts in both sets (same Gap-1 TOCTOU reason as the fast path above).
-    const fresh = now.filter((h) => !before.has(h) && usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h));
-    const freed = now.filter((h) => usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h));
-    for (const h of [...fresh, ...freed]) {
-      if (await hostDetonationReady(h)) {
-        if (usedOn(h) < SLOTS_PER_HOST && !reclaiming.has(h)) {   // re-check under the sync section (map may have changed)
-          acquireSlot(h);
-          return { ok: true, host: h };
-        }
-      }
-    }
-  }
-  return { ok: false, status: 504, error: `activated a standby host but it did not become detonation-ready within ${POOL_ACTIVATE_TIMEOUT_S}s; retry shortly` };
 }
 
 function json(body: unknown, status: number): Response {
@@ -572,7 +313,11 @@ function buildSlug(owner: string, repo: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 28) || "scan";
   const stamp = Date.now().toString(36).slice(-6);
-  const rand = Math.floor(Math.random() * 1296).toString(36);
+  // 36^5 (~60M) values, not 36^2 (~1,296): two requests for the same owner/repo
+  // in the same millisecond must not collide on this slug, since it also doubles
+  // as the FIFO queue token (lib/deep-queue.ts) -- a collision there would make
+  // one of them spuriously wait out the full queue timeout despite a free slot.
+  const rand = Math.floor(Math.random() * 36 ** 5).toString(36);
   return `${base}-${stamp}${rand}`.slice(0, 40).replace(/-+$/g, "");
 }
 
@@ -621,27 +366,24 @@ export async function POST(req: Request): Promise<Response> {
     return json({ error: "deep path needs gcloud on the sandbox controller" }, 501);
   }
 
-  // 5. pick a host with a free detonation slot (single host OR pool) + ACQUIRE that slot.
-  //    resolveTargetHost may resize the pool up + wait for a standby to warm — so this can
-  //    take tens of seconds when the whole pool is saturated (bounded by POOL_ACTIVATE_TIMEOUT_S).
-  const pick = await resolveTargetHost();
-  if (!pick.ok) {
-    return json({ error: pick.error }, pick.status);
-  }
-  const host = pick.host;
-
+  // 5. A per-request token: FIFO key (in-process), VM name slug, and queue row id.
   const slug = buildSlug(owner, repo);
   let stdoutBuf = ""; // accumulates the orchestrator's forensic-record JSON (its stdout)
 
+  // Slot ownership for THIS request. `acquiredSlot` records whether we hold an
+  // inFlight slot, so release() decrements exactly once and only when we do.
+  let acquiredSlot = false;
   let released = false;
   const release = () => {
-    if (!released) {
-      released = true;
-      releaseSlot(host);   // free the slot on the exact host this scan ran on
-      // Pool mode: after a scan drains, reclaim surplus running capacity back to the disk-only
-      // stopped standby pool (a MIG member can't self-poweroff — the reconciler restarts it).
-      // Fire-and-forget so tearing down never blocks the client response.
-      if (POOL_MIG) void scalePoolInIfIdle();
+    if (released) return;
+    released = true;
+    // Always drop out of the in-process FIFO queue (a no-op if never/already gone),
+    // so a disconnect/timeout/finish can never leave a phantom waiter blocking the
+    // head-of-line check for everyone behind it.
+    deepScanQueue.remove(slug);
+    if (acquiredSlot) {
+      acquiredSlot = false;
+      inFlight = Math.max(0, inFlight - 1);
     }
   };
 
@@ -649,18 +391,21 @@ export async function POST(req: Request): Promise<Response> {
   let child: ChildProcess | null = null;
   // The REAL run timeline, accumulated as it streams, so the captured record can be
   // persisted with the report (not just shown live then lost). Only genuine run
-  // milestones are recorded — the "Persist" bookkeeping stage is excluded below.
+  // milestones are recorded — the "Persist" and "Queue" bookkeeping stages are
+  // excluded (they are emitted straight to the client, never pushed here).
   const timeline: Stage[] = [];
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
-      // Hard dead-man's-switch on the child. Without it a hung SSH/orchestrator child would leak
-      // its slot forever — and in pool mode a leaked slot also pins the host RUNNING forever
-      // (scalePoolInIfIdle treats it as busy and never reclaims it), bleeding cost. Cleared in
-      // finish() (the single teardown funnel), same shape as runBash's timeout-and-release.
-      let scanTimer: ReturnType<typeof setTimeout> | null = null;
-      const clearScanTimer = () => { if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; } };
+      // Poll handle for the queued-wait loop, cleared on admission/timeout/finish.
+      let queueTimer: ReturnType<typeof setInterval> | null = null;
+      const clearQueueTimer = () => {
+        if (queueTimer) {
+          clearInterval(queueTimer);
+          queueTimer = null;
+        }
+      };
       const emit = (obj: unknown) => {
         if (closed) return;
         try {
@@ -677,7 +422,7 @@ export async function POST(req: Request): Promise<Response> {
       const finish = () => {
         if (closed) return;
         closed = true;
-        clearScanTimer();
+        clearQueueTimer();
         try {
           controller.close();
         } catch {
@@ -693,119 +438,229 @@ export async function POST(req: Request): Promise<Response> {
         }
       };
 
-      // M4: flush an initial stage immediately so the client sees life at once.
-      recordStage({
-        ch: "Escalate",
-        status: "active",
-        lines: ["Gate tripped — detonating on the microVM sandbox host"],
-      });
-
-      try {
-        // Run the per-scan orchestrator ON the chosen host over SSH. We invoke gcloud
-        // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
-        // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters)
-        // and `host` is a resolved instance name (validated /^[a-z0-9-]+$/ in pool mode, or a
-        // fixed env/default in single-host mode), so interpolating them is injection-free.
-        // `printf 'y\n' |` auto-accepts the host-key cache prompt (same pattern provision-host.sh
-        // uses): pool members are ephemeral MIG instances that legitimately present new SSH host
-        // keys on (re)activation, which the plink cache check would otherwise block on.
-        const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
-        const gcloudCmd = `printf 'y\\n' | gcloud compute ssh ${host} --zone ${POOL_ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
-        child = spawn(BASH, ["-c", gcloudCmd], {
-          cwd: REPO_ROOT,
-          stdio: ["ignore", "pipe", "pipe"],
-          shell: false,
-          env: childEnv(),
-        });
-      } catch (e) {
-        emit({ t: "error", error: `failed to spawn sandbox orchestrator: ${msg(e)}` });
-        finish();
-        return;
-      }
-
-      // Arm the hard wall-clock timeout: on expiry SIGTERM the child (its EXIT trap +
-      // dead-man's-switch tear down any microVM, so no orphans), report a clean error, and
-      // finish() — which clears this timer and releases the slot (unblocking pool scale-in).
-      scanTimer = setTimeout(() => {
-        emit({
-          t: "error",
-          error: `sandbox run exceeded the ${Math.round(DEEP_SCAN_TIMEOUT_MS / 60_000)}-minute hard timeout — aborted`,
-        });
-        killChild();
-        finish();
-      }, DEEP_SCAN_TIMEOUT_MS);
-
-      child.on("error", (e) => {
-        emit({ t: "error", error: `orchestrator spawn error: ${msg(e)}` });
-        finish();
-      });
-
-      // Parse stderr milestones line-by-line (buffer partial lines).
-      let errBuf = "";
-      child.stderr?.on("data", (chunk: Buffer) => {
-        errBuf += chunk.toString("utf8");
-        let nl: number;
-        while ((nl = errBuf.indexOf("\n")) >= 0) {
-          const line = errBuf.slice(0, nl);
-          errBuf = errBuf.slice(nl + 1);
-          const st = milestone(line);
-          if (st) recordStage(st);
-        }
-      });
-
-      // The orchestrator prints the forensic record JSON to stdout; accumulate it.
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdoutBuf += chunk.toString("utf8");
-      });
-
-      child.on("close", async (code) => {
-        if (closed) return;
-        if (code !== 0) {
-          emit({ t: "error", error: `sandbox run exited with code ${code}` });
-          finish();
-          return;
-        }
-        // Parse the forensic record from the orchestrator's stdout (it `cat`s the record
-        // last). gcloud/ssh banners may precede it, so extract from the first "{".
-        let forensics: unknown;
-        try {
-          const start = stdoutBuf.indexOf("{");
-          forensics = JSON.parse(start >= 0 ? stdoutBuf.slice(start) : stdoutBuf);
-        } catch {
-          // Ran but produced no record — honest distinct signal, never implies safe.
-          emit({ t: "error", error: "sandbox completed but produced no forensic record" });
-          finish();
-          return;
-        }
-        emit({
-          t: "stage",
-          ch: "Persist",
+      /**
+       * Spawn the orchestrator and stream its milestones. Called ONLY once a slot
+       * is held (acquiredSlot === true) — either immediately (a slot was free) or
+       * after the queue admitted this request as the FIFO head. Unchanged from the
+       * pre-queue path: same gcloud-over-bash dispatch, same milestone parsing,
+       * same forensics-attach + release semantics.
+       */
+      const startDetonation = () => {
+        // Best-effort: mark the queue row active for observability (never blocks).
+        void setStatus(slug, "active");
+        // M4: flush an initial stage immediately so the client sees life at once.
+        recordStage({
+          ch: "Escalate",
           status: "active",
-          lines: ["Attaching the forensic record to the report row"],
+          lines: ["Gate tripped — detonating on the microVM sandbox host"],
         });
-        const attached = await attachForensics({ owner, repo, sha, forensics, timeline });
-        if (attached.ok) {
+
+        try {
+          // Run the per-scan orchestrator ON the sandbox host over SSH. We invoke gcloud
+          // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
+          // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
+          // so interpolating them into the remote command is injection-free.
+          const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
+          const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
+          child = spawn(BASH, ["-c", gcloudCmd], {
+            cwd: REPO_ROOT,
+            stdio: ["ignore", "pipe", "pipe"],
+            shell: false,
+            env: childEnv(),
+          });
+        } catch (e) {
+          void setStatus(slug, "failed");
+          emit({ t: "error", error: `failed to spawn sandbox orchestrator: ${msg(e)}` });
+          finish();
+          return;
+        }
+
+        child.on("error", (e) => {
+          void setStatus(slug, "failed");
+          emit({ t: "error", error: `orchestrator spawn error: ${msg(e)}` });
+          finish();
+        });
+
+        // Parse stderr milestones line-by-line (buffer partial lines).
+        let errBuf = "";
+        child.stderr?.on("data", (chunk: Buffer) => {
+          errBuf += chunk.toString("utf8");
+          let nl: number;
+          while ((nl = errBuf.indexOf("\n")) >= 0) {
+            const line = errBuf.slice(0, nl);
+            errBuf = errBuf.slice(nl + 1);
+            const st = milestone(line);
+            if (st) recordStage(st);
+          }
+        });
+
+        // The orchestrator prints the forensic record JSON to stdout; accumulate it.
+        child.stdout?.on("data", (chunk: Buffer) => {
+          stdoutBuf += chunk.toString("utf8");
+        });
+
+        child.on("close", async (code) => {
+          if (closed) return;
+          if (code !== 0) {
+            void setStatus(slug, "failed");
+            emit({ t: "error", error: `sandbox run exited with code ${code}` });
+            finish();
+            return;
+          }
+          // Parse the forensic record from the orchestrator's stdout (it `cat`s the record
+          // last). gcloud/ssh banners may precede it, so extract from the first "{".
+          let forensics: unknown;
+          try {
+            const start = stdoutBuf.indexOf("{");
+            forensics = JSON.parse(start >= 0 ? stdoutBuf.slice(start) : stdoutBuf);
+          } catch {
+            // Ran but produced no record — honest distinct signal, never implies safe.
+            void setStatus(slug, "failed");
+            emit({ t: "error", error: "sandbox completed but produced no forensic record" });
+            finish();
+            return;
+          }
           emit({
             t: "stage",
             ch: "Persist",
-            status: "done",
-            kind: "ok",
-            lines: ["Forensics attached — this report now shows a real sandbox run"],
+            status: "active",
+            lines: ["Attaching the forensic record to the report row"],
           });
-          emit({ t: "result", persisted: true });
-        } else {
-          emit({ t: "error", error: attached.error });
-        }
-        finish();
-      });
+          const attached = await attachForensics({ owner, repo, sha, forensics, timeline });
+          if (attached.ok) {
+            void setStatus(slug, "done");
+            emit({
+              t: "stage",
+              ch: "Persist",
+              status: "done",
+              kind: "ok",
+              lines: ["Forensics attached — this report now shows a real sandbox run"],
+            });
+            emit({ t: "result", persisted: true });
+          } else {
+            void setStatus(slug, "failed");
+            emit({ t: "error", error: attached.error });
+          }
+          finish();
+        });
+      };
 
-      // Client disconnect → SIGTERM the child; orchestrate's EXIT trap +
-      // dead-man's-switch then tear down any VMs (no orphans).
-      const signal = req.signal;
-      if (signal) {
-        if (signal.aborted) killChild();
-        else signal.addEventListener("abort", killChild, { once: true });
+      /**
+       * Atomically acquire a slot and start the run. The check + increment run with
+       * NO await between them (single Node process), so two requests can never both
+       * see a free slot and both take it. Returns true when a slot was acquired.
+       */
+      const acquireAndRun = (): boolean => {
+        if (inFlight >= MAX_CONCURRENT) return false;
+        inFlight++;
+        acquiredSlot = true;
+        deepScanQueue.remove(slug); // leave the FIFO line; we're running now
+        startDetonation();
+        return true;
+      };
+
+      // ── Fast path: a slot is free AND nobody is ahead in line → run at once. ──
+      // Strict FIFO: only skip the queue when the in-process queue is empty, so a
+      // just-arrived request can never jump a waiter that is mid-poll for a slot.
+      if (deepScanQueue.size() === 0 && acquireAndRun()) {
+        // Client disconnect → SIGTERM the child; orchestrate's EXIT trap +
+        // dead-man's-switch then tear down any VMs (no orphans).
+        const signal = req.signal;
+        if (signal) {
+          if (signal.aborted) killChild();
+          else signal.addEventListener("abort", killChild, { once: true });
+        }
+        return;
       }
+
+      // ── Queue path: both slots busy (or someone is already waiting). Enqueue,
+      // keep the stream OPEN, emit an honest position/wait line, and poll until we
+      // become the FIFO head with a free slot — or the max-wait deadline elapses. ──
+      const startedAt = Date.now();
+      deepScanQueue.enqueue(slug);
+      // Record the queued row for observability (best-effort; FIFO is in-process).
+      void enqueueRow({ owner, repo, sha, token: slug });
+
+      // Emit the current "Queued — position N of M, ~X min" line. Prefers the DB
+      // position (authoritative, shared) but falls back to the in-process standing
+      // so the number is ALWAYS real, never fabricated, even if the DB is down.
+      const emitQueueLine = async () => {
+        if (closed) return;
+        const local: QueueStanding = deepScanQueue.standing(slug);
+        const dbPos = await fetchPosition(slug);
+        if (closed) return;
+        const standing: QueueStanding = dbPos
+          ? {
+              ahead: dbPos.ahead,
+              waitingTotal: dbPos.waitingTotal,
+              position: dbPos.ahead + 1,
+            }
+          : local;
+        emit({
+          t: "stage",
+          ch: "Queue",
+          status: "active",
+          lines: [queueLine(standing, MAX_CONCURRENT, PER_DETONATION_MS)],
+        });
+      };
+
+      // Wire disconnect handling for the whole queued lifecycle: an aborted request
+      // must leave the queue (release()) so it never blocks the head for those
+      // behind, and — if it had already been admitted and spawned a child — that
+      // child must be SIGTERM'd (orchestrate's EXIT trap then tears down any VM).
+      const signal = req.signal;
+      const onAbort = () => {
+        // Only a request that never ran is a queue "timed_out"; one that was
+        // admitted is torn down by its own child-close/kill path.
+        if (!acquiredSlot) void setStatus(slug, "timed_out");
+        killChild();
+        finish();
+      };
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      // Immediate first line so the user sees "Queued — position …" without a 1s gap.
+      void emitQueueLine();
+
+      let tick = 0;
+      queueTimer = setInterval(() => {
+        if (closed) {
+          clearQueueTimer();
+          return;
+        }
+        // Deadline: waited too long for a slot → honest, specific "too busy" failure.
+        if (isExpired(startedAt, Date.now(), QUEUE_MAX_WAIT_MS)) {
+          clearQueueTimer();
+          void setStatus(slug, "timed_out");
+          const waitedMin = Math.round((Date.now() - startedAt) / 60_000);
+          emit({
+            t: "error",
+            error:
+              `The sandbox was at capacity for too long — your scan waited ${waitedMin} min ` +
+              `without a free detonation slot and was not started. This is a busy-server ` +
+              `timeout, not a problem with the repository. Please retry in a few minutes.`,
+          });
+          finish();
+          return;
+        }
+        // Strict-FIFO admission: only the oldest waiter may take a freed slot.
+        // The abort listener wired above already handles a disconnect for BOTH the
+        // wait phase and the (now) running phase — it kills the child if one exists.
+        if (deepScanQueue.canAcquire(slug, inFlight, MAX_CONCURRENT)) {
+          clearQueueTimer();
+          acquireAndRun();
+          return;
+        }
+        // Still waiting — refresh the emitted position/estimate periodically so the
+        // user sees it move as slots free / others time out.
+        tick++;
+        if (tick % POSITION_REFRESH_TICKS === 0) void emitQueueLine();
+      }, QUEUE_POLL_MS);
     },
     cancel() {
       try {
@@ -813,6 +668,8 @@ export async function POST(req: Request): Promise<Response> {
       } catch {
         /* already gone */
       }
+      // A cancel before we ever ran leaves the queue row abandoned; mark it honestly.
+      if (!acquiredSlot) void setStatus(slug, "timed_out");
       release();
     },
   });
