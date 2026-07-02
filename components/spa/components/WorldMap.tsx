@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { MAP_H, MAP_W, clusterOffsets } from "@/lib/world-geo";
 import { WORLD_COUNTRIES, WORLD_GRATICULE } from "@/lib/world-geo-data";
 import type { BoardDot } from "@/lib/board-data";
@@ -92,6 +93,20 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Full-screen mode is portaled to document.body (see the render below): any
+  // ancestor screen wrapper (e.g. LeaderboardScreen's `screenIn` entrance
+  // animation) resolves to a non-"none" transform/filter once
+  // animation-fill-mode:both holds its end state, which per spec creates a new
+  // containing block for `position: fixed` descendants — pinning the overlay to
+  // that ancestor's box instead of the viewport. A body-level portal sidesteps
+  // this categorically instead of chasing every current/future animated
+  // ancestor. `canPortal` guards the `document.body` access for SSR; it is safe
+  // to compute lazily (no effect, no hydration mismatch) because `fullscreen`
+  // itself only ever flips to true well after mount, from a user click on the
+  // "Expand to full screen" button — never during the initial server or
+  // hydration render — so the two states are never both live at once.
+  const [canPortal] = useState(() => typeof document !== "undefined");
 
   // Escape closes full-screen mode; only listens while it's actually open.
   useEffect(() => {
@@ -195,7 +210,7 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
   // fan stays a constant on-screen size at any zoom.
   const slots = useMemo(() => clusterOffsets(dots.map((d) => d.point)), [dots]);
 
-  return (
+  const content = (
     <div
       style={
         fullscreen
@@ -444,6 +459,18 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
       </div>
     </div>
   );
+
+  // In-flow when normal; ported straight to document.body when full-screen so
+  // the `position: fixed` overlay is never subject to an ancestor's animation
+  // (screenIn/drawerIn's fill-mode:both end-state transform/filter) creating a
+  // containing block underneath it. A body-level portal also makes the overlay
+  // a true top-level sibling for stacking purposes, so its zIndex:85 compares
+  // directly against Sidebar's fixed zIndex:45 in the same stacking context —
+  // it paints above Sidebar rather than being trapped inside a nested one.
+  if (fullscreen && canPortal) {
+    return createPortal(content, document.body);
+  }
+  return content;
 }
 
 function MapButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
