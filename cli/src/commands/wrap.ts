@@ -158,7 +158,7 @@ function confirm(question: string): Promise<boolean> {
  * their presence means someone is trying to break out of the command, so we
  * refuse to run rather than risk injection.
  */
-const SHELL_META_RE = /[&|;<>^"'`$(){}\[\]!\n\r]/;
+const SHELL_META_RE = /[&|;<>^"'`$(){}\[\]!%\n\r]/;
 
 /** Run the underlying manager command, inheriting stdio; resolves its exit code. */
 function runUnderlying(manager: Manager, args: string[]): Promise<number> {
