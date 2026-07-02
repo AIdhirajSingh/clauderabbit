@@ -4,10 +4,21 @@
  * When the fast path trips the escalation gate, the browser calls this route and
  * watches the warm host boot a fresh Firecracker microVM (via Kata), run the
  * unknown code with all egress forced through the deceptive forge, and destroy the
- * microVM — all within the same scan, no queue, no separate drain step. On exit the
- * captured forensic record is POSTed to the deployed `attach-forensics` edge
- * function, which flips the report row to a real "Sandbox run" (its `_ranSandbox`
- * signal becomes true) and surfaces the captured geo + the deep-run count on the board.
+ * microVM — all within the same scan. On exit the captured forensic record is
+ * POSTed to the deployed `attach-forensics` edge function, which flips the report
+ * row to a real "Sandbox run" (its `_ranSandbox` signal becomes true) and surfaces
+ * the captured geo + the deep-run count on the board.
+ *
+ * CONCURRENCY + QUEUE — the host holds at most MAX_CONCURRENT (2) simultaneous
+ * detonations (its 4-vCPU budget). A 3rd concurrent request is no longer flatly
+ * rejected: it QUEUES. The connection stays open and streams an honest
+ * `{t:"stage", ch:"Queue", ...}` line ("Queued — position N of M, ~X min") while it
+ * polls for a free slot in strict FIFO order, then proceeds through the exact same
+ * detonation path once admitted. If it cannot get a slot within QUEUE_MAX_WAIT_MS it
+ * ends with a clear, specific "sandbox was too busy" error — never a silent drop.
+ * The in-process `inFlight` counter remains the sole slot arbiter (single Node
+ * process, race-free); the `deep_scan_queue` table + `lib/deep-queue.ts` provide the
+ * FIFO ordering, honest position/estimate, and observability. See lib/deep-queue.ts.
  *
  * This route only INVOKES the host orchestrator (`orchestrate-microvm.sh`); every
  * containment invariant (disposable Firecracker microVM with no route out except the
@@ -25,6 +36,13 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import {
+  deepScanQueue,
+  isExpired,
+  queueLine,
+  type QueueStanding,
+} from "@/lib/deep-queue";
+import { enqueueRow, fetchPosition, setStatus } from "@/lib/deep-queue-client";
 
 // Privileged local capability: a real Node child process + filesystem. Never edge.
 export const runtime = "nodejs";
@@ -78,6 +96,25 @@ const SHA_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 // cap → at most 2 concurrent deep runs. Enforced in-process (single dev server).
 const MAX_CONCURRENT = 2;
 let inFlight = 0;
+
+// ── queue tuning (see lib/deep-queue.ts for the ordering/estimate/timeout math) ──
+// A real, measured detonation is ~76s on the 4-vCPU host (docs/runs/2026-07-01-
+// host-restart-and-concurrency.md); we use 90s as the per-detonation estimate to
+// fold in the attach + reset overhead so the quoted wait never reads too optimistic.
+const PER_DETONATION_MS = 90_000;
+// Poll cadence while queued. 1s is cheap for a single Node process and surfaces a
+// freed slot / changed position within a tick — fast enough to feel live, not busy.
+const QUEUE_POLL_MS = 1_000;
+// Max time a request may WAIT in the queue before we give up honestly. With 2 slots
+// at ~90s each, an 8-minute window lets a request sit behind ~5 detonations' worth
+// of work (well beyond the "~2-3 detonations ahead" bar) before timing out. It is
+// also comfortably under the client's 20-min DEEP_SCAN_TIMEOUT_MS, so the SERVER
+// emits the honest "too busy" timeout event rather than the client aborting blind.
+const QUEUE_MAX_WAIT_MS = 8 * 60_000;
+// How often to refresh the emitted "position N of M, ~X min" line while waiting.
+// Every 5 ticks (~5s) — frequent enough to reflect position changes, infrequent
+// enough not to spam the stream with an identical line each second.
+const POSITION_REFRESH_TICKS = 5;
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -325,19 +362,23 @@ export async function POST(req: Request): Promise<Response> {
     return json({ error: "deep path needs gcloud on the sandbox controller" }, 501);
   }
 
-  // 5. concurrency cap — check + increment with NO await between (no race).
-  if (inFlight >= MAX_CONCURRENT) {
-    return json({ error: "sandbox at capacity (max 2 concurrent deep runs); retry shortly" }, 429);
-  }
-  inFlight++;
-
+  // 5. A per-request token: FIFO key (in-process), VM name slug, and queue row id.
   const slug = buildSlug(owner, repo);
   let stdoutBuf = ""; // accumulates the orchestrator's forensic-record JSON (its stdout)
 
+  // Slot ownership for THIS request. `acquiredSlot` records whether we hold an
+  // inFlight slot, so release() decrements exactly once and only when we do.
+  let acquiredSlot = false;
   let released = false;
   const release = () => {
-    if (!released) {
-      released = true;
+    if (released) return;
+    released = true;
+    // Always drop out of the in-process FIFO queue (a no-op if never/already gone),
+    // so a disconnect/timeout/finish can never leave a phantom waiter blocking the
+    // head-of-line check for everyone behind it.
+    deepScanQueue.remove(slug);
+    if (acquiredSlot) {
+      acquiredSlot = false;
       inFlight = Math.max(0, inFlight - 1);
     }
   };
@@ -346,12 +387,21 @@ export async function POST(req: Request): Promise<Response> {
   let child: ChildProcess | null = null;
   // The REAL run timeline, accumulated as it streams, so the captured record can be
   // persisted with the report (not just shown live then lost). Only genuine run
-  // milestones are recorded — the "Persist" bookkeeping stage is excluded below.
+  // milestones are recorded — the "Persist" and "Queue" bookkeeping stages are
+  // excluded (they are emitted straight to the client, never pushed here).
   const timeline: Stage[] = [];
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      // Poll handle for the queued-wait loop, cleared on admission/timeout/finish.
+      let queueTimer: ReturnType<typeof setInterval> | null = null;
+      const clearQueueTimer = () => {
+        if (queueTimer) {
+          clearInterval(queueTimer);
+          queueTimer = null;
+        }
+      };
       const emit = (obj: unknown) => {
         if (closed) return;
         try {
@@ -368,6 +418,7 @@ export async function POST(req: Request): Promise<Response> {
       const finish = () => {
         if (closed) return;
         closed = true;
+        clearQueueTimer();
         try {
           controller.close();
         } catch {
@@ -383,103 +434,229 @@ export async function POST(req: Request): Promise<Response> {
         }
       };
 
-      // M4: flush an initial stage immediately so the client sees life at once.
-      recordStage({
-        ch: "Escalate",
-        status: "active",
-        lines: ["Gate tripped — detonating on the microVM sandbox host"],
-      });
-
-      try {
-        // Run the per-scan orchestrator ON the sandbox host over SSH. We invoke gcloud
-        // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
-        // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
-        // so interpolating them into the remote command is injection-free.
-        const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
-        const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
-        child = spawn(BASH, ["-c", gcloudCmd], {
-          cwd: REPO_ROOT,
-          stdio: ["ignore", "pipe", "pipe"],
-          shell: false,
-          env: childEnv(),
-        });
-      } catch (e) {
-        emit({ t: "error", error: `failed to spawn sandbox orchestrator: ${msg(e)}` });
-        finish();
-        return;
-      }
-
-      child.on("error", (e) => {
-        emit({ t: "error", error: `orchestrator spawn error: ${msg(e)}` });
-        finish();
-      });
-
-      // Parse stderr milestones line-by-line (buffer partial lines).
-      let errBuf = "";
-      child.stderr?.on("data", (chunk: Buffer) => {
-        errBuf += chunk.toString("utf8");
-        let nl: number;
-        while ((nl = errBuf.indexOf("\n")) >= 0) {
-          const line = errBuf.slice(0, nl);
-          errBuf = errBuf.slice(nl + 1);
-          const st = milestone(line);
-          if (st) recordStage(st);
-        }
-      });
-
-      // The orchestrator prints the forensic record JSON to stdout; accumulate it.
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdoutBuf += chunk.toString("utf8");
-      });
-
-      child.on("close", async (code) => {
-        if (closed) return;
-        if (code !== 0) {
-          emit({ t: "error", error: `sandbox run exited with code ${code}` });
-          finish();
-          return;
-        }
-        // Parse the forensic record from the orchestrator's stdout (it `cat`s the record
-        // last). gcloud/ssh banners may precede it, so extract from the first "{".
-        let forensics: unknown;
-        try {
-          const start = stdoutBuf.indexOf("{");
-          forensics = JSON.parse(start >= 0 ? stdoutBuf.slice(start) : stdoutBuf);
-        } catch {
-          // Ran but produced no record — honest distinct signal, never implies safe.
-          emit({ t: "error", error: "sandbox completed but produced no forensic record" });
-          finish();
-          return;
-        }
-        emit({
-          t: "stage",
-          ch: "Persist",
+      /**
+       * Spawn the orchestrator and stream its milestones. Called ONLY once a slot
+       * is held (acquiredSlot === true) — either immediately (a slot was free) or
+       * after the queue admitted this request as the FIFO head. Unchanged from the
+       * pre-queue path: same gcloud-over-bash dispatch, same milestone parsing,
+       * same forensics-attach + release semantics.
+       */
+      const startDetonation = () => {
+        // Best-effort: mark the queue row active for observability (never blocks).
+        void setStatus(slug, "active");
+        // M4: flush an initial stage immediately so the client sees life at once.
+        recordStage({
+          ch: "Escalate",
           status: "active",
-          lines: ["Attaching the forensic record to the report row"],
+          lines: ["Gate tripped — detonating on the microVM sandbox host"],
         });
-        const attached = await attachForensics({ owner, repo, sha, forensics, timeline });
-        if (attached.ok) {
+
+        try {
+          // Run the per-scan orchestrator ON the sandbox host over SSH. We invoke gcloud
+          // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
+          // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
+          // so interpolating them into the remote command is injection-free.
+          const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
+          const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${ZONE} --quiet --command ${JSON.stringify(remoteCmd)}`;
+          child = spawn(BASH, ["-c", gcloudCmd], {
+            cwd: REPO_ROOT,
+            stdio: ["ignore", "pipe", "pipe"],
+            shell: false,
+            env: childEnv(),
+          });
+        } catch (e) {
+          void setStatus(slug, "failed");
+          emit({ t: "error", error: `failed to spawn sandbox orchestrator: ${msg(e)}` });
+          finish();
+          return;
+        }
+
+        child.on("error", (e) => {
+          void setStatus(slug, "failed");
+          emit({ t: "error", error: `orchestrator spawn error: ${msg(e)}` });
+          finish();
+        });
+
+        // Parse stderr milestones line-by-line (buffer partial lines).
+        let errBuf = "";
+        child.stderr?.on("data", (chunk: Buffer) => {
+          errBuf += chunk.toString("utf8");
+          let nl: number;
+          while ((nl = errBuf.indexOf("\n")) >= 0) {
+            const line = errBuf.slice(0, nl);
+            errBuf = errBuf.slice(nl + 1);
+            const st = milestone(line);
+            if (st) recordStage(st);
+          }
+        });
+
+        // The orchestrator prints the forensic record JSON to stdout; accumulate it.
+        child.stdout?.on("data", (chunk: Buffer) => {
+          stdoutBuf += chunk.toString("utf8");
+        });
+
+        child.on("close", async (code) => {
+          if (closed) return;
+          if (code !== 0) {
+            void setStatus(slug, "failed");
+            emit({ t: "error", error: `sandbox run exited with code ${code}` });
+            finish();
+            return;
+          }
+          // Parse the forensic record from the orchestrator's stdout (it `cat`s the record
+          // last). gcloud/ssh banners may precede it, so extract from the first "{".
+          let forensics: unknown;
+          try {
+            const start = stdoutBuf.indexOf("{");
+            forensics = JSON.parse(start >= 0 ? stdoutBuf.slice(start) : stdoutBuf);
+          } catch {
+            // Ran but produced no record — honest distinct signal, never implies safe.
+            void setStatus(slug, "failed");
+            emit({ t: "error", error: "sandbox completed but produced no forensic record" });
+            finish();
+            return;
+          }
           emit({
             t: "stage",
             ch: "Persist",
-            status: "done",
-            kind: "ok",
-            lines: ["Forensics attached — this report now shows a real sandbox run"],
+            status: "active",
+            lines: ["Attaching the forensic record to the report row"],
           });
-          emit({ t: "result", persisted: true });
-        } else {
-          emit({ t: "error", error: attached.error });
-        }
-        finish();
-      });
+          const attached = await attachForensics({ owner, repo, sha, forensics, timeline });
+          if (attached.ok) {
+            void setStatus(slug, "done");
+            emit({
+              t: "stage",
+              ch: "Persist",
+              status: "done",
+              kind: "ok",
+              lines: ["Forensics attached — this report now shows a real sandbox run"],
+            });
+            emit({ t: "result", persisted: true });
+          } else {
+            void setStatus(slug, "failed");
+            emit({ t: "error", error: attached.error });
+          }
+          finish();
+        });
+      };
 
-      // Client disconnect → SIGTERM the child; orchestrate's EXIT trap +
-      // dead-man's-switch then tear down any VMs (no orphans).
-      const signal = req.signal;
-      if (signal) {
-        if (signal.aborted) killChild();
-        else signal.addEventListener("abort", killChild, { once: true });
+      /**
+       * Atomically acquire a slot and start the run. The check + increment run with
+       * NO await between them (single Node process), so two requests can never both
+       * see a free slot and both take it. Returns true when a slot was acquired.
+       */
+      const acquireAndRun = (): boolean => {
+        if (inFlight >= MAX_CONCURRENT) return false;
+        inFlight++;
+        acquiredSlot = true;
+        deepScanQueue.remove(slug); // leave the FIFO line; we're running now
+        startDetonation();
+        return true;
+      };
+
+      // ── Fast path: a slot is free AND nobody is ahead in line → run at once. ──
+      // Strict FIFO: only skip the queue when the in-process queue is empty, so a
+      // just-arrived request can never jump a waiter that is mid-poll for a slot.
+      if (deepScanQueue.size() === 0 && acquireAndRun()) {
+        // Client disconnect → SIGTERM the child; orchestrate's EXIT trap +
+        // dead-man's-switch then tear down any VMs (no orphans).
+        const signal = req.signal;
+        if (signal) {
+          if (signal.aborted) killChild();
+          else signal.addEventListener("abort", killChild, { once: true });
+        }
+        return;
       }
+
+      // ── Queue path: both slots busy (or someone is already waiting). Enqueue,
+      // keep the stream OPEN, emit an honest position/wait line, and poll until we
+      // become the FIFO head with a free slot — or the max-wait deadline elapses. ──
+      const startedAt = Date.now();
+      deepScanQueue.enqueue(slug);
+      // Record the queued row for observability (best-effort; FIFO is in-process).
+      void enqueueRow({ owner, repo, sha, token: slug });
+
+      // Emit the current "Queued — position N of M, ~X min" line. Prefers the DB
+      // position (authoritative, shared) but falls back to the in-process standing
+      // so the number is ALWAYS real, never fabricated, even if the DB is down.
+      const emitQueueLine = async () => {
+        if (closed) return;
+        const local: QueueStanding = deepScanQueue.standing(slug);
+        const dbPos = await fetchPosition(slug);
+        if (closed) return;
+        const standing: QueueStanding = dbPos
+          ? {
+              ahead: dbPos.ahead,
+              waitingTotal: dbPos.waitingTotal,
+              position: dbPos.ahead + 1,
+            }
+          : local;
+        emit({
+          t: "stage",
+          ch: "Queue",
+          status: "active",
+          lines: [queueLine(standing, MAX_CONCURRENT, PER_DETONATION_MS)],
+        });
+      };
+
+      // Wire disconnect handling for the whole queued lifecycle: an aborted request
+      // must leave the queue (release()) so it never blocks the head for those
+      // behind, and — if it had already been admitted and spawned a child — that
+      // child must be SIGTERM'd (orchestrate's EXIT trap then tears down any VM).
+      const signal = req.signal;
+      const onAbort = () => {
+        // Only a request that never ran is a queue "timed_out"; one that was
+        // admitted is torn down by its own child-close/kill path.
+        if (!acquiredSlot) void setStatus(slug, "timed_out");
+        killChild();
+        finish();
+      };
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      // Immediate first line so the user sees "Queued — position …" without a 1s gap.
+      void emitQueueLine();
+
+      let tick = 0;
+      queueTimer = setInterval(() => {
+        if (closed) {
+          clearQueueTimer();
+          return;
+        }
+        // Deadline: waited too long for a slot → honest, specific "too busy" failure.
+        if (isExpired(startedAt, Date.now(), QUEUE_MAX_WAIT_MS)) {
+          clearQueueTimer();
+          void setStatus(slug, "timed_out");
+          const waitedMin = Math.round((Date.now() - startedAt) / 60_000);
+          emit({
+            t: "error",
+            error:
+              `The sandbox was at capacity for too long — your scan waited ${waitedMin} min ` +
+              `without a free detonation slot and was not started. This is a busy-server ` +
+              `timeout, not a problem with the repository. Please retry in a few minutes.`,
+          });
+          finish();
+          return;
+        }
+        // Strict-FIFO admission: only the oldest waiter may take a freed slot.
+        // The abort listener wired above already handles a disconnect for BOTH the
+        // wait phase and the (now) running phase — it kills the child if one exists.
+        if (deepScanQueue.canAcquire(slug, inFlight, MAX_CONCURRENT)) {
+          clearQueueTimer();
+          acquireAndRun();
+          return;
+        }
+        // Still waiting — refresh the emitted position/estimate periodically so the
+        // user sees it move as slots free / others time out.
+        tick++;
+        if (tick % POSITION_REFRESH_TICKS === 0) void emitQueueLine();
+      }, QUEUE_POLL_MS);
     },
     cancel() {
       try {
@@ -487,6 +664,8 @@ export async function POST(req: Request): Promise<Response> {
       } catch {
         /* already gone */
       }
+      // A cancel before we ever ran leaves the queue row abandoned; mark it honestly.
+      if (!acquiredSlot) void setStatus(slug, "timed_out");
       release();
     },
   });
