@@ -9,6 +9,7 @@
 
 import { useApp } from "../state";
 import styles from "../spa.module.css";
+import { Avatar } from "../components/Sidebar";
 
 export function ProfileScreen() {
   const app = useApp();
@@ -22,23 +23,7 @@ export function ProfileScreen() {
       </h1>
 
       <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 34 }}>
-        <div
-          style={{
-            width: 68,
-            height: 68,
-            borderRadius: "50%",
-            background: "linear-gradient(135deg, oklch(0.58 0.16 25), oklch(0.52 0.15 320))",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 28,
-            fontWeight: 600,
-            color: "#fff",
-            flexShrink: 0,
-          }}
-        >
-          {profileInitial}
-        </div>
+        <Avatar image={state.profileImage} initial={profileInitial} size={68} fontSize={28} />
         <div style={{ flex: 1, minWidth: 0 }}>
           {state.editName ? (
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

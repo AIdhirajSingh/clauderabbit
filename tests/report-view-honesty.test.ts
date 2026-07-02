@@ -24,24 +24,41 @@ function makeReport(overrides: Record<string, unknown>) {
   });
 }
 
-test("escalated-but-not-run (deep=true, no forensics) → _ranSandbox false, NO runtime claims", () => {
+test("escalation attempted but not run (deep=true, no forensics) → _ranSandbox false, says the run DID NOT COMPLETE, distinct from never-escalated", () => {
   const v = buildReportView(makeReport({ deep: true, forensics_json: null }));
   assert.equal(v._ranSandbox, false);
   // The exact lie that shipped (BUG-2): must NOT appear.
   assert.ok(
     !/we observed|blocked outbound attempts|when we ran it/i.test(v._finalNote),
-    "static scan must not claim runtime observations: " + v._finalNote,
+    "attempted-but-failed scan must not claim runtime observations: " + v._finalNote,
   );
-  // It must instead speak in static terms.
+  // It must PLAINLY say the sandbox run did not complete — the honest failed/incomplete state.
   assert.ok(
-    /static analysis|not executed in a sandbox|static-read/i.test(v._finalNote),
-    "static scan must say so: " + v._finalNote,
+    /sandbox run did not complete/i.test(v._finalNote),
+    "an attempted-but-failed escalation must say the run did not complete: " + v._finalNote,
   );
-  // The "what we could not verify" list must flag that runtime wasn't executed.
+  // And it must NOT wear the never-escalated sentence — the two states never share a sentence.
   assert.ok(
-    v._notVerified.some((s) => /not executed in a sandbox/i.test(s)),
-    "notVerified must flag un-run runtime: " + JSON.stringify(v._notVerified),
+    !/runtime was not executed in a sandbox on this pass/i.test(v._finalNote),
+    "attempted-but-failed must not reuse the never-escalated 'was not executed' sentence: " + v._finalNote,
   );
+  // The "what we could not verify" list must flag that the run did not complete.
+  assert.ok(
+    v._notVerified.some((s) => /sandbox run did not complete/i.test(s)),
+    "notVerified must flag the incomplete run: " + JSON.stringify(v._notVerified),
+  );
+});
+
+test("never-escalated vs attempted-but-failed (both no forensics) produce DISTINCT final notes that never share a sentence", () => {
+  const never = buildReportView(makeReport({ score: 45, deep: false, forensics_json: null }));
+  const failed = buildReportView(makeReport({ score: 45, deep: true, forensics_json: null }));
+  assert.notEqual(never._finalNote, failed._finalNote, "the two states must not render identical copy");
+  // never-escalated speaks in static-read terms; attempted-but-failed says the run did not complete.
+  assert.ok(/not executed in a sandbox on this pass/i.test(never._finalNote), never._finalNote);
+  assert.ok(/sandbox run did not complete/i.test(failed._finalNote), failed._finalNote);
+  // Neither sentence appears in the other note.
+  assert.ok(!/sandbox run did not complete/i.test(never._finalNote), "never-escalated must not claim an attempted run");
+  assert.ok(!/not executed in a sandbox on this pass/i.test(failed._finalNote), "attempted-but-failed must not claim it was never run");
 });
 
 test("a low score alone (no forensics) never produces the 'active credential access' runtime claim", () => {
@@ -151,9 +168,29 @@ test("a STATIC report STILL keeps its honest 'could not verify' list (the refram
   );
 });
 
-test("without forensics the stored summary is returned verbatim (no surprise edits)", () => {
+test("a NEVER-escalated summary is returned verbatim (no surprise edits)", () => {
   const stored = "Project Y. Runtime was not executed in a sandbox on this pass.";
-  const v = buildReportView(makeReport({ score: 70, deep: true, summary: stored, forensics_json: null }));
+  const v = buildReportView(makeReport({ score: 70, deep: false, summary: stored, forensics_json: null }));
   assert.equal(v._ranSandbox, false);
-  assert.equal(v.summary, stored, "static report keeps its summary unchanged");
+  assert.equal(v.summary, stored, "a never-escalated (static-only) report keeps its summary unchanged");
+});
+
+test("an escalated-but-incomplete summary reconciles the stale 'not executed' clause with the badge/verdict", () => {
+  // deep=true + no forensics: the fast-path model summary can still carry the static
+  // 'runtime ... was not executed in a sandbox' clause, which contradicts the
+  // 'Sandbox run incomplete' badge + 'the sandbox run did not complete' final note.
+  const stored =
+    "The repository is an industry-standard project. No malicious behavior was observed in our static read; full runtime behavior was not executed in a sandbox on this pass.";
+  const v = buildReportView(makeReport({ score: 35, deep: true, summary: stored, forensics_json: null }));
+  assert.equal(v._ranSandbox, false);
+  assert.ok(
+    /sandbox run did not complete on this pass/i.test(v.summary),
+    "summary now says the run did not complete: " + v.summary,
+  );
+  assert.ok(
+    !/was not executed in a sandbox on this pass/i.test(v.summary),
+    "summary no longer carries the never-escalated 'not executed' clause: " + v.summary,
+  );
+  // The descriptive part of the summary is preserved (only the stale clause changed).
+  assert.ok(/industry-standard project/i.test(v.summary), "descriptive text preserved: " + v.summary);
 });

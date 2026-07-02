@@ -52,7 +52,7 @@ create_in_some_zone() {
         --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud \
         --boot-disk-size 100GB --boot-disk-type pd-balanced \
         --service-account "$SA" --scopes cloud-platform \
-        --metadata enable-oslogin=FALSE \
+        --metadata enable-oslogin=FALSE,cr-idle-exempt=1 \
         --max-run-duration "$((MAX_RUN_HOURS * 3600))s" --instance-termination-action STOP \
         --labels purpose=cr-microvm-substrate >/dev/null 2>"$err"; then
       ZONE="$z"; log "created in $z"; rm -f "$err"; return 0
