@@ -86,6 +86,13 @@ CR_ALLOW_LOCAL_DEEP=1                 CR_SANDBOX_ZONE=us-east1-b
 CR_DEEP_RUNNER_KEY=<must equal the Supabase CR_DEEP_RUNNER_KEY secret>
 # Windows only, if `python` hits the Store alias:
 CLOUDSDK_PYTHON=…\google-cloud-sdk\platform\bundledpython\python.exe
+# Windows only, if `/api/deep` 501s with "needs gcloud on the sandbox
+# controller": the Node process that runs `next dev`/`next start` may inherit a
+# thinner PATH than an interactive shell (this bit a Claude Preview-launched dev
+# server on one real machine — bash and gcloud were both on the interactive
+# shell's PATH but not the preview tool's spawned process). Pin both explicitly:
+CR_BASH=C:\Program Files\Git\usr\bin\bash.exe
+CR_SANDBOX_PATH_PREPEND=/c/Users/<you>/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin
 ```
 
 - Bring the host up / keep it warm: `bash sandbox/microvm/provision-host.sh`
