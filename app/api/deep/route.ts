@@ -313,7 +313,11 @@ function buildSlug(owner: string, repo: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 28) || "scan";
   const stamp = Date.now().toString(36).slice(-6);
-  const rand = Math.floor(Math.random() * 1296).toString(36);
+  // 36^5 (~60M) values, not 36^2 (~1,296): two requests for the same owner/repo
+  // in the same millisecond must not collide on this slug, since it also doubles
+  // as the FIFO queue token (lib/deep-queue.ts) -- a collision there would make
+  // one of them spuriously wait out the full queue timeout despite a free slot.
+  const rand = Math.floor(Math.random() * 36 ** 5).toString(36);
   return `${base}-${stamp}${rand}`.slice(0, 40).replace(/-+$/g, "");
 }
 
