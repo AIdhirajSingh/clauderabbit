@@ -4,6 +4,17 @@
 .env*
 !.env.example
 *-key.json
+.npmrc
+credentials.json
+service-account.json
+gcp-credentials.json
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.pfx
+*.p12
+.aws/credentials
 
 # dependencies
 node_modules/
