@@ -21,6 +21,11 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { jsonResponse, preflightResponse, streamResponse } from "../_shared/cors.ts";
 import {
+  checkBurstLimit,
+  clientIpFromRequest,
+  rateLimitedResponseInit,
+} from "../_shared/rate-limit.ts";
+import {
   GitHubRateLimitError,
   type OwnerSignal,
   ownerSignal,
@@ -703,6 +708,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
   } catch {
     console.error("config error: server misconfigured (key unavailable or rejected)");
     return jsonResponse({ error: "Server is not configured correctly" }, 500);
+  }
+
+  // 0. BURST/VELOCITY RATE LIMIT (BUG-9 security review) — BEFORE any expensive
+  // work (the live GitHub API call in resolveRepo, the billed Vertex model call,
+  // and the DB writes). Scans stay UNLIMITED per day (no quota is reintroduced);
+  // this only throttles a scripted flood of requests-per-minute from one source,
+  // which would otherwise drain the shared GitHub token and the model budget. A
+  // human or a CLI/MCP agent making occasional real scans never reaches the cap.
+  //
+  // Keyed by the trustworthy (gateway-appended) client IP AND the hashed device
+  // id, whichever trips first — so a flood is caught whether it rotates device
+  // ids (IP bucket catches it) or hides behind a NAT/proxy pool with one device
+  // fingerprint (device bucket catches it). The limiter fails OPEN on any DB
+  // error and when no identity is derivable, so it can never take the endpoint
+  // down or block the free first scan.
+  const clientIp = clientIpFromRequest(req);
+  const burst = await checkBurstLimit(db, { ip: clientIp, deviceIdHash: deviceId });
+  if (!burst.allowed) {
+    console.error(
+      `rate limited (${burst.trippedBy}) ip=${clientIp ?? "none"} retryAfter=${burst.retryAfter}s`,
+    );
+    const init = rateLimitedResponseInit(burst.retryAfter);
+    return jsonResponse(init.body, 429, init.headers);
   }
 
   // 1. Resolve repo → canonical owner/repo + SHA + metadata + files.
