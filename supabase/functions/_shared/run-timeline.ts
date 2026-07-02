@@ -100,13 +100,20 @@ export const DEEP_RUN_CHAPTERS: ReadonlySet<string> = new Set([
   "Escalate",
   "Seal the network",
   "Clone + pin",
-  "Provision trap host",
-  "Provision detonation VM",
+  // Current microVM+forge chapter names (route.ts milestone()).
+  "Bring up the forge",
+  "Boot the microVM",
+  "Detonate through the forge",
   "Build under containment",
-  "Run under the sinkhole",
+  "Three agents read the code",
   "Capture + reset",
   "Compute verdict",
   "Sandbox run",
+  // Retired two-VM names — kept so a re-attach still drops chapters from a
+  // timeline persisted before the microVM+forge rename.
+  "Provision trap host",
+  "Provision detonation VM",
+  "Run under the sinkhole",
 ]);
 
 /** True if a persisted chapter came from a deep run (so a re-attach can drop it). */

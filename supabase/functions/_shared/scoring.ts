@@ -68,7 +68,18 @@ export interface ScoringReputation {
 export interface ScoringDynamicOutcome {
   /** A high-value credential (ssh key, aws creds, .npmrc) was read at runtime. */
   credentialReadObserved: boolean;
-  /** The sandbox intercepted real outbound egress the code attempted. */
+  /**
+   * The sandbox intercepted real outbound egress the code attempted — PHASE-AWARE:
+   * true for a run-phase network attempt, a build-phase attempt to an unrecognized
+   * host, or any attempt whose phase could not be determined. A BUILD-phase fetch to
+   * a recognized software-distribution host (github, sourceforge, ...) with no
+   * credential involvement is a supply-chain caution, not an attack, and must be
+   * EXCLUDED here (see assemble-forensics.py's phase-aware classification and
+   * attach-forensics/index.ts's `extractRuntime`, which is the live producer of this
+   * value today). Never derive this from "any captured host at all" — that conflation
+   * is exactly the false-positive this contract prevents (a benign dependency fetch
+   * scoring as a confirmed attack).
+   */
   egressIntercepted: boolean;
   /** The repo cloned, built and ran unattended (a healthiness signal). */
   autoBuildSucceeded: boolean;
@@ -90,6 +101,19 @@ export interface ScoringInputs {
   confidence: number;
   /** Whether the escalation gate decided to escalate this repo. */
   escalated: boolean;
+  /** Whether the owner was classified as "new" (per decideEscalation's own
+   * NEW_OWNER_AGE_DAYS threshold in scan/index.ts) AT THE TIME of the escalation
+   * decision. Needed because `decideEscalation` only treats plain `network`
+   * (via its `anySignal` check) as an escalation-worthy signal INSIDE the
+   * `newOwner && anySignal` branch — for an established/non-new owner, network
+   * alone never triggers escalation there (only low confidence or the model's
+   * own opaque `escalate` flag do). Scoring only receives the boolean
+   * `escalated`, not the reason, so it needs this flag to tell those cases
+   * apart in `hasRealCodeSignal` below. Defaults to `false` (the safer
+   * assumption: without this flag, plain network is NOT treated as a
+   * qualifying signal) so existing callers that do not pass it keep the
+   * fairer, narrower behavior rather than silently reverting to the bug. */
+  wasNewOwner?: boolean;
   /** Dynamic-run outcome, present only when the deep path actually ran. */
   dynamic?: ScoringDynamicOutcome;
 }
@@ -195,7 +219,16 @@ const LOW_CONFIDENCE_THRESHOLD = 0.7;
 /** Escalation reservation: when the gate escalated but no dynamic run has yet
  * confirmed clean, hold back points — the repo is unresolved, not cleared. Small,
  * because the specific signals that caused escalation already carry their own
- * penalties; this only prevents an escalated-but-otherwise-quiet repo scoring high. */
+ * penalties; this only prevents an escalated-but-otherwise-quiet repo scoring high.
+ *
+ * FAIRNESS GATE: this reservation applies ONLY when the escalation coincided with
+ * at least one real negative code/behavior signal (see `hasRealCodeSignal` in
+ * `codeDeltas`). A repo that escalates PURELY because the static read's own
+ * confidence fell below threshold (or the model asked for a second look) on an
+ * otherwise clean read gets no code/behavior signal to name here — charging it
+ * the same flat penalty as a genuinely suspicious repo would be unearned. That
+ * repo still pays `low_confidence` above when applicable; it just does not ALSO
+ * pay a second, redundant "unresolved" tax with nothing concrete behind it. */
 const W_ESCALATION_PENDING = -6;
 
 // -- Dynamic/forensic outcome (deep path only — OBSERVED behavior, strongest) --
@@ -242,8 +275,23 @@ const SENT_POSITIVE = 70;
 const SENT_NEGATIVE = 35;
 
 /** Hard bounds on the TOTAL reputation contribution. Reputation may move the
- * score by at most +REP_MAX / REP_MIN points — it can nudge, never decide. */
-const REP_MAX = 14;
+ * score by at most +REP_MAX / REP_MIN points — it can nudge, never decide.
+ *
+ * REP_MAX is 20, not the true maximum simultaneous raw total (established +8 +
+ * many_stars +6 + good_sentiment +4 = +18): at 14 the cap was clipping even that
+ * fully-maximal, decade-old/high-star/positive-sentiment case, so the single
+ * strongest reputation a repo can have was worth NO MORE than a middling one
+ * (established + some_stars = +11, or established + many_stars alone = +14) —
+ * reputation could never distinguish its own best case from its merely-good
+ * case. 20 lets the true +18 maximum pass through unclipped for the first time
+ * while staying far below what any single code penalty can do (smallest is -6
+ * `network`; a lone `install_hook` is -8; real malware combinations are -60 to
+ * over -100), so it still cannot rescue dangerous code — it only lets a
+ * genuinely stellar reputation mean more than a merely good one. REP_MIN is
+ * UNCHANGED at -18: this fix does not touch the negative side, and does not
+ * touch any penalty tied to real malicious/suspicious code or runtime signals —
+ * those remain a separate axis, at their existing weights. */
+const REP_MAX = 20;
 const REP_MIN = -18;
 
 // --- Pure helpers ------------------------------------------------------------
@@ -356,15 +404,48 @@ function codeDeltas(inputs: ScoringInputs): ScoreDelta[] {
     });
   }
 
-  // Escalation reservation — only when escalated AND no dynamic run has resolved
-  // it yet. A completed dynamic run supplies its own (stronger) deltas below.
+  // Escalation reservation — only when escalated, no dynamic run has resolved it
+  // yet, AND escalation coincided with a REAL negative code/behavior signal. A
+  // completed dynamic run supplies its own (stronger) deltas below.
+  //
+  // `hasRealCodeSignal` mirrors every code-grounded reason `decideEscalation` (in
+  // scan/index.ts) can escalate on: obfuscation, credential access, install-time
+  // network, an embedded secret, a typosquat hint, an install hook, at least one
+  // net-negative model `risky` finding, or plain (non-install-time) network
+  // capability — but that last one is CONDITIONAL, not automatic.
+  // `decideEscalation` only treats plain network as a qualifying signal INSIDE
+  // its `newOwner && anySignal` branch; for an established/non-new owner,
+  // network alone never triggers escalation there (only low confidence, or the
+  // model's own opaque `escalate` flag, can). Scoring only receives the boolean
+  // `escalated`, not the reason, so `wasNewOwner` is threaded through
+  // `ScoringInputs` to let this gate tell the two cases apart: `s.network` only
+  // counts as a real code signal when `wasNewOwner` is also true, matching
+  // `decideEscalation` exactly. Without that flag (or on an established owner),
+  // plain network no longer justifies this penalty on its own. What is
+  // EXCLUDED, as before: escalating purely because read confidence fell below
+  // threshold, or purely because the model set its own opaque `escalate` flag,
+  // with a fully clean static read and zero risky findings. That case still
+  // pays `low_confidence` above when applicable — it just does not also pay a
+  // second, unnamed "unresolved" tax with no concrete signal behind it.
   if (inputs.escalated && !inputs.dynamic) {
-    deltas.push({
-      factor: "escalation_pending",
-      delta: W_ESCALATION_PENDING,
-      detail: "Escalated to the dynamic sandbox; not yet cleared by a runtime observation.",
-      group: "code",
-    });
+    // Reuses `riskySum` (computed just above) rather than re-deriving it, so the
+    // two can never drift apart.
+    const hasRealCodeSignal = s.installHook ||
+      s.obfuscation ||
+      s.credAccess ||
+      inputs.installTimeNetwork ||
+      s.embeddedSecret ||
+      s.typosquat ||
+      (s.network && inputs.wasNewOwner === true) ||
+      riskySum < 0;
+    if (hasRealCodeSignal) {
+      deltas.push({
+        factor: "escalation_pending",
+        delta: W_ESCALATION_PENDING,
+        detail: "Escalated to the dynamic sandbox; not yet cleared by a runtime observation.",
+        group: "code",
+      });
+    }
   }
 
   // Dynamic/forensic outcome — observed behavior from a real sandbox run.
@@ -573,11 +654,22 @@ const ESC_STATIC_RESIDUAL_FLOOR = -18;
  * findings + reputation as the bounded adjustments. Pure: no forensic-JSON
  * coupling here, so this stays deterministic + unit-testable. */
 export interface ScoringEscalatedInputs {
-  /** The runtime assessment from verdict.py (`forensics.verdict.dynamic_score`). */
+  /** The runtime assessment from assemble-forensics.py (`forensics.verdict.dynamic_score`). */
   dynamicScore: number;
   /** The repo BOTH built and ran without crashing (auto_build_succeeded && ran_without_crash). */
   exercised: boolean;
-  /** The run was caught attempting egress / credential theft / reached a captured C2 host. */
+  /**
+   * The run was caught attempting REAL credential theft or C2/exfil egress — a
+   * credential-file read, a canary exfil, a RUN-phase network attempt, a BUILD-phase
+   * attempt to an unrecognized host, or a refused pinned/mTLS handshake. PHASE-AWARE:
+   * a BUILD-phase dependency fetch to a recognized software-distribution host (github,
+   * sourceforge, ...) with no credential involvement is a supply-chain caution, not an
+   * attack, and must be false here (see assemble-forensics.py's classification and
+   * attach-forensics/index.ts's `extractRuntime`, the live producer of this value).
+   * This hard-caps the score at ESC_CAUGHT_ATTACK_CEILING below — getting its
+   * semantics wrong either lets a real attack score clean, or false-flags a benign
+   * repo as Malicious (the exact bug this contract exists to prevent).
+   */
   caughtAttack: boolean;
   /** Stage-1 code/behavior findings — residual static concern the run did not resolve. */
   codeRisky: ScoringRiskyItem[];
