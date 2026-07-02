@@ -14,6 +14,7 @@
  */
 
 import type { BoardStats } from "@/lib/board-data";
+import { formatCount } from "@/lib/format";
 
 interface BoardStatsStripProps {
   stats: BoardStats | null;
@@ -90,7 +91,7 @@ export function BoardStatsStrip({ stats, loading, loaded }: BoardStatsStripProps
             className="serif tnum"
             style={{ fontSize: 34, lineHeight: 1, color: it.color }}
           >
-            {it.value.toLocaleString()}
+            {formatCount(it.value)}
           </span>
           <span
             style={{
