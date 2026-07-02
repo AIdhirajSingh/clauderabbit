@@ -10,7 +10,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/resolve-ts.mjs --test \"tests/**/*.test.ts\" \"app/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\"",
-    "test:functions": "deno test supabase/functions/"
+    "test:functions": "deno test --allow-net --allow-env supabase/functions/"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",

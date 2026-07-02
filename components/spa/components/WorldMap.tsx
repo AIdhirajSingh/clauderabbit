@@ -26,6 +26,7 @@ import { createPortal } from "react-dom";
 import { MAP_H, MAP_W, clusterOffsets } from "@/lib/world-geo";
 import { WORLD_COUNTRIES, WORLD_GRATICULE } from "@/lib/world-geo-data";
 import type { BoardDot } from "@/lib/board-data";
+import { formatCount } from "@/lib/format";
 
 interface WorldMapProps {
   dots: BoardDot[];
@@ -237,10 +238,10 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexShrink: 0 }}>
         <span style={{ fontSize: 11, color: "var(--t4)", letterSpacing: "0.16em", textTransform: "uppercase" }}>
-          Where caught code phones home
+          Where scanned code comes from
         </span>
         <span className="tnum" style={{ fontSize: 12, color: "var(--t4)" }}>
-          {loaded ? `${dots.length.toLocaleString()} destination${dots.length === 1 ? "" : "s"}` : "loading…"}
+          {loaded ? `${formatCount(dots.length)} repo${dots.length === 1 ? "" : "s"} mapped` : "loading…"}
         </span>
       </div>
 
@@ -253,7 +254,7 @@ export function WorldMap({ dots, loaded }: WorldMapProps) {
           viewBox={`0 0 ${MAP_W} ${MAP_H}`}
           width="100%"
           role="img"
-          aria-label="World map of captured command-and-control destinations for caught repositories"
+          aria-label="World map of scanned repositories by origin, colored by safety score, with captured command-and-control destinations shown for caught malware"
           onWheel={onWheel}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
