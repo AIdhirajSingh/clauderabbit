@@ -42,6 +42,8 @@
     "node_modules",
     "design-source",
     "supabase/functions",
-    "sandbox"
+    "sandbox",
+    "mcp-server",
+    "cli"
   ]
 }

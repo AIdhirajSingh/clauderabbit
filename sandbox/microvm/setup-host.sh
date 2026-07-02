@@ -227,20 +227,43 @@ sleep 1
 fact BUILDKITD "$(systemctl is-active buildkit 2>/dev/null || (command -v buildkitd >/dev/null && echo present) || echo MISSING)"
 mark BUILDKIT ok
 
-# ── Stage 8: idle auto-shutdown watchdog (COST SAFETY RAIL) ──────────────────────────
-# A detonation host must NEVER bleed credit unattended. An interrupted session once left
-# this n2 running for ~2 days (real credit burned) because nothing reclaimed it. This
-# watchdog powers the host OFF after CR_IDLE_MIN minutes with (a) no fresh detonation
-# heartbeat, (b) nobody logged in, and (c) no detonation process in flight — so it reclaims
-# a genuinely abandoned host WITHOUT ever killing an in-progress scan. orchestrate-microvm.sh
-# refreshes /run/cr-activity on every scan; a running orchestrator/ctr/firecracker/mitmproxy/
-# opencode also counts as activity. Poweroff (STOP) reclaims the expensive running compute;
-# the host is restarted by provision-host.sh when work resumes.
+# ── Stage 8: idle auto-shutdown watchdog (COST SAFETY RAIL, RE-SCOPED) ────────────────
+# RE-SCOPE (2026-07): the ALWAYS-ON production microVM substrate host must NEVER be
+# idle-stopped by this watchdog — stopping it cold-starts the next real scan (pool +
+# base-image rebuild), which is the exact "silently-failing escalation" failure the
+# host was found in. Its running cost is bounded by the instance-level 12h
+# max-run-duration=STOP backstop (set in provision-host.sh) plus the operator, NOT by
+# this timer. The watchdog now protects only DISPOSABLE dev/build/probe instances: it
+# idle-stops a host ONLY when it can positively confirm the host is NOT the production
+# substrate. Identity comes from the GCE metadata server (labels are not exposed there,
+# but the instance name + custom metadata are):
+#   • exempt when custom metadata `cr-idle-exempt=1` is present (the explicit flag
+#     provision-host.sh sets on the substrate host), OR
+#   • exempt when the instance name matches CR_PROD_HOST_NAME (default cr-host-build).
+# Fail-safe: if metadata is unreachable (identity unknown) it does NOT stop — a warm
+# host is never sacrificed to a transient metadata blip. A genuinely abandoned host is
+# still reclaimed by the 12h max-run backstop even while exempt here.
 cat > /usr/local/sbin/cr-idle-shutdown.sh <<'WD'
 #!/usr/bin/env bash
 set -uo pipefail
 IDLE_MIN="${CR_IDLE_MIN:-30}"
+PROD_NAME="${CR_PROD_HOST_NAME:-cr-host-build}"
 HB=/run/cr-activity
+md() { curl -s -m 3 -H 'Metadata-Flavor: Google' \
+  "http://metadata.google.internal/computeMetadata/v1/instance/$1" 2>/dev/null; }
+
+# Positive-ID exemption for the always-on production substrate host.
+name="$(md name)"
+if [ -z "$name" ]; then
+  echo "cr-idle: instance identity unknown (metadata unreachable) — not stopping (fail-safe)"
+  exit 0
+fi
+if [ "$(md attributes/cr-idle-exempt)" = "1" ] || [ "$name" = "$PROD_NAME" ]; then
+  echo "cr-idle: '$name' is the production substrate host — exempt from idle-stop (cost bounded by the 12h max-run backstop)"
+  exit 0
+fi
+
+# Disposable instance: reclaim it when genuinely idle (never mid-scan).
 now=$(date +%s)
 # self-seed once per boot (/run is tmpfs) so idle is measured from boot, not the epoch
 [ -f "$HB" ] || { : > "$HB"; echo "cr-idle: seeded heartbeat at boot"; exit 0; }
@@ -250,19 +273,20 @@ if who 2>/dev/null | grep -q . \
   last=$now; touch "$HB"           # active login or detonation in flight → reset the clock
 fi
 idle=$(( (now - last) / 60 ))
-echo "cr-idle: idle=${idle}m threshold=${IDLE_MIN}m"
+echo "cr-idle: [$name] idle=${idle}m threshold=${IDLE_MIN}m"
 if [ "$idle" -ge "$IDLE_MIN" ]; then
-  echo "cr-idle: idle>=${IDLE_MIN}m — powering off to reclaim the host (cost rail)"
+  echo "cr-idle: idle>=${IDLE_MIN}m on disposable host — powering off to reclaim (cost rail)"
   ${CR_IDLE_DRYRUN:+echo DRYRUN-would:} /sbin/poweroff
 fi
 WD
 chmod +x /usr/local/sbin/cr-idle-shutdown.sh
 cat > /etc/systemd/system/cr-idle-shutdown.service <<'UNIT'
 [Unit]
-Description=Claude Rabbit idle auto-shutdown (cost rail)
+Description=Claude Rabbit idle auto-shutdown (cost rail, production-host-exempt)
 [Service]
 Type=oneshot
 Environment=CR_IDLE_MIN=30
+Environment=CR_PROD_HOST_NAME=cr-host-build
 ExecStart=/usr/local/sbin/cr-idle-shutdown.sh
 UNIT
 cat > /etc/systemd/system/cr-idle-shutdown.timer <<'UNIT'

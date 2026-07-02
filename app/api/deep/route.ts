@@ -2,16 +2,17 @@
  * /api/deep — the INLINE deep-sandbox path (BUG-INLINE-MOAT).
  *
  * When the fast path trips the escalation gate, the browser calls this route and
- * watches a fresh GCP detonation VM get provisioned, run the unknown code under
- * the sinkhole, and tear itself down — all within the same scan, no queue, no
- * separate drain step. On exit the captured forensic record is POSTed to the
- * deployed `attach-forensics` edge function, which flips the report row to a real
- * "Sandbox run" (its `_ranSandbox` signal becomes true) and surfaces the captured
- * geo on the world map + the deep-run count on the board.
+ * watches the warm host boot a fresh Firecracker microVM (via Kata), run the
+ * unknown code with all egress forced through the deceptive forge, and destroy the
+ * microVM — all within the same scan, no queue, no separate drain step. On exit the
+ * captured forensic record is POSTed to the deployed `attach-forensics` edge
+ * function, which flips the report row to a real "Sandbox run" (its `_ranSandbox`
+ * signal becomes true) and surfaces the captured geo + the deep-run count on the board.
  *
- * This route only INVOKES `sandbox/orchestrate.sh`; every containment invariant
- * (sealed VM, no external IP/SA, deny-egress, sinkhole, per-scan reset, the
- * dead-man's-switch, zero orphan VMs) lives in that script and is unchanged here.
+ * This route only INVOKES the host orchestrator (`orchestrate-microvm.sh`); every
+ * containment invariant (disposable Firecracker microVM with no route out except the
+ * forge, per-scan reset, the max-run dead-man's-switch, zero orphan microVMs) lives
+ * in that script and is unchanged here.
  *
  * SAFETY — this route spawns gcloud and runs a shell script, so it is a privileged
  * local-controller capability, NOT a public surface. It is hard-gated fail-closed:
@@ -382,39 +383,43 @@ function milestone(rawLine: string): Stage | null {
       return { ch: "Three agents read the code", status: "done", kind: "ok", lines: ["Cross-verified findings from three agents"] };
     return null;
   }
+  // The display chapters describe the REAL substrate — one warm host running a
+  // Firecracker microVM (via Kata) with all egress forced through the deceptive
+  // forge — NOT the retired two-VM trap/sinkhole. The [orch] triggers below still
+  // match orchestrate-microvm.sh's stderr; only the user-facing text is honest.
   const m = rawLine.replace(/^\[orch\]\s*/, "");
   if (/^ensuring hermetic network/.test(m))
-    return { ch: "Seal the network", status: "active", lines: ["Building the hermetic network + sinkhole rules"] };
+    return { ch: "Seal the network", status: "active", lines: ["Building the hermetic per-run network + the deceptive egress forge"] };
   if (/^cloning public repo/.test(m))
-    return { ch: "Clone + pin", status: "active", lines: ["Cloning the repo at the scanned commit (off-VM)"] };
+    return { ch: "Clone + pin", status: "active", lines: ["Cloning the repo at the scanned commit (off-VM, on the host)"] };
   if (/^pinned detonation target/.test(m))
     return { ch: "Clone + pin", status: "done", kind: "ok", lines: ["Pinned to the exact scanned commit"] };
   if (/^booting TRAP host/.test(m))
-    return { ch: "Provision trap host", status: "active", lines: ["Booting the sealed trap host (sinkhole DNS + sink + proxy + pcap)"] };
+    return { ch: "Bring up the forge", status: "active", lines: ["Starting the deceptive egress forge (DNS + TLS interception; registry fast-path)"] };
   if (/^build proxy healthy/.test(m))
-    return { ch: "Provision trap host", status: "done", kind: "ok", lines: ["Trap up · registry-allowlist proxy enforced"] };
+    return { ch: "Bring up the forge", status: "done", kind: "ok", lines: ["Forge up · registries pass through, everything else is forged"] };
   if (/^booting DETONATION VM/.test(m))
-    return { ch: "Provision detonation VM", status: "active", lines: ["Booting a fresh sealed VM — no external IP, no service account, deny-egress"] };
+    return { ch: "Boot the microVM", status: "active", lines: ["Booting a fresh Firecracker microVM via Kata — no route out except the forge"] };
   if (/DEGRADED/.test(m))
-    return { ch: "Provision detonation VM", status: "active", kind: "warn", lines: ["No golden image — booting base image (degraded build)"] };
+    return { ch: "Boot the microVM", status: "active", kind: "warn", lines: ["No prebuilt base image — building the microVM image (degraded)"] };
   if (/^staging harness/.test(m))
-    return { ch: "Provision detonation VM", status: "done", kind: "ok", lines: ["Detonation VM up · staging harness + target"] };
+    return { ch: "Boot the microVM", status: "done", kind: "ok", lines: ["microVM up · staging the harness + target"] };
   if (/^=== BUILD phase/.test(m))
-    return { ch: "Build under containment", status: "active", lines: ["Installing deps via the trap proxy (registries only)"] };
+    return { ch: "Build under containment", status: "active", lines: ["Installing deps through the forge's registry fast-path"] };
   if (/^containment confirmed/.test(m))
     return { ch: "Build under containment", status: "done", kind: "ok", lines: ["Containment confirmed — control probe did NOT reach the real internet"] };
   if (/^=== AGENTIC pass/.test(m))
-    return { ch: "Run under the sinkhole", status: "active", lines: ["Exploring the code, then detonating under the sinkhole"] };
+    return { ch: "Detonate through the forge", status: "active", lines: ["Exploring the code, then detonating in the microVM through the forge"] };
   if (/^=== RUN phase/.test(m))
-    return { ch: "Run under the sinkhole", status: "active", lines: ["Running the code — DNS + DNAT folded to the trap, never the real internet"] };
+    return { ch: "Detonate through the forge", status: "active", lines: ["Running the code — every outbound connection is forged, no real packet leaves"] };
   if (/^=== RESET: deleting detonation VM/.test(m))
-    return { ch: "Capture + reset", status: "active", lines: ["Capture collected — deleting the detonation VM now"] };
+    return { ch: "Capture + reset", status: "active", lines: ["Capture collected — destroying the microVM now"] };
   if (/^folding captured network intent/.test(m))
     return { ch: "Compute verdict", status: "active", lines: ["Folding captured network intent into an honest verdict"] };
   if (/^emitting forensic record/.test(m))
     return { ch: "Compute verdict", status: "done", kind: "ok", lines: ["Forensic record emitted"] };
   if (/^scan complete/.test(m))
-    return { ch: "Capture + reset", status: "done", kind: "ok", lines: ["Scan complete — trap VM deleted (per-scan reset)"] };
+    return { ch: "Capture + reset", status: "done", kind: "ok", lines: ["Scan complete — microVM destroyed (per-scan reset)"] };
   return null;
 }
 
