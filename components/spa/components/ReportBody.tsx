@@ -24,6 +24,7 @@ import type {
   RepoView,
 } from "@/lib/report-view";
 import { RING_CIRC } from "@/lib/report-view";
+import { formatCount } from "@/lib/format";
 import { StarIcon } from "./glyphs";
 import { OwnerAvatar, RepoLink } from "./github";
 
@@ -107,10 +108,16 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
               {/* The scan-path badge is keyed on whether the sandbox ACTUALLY ran
                   (a forensic record exists), never the bare `deep` flag — so a
                   queued-but-not-executed escalation never wears a "Sandbox run"
-                  badge it didn't earn (BUG-2, the canary). */}
+                  badge it didn't earn (BUG-2, the canary). A repo that WAS flagged
+                  for escalation but whose run did not complete gets its own honest
+                  badge — distinct from both a real run and a pure static read. */}
               {r._ranSandbox ? (
                 <span style={{ fontSize: 11.5, color: "var(--t2)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
                   Sandbox run
+                </span>
+              ) : r.deep ? (
+                <span style={{ fontSize: 11.5, color: "var(--amber)", padding: "5px 11px", border: "1px solid var(--line3)", borderRadius: 100 }}>
+                  Sandbox run incomplete
                 </span>
               ) : (
                 <span style={{ fontSize: 11.5, color: "var(--t4)", padding: "5px 11px", border: "1px solid var(--line2)", borderRadius: 100 }}>
@@ -136,7 +143,7 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
           </StatCard>
           <StatCard label="Packages">
             <span className="serif tnum" style={{ fontSize: 26, color: "var(--t1)", lineHeight: 1 }}>
-              {r.stats.packages}
+              {formatCount(r.stats.packages)}
             </span>
           </StatCard>
           <div style={{ border: "1px solid var(--line)", borderRadius: 16, padding: 20, background: "var(--s1)" }}>
@@ -189,7 +196,7 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
               </Row>
               <Row label="Public repos">
                 <span className="tnum" style={{ fontSize: 13, color: "var(--t1)", fontWeight: 500 }}>
-                  {r.ownerHistory.repos}
+                  {formatCount(r.ownerHistory.repos)}
                 </span>
               </Row>
               <Row label="Forks">
@@ -272,13 +279,15 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
                     </svg>
                   </span>
                   <span style={{ fontSize: 15, color: "var(--t1)", fontWeight: 500 }}>
-                    No risky items found {r._forensics ? "on the static read" : ""}
+                    No risky items found
                   </span>
                 </div>
+                {/* Describe only what was found (or not) in the code itself — never
+                    how the scan was performed. The Static-read/Sandbox-run badge
+                    above already carries that signal (CLAUDE.md: a report must
+                    never narrate or imply its own scanning methodology in prose). */}
                 <p style={{ fontSize: 13, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
-                  {r._forensics
-                    ? "Static scanners returned no signatures, no install hooks, no obfuscation, and no embedded secrets — so this repo was escalated to a full sandbox run. What running it actually revealed is below."
-                    : "Static scanners returned no signatures, no install hooks, no obfuscation, and no embedded secrets. The read model was confident enough that a sandbox run was not warranted."}
+                  No signatures, install hooks, obfuscation, or embedded secrets were found in the code.
                 </p>
               </div>
             )}
