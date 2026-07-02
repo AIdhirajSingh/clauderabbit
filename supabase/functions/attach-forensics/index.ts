@@ -32,7 +32,6 @@ import {
 import {
   isDeepRunChapter,
   type LogChapter,
-  type LogKind,
   sanitizeTimeline,
   timelineToChapters,
 } from "../_shared/run-timeline.ts";
@@ -141,10 +140,20 @@ interface RuntimeFacts {
   caughtAttack: boolean;
   credReads: number;
   capturedHost: string | null;
+  /**
+   * A BUILD-phase dependency fetch to a recognized software-distribution host
+   * (github, sourceforge, ...) with no credential involvement — assemble-forensics.py
+   * classifies this as a supply-chain CAUTION, deliberately excluded from
+   * `capturedHost`/`caughtAttack` so a benign dependency fetch never reads as a
+   * confirmed attack. Null when no such fetch was captured for this run.
+   */
+  supplyChainHost: string | null;
   projectType: string | null;
 }
 
-function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
+// Exported (not just for the handler above) so the phase-aware classification
+// contract can be unit-tested directly — see index.test.ts.
+export function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
   const verdict = asObj(forensics.verdict);
   const ran = asObj(forensics.what_it_ran);
   const inVm = asObj(forensics.in_vm_behavior);
@@ -152,6 +161,9 @@ function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
   const builtOk = ran.auto_build_succeeded === true;
   const ranOk = ran.ran_without_crash === true;
   const credReads = asNum(inVm.high_value_credential_reads);
+  // These two are already ATTACK-GRADE only by the time they reach here — a benign
+  // build-phase fetch to a recognized software-distribution host is classified
+  // separately (below) and never appears in either array (see assemble-forensics.py).
   const capturedIntent = asArr(verdict.captured_network_intent)
     .map((h) => (typeof h === "string" ? h.trim() : ""))
     .filter((h) => h.length > 0);
@@ -160,6 +172,9 @@ function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
       const h = asObj(d).host;
       return typeof h === "string" ? h.trim() : "";
     })
+    .filter((h) => h.length > 0);
+  const supplyChainHosts = asArr(verdict.supply_chain_egress)
+    .map((h) => (typeof h === "string" ? h.trim() : ""))
     .filter((h) => h.length > 0);
   const caughtAttack =
     verdict.attack_egress_intercepted === true ||
@@ -178,6 +193,7 @@ function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
     caughtAttack,
     credReads,
     capturedHost: capturedIntent[0] ?? destHosts[0] ?? null,
+    supplyChainHost: supplyChainHosts[0] ?? null,
     projectType,
   };
 }
@@ -233,8 +249,10 @@ function repFromOwner(ownerRow: Record<string, unknown> | null): ScoringReputati
  * verify / a clean run is not a guarantee". A crash is stated as a concrete finding,
  * not a hedge. Rails kept: never a bare "Safe" (the verdict carries evidence), and
  * this is code/runtime content (reputation stays in its own panel).
+ *
+ * Exported for index.test.ts.
  */
-function buildRuntimeSummary(
+export function buildRuntimeSummary(
   owner: string,
   repo: string,
   rt: RuntimeFacts,
@@ -264,6 +282,12 @@ function buildRuntimeSummary(
           ? `attempting to reach ${rt.capturedHost}`
           : `attempting outbound exfiltration`;
     behaviorSentence = `We caught it ${what}. Every outbound attempt was intercepted by the sandbox and never reached its destination.`;
+  } else if (rt.supplyChainHost) {
+    // A real, honestly-surfaced signal that is NOT an attack: a build-time dependency
+    // fetch to a recognized software-distribution host, with no credential involvement.
+    behaviorSentence =
+      `We observed no malicious behavior, credential access, or outbound exfiltration. ` +
+      `Its install reaches ${rt.supplyChainHost} for dependencies — a supply-chain note, not an attack.`;
   } else {
     behaviorSentence = "We observed no malicious behavior, credential access, or outbound exfiltration.";
   }
@@ -333,8 +357,14 @@ function rewriteEscalatedLogs(
         ? `Caught attempting to reach ${rt.capturedHost}; intercepted by the sandbox (no real packet left the VM).`
         : "Caught attempting credential access / outbound exfiltration; intercepted by the sandbox.",
     );
+  } else if (rt.supplyChainHost) {
+    runLines.push(
+      `Its install reached ${rt.supplyChainHost} for dependencies — a supply-chain note, not ` +
+        `an attack; every outbound attempt was intercepted by the sandbox.`,
+    );
   }
-  kept.push({ ch: "Sandbox run", kind: rt.caughtAttack ? "bad" : "ok", lines: runLines });
+  const runKind = rt.caughtAttack ? "bad" : rt.supplyChainHost ? "warn" : "ok";
+  kept.push({ ch: "Sandbox run", kind: runKind, lines: runLines });
   kept.push(buildScoreChapter(score, breakdown));
   return kept;
 }
