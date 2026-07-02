@@ -31,16 +31,19 @@ Claude Rabbit is a free web tool. The first scan is free with no login and no ad
 - No code-quality / CodeRabbit-style review, system-design audit, or refactoring.
 - No subscriptions. No accounts beyond the simple login. No elaborate dashboard beyond scan history, profile, and stats.
 - No Hugging Face / model scanning.
-- No CLI or MCP product surface.
 - No leaderboard moderation tooling beyond a basic display.
 
 These are roadmap. They live in the founder's head, not in v1 scope.
+
+**Shipped beyond the original v1 plan (scope expansion, now real).** A **CLI** (`claude-rabbit-cli` — `scan`/`report` plus `npm-install`/`pnpm-install`/`git-clone` wrappers and opt-in shell hooks), an **MCP server** (`scan_repo`/`get_report` tools over stdio for AI coding tools), and a **Claude Code plugin** (`scan-repo` skill + a `PreToolUse` install/clone-intercept hook) all exist in the repo (`cli/`, `mcp-server/`, `plugins/claude-rabbit/`). They were added under a direct instruction authorizing them as the primary growth channel for a free, ad-free product. Each is a thin distribution layer over the same server-side scan pipeline — same rails, same never-a-bare-"Safe" honesty — not a separate product.
 
 ---
 
 ## 3. System architecture
 
 The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5% escalate to the deep path. This ratio is the load-bearing assumption behind both performance and economics.
+
+> **Model layer, as shipped.** The component names below (DeepSeek, Brave, Kimi K2.7, OpenCode) are the *target* production models. The **current shipped** model layer is all-Gemini via Vertex AI — `gemini-3.1-flash-lite` (fast path) and `gemini-3.5-flash` (deep/agent) — behind a clean swap seam. Everything structural (the funnel, the escalation gate, the code-computed scoring, the cache) is real and does not change when the target models drop in. See §5 and `docs/INFRASTRUCTURE.md`.
 
 ```
                     ┌─────────────────────────────┐
@@ -91,11 +94,11 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 **Escalation gate.** A rule + confidence threshold. Escalates on: obfuscation, unexplained network calls, credential/secret access, install scripts doing too much, brand-new owner, or low read-confidence. Suspicion-triggered, not time-triggered. Tuned over time — explicitly half measured, half judgment.
 
-**Sandbox (deep path).** A pool of **Google Cloud VMs**, each booting a **golden image**: common runtimes (Node, Python, C/C++), a real terminal, and the **OpenCode** harness (MIT-licensed) pre-installed. Network egress locked down, no real credentials present, resources capped. **Reimaged to square-1 after every scan** — this reset is the abuse protection.
+**Sandbox (deep path).** An **on-demand pool of Google Cloud VMs** provisioned from a committed **golden GCE image** (`cr-detonation-golden`) via a Managed Instance Group with a stopped standby pool: each host boots the common runtimes (Node, Python, C/C++), a real terminal, and the agent harness pre-installed. Idle hosts rest as disk-only stopped standbys (near-zero cost); a scan that needs capacity starts a warm standby (≈44s from stopped, ≈88s cold from image) rather than queuing behind one shared box. Each host runs two isolated detonation slots; the orchestrator (`app/api/deep`) spreads scans least-loaded-first and reclaims idle hosts to a warm baseline. Real ceiling today ≈48 concurrent scans (`INSTANCES`=24 quota), ≈100 at the `N2_CPUS`=200 cap, no quota bump. A single manually-provisioned host (`cr-host-build`, cap 2) remains as a fallback. Network egress locked down, no real credentials present, resources capped. **Reimaged to square-1 after every scan** — this reset is the abuse protection. Full lifecycle in `docs/INFRASTRUCTURE.md` §8b/§8c.
 
 **Dynamic brain.** **Kimi K2.7 Code** (open-weight, latest) drives the sandbox agents through OpenCode. Parallelism (swarm-like) comes from running multiple OpenCode sessions, one terminal each. Bulk reasoning can route to DeepSeek to control output-token cost; K2.7 handles final adjudication.
 
-**Scoring & report.** All signals blend into one 0–100 score. The report is generated on the frontend from the shipped Claude Design `design.md` spec in the repo: the frontend produces a layout that conforms to the spec while adapting to each repo's findings — not a fixed template filled with values, and not a JSON payload rendered into a shell. Common boilerplate (background, shared chrome, repeated structure) is cached so it is not regenerated per report; only the per-repo parts are produced fresh. Exports: PDF, standalone HTML, shareable link.
+**Scoring & report.** All signals combine into one 0–100 score via a **deterministic formula computed in code** (`supabase/functions/_shared/scoring.ts`) — the model feeds weighted signals, code decides the number that is cited, so the score can be reasoned about and audited rather than trusted to a model's self-report. The formula also carries the fairness rules: a strict doc-vs-code distinction (prose that merely mentions a credential path is never scored as credential-stealing code) and an "escalated but not yet run" penalty that only applies when a real negative code/behavior signal was present, so a repo escalated purely on low read-confidence is not taxed for ambiguity. The report is generated on the frontend from the shipped Claude Design `design.md` spec in the repo: the frontend produces a layout that conforms to the spec while adapting to each repo's findings — not a fixed template filled with values, and not a JSON payload rendered into a shell. Common boilerplate (background, shared chrome, repeated structure) is cached so it is not regenerated per report; only the per-repo parts are produced fresh. Exports: PDF, standalone HTML, shareable link.
 
 **Storage & cache.** Reports persisted and keyed by **commit SHA**. Cache hit on unchanged repos → instant serve. On change → pull git diff, update only the affected analysis. Reputation cached by owner.
 
@@ -119,19 +122,22 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 ## 5. Tech stack (locked)
 
-| Layer | Choice | Notes |
-|---|---|---|
-| Web framework | **Next.js (App Router)** | SSR report pages = SEO surface; API routes orchestrate |
-| Fast-path brain | **DeepSeek V4 Flash** | $0.14/$0.28 per M tokens; reads flagged code, calls Brave |
-| Reputation search | **Brave Search API** | ~$0.005/query, PAYG; owner-cached; own rate-limit in front |
-| Dynamic brain | **Kimi K2.7 Code** | open-weight; drives sandbox; bulk → DeepSeek, adjudicate → K2.7 |
-| Agent harness | **OpenCode (MIT)** | terminal + parallel multi-session = swarm; LSP self-correction |
-| Sandbox | **Google Cloud VM** | golden image, all prereqs, reset every scan |
-| Static scanners | ClamAV, Semgrep, YARA + secret/hook detection | off-the-shelf, near-zero cost |
-| Storage/cache | keyed by commit SHA; reputation by owner | the survival mechanism |
-| Monetization | AdMob + mediation, rewarded video | one ad per fresh scan |
+The **current shipped** model layer is all-Gemini via the Vertex AI backend, sitting behind a clean swap seam. The "target" column is the intended production swap (DeepSeek/Brave/Kimi K2.7/OpenCode) that drops in by changing one module or secret without touching orchestration, the code-computed scoring, or the escalation gate — those are real and permanent. See `docs/INFRASTRUCTURE.md` §5–§6 for the model strings and the Vertex auth.
 
-All model and search APIs are OpenAI-compatible HTTP / PAYG. No subscriptions, no gated endpoints.
+| Layer | Shipped now | Target swap | Notes |
+|---|---|---|---|
+| Web framework | **Next.js (App Router)** | — | SSR report pages = SEO surface; API routes orchestrate |
+| Fast-path brain | **`gemini-3.1-flash-lite` via Vertex** | DeepSeek V4 Flash | reads only static-flagged regions; emits weighted signals + confidence |
+| Reputation search | Vertex-side lookup | Brave Search API (owner-cached) | owner history, account age, stars, sentiment |
+| Deep / agent brain | **`gemini-3.5-flash` via Vertex** | Kimi K2.7 Code | drives the sandbox agents |
+| Agent harness | agentic analyzer (explore + sinkhole detonate) | OpenCode (MIT) swarm | knowledge-graph explore, then detonate chosen files |
+| Sandbox | **Google Cloud — golden-image MIG + standby pool** | — | reset every scan; on-demand compute pool, see §8c of INFRASTRUCTURE |
+| Static signals | in-house extractor (obfuscation, install-hook, cred-access, secret, typosquat, network) with a doc-vs-code distinction | ClamAV/Semgrep/YARA | near-zero cost; prose mentions never scored as code |
+| Scoring | **code-computed deterministic formula** (`_shared/scoring.ts`) | — | the model feeds signals; code decides the cited 0–100 |
+| Storage/cache | keyed by commit SHA; reputation by owner | — | the survival mechanism |
+| Monetization | AdMob + mediation, rewarded video | — | one ad per fresh scan |
+
+The model/search seam is a single config switch; the orchestration around it does not change when the target models drop in.
 
 ---
 
