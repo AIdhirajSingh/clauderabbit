@@ -1,0 +1,30 @@
+{
+  "name": "claude-rabbit-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CLI for Claude Rabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it, with opt-in shell hooks that scan before npm/pnpm install and git clone.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "claude-rabbit": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "shell",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

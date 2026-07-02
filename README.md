@@ -50,6 +50,24 @@ through `supabase/functions/_shared/vertex.ts`; the agentic sandbox tier
 change the secret / that one module; orchestration, the code-computed scoring, and the
 escalation gate are real and unchanged.
 
+## Distribution surfaces (scan at the moment of install)
+
+The same server-side scan pipeline is shipped to the terminal and to AI coding agents,
+where the "is this safe to run?" question actually lives:
+
+- **CLI** (`cli/`, `claude-rabbit-cli`) — `claude-rabbit scan owner/repo` (or an npm package
+  name), a cached-only `report`, and `npm-install` / `pnpm-install` / `git-clone` wrappers that
+  scan the target and print the honest verdict before running the real command. Opt-in
+  bash/zsh/PowerShell hooks (`install-hooks`) put that check in front of every install/clone.
+- **MCP server** (`mcp-server/`) — `scan_repo` and `get_report` tools over stdio, calling the
+  production scan API, so an agent about to clone-and-run can check first.
+- **Claude Code plugin** (`plugins/claude-rabbit/`) — a `scan-repo` skill plus a `PreToolUse`
+  hook that intercepts install/clone commands inside the agent's own loop.
+
+All three honor the same rails as the web report — reputation kept separate from code/behavior,
+sandbox-actually-ran reported honestly (keyed to a real forensic record, not the escalation flag),
+and never a bare "Safe."
+
 ## Local development
 
 ```bash
@@ -83,12 +101,16 @@ supabase secrets set NAME="value"
 ## Repo layout
 
 ```
-app/                     Next.js routes (SPA home, /[owner]/[repo] SSR report, /badge, /auth/callback)
+app/                     Next.js routes (SPA home, /[owner]/[repo] SSR report, /badge, /auth/callback, /api/deep)
 components/spa/          the faithful design port (8 screens + shared chrome + state machine)
 lib/                     score logic, types, demo seed, supabase clients, scan client, report view
 supabase/migrations/     schema + RLS + scan-limit function
 supabase/functions/scan/ the fast-path orchestrator (Vertex seam, GitHub fetch, static signals)
-sandbox/                 the dynamic sandbox engine (the moat) — see sandbox/README.md
+sandbox/                 the dynamic sandbox engine (the moat) — see sandbox/README.md;
+                         sandbox/microvm/ holds the golden-image + on-demand compute-pool scripts
+cli/                     the claude-rabbit CLI (scan / install-clone wrappers / shell hooks)
+mcp-server/              MCP server (scan_repo / get_report tools over stdio for AI coding tools)
+plugins/claude-rabbit/   Claude Code plugin (scan-repo skill + PreToolUse install/clone-intercept hook)
 docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)
 ```

@@ -15,13 +15,22 @@ export const corsHeaders: Record<string, string> = {
   "Vary": "Origin",
 };
 
-/** Build a JSON Response with CORS headers applied. */
-export function jsonResponse(body: unknown, status = 200): Response {
+/**
+ * Build a JSON Response with CORS headers applied. Optional `extraHeaders` lets a
+ * caller add response headers (e.g. `Retry-After` on a 429) without losing the
+ * CORS headers — they are merged on top of the CORS + content-type defaults.
+ */
+export function jsonResponse(
+  body: unknown,
+  status = 200,
+  extraHeaders?: Record<string, string>,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       ...corsHeaders,
       "Content-Type": "application/json",
+      ...extraHeaders,
     },
   });
 }

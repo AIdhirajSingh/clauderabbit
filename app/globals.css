@@ -53,13 +53,13 @@
 }
 *{ box-sizing:border-box; }
 html,body{ margin:0; padding:0; background:var(--bg); scroll-behavior:smooth; }
-body{ font-family:'Geist',system-ui,sans-serif; -webkit-font-smoothing:antialiased; color:var(--t2); font-feature-settings:"ss01","cv01"; letter-spacing:0.005em; }
+body{ font-family:var(--font-geist),'Geist',system-ui,sans-serif; -webkit-font-smoothing:antialiased; color:var(--t2); font-feature-settings:"ss01","cv01"; letter-spacing:0.005em; }
 ::selection{ background:var(--s3); }
 ::-webkit-scrollbar{ width:11px; height:11px; }
 ::-webkit-scrollbar-thumb{ background:var(--scrollthumb); border-radius:8px; border:3px solid transparent; background-clip:padding-box; }
 ::-webkit-scrollbar-track{ background:transparent; }
 input,button,textarea{ font-family:inherit; }
-.serif{ font-family:'Instrument Serif',Georgia,serif; font-weight:400; letter-spacing:-0.005em; }
+.serif{ font-family:var(--font-instrument-serif),'Instrument Serif',Georgia,serif; font-weight:400; letter-spacing:-0.005em; }
 .tnum{ font-variant-numeric:tabular-nums; }
 .reveal{ opacity:0; transform:translateY(26px); transition:opacity .85s var(--ease), transform .85s var(--ease); will-change:opacity,transform; }
 .reveal.show{ opacity:1; transform:none; }

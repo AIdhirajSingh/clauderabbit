@@ -140,7 +140,11 @@ reproducible from committed code** — nothing on it is hand-tuned that isn't in
   **zone fallback list** and prints `CR_HOST_ZONE=<zone>` at the end.
 - **Set the zone to match:** put the landed zone in `.env.local` as `CR_SANDBOX_ZONE` so
   `/api/deep` SSHes to the right place (the app reaches the host over `gcloud compute ssh`).
-  As of the last provision the host is in **`us-east1-b`** (us-central1 was stocked out).
+  As of the last provision (a `--recreate` forced by a `us-east1-b` zone stockout that
+  persisted for an extended period) the host landed in **`us-east4-c`**, after the
+  fallback list tried `us-central1-a/c/b/f` and `us-east1-b` in turn, all stocked out
+  at that moment — this is real, observed, transient GCP capacity behavior, not a fixed
+  zone assignment; a future provision may land somewhere else in the list.
 - **Cost rails (the host must never bleed credit unattended — it once ran ~2 days after an
   interrupted session):** an **idle auto-shutdown watchdog** (`setup-host.sh` Stage 8:
   systemd timer, `cr-idle-shutdown.sh`) powers the host **OFF after ~30 min** with no
@@ -155,6 +159,65 @@ reproducible from committed code** — nothing on it is hand-tuned that isn't in
 - **Tear it down:** `bash sandbox/microvm/teardown-host.sh [stop|delete]` at session end
   (belt to the watchdog). `stop` reclaims the running compute + keeps the disk; `delete`
   removes it (provision-host.sh rebuilds it from scratch).
+
+### Dispatch queue — a real FIFO, not a flat 429
+
+`/api/deep` holds at most `MAX_CONCURRENT = 2` simultaneous detonations in-process (the
+host's 4-vCPU budget). A 3rd concurrent request used to get a flat 429 and be dropped; it
+now **queues** instead:
+
+- **In-process FIFO authority — `lib/deep-queue.ts`.** A pure, dependency-free ordered
+  list of waiter tokens. This is the sole slot arbiter: `/api/deep` runs as a single Node
+  controller process, so the existing `inFlight` counter plus this in-process queue are
+  race-free by construction — ordering never depends on a DB round-trip. Admission is
+  strict head-of-line (`canAcquire` = this token is the head AND a slot is free), so a
+  later arrival can never jump an earlier waiter.
+- **`deep_scan_queue` table (migration `20260702000002`) — observability + honest
+  position only, NOT the slot lock.** One row per queued request (`token`,
+  owner/repo/sha, a `queued`/`active`/`done`/`failed`/`timed_out` status, `created_at` as
+  the FIFO key). SECURITY DEFINER RPCs (`deep_queue_enqueue` / `_position` / `_set_status`)
+  are service-role only; RLS locked, no client access.
+- **`supabase/functions/deep-queue` edge function** — a thin runner-key-gated wrapper
+  over those RPCs (same auth pattern as `attach-forensics`: anon key for the gateway +
+  `CR_DEEP_RUNNER_KEY` for the function). `lib/deep-queue-client.ts` calls it **best
+  effort** — every call fails soft, so a DB/network hiccup never stalls the queue; the
+  reported position falls back to the in-process standing if the DB call fails.
+- **User-facing behavior:** the streaming NDJSON response stays open and emits
+  `"Queued — position N of M, ~X min"`, refreshed periodically, computed from a real
+  measured ~76s-per-detonation estimate (padded to 90s for attach/reset overhead). A
+  waiter that can't get a slot within an 8-minute deadline gets an honest, specific
+  "sandbox was too busy" error — never a silent drop — well under the client's 20-minute
+  overall timeout so the server always speaks first.
+
+### The on-demand pool — evaluated and reverted; a documented future path, not a running system
+
+Earlier this session an on-demand compute-pool architecture was built and measured as a
+scale-out alternative to the single host: a committed golden GCE image
+(`cr-detonation-golden`) driving a Managed Instance Group with a stopped/suspended
+standby pool, so a scan needing capacity could wake a warm standby instead of sharing one
+box. It was fully built, benchmarked live, and then **reverted** (`git revert` of
+`feat(sandbox): on-demand detonation compute pool (golden image + MIG standby pool)
+(#41)`) — the MIG, its instance template, and the golden image baked for it have all
+been **deleted from GCP**; only `cr-host-build` remains as a real instance.
+
+**Why it was reverted:** the real, measured problem was activation latency, not
+architecture. The actual need is a host that is available near-instantly for per-scan
+microVM spin-up; waking a pool member from stopped/suspended did not deliver that.
+
+**The real numbers, measured when the pool was evaluated (worth preserving for the next
+time this is revisited, not currently running):**
+- Cold create-from-image: **≈88s**
+- Start-from-stopped: **≈44s**
+- Resume-from-suspended: **≈21s**
+
+If real concurrent-traffic data ever shows the single host's 2-slot ceiling — now
+cushioned by the real queue above, not a hard reject — is genuinely the product's
+bottleneck, a fleet/pool approach remains a real, previously-prototyped option to
+revisit, informed by these measured numbers rather than re-deriving them from scratch.
+
+**Rollback point:** the git tag `single-host-dispatch-known-good` points at the exact
+commit that restored this single-host state. If this architecture is ever changed again,
+that tag is the real, verified place to roll back to — no need to rediscover it.
 
 ---
 

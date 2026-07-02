@@ -21,6 +21,11 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { jsonResponse, preflightResponse, streamResponse } from "../_shared/cors.ts";
 import {
+  checkBurstLimit,
+  clientIpFromRequest,
+  rateLimitedResponseInit,
+} from "../_shared/rate-limit.ts";
+import {
   GitHubRateLimitError,
   type OwnerSignal,
   ownerSignal,
@@ -463,6 +468,16 @@ function buildUserPrompt(
 interface EscalationDecision {
   escalate: boolean;
   reason: string;
+  /** Whether the owner was classified "new" (< NEW_OWNER_AGE_DAYS) at decision
+   * time — computed here (the single source of truth for that threshold check)
+   * and threaded into `ScoringInputs.wasNewOwner` so the scoring engine's
+   * `hasRealCodeSignal` gate can tell a new-owner+network escalation (a real,
+   * signal-driven reason to escalate) apart from an established-owner escalation
+   * where network was merely present but never itself a qualifying reason (see
+   * the `newOwner && anySignal` branch below — for a non-new owner, network
+   * alone never escalates). Exposing this avoids recomputing the threshold a
+   * second time in scoring and risking the two definitions drifting apart. */
+  wasNewOwner: boolean;
 }
 
 function decideEscalation(
@@ -471,40 +486,63 @@ function decideEscalation(
   owner: OwnerSignal,
   confidence: number,
 ): EscalationDecision {
+  const newOwner = owner.ageDays >= 0 && owner.ageDays < NEW_OWNER_AGE_DAYS;
+
   // Code/behavior triggers first (heaviest), then reputation-driven, then the
   // model's own request — each yields a specific written reason.
   if (scan.signals.obfuscation) {
-    return { escalate: true, reason: "obfuscated/encoded payload detected on static read" };
+    return {
+      escalate: true,
+      reason: "obfuscated/encoded payload detected on static read",
+      wasNewOwner: newOwner,
+    };
   }
   if (scan.signals.credAccess) {
-    return { escalate: true, reason: "credential-access pattern detected on static read" };
+    return {
+      escalate: true,
+      reason: "credential-access pattern detected on static read",
+      wasNewOwner: newOwner,
+    };
   }
   if (scan.installTimeNetwork) {
-    return { escalate: true, reason: "install-time network/shell activity detected on static read" };
+    return {
+      escalate: true,
+      reason: "install-time network/shell activity detected on static read",
+      wasNewOwner: newOwner,
+    };
   }
-  const newOwner = owner.ageDays >= 0 && owner.ageDays < NEW_OWNER_AGE_DAYS;
   const anySignal = scan.signals.installHook || scan.signals.network ||
     scan.signals.embeddedSecret || scan.signals.typosquat;
   if (newOwner && anySignal) {
     return {
       escalate: true,
       reason: `new owner account (${owner.ageDays}d) combined with a code signal`,
+      wasNewOwner: newOwner,
     };
   }
   if (confidence < CONFIDENCE_ESCALATION_THRESHOLD) {
     return {
       escalate: true,
       reason: `low read confidence (${confidence.toFixed(2)} < ${CONFIDENCE_ESCALATION_THRESHOLD})`,
+      wasNewOwner: newOwner,
     };
   }
   if (model.escalate === true) {
-    return { escalate: true, reason: "read model could not confidently clear the repo" };
+    return {
+      escalate: true,
+      reason: "read model could not confidently clear the repo",
+      wasNewOwner: newOwner,
+    };
   }
   // Not escalating — state plainly why it cleared on the static read.
   const clearedWhy = scan.severityHint === "clean"
     ? "no code signals flagged"
     : `only low-severity signals (${scan.severityHint}) and confident read`;
-  return { escalate: false, reason: `cleared on static read: ${clearedWhy}` };
+  return {
+    escalate: false,
+    reason: `cleared on static read: ${clearedWhy}`,
+    wasNewOwner: newOwner,
+  };
 }
 
 // --- Report reshape (cache hit) ---------------------------------------------
@@ -670,6 +708,38 @@ Deno.serve(async (req: Request): Promise<Response> => {
   } catch {
     console.error("config error: server misconfigured (key unavailable or rejected)");
     return jsonResponse({ error: "Server is not configured correctly" }, 500);
+  }
+
+  // 0. BURST/VELOCITY RATE LIMIT (BUG-9 security review) — BEFORE any expensive
+  // work (the live GitHub API call in resolveRepo, the billed Vertex model call,
+  // and the DB writes). Scans stay UNLIMITED per day (no quota is reintroduced);
+  // this only throttles a scripted flood of requests-per-minute from one source,
+  // which would otherwise drain the shared GitHub token and the model budget. A
+  // human or a CLI/MCP agent making occasional real scans never reaches the cap.
+  //
+  // Keyed by the trustworthy client IP (cf-connecting-ip / leftmost XFF — see
+  // clientIpFromRequest for the empirical reason the earlier rightmost-hop
+  // derivation was broken for Supabase's edge topology) AND the hashed device id,
+  // whichever trips first — so a flood is caught whether it rotates device ids
+  // (IP bucket catches it) or hides behind a NAT/proxy pool with one device
+  // fingerprint (device bucket catches it). For ANONYMOUS traffic (no user
+  // session and no device id) a coarse system-wide circuit breaker also applies,
+  // so a flood spread across many real IPs with no deviceId is still bounded in
+  // aggregate. The limiter fails OPEN on any DB error, so it can never take the
+  // endpoint down or block the free first scan.
+  const clientIp = clientIpFromRequest(req);
+  const isAnonymous = userId === null && deviceId === null;
+  const burst = await checkBurstLimit(db, {
+    ip: clientIp,
+    deviceIdHash: deviceId,
+    isAnonymous,
+  });
+  if (!burst.allowed) {
+    console.error(
+      `rate limited (${burst.trippedBy}) ip=${clientIp ?? "none"} retryAfter=${burst.retryAfter}s`,
+    );
+    const init = rateLimitedResponseInit(burst.retryAfter);
+    return jsonResponse(init.body, 429, init.headers);
   }
 
   // 1. Resolve repo → canonical owner/repo + SHA + metadata + files.
@@ -896,6 +966,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
           stars: metadata.stars,
         },
         confidence,
+        // Threaded from the SAME decision that decided whether/why to escalate,
+        // so the scoring engine's `hasRealCodeSignal` gate can require
+        // `network && wasNewOwner` (matching `decideEscalation`'s own
+        // `newOwner && anySignal` branch) instead of treating plain network as
+        // always signal-worthy regardless of owner age.
+        wasNewOwner: escalation.wasNewOwner,
         escalated: escalate,
       };
       const scoreResult = computeScore(scoringInputs);

@@ -44,7 +44,7 @@ export interface Reputation {
 
 /** Top-line repository statistics. */
 export interface RepoStats {
-  /** Lines of code, formatted (e.g. "14,820"). */
+  /** Repository size, formatted (e.g. "9880 KB"). Despite the field name, this is a byte-size metric from repo metadata, not a line count. */
   loc: string;
   packages: number;
   stars: string;
