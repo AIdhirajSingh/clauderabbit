@@ -29,7 +29,44 @@ mkdir -p "$CAP_DIR" /opt/cr/forge
 
 echo "== Stage 1: base packages =="
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends python3 python3-pip python3-venv iptables curl ca-certificates >/dev/null
+apt-get install -y -qq --no-install-recommends python3 python3-pip python3-venv iptables curl ca-certificates dnsmasq >/dev/null
+
+echo "== Stage 1b: DNS — answer-all-except-allowlist (RESTORES the old per-run design's
+     containment property that route-forcing alone does NOT give you: a genuinely
+     non-existent/sinkholed C2 domain fails DNS resolution INSIDE the container before
+     any connection is ever attempted, so the malware never even tries to reach the
+     network — nothing for the forced route to intercept, and the sample goes silently
+     dormant. Confirmed on a real deployed run: a beacon to a non-resolving example
+     domain never appeared in the capture at all. Every other domain (real registries,
+     control-plane, source hosts, and any REAL but malicious C2) still resolves via
+     real DNS and is contained by the forced route + verified-IP passthrough exactly as
+     before — this ONLY changes the outcome for domains that don't exist in real DNS,
+     making them resolve to THIS gateway instead of failing closed on the DORMANT side) =="
+systemctl disable --now systemd-resolved 2>/dev/null || true
+rm -f /etc/resolv.conf
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+REGDNS="8.8.8.8"
+{
+  printf 'no-resolv\nno-hosts\nfilter-AAAA\ncache-size=4000\ndns-forward-max=300\naddress=/#/10.200.0.10\n'
+  # MUST mirror forge_addon.py's REGISTRY_RE + CONTROL_PLANE_RE + SOURCE_HOST_RE
+  # suffixes exactly — a domain the addon treats as verified-passthrough that
+  # dnsmasq does NOT forward would resolve to this gateway's own IP for BOTH the
+  # container and the addon's own verification resolve, a degenerate "match" that
+  # relays to a dead local port and breaks the build (same failure class the old
+  # per-run dnsmasq's comments already warned about).
+  for d in npmjs.org yarnpkg.com pypi.org pythonhosted.org crates.io \
+           debian.org ubuntu.com nodejs.org supabase.co github.com githubusercontent.com; do
+    printf 'server=/%s/%s\n' "$d" "$REGDNS"
+  done
+  # Listen on BOTH loopback (this VM's own resolver, which /etc/resolv.conf above
+  # points at, used by forge_addon.py's own verification resolves) AND the real
+  # internal IP (so Cloud Run containers, whose resolv.conf points at THIS
+  # gateway, can query it directly across the subnet).
+  printf 'listen-address=127.0.0.1,10.200.0.10\nbind-interfaces\nport=53\n'
+} > /etc/dnsmasq.conf
+systemctl enable --now dnsmasq
+sleep 1
+systemctl is-active dnsmasq || { echo "CR_FORGE_DNSMASQ_FAIL"; exit 1; }
 
 echo "== Stage 2: mitmproxy (isolated venv — Ubuntu 24.04 blocks system-wide pip) =="
 if [ ! -x /opt/cr/forge/venv/bin/mitmdump ]; then
