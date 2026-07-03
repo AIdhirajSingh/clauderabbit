@@ -20,8 +20,10 @@ import type { Report } from "../lib/types.ts";
 const flask = REPOS["pallets/flask"];
 if (!flask) throw new Error("fixture missing: pallets/flask");
 
+const SITE_URL = "http://localhost:2311";
+
 test("reportToMarkdown renders title, score, and verdict for a static-read report", () => {
-  const md = reportToMarkdown(flask);
+  const md = reportToMarkdown(flask, SITE_URL);
   assert.match(md, /^# pallets\/flask — Claude Rabbit safety report/);
   assert.match(md, /\*\*Score:\*\* 98 \/ 100/);
   assert.match(md, /\*\*Verdict:\*\* Trusted/);
@@ -29,7 +31,7 @@ test("reportToMarkdown renders title, score, and verdict for a static-read repor
 });
 
 test("reportToMarkdown separates reputation signals from code & behavior signals into distinct sections", () => {
-  const md = reportToMarkdown(flask);
+  const md = reportToMarkdown(flask, SITE_URL);
   const repIdx = md.indexOf("## Reputation signals");
   const codeIdx = md.indexOf("## Code & behavior signals");
   assert.ok(repIdx > -1, "expected a Reputation signals section");
@@ -50,7 +52,7 @@ test("reportToMarkdown never renders a bare 'Safe' verdict, even for a hypotheti
     ...flask,
     verdict: "Safe",
   };
-  const md = reportToMarkdown(bareSafeReport);
+  const md = reportToMarkdown(bareSafeReport, SITE_URL);
   // enforceVerdict (via buildReportView) must have replaced the bare "Safe" with
   // a score-banded, honest verdict word.
   assert.doesNotMatch(md, /\*\*Verdict:\*\* Safe\b/);
@@ -58,12 +60,12 @@ test("reportToMarkdown never renders a bare 'Safe' verdict, even for a hypotheti
 });
 
 test("reportToMarkdown includes a clean-state note when there are no risky items", () => {
-  const md = reportToMarkdown({ ...flask, risky: [] });
+  const md = reportToMarkdown({ ...flask, risky: [] }, SITE_URL);
   assert.match(md, /No risky items found/);
 });
 
 test("reportToMarkdown omits the forensics section for a report with no forensic record", () => {
-  const md = reportToMarkdown(flask);
+  const md = reportToMarkdown(flask, SITE_URL);
   assert.doesNotMatch(md, /## What running it revealed/);
 });
 
@@ -175,7 +177,7 @@ const escalatedReport: Report = {
 };
 
 test("reportToMarkdown includes the forensics section for an escalated report that actually ran", () => {
-  const md = reportToMarkdown(escalatedReport);
+  const md = reportToMarkdown(escalatedReport, SITE_URL);
   assert.match(md, /## What running it revealed/);
   assert.match(md, /### What it ran/);
   assert.match(md, /npm install/);
@@ -187,13 +189,13 @@ test("reportToMarkdown includes the forensics section for an escalated report th
 });
 
 test("reportToMarkdown renders the captured payload as inert, fenced code, never delivered", () => {
-  const md = reportToMarkdown(escalatedReport);
+  const md = reportToMarkdown(escalatedReport, SITE_URL);
   assert.match(md, /Attempted exfil payload \(captured, never delivered\)/);
   assert.match(md, /```\nsecret=stolen-token\n```/);
 });
 
 test("reportToMarkdown keeps forensics network/behavior findings out of the reputation section", () => {
-  const md = reportToMarkdown(escalatedReport);
+  const md = reportToMarkdown(escalatedReport, SITE_URL);
   const repIdx = md.indexOf("## Reputation signals");
   const codeIdx = md.indexOf("## Code & behavior signals");
   const repSection = md.slice(repIdx, codeIdx);
@@ -206,7 +208,7 @@ test("reportToMarkdown escapes Markdown-significant characters in freeform text"
     ...flask,
     summary: "This repo does `rm -rf /` and has a # heading and | pipe | chars and *asterisks*.",
   };
-  const md = reportToMarkdown(withMarkdownChars);
+  const md = reportToMarkdown(withMarkdownChars, SITE_URL);
   // The raw special characters should be escaped, not interpreted as Markdown syntax.
   // (A "#" that isn't at the start of a line is not heading syntax, so it needs no escaping.)
   assert.match(md, /\\`rm -rf \/\\`/);
@@ -215,8 +217,14 @@ test("reportToMarkdown escapes Markdown-significant characters in freeform text"
 });
 
 test("reportToMarkdown includes end-to-end logs as a distinct section", () => {
-  const md = reportToMarkdown(flask);
+  const md = reportToMarkdown(flask, SITE_URL);
   assert.match(md, /## End-to-end logs/);
   assert.match(md, /### Clone/);
   assert.match(md, /### Reputation/);
+});
+
+test("reportToMarkdown's auto-published line uses the real caller-supplied origin, never a hardcoded domain", () => {
+  const md = reportToMarkdown(flask, "https://example-preview-deploy.test");
+  assert.match(md, /Auto-published at example-preview-deploy\.test\/pallets\/flask/);
+  assert.doesNotMatch(md, /claude-rabbit\.dev/);
 });

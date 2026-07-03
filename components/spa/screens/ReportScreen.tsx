@@ -235,11 +235,14 @@ export function ReportScreen() {
   // Matches the SSR report page's SITE_URL fallback (app/[owner]/[repo]/page.tsx) and
   // copyLink's origin detection (state.tsx) — this footer previously hardcoded
   // "claude-rabbit.dev" regardless of where the app was actually running, so it lied
-  // about the report's real published location on localhost/preview deploys.
+  // about the report's real published location on localhost/preview deploys. The
+  // window-less branch is effectively unreachable (this is a live click-driven
+  // screen) but uses the same NEXT_PUBLIC_SITE_URL fallback as copyLink for the
+  // same reason: never a hardcoded domain, even in dead code.
   const origin =
     typeof window !== "undefined" && window.location?.origin
       ? window.location.origin
-      : "https://claude-rabbit.dev";
+      : (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311");
   const footer = (
     <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t6)" }}>
       Auto-published at {origin.replace(/^https?:\/\//, "")}/{r.owner}/{r.name} · re-checked when the repo changes
