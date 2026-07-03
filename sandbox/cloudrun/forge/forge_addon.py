@@ -87,6 +87,37 @@ REGISTRY_RE = re.compile(
 CR_SUPABASE_PROJECT_REF = os.environ.get("CR_SUPABASE_PROJECT_REF", "mjvlczaytkhvsolnhhkz")
 CONTROL_PLANE_RE = re.compile(r"^" + re.escape(CR_SUPABASE_PROJECT_REF) + r"\.supabase\.co$")
 
+# The harness's OWN 3-agent exploration pass (parallel_agents.py) calls Vertex AI
+# directly when OpenCode is unavailable (vertex_client.py fallback) — a REAL, honest
+# analysis call ("Analyze this repository file for malicious behavior..."), not the
+# scanned repo's own network behavior. CONFIRMED on a real deployed run (AmrDab/
+# clawdcursor): without this, that call was forged like any other unallowlisted
+# host and then MISATTRIBUTED in the final report as if the SCANNED REPO had
+# "attempted to reach aiplatform.googleapis.com" — an honest-reporting bug (the
+# product's core rule cuts both ways: never overclaim malice any more than safety).
+# aiplatform.googleapis.com is Google's SHARED multi-tenant Vertex domain (same
+# risk class as the supabase.co finding) — a malicious repo could have its OWN
+# real Google Cloud project, so hostname-verified-IP alone is not enough scoping
+# here. The request PATH embeds the calling project (`/projects/<id>/...`), so
+# passthrough additionally requires that path to name OUR OWN project — a
+# malicious repo's own Vertex calls (a different project id in the path) still
+# get forged. Path inspection requires the TLS payload decrypted, so — unlike the
+# other categories — this one is NOT checked in tls_clienthello (no ignore_connection
+# shortcut); it's decided in request() below, after mitmproxy has already MITM'd
+# and can read the path, exactly like the existing HTTP-layer passthrough loop.
+CR_OWN_GCP_PROJECT_ID = os.environ.get("CR_OWN_GCP_PROJECT_ID", "redacted-gcp-project")
+OWN_VERTEX_RE = re.compile(r"(^|\.)aiplatform\.googleapis\.com$")
+_OWN_VERTEX_IP_CACHE: dict[str, set[str]] = {}
+
+
+def _is_own_vertex_ip(sni: str, dest_ip: str) -> bool:
+    return _is_verified_ip(_OWN_VERTEX_IP_CACHE, sni, dest_ip)
+
+
+def _is_own_vertex_path(path: str) -> bool:
+    return f"/projects/{CR_OWN_GCP_PROJECT_ID}/" in (path or "")
+
+
 # Source hosting: the harness's OWN `git clone` of the scanned repo (entrypoint.sh,
 # BEFORE any untrusted code ever runs) also transits this same forced-egress path —
 # confirmed by a real deployed run: without this, the clone's info/refs + HEAD
@@ -319,6 +350,27 @@ class Forge:
         src = _source_ip(flow)
         sni = getattr(flow.client_conn, "sni", None)
         intended = sni or req.pretty_host or req.host
+
+        # The harness's OWN Vertex AI calls (agentic exploration fallback) — see
+        # OWN_VERTEX_RE's comment. Requires BOTH a verified real Vertex IP AND the
+        # request path naming OUR OWN project (a malicious repo's own Vertex
+        # project, a different id in the path, still gets forged below).
+        if OWN_VERTEX_RE.search(intended or ""):
+            dest_ip = None
+            try:
+                if flow.server_conn and flow.server_conn.address:
+                    dest_ip = str(flow.server_conn.address[0])
+            except Exception:  # noqa: BLE001
+                dest_ip = None
+            if dest_ip and _is_own_vertex_ip(intended, dest_ip) and _is_own_vertex_path(req.path):
+                _emit({"kind": "own_vertex_passthrough", "host": intended, "dest": dest_ip,
+                       "method": req.method, "path": req.path, "source_ip": src})
+                return
+            _emit({"kind": "own_vertex_spoof_refused", "host": intended, "dest": dest_ip,
+                   "proto": "http", "source_ip": src,
+                   "note": "aiplatform.googleapis.com but destination/project-path is not verified as our "
+                           "own — forging instead of proxying (may be the scanned repo's own Vertex project)"})
+            # fall through: forge it below (do NOT proxy to an unverified project)
 
         # Registry / control-plane / source-host fast-path over plain HTTP (the TLS
         # path is handled in tls_clienthello above; this covers cleartext registry
