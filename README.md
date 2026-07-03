@@ -61,10 +61,8 @@ where the "is this safe to run?" question actually lives:
   bash/zsh/PowerShell hooks (`install-hooks`) put that check in front of every install/clone.
 - **MCP server** (`mcp-server/`) — `scan_repo` and `get_report` tools over stdio, calling the
   production scan API, so an agent about to clone-and-run can check first.
-- **Claude Code plugin** (`plugins/claude-rabbit/`) — a `scan-repo` skill plus a `PreToolUse`
-  hook that intercepts install/clone commands inside the agent's own loop.
 
-All three honor the same rails as the web report — reputation kept separate from code/behavior,
+Both honor the same rails as the web report — reputation kept separate from code/behavior,
 sandbox-actually-ran reported honestly (keyed to a real forensic record, not the escalation flag),
 and never a bare "Safe."
 
@@ -110,7 +108,6 @@ sandbox/                 the dynamic sandbox engine (the moat) — see sandbox/R
                          sandbox/microvm/ holds the golden-image + on-demand compute-pool scripts
 cli/                     the claude-rabbit CLI (scan / install-clone wrappers / shell hooks)
 mcp-server/              MCP server (scan_repo / get_report tools over stdio for AI coding tools)
-plugins/claude-rabbit/   Claude Code plugin (scan-repo skill + PreToolUse install/clone-intercept hook)
 docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)
 ```

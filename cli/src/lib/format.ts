@@ -142,10 +142,8 @@ export function proceedPolicy(report: Report): ProceedPolicy {
 
 /**
  * The `--json` output shape. Field names are chosen to be correct against the
- * real `Report` type AND to satisfy the sibling Claude Code plugin's
- * PreToolUse hook, which reads: target, score, verdict, reportUrl, reputation,
- * behavior, notVerified. See cli/README.md for the full documented schema and
- * the reconciliation note.
+ * real `Report` type: target, score, verdict, reportUrl, reputation, behavior,
+ * notVerified. See cli/README.md for the full documented schema.
  */
 export interface ScanJson {
   target: string;
