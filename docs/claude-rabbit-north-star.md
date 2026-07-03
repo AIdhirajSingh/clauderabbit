@@ -76,9 +76,8 @@ The web app is one surface, but the anxiety it answers — *I am about to run th
 
 - **A CLI (`claude-rabbit-cli`).** `claude-rabbit scan owner/repo` (or an npm package name) prints the honest verdict in the terminal; `report` reads an existing cached report without triggering a new scan. It also wraps the dangerous commands directly — `npm-install`, `pnpm-install`, `git-clone` scan the target, show the verdict, and only proceed on a trusted result, with the full hedge printed first for anything else. Opt-in shell hooks (bash/zsh/PowerShell) put that check in front of every install and clone the developer types.
 - **An MCP server.** An AI coding tool speaking the Model Context Protocol gets two tools — `scan_repo` and `get_report` — so an autonomous agent about to clone-and-run a stranger's repo can check it first, over stdio, against the same production scan API. The agent audience in the "reality we're building into" section is not hypothetical; this is how we reach it.
-- **A Claude Code plugin.** A `scan-repo` skill plus a `PreToolUse` hook that intercepts install/clone commands and runs the check before the command executes — the guardrail moves inside the agent's own loop.
 
-Every one of these honors the same rails as the web report: it separates reputation from code/behavior, it reports whether the sandbox actually ran (keyed to a real forensic record, never merely to the escalation flag), and it never states a bare "Safe." They are built and in the repo (`cli/`, `mcp-server/`, `plugins/claude-rabbit/`) — a distribution layer over the one pipeline, not a fork of it.
+Every one of these honors the same rails as the web report: it separates reputation from code/behavior, it reports whether the sandbox actually ran (keyed to a real forensic record, never merely to the escalation flag), and it never states a bare "Safe." They are built and in the repo (`cli/`, `mcp-server/`) — a distribution layer over the one pipeline, not a fork of it. (A Claude Code plugin approach was tried and dropped; the CLI and MCP server are the supported surfaces.)
 
 ## What we are, in one breath
 
