@@ -107,6 +107,15 @@ CONTROL_PLANE_RE = re.compile(r"^" + re.escape(CR_SUPABASE_PROJECT_REF) + r"\.su
 # and can read the path, exactly like the existing HTTP-layer passthrough loop.
 CR_OWN_GCP_PROJECT_ID = os.environ.get("CR_OWN_GCP_PROJECT_ID", "redacted-gcp-project")
 OWN_VERTEX_RE = re.compile(r"(^|\.)aiplatform\.googleapis\.com$")
+# Anchored to the path's own /projects/<id>/ segment (Vertex's actual URL shape is
+# always /v1[betaN]/projects/<id>/...) rather than a bare substring check — a
+# substring match would let a malicious repo with its OWN real Google Cloud project
+# get ITS OWN Vertex traffic waved through as "own_vertex_passthrough" merely by
+# stuffing our project id into an unrelated query string. Not a containment breach
+# either way (the IP-verification gate below still requires a real Google IP), but
+# this keeps the classification/attribution honest, matching the same rigor as the
+# containment check itself.
+_OWN_VERTEX_PATH_RE = re.compile(rf"^/v[\w]*/projects/{re.escape(CR_OWN_GCP_PROJECT_ID)}(/|$)")
 _OWN_VERTEX_IP_CACHE: dict[str, set[str]] = {}
 
 
@@ -115,7 +124,7 @@ def _is_own_vertex_ip(sni: str, dest_ip: str) -> bool:
 
 
 def _is_own_vertex_path(path: str) -> bool:
-    return f"/projects/{CR_OWN_GCP_PROJECT_ID}/" in (path or "")
+    return bool(_OWN_VERTEX_PATH_RE.match(path or ""))
 
 
 # Source hosting: the harness's OWN `git clone` of the scanned repo (entrypoint.sh,
