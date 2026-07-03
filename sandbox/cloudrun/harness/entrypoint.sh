@@ -109,6 +109,29 @@ OVERALL_OK=1
 FAIL_NOTES=()
 note_failure() { OVERALL_OK=0; FAIL_NOTES+=("$1"); log "FAILURE: $1"; }
 
+# ── real, granular progress reporting (the processing-timeline feature) ──────
+# Best-effort, fire-and-forget: a stage-reporting hiccup must never affect the
+# actual detonation — same "observability only, never load-bearing" contract
+# as the enqueue/position/status ops this reuses (deep-queue edge function,
+# runner-key-gated). CR_SUPABASE_URL is Supabase's exact project ref, a
+# VERIFIED passthrough on the gateway (CONTROL_PLANE_RE in forge_addon.py), so
+# this genuinely reaches the function in real time, not forged/blocked.
+report_stage() {
+  local stage="$1" detail="${2:-}"
+  local body
+  body="$(python3 -c '
+import json, sys
+print(json.dumps({"op": "set_stage", "token": sys.argv[1], "stage": sys.argv[2], "detail": sys.argv[3]}))
+' "$CR_SCAN_ID" "$stage" "$detail" 2>/dev/null)" || return 0
+  local hdrs=(-H "Content-Type: application/json" -H "x-runner-key: ${CR_DEEP_RUNNER_KEY}")
+  if [ -n "${CR_SUPABASE_ANON_KEY:-}" ]; then
+    hdrs+=(-H "apikey: ${CR_SUPABASE_ANON_KEY}" -H "Authorization: Bearer ${CR_SUPABASE_ANON_KEY}")
+  fi
+  curl -fsS -m 10 -X POST "${CR_SUPABASE_URL%/}/functions/v1/deep-queue" \
+    "${hdrs[@]}" --data-binary "$body" >/dev/null 2>&1 || true
+}
+report_stage "container_start" "entrypoint running, validating env"
+
 # ── 1) register this container's source IP with the gateway, FIRST ───────────
 log "registering scan_id=${CR_SCAN_ID} with the gateway (must happen before any other egress)"
 REGISTER_BODY="{\"scan_id\":\"${CR_SCAN_ID}\"}"
@@ -202,6 +225,7 @@ cat > "${OC_CONFIG_DIR}/opencode.json" <<JSON
 JSON
 
 # ── 3) shallow clone the pinned repo at the exact commit ──────────────────────
+report_stage "cloning" "${CR_OWNER}/${CR_REPO}@${CR_COMMIT_SHA:0:12}"
 log "cloning ${CR_OWNER}/${CR_REPO}@${CR_COMMIT_SHA:0:12}"
 if git clone --quiet --depth 1 "https://github.com/${CR_OWNER}/${CR_REPO}.git" "$REPO_DIR" 2>/tmp/cr-clone.log; then
   if ! ( cd "$REPO_DIR" && git fetch --quiet --depth 1 origin "$CR_COMMIT_SHA" 2>>/tmp/cr-clone.log && git checkout --quiet "$CR_COMMIT_SHA" 2>>/tmp/cr-clone.log ); then
@@ -265,8 +289,10 @@ AGENT_MAX_TARGETS="${CR_AGENT_MAX_TARGETS:-6}"
 ) &
 AGENTIC_PID=$!
 log "agentic exploration pass launched in background (pid ${AGENTIC_PID}), running concurrently with detonation"
+report_stage "agents_exploring" "3 agents (install-time, runtime, payload) reading the code in parallel"
 
 # ── 5) detonate.py — the adapted in-container harness ──────────────────────────
+report_stage "installing" "installing dependencies with the repo's own package manager"
 log "=== BUILD+RUN phase: installing deps + executing under strace, egress forced through the gateway route ==="
 export CR_REPO_DIR="$REPO_DIR"
 export CR_TELEMETRY_HOST="$GATEWAY_HOST"
@@ -372,6 +398,7 @@ else
   note_failure "no local observation file at ${CR_OBSERVATION_PATH} — detonate.py may have crashed before writing it; the forensic record's what_it_ran/in_vm_behavior sections will be empty, which assemble-forensics.py already renders as an honest 'did not build/run' outcome, never a false clean"
 fi
 
+report_stage "assembling_forensics" "reconstructing the capture into the forensic record"
 log "assembling forensic record (assemble-forensics.py, UNCHANGED script/schema)"
 FORENSICS_JSON="$WORK/forensics.json"
 AGENTIC_ARG=()
@@ -417,6 +444,7 @@ fi
 log "forensic record ready at ${FORENSICS_JSON}"
 
 # ── 7) POST the forensic record to attach-forensics ────────────────────────────
+report_stage "persisting" "attaching forensics to the report row"
 log "attaching forensics to the report (attach-forensics)"
 PAYLOAD="$WORK/payload.json"
 python3 - "$FORENSICS_JSON" "$CR_OWNER" "$CR_REPO" "$CR_COMMIT_SHA" > "$PAYLOAD" <<'PY'

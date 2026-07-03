@@ -16,7 +16,9 @@ export type QueueStatus = (typeof QUEUE_STATUSES)[number];
 export type QueueOp =
   | { op: "enqueue"; token: string; owner: string; repo: string; sha: string }
   | { op: "position"; token: string }
-  | { op: "status"; token: string; status: QueueStatus };
+  | { op: "status"; token: string; status: QueueStatus }
+  | { op: "set_stage"; token: string; stage: string; detail: string }
+  | { op: "get_stage"; token: string };
 
 /** A clean, VM-name-safe token: the route's buildSlug charset. */
 export function isToken(v: unknown): v is string {
@@ -36,6 +38,37 @@ export function isSha(v: unknown): v is string {
 /** A valid lifecycle status. */
 export function isStatus(v: unknown): v is QueueStatus {
   return typeof v === "string" && (QUEUE_STATUSES as readonly string[]).includes(v);
+}
+
+/** A real stage marker name — short, machine-readable, from a fixed vocabulary
+ * the entrypoint and the client both know (see app/api/deep/route.ts's
+ * STAGE_LABELS for the human-facing text each one maps to).
+ *
+ * Deliberately ONE "agents_exploring" stage, not three sequential per-agent
+ * stages — the install-time/runtime/payload agents run CONCURRENTLY
+ * (parallel_agents.py), so reporting them as sequential steps would overclaim
+ * an ordering that doesn't exist, the same honesty standard the verdict/score
+ * rails already hold everywhere else. */
+export const STAGES = [
+  "container_start",
+  "cloning",
+  "installing",
+  "agents_exploring",
+  "running",
+  "assembling_forensics",
+  "persisting",
+] as const;
+export type Stage = (typeof STAGES)[number];
+
+export function isStage(v: unknown): v is Stage {
+  return typeof v === "string" && (STAGES as readonly string[]).includes(v);
+}
+
+/** A short, real, freeform detail string (the actual package manager detected,
+ * which agent started, etc.) — bounded so a compromised runner can't smuggle
+ * an oversized payload through a "detail" field. */
+export function isStageDetail(v: unknown): v is string {
+  return typeof v === "string" && v.length <= 200;
 }
 
 /**
@@ -63,6 +96,16 @@ export function parseQueueOp(body: unknown): { ok: true; value: QueueOp } | { ok
     if (!isToken(b.token)) return { ok: false, error: "invalid token" };
     if (!isStatus(b.status)) return { ok: false, error: "invalid status" };
     return { ok: true, value: { op: "status", token: b.token, status: b.status } };
+  }
+  if (op === "set_stage") {
+    if (!isToken(b.token)) return { ok: false, error: "invalid token" };
+    if (!isStage(b.stage)) return { ok: false, error: "invalid stage" };
+    if (!isStageDetail(b.detail)) return { ok: false, error: "invalid detail" };
+    return { ok: true, value: { op: "set_stage", token: b.token, stage: b.stage, detail: b.detail } };
+  }
+  if (op === "get_stage") {
+    if (!isToken(b.token)) return { ok: false, error: "invalid token" };
+    return { ok: true, value: { op: "get_stage", token: b.token } };
   }
   return { ok: false, error: "unknown op" };
 }

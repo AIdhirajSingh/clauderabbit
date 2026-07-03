@@ -1280,7 +1280,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
               // Ran but produced/persisted no record — never imply a clean result.
               toast("Sandbox ran, but no forensic record was captured.", "var(--amber)");
             } else {
-              toast(`Sandbox run did not complete: ${deep.error}`, "var(--amber)");
+              // deep.error is already a plain, self-contained statement of what broke
+              // (e.g. "Cloud Run execution failed (exit 1): ...") — no prefix needed.
+              toast(deep.error, "var(--amber)");
             }
             return;
           }

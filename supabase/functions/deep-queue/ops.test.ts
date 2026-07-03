@@ -10,7 +10,7 @@
  */
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { isSegment, isSha, isStatus, isToken, parseQueueOp } from "./ops.ts";
+import { isSegment, isSha, isStage, isStageDetail, isStatus, isToken, parseQueueOp } from "./ops.ts";
 
 Deno.test("isToken accepts the buildSlug charset, rejects slashes/metacharacters/empties", () => {
   assertEquals(isToken("psf-requests-abc123"), true);
@@ -73,6 +73,36 @@ Deno.test("parseQueueOp: a valid status op requires a real enum status", () => {
   assertEquals(r.ok, true);
   if (r.ok && r.value.op === "status") assertEquals(r.value.status, "active");
   assertEquals(parseQueueOp({ op: "status", token: "abc-123", status: "nope" }).ok, false);
+});
+
+Deno.test("isStage / isStageDetail guard the granular-progress fields", () => {
+  assertEquals(isStage("cloning"), true);
+  assertEquals(isStage("agents_exploring"), true);
+  assertEquals(isStage("not_a_real_stage"), false);
+  assertEquals(isStage(""), false);
+  assertEquals(isStageDetail("npm — native"), true);
+  assertEquals(isStageDetail(""), true); // empty detail is fine, just no extra text
+  assertEquals(isStageDetail("x".repeat(201)), false); // bounded
+});
+
+Deno.test("parseQueueOp: a valid set_stage op requires a real stage + bounded detail", () => {
+  const r = parseQueueOp({ op: "set_stage", token: "abc-123", stage: "cloning", detail: "shallow clone" });
+  assertEquals(r.ok, true);
+  if (r.ok && r.value.op === "set_stage") {
+    assertEquals(r.value.stage, "cloning");
+    assertEquals(r.value.detail, "shallow clone");
+  }
+  assertEquals(
+    parseQueueOp({ op: "set_stage", token: "abc-123", stage: "not_real", detail: "" }).ok,
+    false,
+  );
+});
+
+Deno.test("parseQueueOp: a valid get_stage op needs only a clean token", () => {
+  const r = parseQueueOp({ op: "get_stage", token: "abc-123" });
+  assertEquals(r.ok, true);
+  if (r.ok) assertEquals(r.value.op, "get_stage");
+  assertEquals(parseQueueOp({ op: "get_stage", token: "" }).ok, false);
 });
 
 Deno.test("parseQueueOp: unknown op and non-object bodies are rejected", () => {

@@ -106,6 +106,18 @@ export function reportRowToReport(row: ReportRow): Report {
     verdict: row.verdict,
     cached: row.cached,
     deep: row.deep,
+    // The real root cause of a genuine, reproducible (not intermittent)
+    // "forensic record was not confirmed" bug: this reshape never passed the
+    // row's commit_sha through, so every Report built via fetchLatestReport
+    // (the SSR page, the SPA, AND app/api/deep/route.ts's
+    // confirmForensicsAttached) always had commit_sha === undefined —
+    // confirmForensicsAttached's `report.commit_sha === sha` check could
+    // therefore never succeed, regardless of whether forensics had genuinely
+    // landed (confirmed live: hasForensics was true on every single poll
+    // attempt while commit_sha stayed undefined). normalizeReport (lib/scan.ts)
+    // already correctly carries commit_sha through when present in its input —
+    // it was simply never given the chance to.
+    commit_sha: row.commit_sha,
     summary: row.summary ?? "",
     ownerHistory: {
       handle: owner?.github_login ?? row.owner_login,
