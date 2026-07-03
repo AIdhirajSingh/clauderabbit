@@ -59,7 +59,7 @@ export function ProcessingScreen() {
               The scan couldn&apos;t complete
             </h2>
             <p style={{ fontSize: 14.5, color: "var(--t3)", margin: "0 0 6px" }}>
-              The sandbox run timed out while building this repository.
+              {state.procError ?? "The scan failed before it could finish. This wasn't a timeout — the exact reason wasn't captured."}
             </p>
             <p style={{ fontSize: 13, color: "var(--t5)", margin: "0 0 26px" }}>
               Nothing was lost. Your attempt is saved and ready to retry.

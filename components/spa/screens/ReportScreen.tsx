@@ -232,9 +232,17 @@ export function ReportScreen() {
     </div>
   );
 
+  // Matches the SSR report page's SITE_URL fallback (app/[owner]/[repo]/page.tsx) and
+  // copyLink's origin detection (state.tsx) — this footer previously hardcoded
+  // "claude-rabbit.dev" regardless of where the app was actually running, so it lied
+  // about the report's real published location on localhost/preview deploys.
+  const origin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "https://claude-rabbit.dev";
   const footer = (
     <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t6)" }}>
-      Auto-published at claude-rabbit.dev/{r.owner}/{r.name} · re-checked when the repo changes
+      Auto-published at {origin.replace(/^https?:\/\//, "")}/{r.owner}/{r.name} · re-checked when the repo changes
     </div>
   );
 
