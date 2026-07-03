@@ -1,10 +1,15 @@
 /**
  * deep-queue.ts — the pure, in-process FIFO authority for /api/deep dispatch.
  *
- * /api/deep detonates unknown repos on ONE warm sandbox host, capped at
- * MAX_CONCURRENT simultaneous detonations. When both slots are busy, a further
- * request no longer gets a flat 429 — it QUEUES and waits its turn. This module
- * is the ordering + position + wait-estimate + timeout brain for that queue.
+ * /api/deep detonates unknown repos as ephemeral Cloud Run Job executions, each
+ * routing its egress through the ONE shared NVA gateway VM (cr-forge-gateway) —
+ * that gateway, not the detonation compute itself, is the real bottleneck this
+ * controller throttles against, capped at MAX_CONCURRENT simultaneous
+ * detonations (see app/api/deep/route.ts and docs/INFRASTRUCTURE.md for the
+ * real, measured concurrency proof this cap is tuned against). When all slots
+ * are busy, a further request no longer gets a flat 429 — it QUEUES and waits
+ * its turn. This module is the ordering + position + wait-estimate + timeout
+ * brain for that queue.
  *
  * WHY IN-PROCESS IS THE AUTHORITY:
  *   /api/deep only ever runs on a single local controller Node process (Vercel
