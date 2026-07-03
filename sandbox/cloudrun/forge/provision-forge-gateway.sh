@@ -163,14 +163,34 @@ RemainAfterExit=true
 WantedBy=multi-user.target
 EOF
 
+# SECURITY REVIEW FINDING (lower severity, fixed): unlike the old per-run netns
+# (torn down + rebuilt every scan), this gateway is a long-lived VM — the boot-
+# time reapply above gives no protection against a manual debugging session
+# (e.g. an operator running `iptables -F` to troubleshoot) silently leaving
+# containment down until the next reboot, with no automated detection. Re-run
+# the SAME reapply on a short timer continuously, not just at boot, so any such
+# drift self-heals within minutes rather than persisting indefinitely.
+cat > /etc/systemd/system/cr-forge-iptables.timer <<'EOF'
+[Unit]
+Description=Periodically reassert Claude Rabbit forge iptables rules
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable --now cr-forge-iptables.service
+systemctl enable --now cr-forge-iptables.timer
 systemctl enable --now cr-forge-api.service
 systemctl enable --now cr-forge-mitm.service
 sleep 2
 
 echo "== Verify =="
-systemctl is-active cr-forge-iptables.service cr-forge-api.service cr-forge-mitm.service
+systemctl is-active cr-forge-iptables.service cr-forge-iptables.timer cr-forge-api.service cr-forge-mitm.service
 ss -ltn | grep -E ":${MITM_PORT}|:${API_PORT}" || { echo "CR_FORGE_GATEWAY_FAIL: ports not listening"; exit 1; }
 curl -fsS "http://127.0.0.1:${API_PORT}/healthz" || { echo "CR_FORENSICS_API_FAIL"; exit 1; }
 echo "CR_FORGE_GATEWAY_UP mitm=${MITM_PORT} api=${API_PORT} ca=/root/.mitmproxy/mitmproxy-ca-cert.pem"
