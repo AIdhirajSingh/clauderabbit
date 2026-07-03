@@ -5,6 +5,13 @@ const nextConfig: NextConfig = {
   // Hide the on-screen dev indicator/watermark (a clean preview surface; it never
   // shipped to production anyway, but the local preview is the demo surface).
   devIndicators: false,
+  // Inlines above-the-fold critical CSS and defers the rest, instead of a
+  // render-blocking <link> for the whole stylesheet — a real Lighthouse LCP
+  // finding on the homepage (two small render-blocking CSS chunks costing
+  // ~460ms of simulated-mobile LCP). Requires the `critters` devDependency.
+  experimental: {
+    optimizeCss: true,
+  },
   // Pin the workspace root to THIS project so Turbopack doesn't infer it from a
   // parent lockfile (the git-worktree layout has a lockfile above us). Absolute
   // path per the Next 16 turbopack.root contract.
