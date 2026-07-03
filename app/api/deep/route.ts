@@ -2,16 +2,23 @@
  * /api/deep — the INLINE deep-sandbox path (BUG-INLINE-MOAT).
  *
  * When the fast path trips the escalation gate, the browser calls this route and
- * watches the warm host boot a fresh Firecracker microVM (via Kata), run the
- * unknown code with all egress forced through the deceptive forge, and destroy the
- * microVM — all within the same scan. On exit the captured forensic record is
- * POSTed to the deployed `attach-forensics` edge function, which flips the report
- * row to a real "Sandbox run" (its `_ranSandbox` signal becomes true) and surfaces
- * the captured geo + the deep-run count on the board.
+ * watches a Cloud Run Job execution (one execution per scan, Gen2 — Jobs only run
+ * Gen2, there is no flag to set) clone the repo, run the 3-agent OpenCode
+ * exploration pass, detonate the code, and report its own forensic record. Every
+ * containment invariant now lives in the Direct-VPC-Egress + forced-route + NVA
+ * gateway architecture (see sandbox/cloudrun/forge/ + docs/INFRASTRUCTURE.md), not
+ * in a per-run Firecracker microVM — Cloud Run's own container boundary + the
+ * custom route to cr-forge-gateway (10.200.0.10) IS the isolation now. The
+ * container's own entrypoint (sandbox/cloudrun/harness/) POSTs its forensic record
+ * to attach-forensics directly (it already has network egress, routed through the
+ * same forge); this route triggers the execution, waits for it, and CONFIRMS the
+ * attach genuinely landed before telling the client "persisted" — it does not
+ * blindly trust the container's own exit code as proof the report was updated.
  *
- * CONCURRENCY + QUEUE — the host holds at most MAX_CONCURRENT (2) simultaneous
- * detonations (its 4-vCPU budget). A 3rd concurrent request is no longer flatly
- * rejected: it QUEUES. The connection stays open and streams an honest
+ * CONCURRENCY + QUEUE — MAX_CONCURRENT bounds simultaneous executions this
+ * controller will trigger at once (see Unit 16 / docs/INFRASTRUCTURE.md for the
+ * real Cloud Run concurrent-execution ceiling this is tuned against). A request
+ * over the cap QUEUES: the connection stays open and streams an honest
  * `{t:"stage", ch:"Queue", ...}` line ("Queued — position N of M, ~X min") while it
  * polls for a free slot in strict FIFO order, then proceeds through the exact same
  * detonation path once admitted. If it cannot get a slot within QUEUE_MAX_WAIT_MS it
@@ -20,19 +27,17 @@
  * process, race-free); the `deep_scan_queue` table + `lib/deep-queue.ts` provide the
  * FIFO ordering, honest position/estimate, and observability. See lib/deep-queue.ts.
  *
- * This route only INVOKES the host orchestrator (`orchestrate-microvm.sh`); every
- * containment invariant (disposable Firecracker microVM with no route out except the
- * forge, per-scan reset, the max-run dead-man's-switch, zero orphan microVMs) lives
- * in that script and is unchanged here.
- *
- * SAFETY — this route spawns gcloud and runs a shell script, so it is a privileged
- * local-controller capability, NOT a public surface. It is hard-gated fail-closed:
+ * SAFETY — this route spawns gcloud, so it is a privileged local-controller
+ * capability, NOT a public surface. It is hard-gated fail-closed:
  *   1. CR_ALLOW_LOCAL_DEEP=1 must be set (off by default → inert on Vercel).
  *   2. The request Host/Origin must be localhost (no remote caller).
  *   3. gcloud must be present on the machine (the sandbox controller).
- *   4. An in-process concurrency cap (≤2) honours orchestrate's 8-core budget.
- * owner/repo/sha are validated against strict charsets and passed to `spawn` as an
- * argv array (never an interpolated shell string), so they cannot inject commands.
+ *   4. An in-process concurrency cap honours the Cloud Run Job's real ceiling.
+ * owner/repo/sha are validated against strict charsets and passed as a Cloud Run
+ * per-EXECUTION env var override (`--update-env-vars` on `execute` merges into one
+ * execution's env, it does NOT mutate the job's stored template — confirmed
+ * against `gcloud run jobs execute --help` — so concurrent scans never race each
+ * other's inputs), never interpolated into a shell string.
  */
 
 import { existsSync } from "node:fs";
@@ -44,27 +49,22 @@ import {
   type QueueStanding,
 } from "@/lib/deep-queue";
 import { enqueueRow, fetchPosition, setStatus } from "@/lib/deep-queue-client";
+import { createClient } from "@/lib/supabase/server";
+import { fetchLatestReport } from "@/lib/report-fetch";
 
 // Privileged local capability: a real Node child process + filesystem. Never edge.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ── server-only config (NEVER NEXT_PUBLIC for the runner key / zone) ────────────
-const RUNNER_KEY = process.env.CR_DEEP_RUNNER_KEY ?? "";
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-// The publishable (anon) key — PUBLIC, fine server-side. attach-forensics sits
-// behind the Supabase Functions gateway, which requires a valid apikey/JWT BEFORE
-// the function runs; the function then enforces its own runner-key auth. So the
-// call needs BOTH (matching sandbox/run-deep-queue.sh): anon for the gateway,
-// x-runner-key for the function. Missing the anon header → gateway 401, no attach.
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
+// ── server-only config ───────────────────────────────────────────────────────
+// Note: CR_DEEP_RUNNER_KEY is no longer read here — the Cloud Run execution's
+// OWN entrypoint POSTs to attach-forensics directly, using its own copy of that
+// secret (injected via a Secret Manager reference at Job deploy time). This
+// controller process only triggers + confirms the execution.
 const REPO_ROOT = process.cwd();
-// The NEW substrate runs on a persistent host VM (one host + Kata/Firecracker microVMs +
-// the deceptive forge). /api/deep SSHes to that host and runs the per-scan orchestrator
-// there, streaming its [orch] milestones back over stderr and reading the forensic record
-// from stdout. (The old two-VM `sandbox/orchestrate.sh` ran locally and is retired.)
-const SANDBOX_HOST = process.env.CR_SANDBOX_HOST ?? "cr-host-build";
-const REMOTE_ORCH = process.env.CR_REMOTE_ORCH ?? "/opt/cr/microvm/orchestrate-microvm.sh";
+// The Cloud Run Job this route triggers one execution of per scan.
+const RUN_JOB_NAME = process.env.CR_RUN_JOB_NAME ?? "cr-detonation";
+const RUN_REGION = process.env.CR_RUN_REGION ?? "us-central1";
 
 // The dev/controller process may be launched with a narrower PATH than an
 // interactive shell — this repo is checked out into many separate worktrees, each
@@ -126,15 +126,19 @@ const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 // into `git fetch origin "$REF"` downstream — a leading dash would smuggle a flag).
 const SHA_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 
-// orchestrate budget: trap(2 cores) + detonation(2 cores) = 4 cores/run, 8-core
-// cap → at most 2 concurrent deep runs. Enforced in-process (single dev server).
+// How many Cloud Run executions THIS controller will trigger at once. Cloud
+// Run itself can run many more executions in parallel (see Unit 16 / the real
+// concurrent-execution ceiling measured in docs/INFRASTRUCTURE.md) — this cap
+// is a deliberate, separately-tunable in-process throttle, not a substrate
+// limit. Enforced in-process (single Node controller, race-free by construction).
 const MAX_CONCURRENT = 2;
 let inFlight = 0;
 
 // ── queue tuning (see lib/deep-queue.ts for the ordering/estimate/timeout math) ──
-// A real, measured detonation is ~76s on the 4-vCPU host (docs/runs/2026-07-01-
-// host-restart-and-concurrency.md); we use 90s as the per-detonation estimate to
-// fold in the attach + reset overhead so the quoted wait never reads too optimistic.
+// Per-detonation estimate used ONLY to phrase the queued-wait line ("~X min");
+// re-measure against the real deployed Cloud Run architecture (Unit 16) and
+// update this once real numbers exist — 90s carries over the old host's
+// measured figure as a starting placeholder, not a Cloud Run measurement.
 const PER_DETONATION_MS = 90_000;
 // Poll cadence while queued. 1s is cheap for a single Node process and surfaces a
 // freed slot / changed position within a tick — fast enough to feel live, not busy.
@@ -216,50 +220,6 @@ function hasGcloud(): Promise<boolean> {
   });
 }
 
-// The host's zone is live GCP state, not machine config — provision-host.sh's own
-// documented zone-fallback list already means a recreation can land cr-host-build
-// in a different zone than last time (observed for real twice this session). A
-// static CR_SANDBOX_ZONE env var requires that new zone to be hand-copied into
-// every checkout's .env.local, which is exactly the kind of drift that caused this
-// bug. Resolve it live from GCP instead, falling back to the env var (then a
-// last-resort default) only if the discovery call itself fails.
-const ZONE_CACHE_MS = 5 * 60_000;
-let cachedZone: { zone: string; at: number } | null = null;
-
-function discoverZone(): Promise<string | null> {
-  return new Promise((resolve) => {
-    try {
-      const p = spawn(
-        BASH,
-        ["-c", `gcloud compute instances list --filter="name=${SANDBOX_HOST}" --format="value(zone)"`],
-        { stdio: ["ignore", "pipe", "ignore"], shell: false, env: childEnv() },
-      );
-      let out = "";
-      p.stdout?.on("data", (chunk: Buffer) => {
-        out += chunk.toString("utf8");
-      });
-      p.on("error", () => resolve(null));
-      p.on("close", (code) => {
-        if (code !== 0) return resolve(null);
-        const zone = out.trim().split(/\s+/)[0];
-        resolve(zone || null);
-      });
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-async function resolveZone(): Promise<string> {
-  if (cachedZone && Date.now() - cachedZone.at < ZONE_CACHE_MS) return cachedZone.zone;
-  const discovered = await discoverZone();
-  if (discovered) {
-    cachedZone = { zone: discovered, at: Date.now() };
-    return discovered;
-  }
-  return process.env.CR_SANDBOX_ZONE || "us-central1-a";
-}
-
 interface Stage {
   ch: string;
   status: "active" | "done";
@@ -267,122 +227,36 @@ interface Stage {
   lines?: string[];
 }
 
+// Detonation itself can legitimately take several minutes (clone + install +
+// agentic pass + run) — this bounds how long we'll wait for the Cloud Run
+// execution before giving up honestly, distinct from QUEUE_MAX_WAIT_MS (which
+// bounds time spent WAITING for a slot, before the execution even starts).
+const DETONATION_MAX_WAIT_MS = 20 * 60_000;
+// After the execution reports success, the container's OWN entrypoint already
+// POSTed to attach-forensics — confirm that write actually landed (Postgres
+// writes are immediately visible; a couple of short retries absorb any
+// request-handling latency) rather than trusting the exit code alone.
+const ATTACH_CONFIRM_RETRIES = 5;
+const ATTACH_CONFIRM_DELAY_MS = 2_000;
+
 /**
- * Map a single orchestrate `[orch]` stderr milestone to a user-facing stage, or
- * null for lines that are noise. These are the REAL milestones the moat logs —
- * the browser sees genuine provision → build → run → capture → reset progress.
+ * Confirm the Cloud Run execution's own attach-forensics POST actually landed,
+ * by reading the report row back and checking `deep` is set for THIS commit.
+ * Never trusts the job's exit code alone — a container that "succeeded" but
+ * whose own network POST silently failed must not be reported as persisted.
  */
-function milestone(rawLine: string): Stage | null {
-  // Three-agent stream: orchestrate forwards the agentic pass's `[agent]` stderr
-  // lines verbatim. Each agent's REAL reasoning is surfaced live under one chapter
-  // so the browser watches three OpenCode agents think in parallel.
-  const agent = rawLine.match(/^\[agent\]\s*(.*)$/);
-  if (agent) {
-    const body = agent[1] ?? "";
-    if (/^launching THREE parallel agents/.test(body))
-      return {
-        ch: "Three agents read the code",
-        status: "active",
-        lines: ["Three OpenCode agents exploring in parallel — install-time · runtime · payload"],
-      };
-    const a = body.match(/^(install|runtime|payload)\s+(thinking|finding|detonate)[:]?\s*(.*)$/);
-    if (a) {
-      const lens = a[1] ?? "";
-      const kind = a[2] ?? "";
-      const text = (a[3] ?? "").trim();
-      if (kind === "thinking" && text)
-        return { ch: "Three agents read the code", status: "active", lines: [`[${lens}] ${text}`] };
-      if (kind === "finding" && text)
-        return { ch: "Three agents read the code", status: "active", lines: [`[${lens}] flagged ${text}`] };
-      if (kind === "detonate" && /run-target/.test(text))
-        return { ch: "Three agents read the code", status: "active", lines: [`[${lens}] requested a sandbox detonation`] };
-    }
-    if (/^cross-verified|^three agents done/i.test(body))
-      return { ch: "Three agents read the code", status: "done", kind: "ok", lines: ["Cross-verified findings from three agents"] };
-    return null;
+async function confirmForensicsAttached(owner: string, repo: string, sha: string): Promise<boolean> {
+  const supabase = await createClient().catch(() => null);
+  if (!supabase) return false;
+  for (let attempt = 0; attempt < ATTACH_CONFIRM_RETRIES; attempt++) {
+    const report = await fetchLatestReport(supabase, owner, repo);
+    if (report && report.deep && report.commit_sha === sha) return true;
+    await new Promise((r) => setTimeout(r, ATTACH_CONFIRM_DELAY_MS));
   }
-  // The display chapters describe the REAL substrate — one warm host running a
-  // Firecracker microVM (via Kata) with all egress forced through the deceptive
-  // forge — NOT the retired two-VM trap/sinkhole. The [orch] triggers below still
-  // match orchestrate-microvm.sh's stderr; only the user-facing text is honest.
-  const m = rawLine.replace(/^\[orch\]\s*/, "");
-  if (/^ensuring hermetic network/.test(m))
-    return { ch: "Seal the network", status: "active", lines: ["Building the hermetic per-run network + the deceptive egress forge"] };
-  if (/^cloning public repo/.test(m))
-    return { ch: "Clone + pin", status: "active", lines: ["Cloning the repo at the scanned commit (off-VM, on the host)"] };
-  if (/^pinned detonation target/.test(m))
-    return { ch: "Clone + pin", status: "done", kind: "ok", lines: ["Pinned to the exact scanned commit"] };
-  if (/^booting TRAP host/.test(m))
-    return { ch: "Bring up the forge", status: "active", lines: ["Starting the deceptive egress forge (DNS + TLS interception; registry fast-path)"] };
-  if (/^build proxy healthy/.test(m))
-    return { ch: "Bring up the forge", status: "done", kind: "ok", lines: ["Forge up · registries pass through, everything else is forged"] };
-  if (/^booting DETONATION VM/.test(m))
-    return { ch: "Boot the microVM", status: "active", lines: ["Booting a fresh Firecracker microVM via Kata — no route out except the forge"] };
-  if (/DEGRADED/.test(m))
-    return { ch: "Boot the microVM", status: "active", kind: "warn", lines: ["No prebuilt base image — building the microVM image (degraded)"] };
-  if (/^staging harness/.test(m))
-    return { ch: "Boot the microVM", status: "done", kind: "ok", lines: ["microVM up · staging the harness + target"] };
-  if (/^=== BUILD phase/.test(m))
-    return { ch: "Build under containment", status: "active", lines: ["Installing deps through the forge's registry fast-path"] };
-  if (/^containment confirmed/.test(m))
-    return { ch: "Build under containment", status: "done", kind: "ok", lines: ["Containment confirmed — control probe did NOT reach the real internet"] };
-  if (/^=== AGENTIC pass/.test(m))
-    return { ch: "Detonate through the forge", status: "active", lines: ["Exploring the code, then detonating in the microVM through the forge"] };
-  if (/^=== RUN phase/.test(m))
-    return { ch: "Detonate through the forge", status: "active", lines: ["Running the code — every outbound connection is forged, no real packet leaves"] };
-  if (/^=== RESET: deleting detonation VM/.test(m))
-    return { ch: "Capture + reset", status: "active", lines: ["Capture collected — destroying the microVM now"] };
-  if (/^folding captured network intent/.test(m))
-    return { ch: "Compute verdict", status: "active", lines: ["Folding captured network intent into an honest verdict"] };
-  if (/^emitting forensic record/.test(m))
-    return { ch: "Compute verdict", status: "done", kind: "ok", lines: ["Forensic record emitted"] };
-  if (/^scan complete/.test(m))
-    return { ch: "Capture + reset", status: "done", kind: "ok", lines: ["Scan complete — microVM destroyed (per-scan reset)"] };
-  return null;
+  return false;
 }
 
-/** POST the captured forensic record + the real run timeline to attach-forensics. */
-async function attachForensics(args: {
-  owner: string;
-  repo: string;
-  sha: string;
-  forensics: unknown;
-  timeline: Stage[];
-}): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!SUPABASE_URL) return { ok: false, error: "NEXT_PUBLIC_SUPABASE_URL not configured" };
-  const url = `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1/attach-forensics`;
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        // Gateway auth (anon) + function auth (runner key) — both required.
-        apikey: ANON_KEY,
-        Authorization: `Bearer ${ANON_KEY}`,
-        "x-runner-key": RUNNER_KEY,
-      },
-      body: JSON.stringify({
-        owner: args.owner,
-        repo: args.repo,
-        sha: args.sha,
-        forensics: args.forensics,
-        // The REAL streamed run timeline (provision -> build -> run -> capture ->
-        // reset). attach-forensics validates + persists it so the cached report's
-        // "view logs" shows the complete record, not a 2-line stub.
-        timeline: args.timeline,
-      }),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      return { ok: false, error: `attach-forensics ${res.status}: ${txt.slice(0, 200)}` };
-    }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: `attach-forensics request failed: ${msg(e)}` };
-  }
-}
-
-/** Build a VM-name-safe unique slug: `[A-Za-z0-9-]{1,40}`, distinct per request. */
+/** Build a job-execution-safe unique scan id: `[a-z0-9-]{1,40}`, distinct per request. */
 function buildSlug(owner: string, repo: string): string {
   const base =
     `${owner}-${repo}`
@@ -434,19 +308,13 @@ export async function POST(req: Request): Promise<Response> {
     return json({ error: "invalid commit sha" }, 400);
   }
 
-  // 3. without the runner key we cannot persist — fail honest, don't detonate.
-  if (!RUNNER_KEY) {
-    return json({ error: "CR_DEEP_RUNNER_KEY not configured on the controller" }, 500);
-  }
-
-  // 4. gcloud must be present (this is the sandbox controller).
+  // 3. gcloud must be present (this is the sandbox controller).
   if (!(await hasGcloud())) {
     return json({ error: "deep path needs gcloud on the sandbox controller" }, 501);
   }
 
-  // 5. A per-request token: FIFO key (in-process), VM name slug, and queue row id.
+  // 4. A per-request token: FIFO key (in-process), Cloud Run scan id, queue row id.
   const slug = buildSlug(owner, repo);
-  let stdoutBuf = ""; // accumulates the orchestrator's forensic-record JSON (its stdout)
 
   // Slot ownership for THIS request. `acquiredSlot` records whether we hold an
   // inFlight slot, so release() decrements exactly once and only when we do.
@@ -530,17 +398,33 @@ export async function POST(req: Request): Promise<Response> {
         recordStage({
           ch: "Escalate",
           status: "active",
-          lines: ["Gate tripped — detonating on the microVM sandbox host"],
+          lines: ["Gate tripped — dispatching a Cloud Run detonation execution"],
         });
 
+        let detonationTimedOut = false;
+        const detonationTimer = setTimeout(() => {
+          detonationTimedOut = true;
+          killChild();
+        }, DETONATION_MAX_WAIT_MS);
+
         try {
-          // Run the per-scan orchestrator ON the sandbox host over SSH. We invoke gcloud
-          // THROUGH bash (the same context hasGcloud() uses) so the gcloud.cmd shim resolves
-          // on Windows. owner/repo/sha/slug are strictly validated (no shell metacharacters),
-          // so interpolating them into the remote command is injection-free.
-          const zone = await resolveZone();
-          const remoteCmd = `sudo bash ${REMOTE_ORCH} --github ${owner}/${repo} --ref ${sha} --name ${slug}`;
-          const gcloudCmd = `gcloud compute ssh ${SANDBOX_HOST} --zone ${zone} --quiet --command ${JSON.stringify(remoteCmd)}`;
+          // Trigger ONE Cloud Run Job execution for this scan. owner/repo/sha/slug
+          // are strictly validated above (no shell metacharacters), and
+          // --update-env-vars overrides THIS execution only (confirmed against
+          // `gcloud run jobs execute --help`: "environment variables overrides
+          // for an execution of a job" — it does not mutate the job's stored
+          // template), so concurrent scans can never race each other's inputs.
+          // Invoked through bash (same context hasGcloud() uses) so the
+          // gcloud.cmd shim resolves on Windows.
+          const envOverrides = [
+            `CR_OWNER=${owner}`,
+            `CR_REPO=${repo}`,
+            `CR_COMMIT_SHA=${sha}`,
+            `CR_SCAN_ID=${slug}`,
+          ].join(",");
+          const gcloudCmd =
+            `gcloud run jobs execute ${RUN_JOB_NAME} --region ${RUN_REGION} ` +
+            `--update-env-vars ${envOverrides} --wait`;
           child = spawn(BASH, ["-c", gcloudCmd], {
             cwd: REPO_ROOT,
             stdio: ["ignore", "pipe", "pipe"],
@@ -548,65 +432,64 @@ export async function POST(req: Request): Promise<Response> {
             env: childEnv(),
           });
         } catch (e) {
+          clearTimeout(detonationTimer);
           void setStatus(slug, "failed");
-          emit({ t: "error", error: `failed to spawn sandbox orchestrator: ${msg(e)}` });
+          emit({ t: "error", error: `failed to trigger Cloud Run execution: ${msg(e)}` });
           finish();
           return;
         }
 
         child.on("error", (e) => {
+          clearTimeout(detonationTimer);
           void setStatus(slug, "failed");
-          emit({ t: "error", error: `orchestrator spawn error: ${msg(e)}` });
+          emit({ t: "error", error: `Cloud Run execution spawn error: ${msg(e)}` });
           finish();
         });
 
-        // Parse stderr milestones line-by-line (buffer partial lines).
+        // gcloud's own execute --wait progress/error text (not parsed for
+        // per-stage milestones the way the old SSH-tailed orchestrator output
+        // was — a real Cloud Run execution's internal progress isn't observable
+        // through this channel — but captured so a failure is diagnosable).
         let errBuf = "";
         child.stderr?.on("data", (chunk: Buffer) => {
           errBuf += chunk.toString("utf8");
-          let nl: number;
-          while ((nl = errBuf.indexOf("\n")) >= 0) {
-            const line = errBuf.slice(0, nl);
-            errBuf = errBuf.slice(nl + 1);
-            const st = milestone(line);
-            if (st) recordStage(st);
-          }
-        });
-
-        // The orchestrator prints the forensic record JSON to stdout; accumulate it.
-        child.stdout?.on("data", (chunk: Buffer) => {
-          stdoutBuf += chunk.toString("utf8");
         });
 
         child.on("close", async (code) => {
+          clearTimeout(detonationTimer);
           if (closed) return;
+          if (detonationTimedOut) {
+            void setStatus(slug, "timed_out");
+            emit({
+              t: "error",
+              error: `Cloud Run execution did not complete within ${Math.round(DETONATION_MAX_WAIT_MS / 60_000)} min — treating as failed, not silently dropping it.`,
+            });
+            finish();
+            return;
+          }
           if (code !== 0) {
             void setStatus(slug, "failed");
-            emit({ t: "error", error: `sandbox run exited with code ${code}` });
+            emit({ t: "error", error: `Cloud Run execution failed (exit ${code}): ${errBuf.trim().slice(-500)}` });
             finish();
             return;
           }
-          // Parse the forensic record from the orchestrator's stdout (it `cat`s the record
-          // last). gcloud/ssh banners may precede it, so extract from the first "{".
-          let forensics: unknown;
-          try {
-            const start = stdoutBuf.indexOf("{");
-            forensics = JSON.parse(start >= 0 ? stdoutBuf.slice(start) : stdoutBuf);
-          } catch {
-            // Ran but produced no record — honest distinct signal, never implies safe.
-            void setStatus(slug, "failed");
-            emit({ t: "error", error: "sandbox completed but produced no forensic record" });
-            finish();
-            return;
-          }
+          recordStage({
+            ch: "Detonate",
+            status: "done",
+            kind: "ok",
+            lines: ["Cloud Run execution completed — confirming the forensic record actually attached"],
+          });
           emit({
             t: "stage",
             ch: "Persist",
             status: "active",
-            lines: ["Attaching the forensic record to the report row"],
+            lines: ["Confirming the forensic record landed on the report row"],
           });
-          const attached = await attachForensics({ owner, repo, sha, forensics, timeline });
-          if (attached.ok) {
+          // The execution's OWN entrypoint already POSTed to attach-forensics
+          // (it has network egress, routed through the same forge) — confirm
+          // that write actually happened rather than trusting exit 0 alone.
+          const attached = await confirmForensicsAttached(owner, repo, sha);
+          if (attached) {
             void setStatus(slug, "done");
             emit({
               t: "stage",
@@ -618,7 +501,12 @@ export async function POST(req: Request): Promise<Response> {
             emit({ t: "result", persisted: true });
           } else {
             void setStatus(slug, "failed");
-            emit({ t: "error", error: attached.error });
+            emit({
+              t: "error",
+              error:
+                "Cloud Run execution succeeded but the forensic record was not confirmed on the report row " +
+                "— the sandbox ran, but we cannot confirm the result was persisted. Not claiming a sandbox run.",
+            });
           }
           finish();
         });
