@@ -423,12 +423,22 @@ if [ -n "${CR_SUPABASE_ANON_KEY:-}" ]; then
 fi
 
 ATTACH_OK=0
-if curl -fsS -m 30 -X POST "${CR_SUPABASE_URL%/}/functions/v1/attach-forensics" \
+# --retry: a real deployed run hit a one-off "Failed sending HTTP POST
+# request" against this exact endpoint (a transient send-phase failure, not
+# reproducible from a separate real GCE VM issuing the same POST through the
+# same gateway/route at various payload sizes — so not a size or containment-
+# logic issue) — this is exactly the class of transient network hiccup a
+# real outbound POST should tolerate. --retry-all-errors covers a failed SEND
+# too (plain --retry only retries on a set of response codes / connect
+# failures), and --http1.1 sidesteps any HTTP/2 negotiation edge case between
+# this container's curl and mitmproxy's raw ignore_connection relay.
+if curl -fsS -m 30 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 \
+     -X POST "${CR_SUPABASE_URL%/}/functions/v1/attach-forensics" \
      "${ATTACH_HEADERS[@]}" --data-binary @"$PAYLOAD" >/tmp/cr-attach.log 2>&1; then
   ATTACH_OK=1
   log "forensics attached to report: $(cat /tmp/cr-attach.log)"
 else
-  note_failure "attach-forensics POST failed (see /tmp/cr-attach.log): $(cat /tmp/cr-attach.log 2>/dev/null)"
+  note_failure "attach-forensics POST failed after retries (see /tmp/cr-attach.log): $(cat /tmp/cr-attach.log 2>/dev/null)"
 fi
 
 # ── 8) exit status — never silently swallow a failure, never overclaim success ──
