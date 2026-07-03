@@ -44,9 +44,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # COREPACK_ENABLE_DOWNLOAD_PROMPT=0 is CRITICAL: the container runs unattended/
 # non-interactively, and without it corepack blocks on a "download? [Y/n]" prompt
 # and the whole build hangs until the run cap kills it.
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-    COREPACK_DEFAULT_TO_LATEST=1
-RUN corepack enable && npm install -g --no-audit --no-fund yarn pnpm@9 \
+#
+# `--force` is REQUIRED here (caught in a real Cloud Build run, not a guess):
+# node:22-slim ships a preinstalled /usr/local/bin/yarn, so a plain
+# `npm install -g yarn` fails with EEXIST — and since this whole RUN line ended
+# in `|| true` (to make cache-clean's own transient failure non-fatal), that
+# EEXIST failure was being silently swallowed, meaning pnpm@9 never actually
+# installed. `--force` lets npm's yarn overwrite the preinstalled shim (fine —
+# corepack governs which yarn actually resolves at runtime anyway) so the
+# install genuinely succeeds instead of degrading unnoticed.
+RUN corepack enable && npm install -g --force --no-audit --no-fund yarn pnpm@9 \
     && npm cache clean --force 2>/dev/null || true
 
 # The agent package's only third-party Python dependency: google-genai, used
