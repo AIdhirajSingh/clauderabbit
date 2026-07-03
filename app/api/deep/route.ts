@@ -48,9 +48,26 @@ import {
   queueLine,
   type QueueStanding,
 } from "@/lib/deep-queue";
-import { enqueueRow, fetchPosition, setStatus } from "@/lib/deep-queue-client";
-import { createClient } from "@/lib/supabase/server";
+import { enqueueRow, fetchPosition, fetchStage, setStatus } from "@/lib/deep-queue-client";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { fetchLatestReport } from "@/lib/report-fetch";
+
+// Real, live-diagnosed bug (a scan reporting "forensic record was not
+// confirmed" despite the write genuinely landing — verified directly against
+// the database): lib/supabase/server.ts's createClient() calls Next's
+// cookies() API, which is only valid inside an active per-request Async Local
+// Storage context. confirmForensicsAttached() below runs from a
+// child_process's "close" event — a raw Node event-emitter callback, not part
+// of Next's own request instrumentation — that can fire 60-150s after the
+// original request, well outside that context. cookies() then throws,
+// createClient() rejects, the outer `.catch(() => null)` swallows it, and
+// EVERY confirmation attempt silently returns false — never because the read
+// failed, but because the client was never even constructed. This read is
+// anonymous and public (same RLS-exposed report row the SSR page and the SPA
+// already read anonymously) and never needs a session or cookies, so it needs
+// a plain, context-free client, not the cookie-coupled one.
+const CONFIRM_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const CONFIRM_SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 // Privileged local capability: a real Node child process + filesystem. Never edge.
 export const runtime = "nodejs";
@@ -237,6 +254,32 @@ interface Stage {
   lines?: string[];
 }
 
+// Real, granular detonation progress — replaces the ONE static "Gate tripped —
+// dispatching a Cloud Run detonation execution" line that used to sit unmoving
+// for the entire ~100-160s real detonation window. The Cloud Run execution's
+// own entrypoint (sandbox/cloudrun/harness/entrypoint.sh + detonate.py) reports
+// each of these stage names live via deep-queue's set_stage op as it actually
+// reaches them (see supabase/migrations/20260703000001_deep_scan_queue_stage.sql);
+// this route polls deep-queue's get_stage op and emits a real, distinct
+// timeline entry for each one, matching the same honest step-by-step
+// visibility the earlier Resolve/Static-scan/Reputation/Read/Verdict/Escalation
+// stages already have. Must exactly match supabase/functions/deep-queue/ops.ts's
+// STAGES vocabulary — a stage name reported by the container that isn't a key
+// here just renders as itself (never dropped, never a UI crash).
+const STAGE_LABELS: Record<string, string> = {
+  container_start: "Sandbox container starting",
+  cloning: "Cloning the repository at the pinned commit",
+  installing: "Installing dependencies",
+  agents_exploring: "Three agents reading the code in parallel",
+  running: "Executing the repository's start command",
+  assembling_forensics: "Assembling the forensic record",
+  persisting: "Persisting the result to the report",
+};
+// How often to poll for a new stage during the detonation wait. Cheap for a
+// single Node process; frequent enough that the timeline never looks stalled
+// for long even between real transitions.
+const STAGE_POLL_MS = 2_500;
+
 // Detonation itself can legitimately take several minutes (clone + install +
 // agentic pass + run) — this bounds how long we'll wait for the Cloud Run
 // execution before giving up honestly, distinct from QUEUE_MAX_WAIT_MS (which
@@ -251,16 +294,31 @@ const ATTACH_CONFIRM_DELAY_MS = 2_000;
 
 /**
  * Confirm the Cloud Run execution's own attach-forensics POST actually landed,
- * by reading the report row back and checking `deep` is set for THIS commit.
- * Never trusts the job's exit code alone — a container that "succeeded" but
- * whose own network POST silently failed must not be reported as persisted.
+ * by reading the report row back and checking it genuinely carries a forensic
+ * record for THIS commit. Never trusts the job's exit code alone — a
+ * container that "succeeded" but whose own network POST silently failed must
+ * not be reported as persisted.
+ *
+ * Checks `report.forensics` is present, not just `deep`/`commit_sha` — those
+ * two are already true from the INITIAL fast-path escalation insert, before
+ * the Cloud Run job ever runs, so checking only them would report "attached"
+ * on the very first poll regardless of whether the detonation's own write
+ * ever actually landed. Checking the real forensic payload is what makes this
+ * a genuine confirmation, not a trivially-true one.
  */
 async function confirmForensicsAttached(owner: string, repo: string, sha: string): Promise<boolean> {
-  const supabase = await createClient().catch(() => null);
-  if (!supabase) return false;
+  if (!CONFIRM_SUPABASE_URL || !CONFIRM_SUPABASE_ANON_KEY) return false;
+  // A plain, context-free client — this read is anonymous and public (same
+  // RLS-exposed row the SSR page and SPA already read without a session), and
+  // must not depend on Next's per-request cookie context (see the note above
+  // createClient as createSupabaseClient — this runs from a detached
+  // child_process event callback, not a live request scope).
+  const supabase = createSupabaseClient(CONFIRM_SUPABASE_URL, CONFIRM_SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
   for (let attempt = 0; attempt < ATTACH_CONFIRM_RETRIES; attempt++) {
-    const report = await fetchLatestReport(supabase, owner, repo);
-    if (report && report.deep && report.commit_sha === sha) return true;
+    const report = await fetchLatestReport(supabase, owner, repo).catch(() => null);
+    if (report && report.deep && report.commit_sha === sha && report.forensics) return true;
     await new Promise((r) => setTimeout(r, ATTACH_CONFIRM_DELAY_MS));
   }
   return false;
@@ -417,6 +475,29 @@ export async function POST(req: Request): Promise<Response> {
           killChild();
         }, DETONATION_MAX_WAIT_MS);
 
+        // Real, granular progress polling — see STAGE_LABELS above. Started
+        // once the execution is actually triggered, stopped on every exit path
+        // (spawn failure, spawn error, or the child closing) via stopStagePoll.
+        let lastStage: string | null = null;
+        let stagePollTimer: ReturnType<typeof setInterval> | null = null;
+        const stopStagePoll = () => {
+          if (stagePollTimer) clearInterval(stagePollTimer);
+          stagePollTimer = null;
+        };
+        const startStagePoll = () => {
+          stagePollTimer = setInterval(() => {
+            void fetchStage(slug).then((s) => {
+              if (!s || !s.stage || s.stage === lastStage) return;
+              lastStage = s.stage;
+              recordStage({
+                ch: "Detonate",
+                status: "active",
+                lines: [s.detail ? `${STAGE_LABELS[s.stage] ?? s.stage} — ${s.detail}` : (STAGE_LABELS[s.stage] ?? s.stage)],
+              });
+            });
+          }, STAGE_POLL_MS);
+        };
+
         try {
           // Trigger ONE Cloud Run Job execution for this scan. owner/repo/sha/slug
           // are strictly validated above (no shell metacharacters), and
@@ -441,8 +522,10 @@ export async function POST(req: Request): Promise<Response> {
             shell: false,
             env: childEnv(),
           });
+          startStagePoll();
         } catch (e) {
           clearTimeout(detonationTimer);
+          stopStagePoll();
           void setStatus(slug, "failed");
           emit({ t: "error", error: `failed to trigger Cloud Run execution: ${msg(e)}` });
           finish();
@@ -451,15 +534,16 @@ export async function POST(req: Request): Promise<Response> {
 
         child.on("error", (e) => {
           clearTimeout(detonationTimer);
+          stopStagePoll();
           void setStatus(slug, "failed");
           emit({ t: "error", error: `Cloud Run execution spawn error: ${msg(e)}` });
           finish();
         });
 
-        // gcloud's own execute --wait progress/error text (not parsed for
-        // per-stage milestones the way the old SSH-tailed orchestrator output
-        // was — a real Cloud Run execution's internal progress isn't observable
-        // through this channel — but captured so a failure is diagnosable).
+        // gcloud's own execute --wait progress/error text is not parsed for
+        // per-stage milestones — real granular progress comes from the
+        // stage-poll above (the execution's own entrypoint reporting live),
+        // not this channel — but stderr is captured so a failure is diagnosable.
         let errBuf = "";
         child.stderr?.on("data", (chunk: Buffer) => {
           errBuf += chunk.toString("utf8");
@@ -467,12 +551,13 @@ export async function POST(req: Request): Promise<Response> {
 
         child.on("close", async (code) => {
           clearTimeout(detonationTimer);
+          stopStagePoll();
           if (closed) return;
           if (detonationTimedOut) {
             void setStatus(slug, "timed_out");
             emit({
               t: "error",
-              error: `Cloud Run execution did not complete within ${Math.round(DETONATION_MAX_WAIT_MS / 60_000)} min — treating as failed, not silently dropping it.`,
+              error: `Cloud Run execution exceeded the ${Math.round(DETONATION_MAX_WAIT_MS / 60_000)} min timeout and was terminated.`,
             });
             finish();
             return;
@@ -506,7 +591,7 @@ export async function POST(req: Request): Promise<Response> {
               ch: "Persist",
               status: "done",
               kind: "ok",
-              lines: ["Forensics attached — this report now shows a real sandbox run"],
+              lines: ["Forensics attached. This is a confirmed sandbox run."],
             });
             emit({ t: "result", persisted: true });
           } else {
@@ -514,8 +599,8 @@ export async function POST(req: Request): Promise<Response> {
             emit({
               t: "error",
               error:
-                "Cloud Run execution succeeded but the forensic record was not confirmed on the report row " +
-                "— the sandbox ran, but we cannot confirm the result was persisted. Not claiming a sandbox run.",
+                "The sandbox ran, but the forensic record never landed on the report row. " +
+                "This scan is not a confirmed sandbox run.",
             });
           }
           finish();
@@ -536,6 +621,15 @@ export async function POST(req: Request): Promise<Response> {
         return true;
       };
 
+      // Record the row for observability + granular stage tracking UNCONDITIONALLY
+      // — not just on the queue path. A real bug this fixes: the container's
+      // report_stage() calls (set_stage) target this row by token, but when a
+      // slot was immediately free (the common case, no queueing needed) this
+      // row was never created, so every set_stage/get_stage call silently
+      // updated/read zero rows and the granular timeline never advanced past
+      // the static "Escalate" line — confirmed live before this fix.
+      void enqueueRow({ owner, repo, sha, token: slug });
+
       // ── Fast path: a slot is free AND nobody is ahead in line → run at once. ──
       // Strict FIFO: only skip the queue when the in-process queue is empty, so a
       // just-arrived request can never jump a waiter that is mid-poll for a slot.
@@ -553,10 +647,9 @@ export async function POST(req: Request): Promise<Response> {
       // ── Queue path: both slots busy (or someone is already waiting). Enqueue,
       // keep the stream OPEN, emit an honest position/wait line, and poll until we
       // become the FIFO head with a free slot — or the max-wait deadline elapses. ──
+      // (The observability row was already recorded unconditionally above.)
       const startedAt = Date.now();
       deepScanQueue.enqueue(slug);
-      // Record the queued row for observability (best-effort; FIFO is in-process).
-      void enqueueRow({ owner, repo, sha, token: slug });
 
       // Emit the current "Queued — position N of M, ~X min" line. Prefers the DB
       // position (authoritative, shared) but falls back to the in-process standing

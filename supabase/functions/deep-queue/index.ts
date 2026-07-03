@@ -155,16 +155,46 @@ export async function handler(req: Request): Promise<Response> {
     return jsonResponse({ ok: true, ahead, waiting_total: waitingTotal });
   }
 
-  // op === "status"
-  const { data, error } = await db.rpc("deep_queue_set_status", {
-    p_token: q.token,
-    p_status: q.status,
-  });
-  if (error) {
-    console.error("deep_queue_set_status failed:", error.message);
-    return jsonResponse({ error: "Status update failed" }, 500);
+  if (q.op === "status") {
+    const { data, error } = await db.rpc("deep_queue_set_status", {
+      p_token: q.token,
+      p_status: q.status,
+    });
+    if (error) {
+      console.error("deep_queue_set_status failed:", error.message);
+      return jsonResponse({ error: "Status update failed" }, 500);
+    }
+    return jsonResponse({ ok: true, updated: data === true });
   }
-  return jsonResponse({ ok: true, updated: data === true });
+
+  if (q.op === "set_stage") {
+    // Called by the Cloud Run execution's own entrypoint — real, granular
+    // progress markers (see supabase/migrations/20260703000001_deep_scan_queue_stage.sql).
+    const { data, error } = await db.rpc("deep_queue_set_stage", {
+      p_token: q.token,
+      p_stage: q.stage,
+      p_detail: q.detail,
+    });
+    if (error) {
+      console.error("deep_queue_set_stage failed:", error.message);
+      return jsonResponse({ error: "Stage update failed" }, 500);
+    }
+    return jsonResponse({ ok: true, updated: data === true });
+  }
+
+  // op === "get_stage" — /api/deep's polling read during the detonation wait.
+  const { data, error } = await db.rpc("deep_queue_get_stage", { p_token: q.token });
+  if (error) {
+    console.error("deep_queue_get_stage failed:", error.message);
+    return jsonResponse({ error: "Stage lookup failed" }, 500);
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  return jsonResponse({
+    ok: true,
+    stage: row?.current_stage ?? null,
+    detail: row?.current_stage_detail ?? null,
+    updated_at: row?.updated_at ?? null,
+  });
 }
 
 Deno.serve((req) =>

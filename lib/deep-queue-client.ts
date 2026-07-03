@@ -87,3 +87,27 @@ export async function fetchPosition(token: string): Promise<QueuePosition | null
 export async function setStatus(token: string, status: QueueStatus): Promise<void> {
   await post({ op: "status", token, status });
 }
+
+/** The real, granular progress marker read back from the DB (or null fields
+ * when the execution hasn't reported one yet). */
+export interface QueueStage {
+  stage: string | null;
+  detail: string | null;
+  updatedAt: string | null;
+}
+
+/**
+ * Read this token's live stage marker — the granular processing-timeline
+ * feature's polling read, called from /api/deep DURING the detonation wait
+ * (not just after). Never throws; a DB hiccup just means one missed tick, the
+ * next poll tries again.
+ */
+export async function fetchStage(token: string): Promise<QueueStage | null> {
+  const data = await post({ op: "get_stage", token });
+  if (!data) return null;
+  return {
+    stage: typeof data.stage === "string" ? data.stage : null,
+    detail: typeof data.detail === "string" ? data.detail : null,
+    updatedAt: typeof data.updated_at === "string" ? data.updated_at : null,
+  };
+}
