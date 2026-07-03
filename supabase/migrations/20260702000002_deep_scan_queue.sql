@@ -3,11 +3,14 @@
 -- Migration: 20260702000002_deep_scan_queue.sql
 --
 -- WHY THIS EXISTS:
---   /api/deep detonates unknown repos on ONE warm sandbox host, capped at
---   MAX_CONCURRENT=2 simultaneous detonations (the host's 4-vCPU budget). Before
---   this change a 3rd concurrent request was FLATLY rejected with a 429 and simply
---   dropped — the caller had to hand-retry. That is the honesty gap this closes:
---   a 3rd request now QUEUES and waits its turn instead of vanishing.
+--   /api/deep detonates unknown repos as Cloud Run Job executions, capped at
+--   MAX_CONCURRENT simultaneous detonations (the real bottleneck is the single
+--   shared NVA gateway VM every execution's egress routes through, not the
+--   detonation compute itself — see docs/INFRASTRUCTURE.md §8b for the real,
+--   measured concurrency proof this cap is tuned against). Before this change
+--   a request over the cap was FLATLY rejected with a 429 and simply dropped —
+--   the caller had to hand-retry. That is the honesty gap this closes: an
+--   over-cap request now QUEUES and waits its turn instead of vanishing.
 --
 --   This table is the OBSERVABILITY + FIFO-ORDERING record for that queue. It is
 --   NOT the slot-locking mechanism: /api/deep runs in a single local controller

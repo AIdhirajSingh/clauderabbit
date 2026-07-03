@@ -7,7 +7,7 @@
 
 ## 1. Product definition
 
-Claude Rabbit is a free web tool. The first scan is free with no login and no ad. A user pastes any public GitHub repo, fork, or dependency. The system analyzes it — reading the code, checking reputation, and *running it in a sandbox when warranted* — and returns a single 0–100 safety score with a plain-language report. The report is public, permanently hosted at `/owner/repo`, shareable, and embeddable as a trust badge. After the first free scan, login is required to continue, and a rewarded ad gates each further result (fresh or cached).
+Claude Rabbit is a free web tool. Scanning is free and unlimited, with no login required and no ads — a deliberate, settled product decision (a real, reviewed commit removed an earlier login-wall-plus-demo-ad gate after it was recognized as fake scaffolding, not a real integration, contradicting the product's no-fabricated-data rail). A user pastes any public GitHub repo, fork, or dependency. The system analyzes it — reading the code, checking reputation, and *running it in a sandbox when warranted* — and returns a single 0–100 safety score with a plain-language report. The report is public, permanently hosted at `/owner/repo`, shareable, and embeddable as a trust badge. Signing in only saves scan history and attributes it to the growing public database — it never gates a scan or a result.
 
 **The wedge:** every other tool (Socket, static scanners, the free repo-checkers) only *reads* code. We run it. That is the one thing nobody ships to the individual developer, and it is the only feature we protect at all costs.
 
@@ -20,12 +20,12 @@ Claude Rabbit is a free web tool. The first scan is free with no login and no ad
 ## 2. Goals & non-goals (v1)
 
 **Goals**
-- Paste-a-URL → fast safety verdict. First scan free, no login, no ad; login required after that.
+- Paste-a-URL → fast safety verdict. Free and unlimited, no login, no ad, ever.
 - Two-speed analysis: cheap static + reputation read for most repos, dynamic sandbox execution for the suspicious minority.
 - Public, SEO-indexed report per repo state, with a one-click trust badge.
-- Operationally self-sustaining on ads alone (one rewarded ad gates each result after the free first scan), even at zero cache, via the escalation gate.
+- **No monetization currently shipped.** An earlier ad-gated revenue model (§below) was built, then removed as fake scaffolding — see the note in Unit 18 / `docs/INFRASTRUCTURE.md` §9 for the real, current gap this leaves in "self-sustaining without debt," and CLAUDE.md for the standing decision that free-and-unlimited wins over a fabricated ad gate until a real, honest monetization mechanism is designed.
 - Honest verdicts that never state a bare "Safe."
-- Simple login plus a dashboard (scan history, profile, stats) for returning users after the first scan.
+- Simple, optional login plus a dashboard (scan history, profile, stats) for returning users — never required to see a report.
 
 **Non-goals (not in v1 — do not build)**
 - No code-quality / CodeRabbit-style review, system-design audit, or refactoring.
@@ -64,10 +64,10 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
                           confident clean → SHIP VERDICT                  │
                                    ▼ suspicious / "can't tell"            │
         ┌──────────────────────── DEEP PATH (~5%) ─────────────────────────┐
-        │  6. Dispatch to the warm sandbox host (queue if both slots busy) │
+        │  6. Trigger a fresh Cloud Run Job execution (queue if slots busy) │
         │  7. OpenCode harness + Kimi K2.7 agent(s)/swarm:                  │
         │       clone → build → run → adversarial input → observe behavior  │
-        │  8. Reset: destroy the microVM, reimage to square-1 (abuse protect)│
+        │  8. Reset: the execution is destroyed, never reused (abuse protect)│
         └───────────────────────────────┬──────────────────────────────────┘
                                          ▼
                        ┌───────────────────────────┐
@@ -84,7 +84,7 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 **Web layer (Next.js).** Homepage with the global input field, live activity feed, viral repos, and the dangerous-repos leaderboard. Server-rendered `/owner/repo` report pages (the SEO surface). API routes orchestrate scans and serve cached reports. URL trick: swapping the domain on any GitHub URL pulls up that repo's report.
 
-**Orchestrator (Next.js API route + queue).** Receives a scan request, runs the cache check, drives the fast path, evaluates the escalation gate, and dispatches deep scans to the single warm sandbox host — queuing honestly (real FIFO, live position/wait, honest timeout) when both detonation slots are busy. Returns the blended verdict.
+**Orchestrator (Next.js API route + queue).** Receives a scan request, runs the cache check, drives the fast path, evaluates the escalation gate, and triggers deep scans as Cloud Run Job executions — queuing honestly (real FIFO, live position/wait, honest timeout) when all detonation slots are busy. Returns the blended verdict.
 
 **Static scan layer.** Off-the-shelf scanners run in the cheap environment: ClamAV (signatures), Semgrep (patterns), YARA (custom rules), plus secret/install-hook detection. Output: flagged files/regions + signal, fed to the read model. Near-zero token cost.
 
@@ -94,7 +94,7 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 **Escalation gate.** A rule + confidence threshold. Escalates on: obfuscation, unexplained network calls, credential/secret access, install scripts doing too much, brand-new owner, or low read-confidence. Suspicion-triggered, not time-triggered. Tuned over time — explicitly half measured, half judgment.
 
-**Sandbox (deep path).** A **single always-on Google Cloud VM** (`cr-host-build`, n2-standard-4), pre-loaded with the common runtimes (Node, Python, C/C++), a real terminal, and the agent harness. `app/api/deep` dispatches directly to it over `gcloud compute ssh`, capped at 2 simultaneous detonation slots (its 4-vCPU budget). A 3rd concurrent request no longer gets a flat 429: it joins a real FIFO queue (`lib/deep-queue.ts`, backed by a `deep_scan_queue` table + `deep-queue` edge function for observability and honest position reporting), sees a live "position N of M, ~X min" estimate, and is admitted the instant a slot frees, or times out honestly after 8 minutes. An on-demand golden-image + Managed Instance Group standby-pool architecture was built and benchmarked this session as a scale-out alternative but was reverted after real measurements showed its activation latency (21–88s to wake a host) didn't deliver the near-instant availability the product actually needs; it remains a documented future option if real traffic ever shows the 2-slot ceiling is the true bottleneck. Network egress locked down, no real credentials present, resources capped. **Reimaged to square-1 after every scan** — this reset is the abuse protection. Full lifecycle, the queue design, and the pool's preserved measurements are in `docs/INFRASTRUCTURE.md` §8b.
+**Sandbox (deep path).** Each detonation is its own ephemeral **Cloud Run Job execution** (`cr-detonation`, Gen2), pre-loaded with the common runtimes (Node, Python, C/C++), a real terminal, and the agent harness — no persistent per-scan host. `app/api/deep` triggers it directly via the Cloud Run API. Every execution's network egress is forced through one small, shared, persistent NVA gateway VM (`cr-forge-gateway`) that plays the deceptive-sinkhole role a Cloud Run container can't play for itself (no low-level network-namespace control inside the container on any Cloud Run generation). Concurrency is capped at `MAX_CONCURRENT` simultaneous detonations, tuned to what that shared gateway can handle — proven live at 3 concurrent detonations with headroom to spare, not the platform's own much higher execution quota. A request past the cap no longer gets a flat 429: it joins a real FIFO queue (`lib/deep-queue.ts`, backed by a `deep_scan_queue` table + `deep-queue` edge function for observability and honest position reporting), sees a live "position N of M, ~X min" estimate, and is admitted the instant a slot frees, or times out honestly after 8 minutes. An earlier single-always-on-host architecture, and before that an on-demand golden-image + Managed Instance Group standby-pool alternative, were both built, measured, and superseded by this one. Network egress locked down, no real credentials present, resources capped. **Every execution is fresh and disposable** — this reset is the abuse protection. Full lifecycle, the queue design, and the real concurrency proof are in `docs/INFRASTRUCTURE.md` §8b.
 
 **Dynamic brain.** **Kimi K2.7 Code** (open-weight, latest) drives the sandbox agents through OpenCode. Parallelism (swarm-like) comes from running multiple OpenCode sessions, one terminal each. Bulk reasoning can route to DeepSeek to control output-token cost; K2.7 handles final adjudication.
 
@@ -102,7 +102,7 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 **Storage & cache.** Reports persisted and keyed by **commit SHA**. Cache hit on unchanged repos → instant serve. On change → pull git diff, update only the affected analysis. Reputation cached by owner.
 
-**Ads.** AdMob + mediation. The first scan is free with no ad and no login. After that, login is required and one rewarded video ad gates each result — fresh scans and cached report views alike. Cached views cost us ~$0 in compute but still carry the ad after the first scan, making them near-pure margin. Ads are the primary, sole v1 revenue model.
+**Monetization: none currently shipped.** The originally planned AdMob-gated model (first scan free, login + a rewarded ad gating every result after) was built, then deliberately removed in a real, reviewed commit as fake scaffolding — a demo "ad" with a "Skip ad (demo)" button, not a real integration — because it and an accompanying login wall contradicted the product's no-fabricated-data rail. Scanning is free and unlimited with no monetization mechanism in its place. This is a real, open gap against the "self-sustaining without debt" goal, not a solved problem — see `docs/INFRASTRUCTURE.md` §9 and the cost/unit-economics doc for the honest current numbers.
 
 ---
 
@@ -110,11 +110,11 @@ The system is a **two-speed funnel**. ~95% of scans resolve on the fast path; ~5
 
 1. **Submit.** User pastes URL. Next.js API route receives `{owner, repo, ref}`.
 2. **Resolve + cache check.** Resolve to a commit SHA. If a report exists for that SHA and the repo is unchanged → return it instantly. Done.
-3. **Rate-limit / ad gate.** The first scan is free with no login or ad. After that, each result (fresh or cached) requires login and the rewarded ad to complete, and passes a per-user/IP rate limit (generous; abuse protection, not a paywall).
+3. **Scanning is free and unlimited, sign-in optional.** No login wall and no ad ever gate a scan or a result — a deliberate, settled product decision (an earlier login-wall-plus-demo-ad gate was removed as fake/fabricated scaffolding that contradicted the product's no-fabricated-data rail). Signing in only saves scan history and attributes it to the growing public database; it is never required to see a report.
 4. **Fast path.** Clone metadata + run static scanners → flagged regions. In parallel, reputation lookup (owner-cached). DeepSeek reads flagged regions, comprehends, blends, emits score + confidence.
 5. **Gate.** Confident clean → go to step 8. Suspicious / low-confidence → escalate.
-6. **Deep path.** Dispatch to the single warm sandbox host (queue if both detonation slots are busy). OpenCode + K2.7 clone, build, run, probe with adversarial/synthetic input, observe behavior. Capped output per agent; right-sized agent count.
-7. **Reset.** Reimage the microVM to square-1 and destroy it; the host itself stays warm for the next detonation.
+6. **Deep path.** Trigger a fresh Cloud Run Job execution (queue if all detonation slots are busy). OpenCode + K2.7 clone, build, run, probe with adversarial/synthetic input, observe behavior. Capped output per agent; right-sized agent count.
+7. **Reset.** The Cloud Run execution is destroyed and never reused — no host state to reimage, since there is no persistent per-scan host anymore.
 8. **Blend & emit.** Combine code comprehension, runtime behavior, static findings, reputation, owner history → one 0–100 score and the structured findings that drive the report (reputation vs code/behavior signals separated; never a bare "Safe").
 9. **Render & persist.** Generate the report on the frontend from the `design.md` spec (boilerplate cached, per-repo parts fresh). Persist keyed by SHA. Publish `/owner/repo`. Update homepage feed / leaderboard if relevant.
 
@@ -131,7 +131,7 @@ The **current shipped** model layer is all-Gemini via the Vertex AI backend, sit
 | Reputation search | Vertex-side lookup | Brave Search API (owner-cached) | owner history, account age, stars, sentiment |
 | Deep / agent brain | **`gemini-3.5-flash` via Vertex** | Kimi K2.7 Code | drives the sandbox agents |
 | Agent harness | agentic analyzer (explore + sinkhole detonate) | OpenCode (MIT) swarm | knowledge-graph explore, then detonate chosen files |
-| Sandbox | **Google Cloud — single always-on host (`cr-host-build`) + real FIFO queue** | — | reset every scan; cap 2 concurrent detonations, 3rd queues honestly; see §8b of INFRASTRUCTURE |
+| Sandbox | **Google Cloud — Cloud Run Job executions + shared NVA gateway + real FIFO queue** | — | fresh disposable execution every scan; cap 3 concurrent detonations (measured against the shared gateway, not the platform quota), over-cap queues honestly; see §8b of INFRASTRUCTURE |
 | Static signals | in-house extractor (obfuscation, install-hook, cred-access, secret, typosquat, network) with a doc-vs-code distinction | ClamAV/Semgrep/YARA | near-zero cost; prose mentions never scored as code |
 | Scoring | **code-computed deterministic formula** (`_shared/scoring.ts`) | — | the model feeds signals; code decides the cited 0–100 |
 | Storage/cache | keyed by commit SHA; reputation by owner | — | the survival mechanism |
@@ -143,7 +143,7 @@ The model/search seam is a single config switch; the orchestration around it doe
 
 ## 6. Unit economics (the constraint v1 must satisfy)
 
-All prices verified June 2026. The model must be operationally profitable on ads **at zero cache**, worst case.
+All prices verified June 2026, modeled against the TARGET stack (DeepSeek/Brave/K2.7), not the currently-shipped Gemini-via-Vertex placeholder or the Cloud Run detonation substrate — see Unit 18 / the cost doc for real, currently-measured numbers. This section was originally written to show the model could be operationally profitable on ads **at zero cache**, worst case — that ad revenue mechanism has since been removed (see the Ads note above), so the ad-covers-cost conclusion below is a historical target-model argument, not a claim about current revenue (there currently is none).
 
 **Fast-path scan (~95% of scans):** DeepSeek read (~$0.003) + 2 Brave queries (~$0.010) ≈ **$0.013**.
 
@@ -151,9 +151,9 @@ All prices verified June 2026. The model must be operationally profitable on ads
 
 **Blended cost/scan** (95% × $0.013 + 5% × $0.067) ≈ **$0.016**.
 
-**Revenue:** one rewarded video ad ≈ $0.008–0.025 (eCPM $8–25). At blended $0.016/scan, **one rewarded ad covers a scan** at mid eCPM, ~2 ads at low eCPM. Cached report views cost ~$0 and carry ads as near-pure margin.
+**Revenue (historical target-model figure, not current):** one rewarded video ad ≈ $0.008–0.025 (eCPM $8–25). At blended $0.016/scan, one rewarded ad would have covered a scan at mid eCPM, ~2 ads at low eCPM. This ad mechanism does not exist in the shipped product (see the Ads note above) — there is currently no revenue offsetting scan cost.
 
-**Conclusion:** sustainable on ads alone **conditional on three disciplines** — (1) escalate rarely (~5%), (2) cap swarm output + right-size agent count, (3) route bulk reasoning to the cheap model. Lose any one and the deep scan balloons past what ads can cover.
+**Conclusion (historical target-model argument):** the target stack was projected sustainable on ads alone **conditional on three disciplines** — (1) escalate rarely (~5%), (2) cap swarm output + right-size agent count, (3) route bulk reasoning to the cheap model. Those cost-discipline levers remain real and worth holding regardless of monetization; the ad-revenue side of the argument no longer applies since ads were removed.
 
 **Survival levers, in priority order:**
 1. **Cache by SHA** — popular repos scanned once, served free thereafter. Turns virality from a cost into margin.
@@ -194,7 +194,7 @@ Point the hardest hours at these three. The rest is boring-on-purpose scaffold.
 - Sandbox builds-and-runs a meaningful share of real repos, isolated and reset every scan.
 - Reports are public at `/owner/repo`, exportable, with an embeddable badge.
 - Cache by SHA + owner-cache reputation are live.
-- First scan is free with no login or ad; after that, login plus one rewarded ad gates each result (fresh or cached).
+- Scanning is free and unlimited, no login or ad ever required; sign-in is optional and only saves history.
 - Verdicts never say a bare "Safe."
 - Homepage shows live scans, viral repos, and the dangerous-repos leaderboard.
 
