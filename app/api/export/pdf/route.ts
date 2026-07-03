@@ -83,6 +83,16 @@ export async function GET(req: Request): Promise<Response> {
     const page = await browser.newPage();
     await page.setViewport({ width: PDF_WIDTH_PX, height: 1080 });
 
+    // CRITICAL: page.pdf() renders using the "print" CSS media type by default,
+    // not "screen". app/globals.css has its OWN @media print block (kept for the
+    // harmless Ctrl+P fallback) that forces white paper / light-theme neutrals
+    // regardless of data-theme — exactly so a manual browser print looks good on
+    // paper. Left alone, that block would silently override our forced dark/light
+    // theme here too (both would render identically as forced-white "print"
+    // output). Force the "screen" media type so this render uses the REAL live
+    // page styles (the actual dark/light theme), not the print stylesheet.
+    await page.emulateMediaType("screen");
+
     // Force the theme BEFORE navigation finishes painting: seed localStorage via
     // an init script (runs before any page script, including the app's no-flash
     // theme-init script in <head>), matching the exact persistence key
