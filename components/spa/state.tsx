@@ -1302,12 +1302,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             toast("Cached report, served instantly. No compute.", bandColor(report.score));
           }
         })
-        .catch(() => {
-          // runScan never rejects, but guard anyway so a thrown error still
-          // surfaces the retryable failed state rather than hanging the loader.
+        .catch((err: unknown) => {
+          // This chain also covers the inline deep-run branch above (runDeepScan,
+          // fetchLatestReportRest, fetchBoardData) — those are documented as
+          // non-throwing but that contract isn't airtight, so surface whatever
+          // real message comes through instead of always discarding it.
           if (token !== liveScanToken.current) return;
           if (procTimer.current) clearInterval(procTimer.current);
-          patch({ failed: true, procError: null, procLive: false, procActiveCh: null });
+          const message = err instanceof Error ? err.message : typeof err === "string" ? err : null;
+          patch({ failed: true, procError: message, procLive: false, procActiveCh: null });
         });
     },
     [patch, toast, getSupabase],
@@ -1588,9 +1591,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return `${origin.replace(/\/$/, "")}/auth/callback`;
   }, []);
 
-  /** Start an OAuth provider — a full-page redirect; the callback finishes the session. */
+  /** Start an OAuth provider — a full-page redirect; the callback finishes the session.
+   * Google only — GitHub is not a configured Supabase provider in V1 (see
+   * signInWithGitHub below), so this never widens back to accept it. */
   const signInWithProvider = useCallback(
-    (provider: "google" | "github", label: string) => {
+    (provider: "google", label: string) => {
       const supabase = getSupabase();
       if (!supabase) {
         toast("Sign-in is not configured.", "var(--amber)");
@@ -1615,9 +1620,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => signInWithProvider("google", "Google"),
     [signInWithProvider],
   );
+  // GitHub is not a configured Supabase provider in V1 (Google + email only, per
+  // CLAUDE.md) — this must surface that clearly rather than attempting a real
+  // OAuth call that can only fail server-side with a generic, indistinguishable-
+  // from-a-network-blip error message.
   const signInWithGitHub = useCallback(
-    () => signInWithProvider("github", "GitHub"),
-    [signInWithProvider],
+    () => toast("GitHub sign-in isn't available yet — use Google or email below.", "var(--amber)"),
+    [toast],
   );
 
   /** Send an email magic-link / OTP. No provider creds needed; works on its own. */
@@ -1742,10 +1751,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const r = reportById(cur.activeRepoId, cur.liveReports);
     const path = r ? `${r.owner}/${r.name}` : "";
     // Copy the real public report URL (the SEO surface) when one is available.
+    // The window-less fallback is effectively unreachable (copyLink only ever
+    // runs from a live click), but it previously hardcoded the prod domain —
+    // use the same NEXT_PUBLIC_SITE_URL the SSR page and API routes read from,
+    // so it's honest about a non-prod deployment even in that dead path.
     const origin =
       typeof window !== "undefined" && window.location?.origin
         ? window.location.origin
-        : "https://claude-rabbit.dev";
+        : (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311");
     const url = `${origin}/${path}`;
     try {
       navigator.clipboard?.writeText(url);
