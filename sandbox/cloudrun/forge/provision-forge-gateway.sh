@@ -48,14 +48,21 @@ echo "nameserver 127.0.0.1" > /etc/resolv.conf
 REGDNS="8.8.8.8"
 {
   printf 'no-resolv\nno-hosts\nfilter-AAAA\ncache-size=4000\ndns-forward-max=300\naddress=/#/10.200.0.10\n'
-  # MUST mirror forge_addon.py's REGISTRY_RE + CONTROL_PLANE_RE + SOURCE_HOST_RE
-  # suffixes exactly — a domain the addon treats as verified-passthrough that
-  # dnsmasq does NOT forward would resolve to this gateway's own IP for BOTH the
-  # container and the addon's own verification resolve, a degenerate "match" that
-  # relays to a dead local port and breaks the build (same failure class the old
-  # per-run dnsmasq's comments already warned about).
+  # MUST mirror forge_addon.py's REGISTRY_RE + CONTROL_PLANE_RE + SOURCE_HOST_RE +
+  # OWN_VERTEX_RE suffixes exactly — a domain the addon treats as verified-
+  # passthrough-eligible that dnsmasq does NOT forward would resolve to this
+  # gateway's own IP for BOTH the container's real connection attempt AND the
+  # addon's own verification resolve — a degenerate "match" against a private,
+  # non-public IP that the addon's _is_public_ip guard then correctly refuses,
+  # so the passthrough can never succeed no matter how well the addon-side logic
+  # is written. CONFIRMED missing for aiplatform.googleapis.com on a real deployed
+  # run: the harness's own Vertex fallback calls got DNS-forged to this gateway's
+  # own IP, so even the project-scoped verified-IP check in forge_addon.py could
+  # never pass (there was no real IP to verify against) — same failure class the
+  # old per-run dnsmasq's comments already warned about for registries.
   for d in npmjs.org yarnpkg.com pypi.org pythonhosted.org crates.io \
-           debian.org ubuntu.com nodejs.org supabase.co github.com githubusercontent.com; do
+           debian.org ubuntu.com nodejs.org supabase.co github.com githubusercontent.com \
+           aiplatform.googleapis.com; do
     printf 'server=/%s/%s\n' "$d" "$REGDNS"
   done
   # Listen on BOTH loopback (this VM's own resolver, which /etc/resolv.conf above
