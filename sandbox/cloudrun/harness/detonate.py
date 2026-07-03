@@ -70,6 +70,20 @@ GATEWAY_IP = os.environ.get("CR_GATEWAY_IP", "10.200.0.10")
 PHASE_MARKER_PATH = "/cr-phase-marker"
 REPO_DIR = os.environ.get("CR_REPO_DIR", "/repo")
 OBSERVATION_PATH = os.environ.get("CR_OBSERVATION_PATH", "/tmp/cr-observation.json")
+# Real, granular progress reporting (the processing-timeline feature) — a
+# SEPARATE mechanism from emit_phase_marker above: that beacon goes through the
+# gateway's telemetry endpoint for FORENSICS phase-boundary classification;
+# this one reaches the deep-queue Supabase edge function directly (a verified
+# control-plane passthrough, same as attach-forensics) purely to report live
+# UI progress. Losing this beacon never affects the detonation or its
+# forensics — it's observability only, same contract as entrypoint.sh's own
+# report_stage() (bash) which calls the same op for the container/clone/agent
+# stages; this is the one stage transition (install-done -> run-start) that's
+# only knowable from inside detonate.py itself.
+CR_SCAN_ID = os.environ.get("CR_SCAN_ID", "")
+CR_SUPABASE_URL = os.environ.get("CR_SUPABASE_URL", "")
+CR_SUPABASE_ANON_KEY = os.environ.get("CR_SUPABASE_ANON_KEY", "")
+CR_DEEP_RUNNER_KEY = os.environ.get("CR_DEEP_RUNNER_KEY", "")
 # Build gets a realistic budget (real installs run postinstall hooks — that's where most
 # install-time malware fires); the run phase is shorter (beacon/exfil happen fast). The
 # budget is the TOTAL for the adaptive ladder (native install + any error-driven retry all
@@ -467,6 +481,29 @@ def emit(record: dict) -> None:
         pass
 
 
+def report_stage(stage: str, detail: str = "") -> None:
+    """Best-effort live progress report to /api/deep via the deep-queue edge
+    function's set_stage op (see supabase/functions/deep-queue). Never raises —
+    a lost report only means one missed UI tick, never a detonation impact."""
+    if not (CR_SCAN_ID and CR_SUPABASE_URL and CR_DEEP_RUNNER_KEY):
+        return
+    try:
+        headers = {"Content-Type": "application/json", "x-runner-key": CR_DEEP_RUNNER_KEY}
+        if CR_SUPABASE_ANON_KEY:
+            headers["apikey"] = CR_SUPABASE_ANON_KEY
+            headers["Authorization"] = f"Bearer {CR_SUPABASE_ANON_KEY}"
+        body = json.dumps({"op": "set_stage", "token": CR_SCAN_ID, "stage": stage, "detail": detail}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{CR_SUPABASE_URL.rstrip('/')}/functions/v1/deep-queue",
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10).read(256)
+    except Exception:  # noqa: BLE001 — best effort, observability only
+        pass
+
+
 def emit_phase_marker(phase: str) -> None:
     """Beacon the install-end/run-start boundary to the gateway through the SAME
     telemetry-host convention the old guest used (`cr-harness.cr.internal`),
@@ -529,6 +566,7 @@ def main() -> int:
     # the host can tell a benign build-time dependency fetch apart from a genuine
     # run-phase network attempt (see emit_phase_marker + assemble-forensics.py).
     emit_phase_marker("run_start")
+    report_stage("running", f"executing the repo's start command (pm={package_manager or 'n/a'})")
     run = _run(run_cmd, RUN_TIMEOUT, "run", observe_syscalls=True) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
     # The strategy that actually built it (transparency: the report/forensics can say
