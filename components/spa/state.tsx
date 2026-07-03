@@ -577,6 +577,7 @@ export interface AppApi {
   signInWithEmail: (email: string) => void;
   logout: () => void;
   exportPDF: () => void;
+  exportMarkdown: () => void;
   copyLink: () => void;
   goDashboard: () => void;
   goProfile: () => void;
@@ -1646,16 +1647,85 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (supabase) void supabase.auth.signOut({ scope: "global" });
   }, [getSupabase, patch, toast]);
 
+  /**
+   * Download a same-origin export endpoint's response as a file, via a
+   * temporary blob-URL anchor. Shared by exportPDF/exportMarkdown so both real
+   * exports fail the same honest way: a non-OK response or network error
+   * toasts the actual problem, never a false-success claim.
+   */
+  const downloadExport = useCallback(
+    async (path: string, fallbackName: string, failureNoun: string) => {
+      if (typeof window === "undefined" || typeof document === "undefined") {
+        toast(`Exporting isn't available in this environment.`, "var(--amber)");
+        return;
+      }
+      try {
+        const res = await fetch(path);
+        if (!res.ok) {
+          let detail = "";
+          try {
+            const body = (await res.json()) as { error?: string };
+            detail = body?.error ? ` (${body.error})` : "";
+          } catch {
+            /* non-JSON error body; fall through with no extra detail */
+          }
+          toast(`Could not generate the ${failureNoun}${detail}.`, "var(--amber)");
+          return;
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get("content-disposition") ?? "";
+        const match = /filename="([^"]+)"/.exec(disposition);
+        const filename = match?.[1] ?? fallbackName;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch {
+        toast(`Could not generate the ${failureNoun} — a network error occurred.`, "var(--amber)");
+      }
+    },
+    [toast],
+  );
+
   const exportPDF = useCallback(() => {
-    // Honest export: open the browser's print dialog, where the user can
-    // "Save as PDF". This product never claims a success it did not perform —
-    // the old handler toasted "PDF report generated" while generating nothing.
-    if (typeof window === "undefined" || typeof window.print !== "function") {
-      toast("Saving to PDF isn't available in this browser.", "var(--amber)");
+    const cur = stateRef.current;
+    const r = reportById(cur.activeRepoId, cur.liveReports);
+    if (!r) {
+      toast("Open a report before exporting to PDF.", "var(--amber)");
       return;
     }
-    window.print();
-  }, [toast]);
+    // Real headless-browser render of the ACTUAL rendered report page (Task 1):
+    // this is no longer window.print() — the server launches a headless Chromium,
+    // navigates to the live report page, and returns a real single-page PDF.
+    // The theme param matches what is on screen right now, so the download looks
+    // exactly like what the user was looking at when they clicked PDF.
+    const params = new URLSearchParams({ owner: r.owner, repo: r.name, theme: cur.theme });
+    void downloadExport(
+      `/api/export/pdf?${params.toString()}`,
+      `${r.owner}-${r.name}-claude-rabbit-report.pdf`,
+      "PDF",
+    );
+  }, [downloadExport, toast]);
+
+  const exportMarkdown = useCallback(() => {
+    const cur = stateRef.current;
+    const r = reportById(cur.activeRepoId, cur.liveReports);
+    if (!r) {
+      toast("Open a report before exporting to Markdown.", "var(--amber)");
+      return;
+    }
+    const params = new URLSearchParams({ owner: r.owner, repo: r.name });
+    void downloadExport(
+      `/api/export/markdown?${params.toString()}`,
+      `${r.owner}-${r.name}-claude-rabbit-report.md`,
+      "Markdown file",
+    );
+  }, [downloadExport, toast]);
+
   const copyLink = useCallback(() => {
     const cur = stateRef.current;
     const r = reportById(cur.activeRepoId, cur.liveReports);
@@ -1994,6 +2064,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       signInWithEmail,
       logout,
       exportPDF,
+      exportMarkdown,
       copyLink,
       goDashboard,
       goProfile,
@@ -2049,6 +2120,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       signInWithEmail,
       logout,
       exportPDF,
+      exportMarkdown,
       copyLink,
       goDashboard,
       goProfile,
