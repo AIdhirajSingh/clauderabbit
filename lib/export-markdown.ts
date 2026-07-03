@@ -46,8 +46,13 @@ function heading(level: number, text: string): string {
 /**
  * Render a full Markdown report for the given `Report`. Pure — no I/O, no
  * React, safe to unit test directly and to call from a server route.
+ *
+ * `siteUrl` is the real origin the report is published at (the caller's own
+ * `NEXT_PUBLIC_SITE_URL`, e.g. `http://localhost:2311` in dev or the real
+ * production domain) — never hardcoded here, so the download is honest about
+ * where it actually lives regardless of which deployment served it.
  */
-export function reportToMarkdown(report: Report): string {
+export function reportToMarkdown(report: Report, siteUrl: string): string {
   const view = buildReportView(report);
   const lines: string[] = [];
 
@@ -287,7 +292,8 @@ export function reportToMarkdown(report: Report): string {
 
   lines.push("---");
   lines.push("");
-  lines.push(`_Auto-published at claude-rabbit.dev/${slug} · re-checked when the repo changes._`);
+  const origin = siteUrl.replace(/\/+$/, "").replace(/^https?:\/\//, "");
+  lines.push(`_Auto-published at ${origin}/${slug} · re-checked when the repo changes._`);
   lines.push("");
 
   return lines.join("\n");
