@@ -42,6 +42,7 @@ export const metadata: Metadata = {
   title: "Claude Rabbit",
   description:
     "Claude Rabbit is a free, open-source security product protecting the open-source community from malware. We clone any public GitHub repo into an isolated sandbox, run it, and return one honest safety score.",
+  alternates: { canonical: siteUrl },
 };
 
 /**
