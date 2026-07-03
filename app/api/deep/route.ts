@@ -127,11 +127,21 @@ const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 const SHA_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 
 // How many Cloud Run executions THIS controller will trigger at once. Cloud
-// Run itself can run many more executions in parallel (see Unit 16 / the real
-// concurrent-execution ceiling measured in docs/INFRASTRUCTURE.md) — this cap
-// is a deliberate, separately-tunable in-process throttle, not a substrate
-// limit. Enforced in-process (single Node controller, race-free by construction).
-const MAX_CONCURRENT = 2;
+// Run itself allows far more (a 1000-per-project-region default quota on
+// concurrent job executions — not the real constraint here). The actual
+// bottleneck is the single shared e2-small NVA gateway VM (cr-forge-gateway)
+// that ALL concurrent detonations route their egress through (mitmproxy +
+// dnsmasq + iptables, one small VM, not per-execution). Proven live (Unit 16,
+// docs/INFRASTRUCTURE.md): 3 genuinely concurrent Cloud Run detonations
+// (overlapping start/end timestamps, not serialized) completed cleanly, each
+// correctly isolated by its own Cloud-Run-assigned source IP
+// (10.200.0.192/.193/.194 in the proof run) — the gateway stayed at load
+// average ~0.02 with both cr-forge-mitm and cr-forge-api still active
+// afterward, well short of its real ceiling. This cap is a deliberate,
+// separately-tunable in-process throttle, not a substrate limit — raise it
+// again only after a fresh concurrency proof at the higher number, not by
+// guessing. Enforced in-process (single Node controller, race-free by construction).
+const MAX_CONCURRENT = 3;
 let inFlight = 0;
 
 // ── queue tuning (see lib/deep-queue.ts for the ordering/estimate/timeout math) ──
