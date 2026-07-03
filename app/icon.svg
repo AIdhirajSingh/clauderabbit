@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    path, circle { stroke: #221f1a; }
+    circle.pupil { fill: #221f1a; }
+    @media (prefers-color-scheme: dark) {
+      path, circle { stroke: #f4f1ea; }
+      circle.pupil { fill: #f4f1ea; }
+    }
+  </style>
+  <path
+    d="M10.2 14.5 C8.3 9.8 8.6 4.4 10.2 4 C11.8 3.6 13.1 8 13.3 12.3"
+    fill="none"
+    stroke-width="1.9"
+    stroke-linecap="round"
+  />
+  <path
+    d="M21.8 14.5 C23.7 9.8 23.4 4.4 21.8 4 C20.2 3.6 18.9 8 18.7 12.3"
+    fill="none"
+    stroke-width="1.9"
+    stroke-linecap="round"
+  />
+  <circle cx="16" cy="19.6" r="7" fill="none" stroke-width="1.9" />
+  <circle class="pupil" cx="16" cy="19.8" r="1.8" stroke="none" />
+</svg>

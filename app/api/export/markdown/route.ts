@@ -22,6 +22,9 @@ export const dynamic = "force-dynamic";
 // Same owner/repo segment charset used across the app (parse-repo.ts /
 // attach-forensics / /api/deep) — 1-100 chars of [A-Za-z0-9._-].
 const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
+// Same pattern as app/api/export/pdf/route.ts — never hardcode the published
+// domain; fall back to the real local dev origin.
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
 function isCleanSegment(v: string | null): v is string {
   return (
@@ -61,7 +64,7 @@ export async function GET(req: Request): Promise<Response> {
     return json({ error: `no report found for ${owner}/${repo}` }, 404);
   }
 
-  const markdown = reportToMarkdown(report);
+  const markdown = reportToMarkdown(report, SITE_URL);
   const filename = `${owner}-${repo}-claude-rabbit-report.md`;
 
   return new Response(markdown, {

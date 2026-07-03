@@ -38,8 +38,12 @@
   --line:rgba(255,255,255,0.08); --line2:rgba(255,255,255,0.13); --line3:rgba(255,255,255,0.22);
   /* --t4 lightened #7e7669 -> #9a917f so muted secondary text clears WCAG AA (4.5:1)
      on the dark surfaces it sits on (was 3.4-4.1; Lighthouse color-contrast). Still
-     clearly muted, and the t3 > t4 > t5 hierarchy is preserved. */
-  --t1:#f4f1ea; --t2:#d9d4ca; --t3:#a39c90; --t4:#9a917f; --t5:#574f44; --t6:#39322a;
+     clearly muted, and the t3 > t4 > t5 hierarchy is preserved.
+     --t5 lightened #574f44 -> #8d8577 for the same reason (real body text uses it —
+     footer copyright, login legal copy, "nothing was lost" retry copy — not just
+     decorative dividers): was 2.29:1, well under AA; #8d8577 clears 4.5:1 (5.07:1)
+     while staying dimmer than --t4 (5.93:1), so t5 is still the most muted tier. */
+  --t1:#f4f1ea; --t2:#d9d4ca; --t3:#a39c90; --t4:#9a917f; --t5:#8d8577; --t6:#39322a;
   --ink:#f4f1ea; --ink-fg:#1a1714; --inkhi:rgba(255,255,255,0.5);
   --green:oklch(0.80 0.14 158); --green-g:oklch(0.80 0.14 158 / 0.40); --green-t:oklch(0.80 0.14 158 / 0.13);
   --blue:oklch(0.74 0.11 232); --blue-g:oklch(0.74 0.11 232 / 0.40); --blue-t:oklch(0.74 0.11 232 / 0.13);
