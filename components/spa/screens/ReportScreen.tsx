@@ -5,8 +5,12 @@
  * `ReportBody` (`components/spa/components/ReportBody.tsx`). The body markup is
  * the faithful port of `design-source/Claude Rabbit.dc.html` lines ~537–725;
  * this file supplies the interactive chrome the SPA needs (the back control when
- * logged out, the PDF + copy-link actions, and the View-full-logs button that
- * opens the logs overlay) and renders the SAME body the public server page does.
+ * logged out, the Markdown + PDF + copy-link actions, and the View-full-logs
+ * button that opens the logs overlay) and renders the SAME body the public
+ * server page does. PDF export (`app.exportPDF`) hits `/api/export/pdf`, a real
+ * headless-browser render of the actual report page — not `window.print()`.
+ * Markdown export (`app.exportMarkdown`) hits `/api/export/markdown`, a pure
+ * server-side render of the same report data via `lib/export-markdown.ts`.
  *
  * The two signal panels are kept visually and structurally distinct per the
  * design rule that reputation and code/behavior signals never blur together —
@@ -119,6 +123,24 @@ export function ReportScreen() {
           </svg>
           Open on GitHub
         </a>
+        <button
+          onClick={app.exportMarkdown}
+          className={styles.exportBtn}
+          style={{
+            background: "var(--glass)",
+            backdropFilter: "blur(16px)",
+            border: "1px solid var(--line2)",
+            color: "var(--t3)",
+            fontSize: 12.5,
+            padding: "9px 14px",
+            borderRadius: 11,
+            cursor: "pointer",
+            boxShadow: "var(--shadow-sm)",
+            transition: "all .16s var(--ease)",
+          }}
+        >
+          Markdown
+        </button>
         <button
           onClick={app.exportPDF}
           className={styles.exportBtn}

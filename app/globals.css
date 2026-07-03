@@ -91,8 +91,13 @@ input,button,textarea{ font-family:inherit; }
 @media (prefers-reduced-motion:reduce){ .reveal{ transition:opacity .4s ease; transform:none; } *{ animation-duration:.001ms !important; } }
 
 /* ---------------------------------------------------------------------------
- * PRINT — Save-as-PDF of a report (the report "PDF" button calls window.print).
- * On-screen appearance is untouched; these rules apply ONLY when printing.
+ * PRINT — fallback stylesheet for the browser's native Ctrl+P / Save-as-PDF,
+ * kept for manual printing (e.g. a user's own browser print shortcut). This is
+ * NOT the report "PDF" button anymore: that button now calls
+ * `/api/export/pdf`, a real headless-browser render of the actual report page
+ * (see `app/api/export/pdf/route.ts`), which produces one continuous pageless
+ * PDF rather than relying on the browser's print-to-PDF flow. These rules only
+ * apply when the page is printed directly (e.g. Ctrl+P), harmlessly.
  * The report body tags its root with data-print="report"; its interactive chrome
  * (the action bar, the logs CTA) is tagged data-print="hide". We drop the SPA
  * shell (decorative background, sidebar, toast, logs overlay), force the light
