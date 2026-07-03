@@ -74,6 +74,23 @@ REGISTRY_RE = re.compile(
 # untrusted repo's alike). Verified-IP passthrough, same discipline as a registry.
 CONTROL_PLANE_RE = re.compile(r"(^|\.)supabase\.co$")
 
+# Source hosting: the harness's OWN `git clone` of the scanned repo (entrypoint.sh,
+# BEFORE any untrusted code ever runs) also transits this same forced-egress path —
+# confirmed by a real deployed run: without this, the clone's info/refs + HEAD
+# requests to github.com were forged like any other non-allowlisted host, and a
+# forged git-smart-HTTP response cannot deliver real repository content. That
+# defeats the product's actual point ("we run it for real") for every scan, not an
+# edge case — so this MUST be a genuine, verified-IP passthrough, same discipline
+# as a registry. codeload.github.com / api.github.com / raw+objects.githubusercontent.com
+# all match by suffix. TRADE-OFF (accepted, documented): assemble-forensics.py's
+# existing supply-chain-caution classification (SOFTWARE_DISTRIBUTION_HOSTS) only
+# reads FORGED "http_request" records — a real passthrough here means a build
+# script's OWN later fetch to github.com (e.g. a postinstall pulling a release
+# tarball) is no longer visible as that caution signal either. Correctness of the
+# harness's own clone (every scan) outweighs that secondary visibility signal
+# (some scans); revisit if that signal turns out to matter in practice.
+SOURCE_HOST_RE = re.compile(r"(^|\.)(github\.com|githubusercontent\.com)$")
+
 # Forged bodies. The forge must answer in a shape the CONSUMER can use so the install
 # COMPLETES — a JSON success piped into `bash` is a syntax error that kills the install
 # (clawdcursor's case), so we pick by consumer. The real remote payload is NEVER fetched;
@@ -95,6 +112,7 @@ JSON_OK = b'{"status":"ok","ok":true,"success":true}'
 # an attacker IP will not be in the set, so it is refused.
 _REGISTRY_IP_CACHE: dict[str, set[str]] = {}
 _CONTROL_IP_CACHE: dict[str, set[str]] = {}
+_SOURCE_IP_CACHE: dict[str, set[str]] = {}
 
 
 def _is_public_ip(ip: str) -> bool:
@@ -146,6 +164,10 @@ def _is_registry_ip(sni: str, dest_ip: str) -> bool:
 
 def _is_control_plane_ip(sni: str, dest_ip: str) -> bool:
     return _is_verified_ip(_CONTROL_IP_CACHE, sni, dest_ip)
+
+
+def _is_source_host_ip(sni: str, dest_ip: str) -> bool:
+    return _is_verified_ip(_SOURCE_IP_CACHE, sni, dest_ip)
 
 
 def _b64(raw: bytes | None) -> str:
@@ -223,6 +245,12 @@ class Forge:
                 _emit({"kind": "control_plane_passthrough_raw", "host": sni, "dest": dest_ip, "source_ip": src})
             else:
                 _emit({"kind": "control_plane_sni_spoof_refused", "host": sni, "dest": dest_ip, "source_ip": src})
+        elif SOURCE_HOST_RE.search(sni):
+            if dest_ip and _is_source_host_ip(sni, dest_ip):
+                data.ignore_connection = True
+                _emit({"kind": "source_host_passthrough_raw", "host": sni, "dest": dest_ip, "source_ip": src})
+            else:
+                _emit({"kind": "source_host_sni_spoof_refused", "host": sni, "dest": dest_ip, "source_ip": src})
 
     @staticmethod
     def _dest_ip(data: tls.ClientHelloData) -> str | None:
@@ -249,6 +277,7 @@ class Forge:
         for label, rx, verifier in (
             ("registry", REGISTRY_RE, _is_registry_ip),
             ("control_plane", CONTROL_PLANE_RE, _is_control_plane_ip),
+            ("source_host", SOURCE_HOST_RE, _is_source_host_ip),
         ):
             if rx.search(intended or ""):
                 dest_ip = None
@@ -308,7 +337,7 @@ class Forge:
         if flow.response is not None:
             sni = getattr(flow.client_conn, "sni", None)
             host = sni or flow.request.pretty_host or ""
-            if REGISTRY_RE.search(host) or CONTROL_PLANE_RE.search(host):
+            if REGISTRY_RE.search(host) or CONTROL_PLANE_RE.search(host) or SOURCE_HOST_RE.search(host):
                 return
             _emit(
                 {
