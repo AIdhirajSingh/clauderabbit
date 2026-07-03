@@ -119,6 +119,11 @@ interface State {
   procDeep: boolean;
   procRepoId: string | null;
   failed: boolean;
+  /** The real reason the scan failed (repo not found, rate limit, timeout, ...),
+   * shown verbatim on the failed-processing card. Null falls back to a generic
+   * message — never a hardcoded specific claim like "timed out" for a failure
+   * that wasn't actually a timeout. */
+  procError: string | null;
   toast: string | null;
   toastColor: string;
   profileName: string;
@@ -199,6 +204,7 @@ const initialState: State = {
   procDeep: false,
   procRepoId: null,
   failed: false,
+  procError: null,
   toast: null,
   toastColor: "var(--t3)",
   // Identity is populated from the real Supabase session on sign-in (see the
@@ -562,7 +568,7 @@ export interface AppApi {
   onFocus: () => void;
   onBlur: () => void;
   noop: (e: React.MouseEvent) => void;
-  failProcessing: () => void;
+  failProcessing: (message?: string) => void;
   retryScan: () => void;
   openReport: (id: string, from?: Screen) => void;
   /** Load the active report on demand when it isn't in the store (never blank). */
@@ -1066,6 +1072,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         procStep: 0,
         procDeep: repo.deep,
         failed: false,
+        procError: null,
       });
       if (procTimer.current) clearInterval(procTimer.current);
       const total = repo.logs.length;
@@ -1121,6 +1128,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         procStep: 0,
         procDeep: false,
         failed: false,
+        procError: null,
         procStages: [],
         // A non-null placeholder so the timeline shows a single live spinner
         // immediately — a fast cache hit (no streamed stages) never flashes a
@@ -1176,7 +1184,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!result.ok) {
             // Clear live-scan state so the failed card never sits on stale
             // streaming flags (procLive / procActiveCh) until the user retries.
-            patch({ failed: true, procLive: false, procActiveCh: null });
+            patch({ failed: true, procError: result.error, procLive: false, procActiveCh: null });
             return;
           }
           const report = result.report;
@@ -1299,7 +1307,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // surfaces the retryable failed state rather than hanging the loader.
           if (token !== liveScanToken.current) return;
           if (procTimer.current) clearInterval(procTimer.current);
-          patch({ failed: true, procLive: false, procActiveCh: null });
+          patch({ failed: true, procError: null, procLive: false, procActiveCh: null });
         });
     },
     [patch, toast, getSupabase],
@@ -1375,14 +1383,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     startLiveProcessing(owner, repo, undefined, from);
   }, [patch, resolveDemoId, startLiveProcessing, startProcessing, toast]);
 
-  const failProcessing = useCallback(() => {
-    if (procTimer.current) clearInterval(procTimer.current);
-    if (tailTimer.current) clearTimeout(tailTimer.current);
-    // Invalidate any in-flight live scan so a late resolution can't override
-    // the failed state the user just triggered.
-    liveScanToken.current++;
-    patch({ failed: true });
-  }, [patch]);
+  const failProcessing = useCallback(
+    (message?: string) => {
+      if (procTimer.current) clearInterval(procTimer.current);
+      if (tailTimer.current) clearTimeout(tailTimer.current);
+      // Invalidate any in-flight live scan so a late resolution can't override
+      // the failed state the user just triggered.
+      liveScanToken.current++;
+      patch({ failed: true, procError: message ?? null });
+    },
+    [patch],
+  );
 
   const retryScan = useCallback(() => {
     const cur = stateRef.current;
