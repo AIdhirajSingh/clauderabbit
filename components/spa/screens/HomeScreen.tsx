@@ -459,6 +459,69 @@ export function HomeScreen() {
         </div>
       </div>
 
+      {/* use it everywhere: MCP server + CLI */}
+      <div className="reveal" style={{ position: "relative", zIndex: 1, maxWidth: 1040, margin: "140px auto 0", padding: "0 24px" }}>
+        <div style={{ maxWidth: 620, marginBottom: 48 }}>
+          <h2 className="serif" style={{ fontSize: "clamp(32px,4.4vw,46px)", margin: "0 0 18px", color: "var(--t1)", lineHeight: 1.02, letterSpacing: "-0.01em" }}>
+            Use it everywhere you already work.
+          </h2>
+          <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
+            The web report is one surface. Claude Rabbit also ships as an MCP server and a CLI, so the same honest,
+            evidence-backed verdict is one call away &mdash; from an AI coding tool, a terminal, or a pre-install hook &mdash;
+            without ever leaving where you already are.
+          </p>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 18 }}>
+          {[
+            {
+              title: "MCP server",
+              body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. Two tools: scan a repo, or read back an existing cached report. No API key, no login.",
+              cmd: 'claude mcp add claude-rabbit -- npx claude-rabbit-mcp',
+            },
+            {
+              title: "CLI",
+              body: "Run the same fast-path scan from a terminal, or wire it in as an opt-in shell hook that checks a repo or package before npm install / pnpm install / git clone actually run. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
+              cmd: "npx claude-rabbit-cli scan owner/repo",
+            },
+          ].map((t) => (
+            <div
+              key={t.title}
+              className={styles.useCard}
+              style={{
+                border: "1px solid var(--line)",
+                borderRadius: 18,
+                padding: "28px 26px",
+                background: "var(--s1)",
+                transition: "border-color .22s var(--ease), transform .22s var(--ease), background .22s",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div style={{ fontSize: 17, fontWeight: 600, color: "var(--t1)", marginBottom: 9, letterSpacing: "-0.01em" }}>
+                {t.title}
+              </div>
+              <div style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, marginBottom: 18 }}>{t.body}</div>
+              <div
+                className="tnum"
+                style={{
+                  marginTop: "auto",
+                  fontSize: 13,
+                  color: "var(--t2)",
+                  background: "var(--s2)",
+                  border: "1px solid var(--line)",
+                  borderRadius: 9,
+                  padding: "10px 14px",
+                  overflowX: "auto",
+                  whiteSpace: "pre",
+                }}
+              >
+                {t.cmd}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* footer */}
       <footer style={{ position: "relative", zIndex: 1, marginTop: 150, borderTop: "1px solid var(--line)" }}>
         <div
