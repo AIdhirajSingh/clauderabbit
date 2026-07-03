@@ -124,6 +124,21 @@ if ! curl -fsS -m 15 -X POST "${GATEWAY_BASE}/register" \
 fi
 log "registered with gateway"
 
+# ── 1b) point DNS at the gateway BEFORE anything else resolves a name ─────────
+# RESTORES a property route-forcing alone does not give you: a genuinely
+# non-existent/sinkholed C2 domain fails DNS resolution locally before any
+# connection is even attempted, so a condition-gated sample goes silently
+# DORMANT — confirmed on a real deployed run (a beacon to a non-resolving
+# example domain never appeared in the gateway's capture at all). The gateway
+# now runs dnsmasq: real registries/control-plane/source hosts still resolve
+# to their REAL IPs (forwarded), everything else resolves to the gateway
+# itself, so a condition-gated sample's connection attempt actually happens
+# and the forced route + forge can intercept it. Set this early enough to
+# cover the clone below too, not just detonate.py.
+if ! printf 'nameserver %s\noptions timeout:2 attempts:2\n' "${GATEWAY_IP}" > /etc/resolv.conf 2>/tmp/cr-resolv.log; then
+  note_failure "could not write /etc/resolv.conf (see /tmp/cr-resolv.log); DNS stays on the container default, so a non-existent/sinkholed C2 domain may go undetected this run"
+fi
+
 # ── 2) fetch + trust the gateway's forged-TLS CA BEFORE running anything untrusted ──
 log "fetching gateway CA cert"
 CA_DEST=/usr/local/share/ca-certificates/cr-gateway-ca.crt
@@ -255,6 +270,7 @@ log "agentic exploration pass launched in background (pid ${AGENTIC_PID}), runni
 log "=== BUILD+RUN phase: installing deps + executing under strace, egress forced through the gateway route ==="
 export CR_REPO_DIR="$REPO_DIR"
 export CR_TELEMETRY_HOST="$GATEWAY_HOST"
+export CR_GATEWAY_IP="$GATEWAY_IP"
 export CR_BUILD_TIMEOUT="${CR_BUILD_TIMEOUT_S:-240}"
 export CR_RUN_TIMEOUT="${CR_RUN_TIMEOUT_S:-25}"
 export CR_OBSERVATION_PATH="$WORK/observation.json"
@@ -432,11 +448,24 @@ ATTACH_OK=0
 # too (plain --retry only retries on a set of response codes / connect
 # failures), and --http1.1 sidesteps any HTTP/2 negotiation edge case between
 # this container's curl and mitmproxy's raw ignore_connection relay.
-if curl -fsS -m 30 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 \
+#
+# Deliberately NOT using -f here: on a non-2xx response -f discards the
+# response BODY entirely, which is exactly the diagnostic info needed when
+# this fails (the real error reason from the gateway/function) — status is
+# checked explicitly via -w instead, and the body is always logged.
+ATTACH_HTTP_CODE=$(curl -sS -m 30 --http1.1 --retry 3 --retry-all-errors --retry-delay 2 \
+     -o /tmp/cr-attach-body.log -w "%{http_code}" \
      -X POST "${CR_SUPABASE_URL%/}/functions/v1/attach-forensics" \
-     "${ATTACH_HEADERS[@]}" --data-binary @"$PAYLOAD" >/tmp/cr-attach.log 2>&1; then
+     "${ATTACH_HEADERS[@]}" --data-binary @"$PAYLOAD" 2>/tmp/cr-attach.log)
+CURL_RC=$?
+{
+  echo "curl_exit=${CURL_RC} http_code=${ATTACH_HTTP_CODE}"
+  echo "--- response body ---"
+  cat /tmp/cr-attach-body.log 2>/dev/null
+} >> /tmp/cr-attach.log
+if [ "$CURL_RC" -eq 0 ] && [ "$ATTACH_HTTP_CODE" -ge 200 ] && [ "$ATTACH_HTTP_CODE" -lt 300 ]; then
   ATTACH_OK=1
-  log "forensics attached to report: $(cat /tmp/cr-attach.log)"
+  log "forensics attached to report: $(cat /tmp/cr-attach-body.log)"
 else
   note_failure "attach-forensics POST failed after retries (see /tmp/cr-attach.log): $(cat /tmp/cr-attach.log 2>/dev/null)"
 fi

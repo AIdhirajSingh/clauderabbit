@@ -49,6 +49,8 @@ Env:
   CR_BUILD_TIMEOUT      seconds for the adaptive install ladder (default 240)
   CR_OBSERVATION_PATH   where to write the local observation JSON (default
                         /tmp/cr-observation.json) — entrypoint.sh reads this
+  CR_GATEWAY_IP         the forge gateway's DNS + egress IP (default 10.200.0.10)
+                        — configure_egress() points /etc/resolv.conf at it
 """
 from __future__ import annotations
 
@@ -62,6 +64,7 @@ import time
 import urllib.request
 
 TELEMETRY_HOST = os.environ.get("CR_TELEMETRY_HOST", "cr-harness.cr.internal")
+GATEWAY_IP = os.environ.get("CR_GATEWAY_IP", "10.200.0.10")
 # A distinct path from the main telemetry POST so assemble-forensics.py can tell
 # the phase-boundary beacon apart from the full observation record at a glance.
 PHASE_MARKER_PATH = "/cr-phase-marker"
@@ -92,16 +95,29 @@ DECOYS = {**HIGH_VALUE, **TOOL_CONFIG}
 
 
 def configure_egress() -> None:
-    """NO-OP on Cloud Run (see the module docstring's ARCHITECTURE CHANGE note).
-    The old microVM guest rewrote /etc/resolv.conf to point DNS at a per-run
-    forge bridge IP; Cloud Run Gen2 containers get no CAP_NET_ADMIN and may not
-    even permit writing resolv.conf, and there is no per-run forge IP to point
-    at in this architecture — containment is enforced by a VPC-level custom
-    route that forces ALL egress (any destination, real DNS answer or not) to
-    the gateway. Kept as a callable (rather than deleted outright) so the call
-    site below needs no restructuring and so a future reader immediately sees
-    why nothing happens here."""
-    return
+    """REINSTATED (see module docstring for why the first cut made this a no-op,
+    and why that was wrong): route-based containment alone only catches malware
+    whose C2 domain actually resolves to SOME real IP. A genuinely non-existent
+    or sinkholed domain fails DNS resolution INSIDE the container before any
+    connection is even attempted — confirmed on a real deployed run: a beacon to
+    a non-resolving example C2 domain never appeared in the gateway's capture at
+    all, i.e. it went silently DORMANT, the exact failure mode this product
+    exists to prevent. The gateway now runs dnsmasq (answer-all-except-allowlist,
+    same discipline as the old per-run design, just centralized on the shared
+    gateway instead of a per-run instance) — pointing DNS at it makes every
+    domain resolvable to SOMETHING reachable, so a condition-gated sample's
+    connection attempt actually happens and the forced route + forge can
+    intercept it. Real registries/control-plane/source hosts still resolve to
+    their REAL IPs (dnsmasq forwards those), so containment for a genuinely
+    malicious real-IP C2 is unchanged — this only fixes the non-existent-domain
+    gap. Cloud Run containers get a writable, per-container /etc/resolv.conf
+    (no CAP_NET_ADMIN needed to write a plain file — confirmed by this actually
+    working on a real deployed execution)."""
+    try:
+        with open("/etc/resolv.conf", "w", encoding="utf-8") as f:
+            f.write(f"nameserver {GATEWAY_IP}\noptions timeout:2 attempts:2\n")
+    except OSError as e:
+        print(f"CR_HARNESS resolv.conf write failed: {e}", file=sys.stderr)
 
 
 def containment_probe() -> bool:
