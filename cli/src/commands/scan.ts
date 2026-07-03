@@ -3,8 +3,7 @@
  *
  * Resolves the target (owner/repo, GitHub URL, or npm package name), calls the
  * real Claude Rabbit API, and prints either a human report or the documented
- * `--json` structured object (consumed by the sibling Claude Code plugin's
- * PreToolUse hook and by agents).
+ * `--json` structured object (consumed by scripts and agents).
  */
 
 import { scanRepo } from "../lib/client.js";
