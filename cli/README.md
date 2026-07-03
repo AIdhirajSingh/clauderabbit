@@ -224,36 +224,6 @@ A successful scan object:
   (running the code is the point, not a caveat). This is the machine-readable form of the
   "never a bare Safe" rail.
 
-## Reconciliation with the Claude Code plugin
-
-The sibling Claude Code plugin (`plugins/claude-rabbit`) ships a `PreToolUse` hook
-(`scripts/pre-install-scan.sh`) that shells out to **`claude-rabbit scan <target> --json`** and
-parses fields from the stdout JSON. The plugin's expected field set is:
-`target`, `score`, `verdict`, `reportUrl`, `reputation`, `behavior`, `notVerified`.
-
-**This CLI's `--json` output provides every one of those fields at the top level**, so the
-plugin's existing extraction works as-is:
-
-| Plugin expects | This CLI emits | Match |
-|---|---|---|
-| `.target` | `target` (`"owner/repo"`) | ✅ exact |
-| `.score` | `score` (0–100) | ✅ exact |
-| `.verdict` | `verdict` (word) | ✅ exact |
-| `.reportUrl` | `reportUrl` | ✅ exact |
-| `.reputation` | `reputation` **(object: `owner`/`community`/`findings`)** | ✅ present; see note |
-| `.behavior` | `behavior` (array of code/behavior findings) | ✅ exact |
-| `.notVerified` | `notVerified` (array of strings) | ✅ exact |
-
-The one place to reconcile deliberately: `reputation` here is a **structured object** (owner +
-community + reputation-kind findings), not a flat string. That is the correct shape given the
-real `Report` type and the product's rule that reputation is a distinct, itemized signal — a
-flat string would lose the owner/community separation. The plugin's current hook only reads
-`.score`, `.verdict`, and `.reportUrl` via `jq` (it does not yet dereference `.reputation` or
-`.behavior`), so nothing breaks today; when the plugin starts surfacing those, it should read
-`reputation.owner` / `reputation.community` / `reputation.findings` and the `behavior` array
-rather than expecting flat strings. No contortion was applied on the CLI side to match a
-lossy guessed shape.
-
 ## What a scan does and does NOT prove
 
 Claude Rabbit is a two-speed system. The fast path (what `scan`/`report` call) runs on
