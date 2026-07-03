@@ -11,16 +11,17 @@ you on purpose. Everything else is done.
 
 ## What is already wired (nothing to do here)
 
-- Supabase project `mjvlczaytkhvsolnhhkz`: schema, RLS, the `scan` + `attach-forensics`
-  edge functions, and all secrets (`GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_*`, `GEMINI_*`,
-  `GITHUB_TOKEN`, `CR_DEEP_RUNNER_KEY`, …) are set server-side.
+- Supabase project `mjvlczaytkhvsolnhhkz`: schema, RLS, the `scan` + `attach-forensics` +
+  `deep-queue` edge functions, and all secrets (`GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_*`,
+  `GEMINI_*`, `GITHUB_TOKEN`, `CR_DEEP_RUNNER_KEY`, …) are set server-side.
 - Google sign-in works today (the Google OAuth client + the Supabase callback
   `https://mjvlczaytkhvsolnhhkz.supabase.co/auth/v1/callback` are configured).
-- The dynamic sandbox runs on the GCP host `cr-host-build` (us-east1-b), driven by the
-  local `/api/deep` controller. `/api/deep` is **inert on Vercel by default**
-  (`CR_ALLOW_LOCAL_DEEP` unset → 403), so a deploy cannot spawn VMs. Deep scans keep
-  running from your local controller and land in the shared DB; Vercel serves those
-  cached deep reports to the world.
+- The dynamic sandbox runs as Cloud Run Job executions (`cr-detonation`, region
+  `us-central1`), triggered by the local `/api/deep` controller via the Cloud Run API —
+  there is no per-scan host to SSH into anymore (see `docs/INFRASTRUCTURE.md` §8b).
+  `/api/deep` is **inert on Vercel by default** (`CR_ALLOW_LOCAL_DEEP` unset → 403), so a
+  deploy cannot trigger detonations. Deep scans keep running from your local controller
+  and land in the shared DB; Vercel serves those cached deep reports to the world.
 
 ---
 
@@ -59,19 +60,23 @@ Supabase callback, and Supabase forwards to whichever app URL is on this allowli
 
 ---
 
-## Step 3 — Enable GitHub sign-in (optional, do it when you want it)
+## Step 3 — GitHub sign-in is intentionally NOT offered (a deliberate V1 scope decision, not a TODO)
 
-GitHub is offered as a sign-in provider in the UI but the provider is not enabled yet.
-To turn it on:
+GitHub is not a configured Supabase auth provider, and — as of a bug-sweep fix this
+session — the "Continue with GitHub" button no longer even attempts it: it shows an
+honest "GitHub sign-in isn't available yet — use Google or email" message instantly,
+rather than trying a real OAuth call that could only fail server-side. This was a real
+fix, not an oversight: CLAUDE.md scopes V1 auth to Google + email only, and the button
+previously produced a generic, misleading failure toast indistinguishable from a network
+blip.
 
-1. **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
-   - Homepage URL: your Vercel URL
-   - **Authorization callback URL:** `https://mjvlczaytkhvsolnhhkz.supabase.co/auth/v1/callback`
-   - Create it, then generate a **client secret**.
-2. **Supabase dashboard → Authentication → Providers → GitHub**
-   - Enable it; paste the **Client ID** and **Client Secret** from step 1; save.
-3. Sign-in with GitHub now works with no code change (the button already calls the
-   `github` provider). Nothing to redeploy.
+If GitHub sign-in is ever actually wanted, it now needs BOTH a Supabase-side provider
+config (GitHub OAuth App → Supabase **Authentication → Providers → GitHub**, same as
+Google) AND a client-code change (`components/spa/state.tsx`'s `signInWithGitHub` would
+need to route through `signInWithProvider` again, and `signInWithProvider`'s type
+signature would need to accept `"github"` again — it was deliberately narrowed to
+`"google"` only so this can't silently regress). Toggling only the Supabase config, as
+this step used to instruct, would NOT turn GitHub sign-in back on by itself anymore.
 
 ---
 
@@ -82,8 +87,8 @@ controller machine, `.env.local` must have (this is gitignored, never committed)
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=…            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=…
-CR_ALLOW_LOCAL_DEEP=1                 CR_SANDBOX_ZONE=us-east1-b
-CR_DEEP_RUNNER_KEY=<must equal the Supabase CR_DEEP_RUNNER_KEY secret>
+CR_ALLOW_LOCAL_DEEP=1                 CR_RUN_JOB_NAME=cr-detonation
+CR_RUN_REGION=us-central1
 # Windows only, if `python` hits the Store alias:
 CLOUDSDK_PYTHON=…\google-cloud-sdk\platform\bundledpython\python.exe
 # Windows only, if `/api/deep` 501s with "needs gcloud on the sandbox
@@ -95,11 +100,12 @@ CR_BASH=C:\Program Files\Git\usr\bin\bash.exe
 CR_SANDBOX_PATH_PREPEND=/c/Users/<you>/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin
 ```
 
-- Bring the host up / keep it warm: `bash sandbox/microvm/provision-host.sh`
-  (idempotent; starts it if stopped). Set `CR_SANDBOX_ZONE` to the landed zone.
-- The host is **always-on by design** (the idle watchdog now exempts it; a 12h
-  max-run backstop reclaims it only if truly abandoned). Stop it between work
-  sessions with `bash sandbox/microvm/teardown-host.sh stop` to save credit.
+- No host to bring up or keep warm anymore — `/api/deep` triggers a `cr-detonation`
+  Cloud Run Job execution per scan directly via the Cloud Run API (`gcloud run jobs
+  execute`). The one thing that DOES need to stay running is the shared NVA gateway VM
+  (`cr-forge-gateway`) every detonation's egress routes through — it's a small,
+  persistent VM (not per-scan), already up; there's nothing to provision per session.
+  See `docs/INFRASTRUCTURE.md` §8b for the full architecture.
 
 ---
 
