@@ -10,7 +10,7 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
 
 - **Google account (GCP + Gemini):** `manishpratapsingh@gmail.com`
 - **GitHub:** user `AIdhirajSingh`, repo `clauderabbit` — `https://github.com/AIdhirajSingh/clauderabbit.git`
-- **Local repo path (Windows):** `C:\Users\manis\Development\clauderabbit`
+- **Local repo path (Windows):** `C:\Users\Maneesh Pratap\Development\clauderabbit` (the repo is worked in via git worktrees under `.claude\worktrees\<name>`, not always the bare root checkout)
 - **Shell:** PowerShell 7.6.3
 
 ---
@@ -46,9 +46,10 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
 - **Billing account:** `01CE66-086F73-F3E45C`, `billingEnabled: true`
 - **gcloud CLI:** authenticated as `manishpratapsingh@gmail.com`
 - **Enabled APIs:**
-  - `aiplatform.googleapis.com` — Agent Platform API (formerly Vertex AI; same endpoint, renamed at console level). This is the Gemini-via-Vertex backend.
-  - `compute.googleapis.com` — Compute Engine API, for the dynamic sandbox VMs.
-- This project is Claude Rabbit's permanent GCP home: Gemini-via-Vertex now, sandbox VMs later.
+  - `aiplatform.googleapis.com` — Agent Platform API (formerly Vertex AI; same endpoint, renamed at console level). This is the Gemini-via-Vertex backend, AND the harness's own in-sandbox agentic-analysis calls (see §8b — these must never be misattributed as the scanned repo's own traffic).
+  - `compute.googleapis.com` — Compute Engine API, for the NVA gateway VM (`cr-forge-gateway`, §8b) — a persistent, small, shared VM, not a per-scan sandbox host.
+  - `run.googleapis.com` — Cloud Run API. The actual detonation substrate (`cr-detonation` Job, §8b) — every scan's untrusted-code execution happens here, not on a Compute Engine VM.
+- This project is Claude Rabbit's permanent GCP home: Gemini-via-Vertex, the Cloud Run detonation substrate, and the shared NVA gateway all live here.
 
 ### Free-trial credit
 - **$300 / ₹28,710 free-trial Welcome credit, active.** Expires **24 September 2026** (90 days).
@@ -126,106 +127,121 @@ supabase secrets list      # shows names + digests only, never values
 
 ---
 
-## 8b. Detonation host lifecycle (the sandbox VM) — reproducible + self-cleaning
+## 8b. Detonation substrate — Cloud Run Jobs + a shared NVA gateway (current, live)
 
-The dynamic-sandbox host is a single GCP VM (`cr-host-build`, n2-standard-4, nested-virt,
-Ubuntu 24.04) running Kata + Firecracker microVMs + the deceptive forge. It is **fully
-reproducible from committed code** — nothing on it is hand-tuned that isn't in a script:
+**Superseded architecture, do not roll back to it:** an earlier phase of this project ran
+detonations on a single always-on Compute Engine VM (`cr-host-build`) directly executing
+Kata + Firecracker microVMs, with the git tag `single-host-dispatch-known-good` marking
+that state. That VM and its microVM tooling are gone — the project migrated to the
+architecture below, proven live end-to-end (a real fresh Google sign-in, a real Cloud Run
+detonation, a real "Sandbox run" badge with confirmed containment). `single-host-dispatch-
+known-good` is now a historical marker only; rolling back to it would undo this migration
+and is not a live option.
 
-- **Stand it up / resume it:** `bash sandbox/microvm/provision-host.sh` (add `--recreate`
-  to delete + rebuild). Idempotent: creates the VM if absent, starts it if stopped, deploys
-  `/opt/cr/{microvm,agent}` + `/opt/supabase/functions/_shared`, runs `setup-host.sh`,
-  installs deno + OpenCode (+ `~/.config/opencode/opencode.json` = google-vertex@global),
-  builds the base image, verifies. n2 nested-virt zones stock out transiently, so it tries a
-  **zone fallback list** and prints `CR_HOST_ZONE=<zone>` at the end.
-- **Set the zone to match:** put the landed zone in `.env.local` as `CR_SANDBOX_ZONE` so
-  `/api/deep` SSHes to the right place (the app reaches the host over `gcloud compute ssh`).
-  As of the last provision (a `--recreate` forced by a `us-east1-b` zone stockout that
-  persisted for an extended period) the host landed in **`us-east4-c`**, after the
-  fallback list tried `us-central1-a/c/b/f` and `us-east1-b` in turn, all stocked out
-  at that moment — this is real, observed, transient GCP capacity behavior, not a fixed
-  zone assignment; a future provision may land somewhere else in the list.
-- **Cost rails (the host must never bleed credit unattended — it once ran ~2 days after an
-  interrupted session):** an **idle auto-shutdown watchdog** (`setup-host.sh` Stage 8:
-  systemd timer, `cr-idle-shutdown.sh`) powers the host **OFF after ~30 min** with no
-  detonation heartbeat + nobody logged in + no detonation in flight; and a **max-run-duration
-  backstop** (12h → STOP) reclaims a host even if the watchdog dies. `orchestrate-microvm.sh`
-  refreshes `/run/cr-activity` each scan so a busy host never self-stops mid-work.
-- **Survives its own stop/start:** an unclean poweroff corrupts the loopback devmapper
-  thin-pool, so on every boot `cr-dm-pool.service` rebuilds a **fresh** pool and
-  `cr-base-image.service` rebuilds the base image onto it (the pool only holds reproducible
-  artifacts). A watchdog-stopped host that is later `provision-host.sh`-started (or bare
-  `instances start`-ed) is detonation-ready with no manual fixups.
-- **Tear it down:** `bash sandbox/microvm/teardown-host.sh [stop|delete]` at session end
-  (belt to the watchdog). `stop` reclaims the running compute + keeps the disk; `delete`
-  removes it (provision-host.sh rebuilds it from scratch).
+**The substrate today:** every scan's untrusted code runs as an ephemeral **Cloud Run Job
+execution** (`cr-detonation`, Gen2 — Jobs only run Gen2, there is no flag to choose
+otherwise), not a persistent VM. Isolation is the container boundary itself plus forced
+network egress through one shared, persistent **NVA (network virtual appliance) gateway
+VM** — there is no per-scan network namespace or microVM anymore; Cloud Run's own
+container sandboxing IS the per-execution isolation, and the gateway is what makes that
+egress *deceptive* (real registry traffic passed through, everything else forged and
+captured) rather than just blocked.
 
-### Dispatch queue — a real FIFO, not a flat 429
+- **The Job (`cr-detonation`, region `us-central1`):** 2 vCPU / 4Gi memory per execution,
+  `execution-environment: gen2`, Direct VPC Egress into `cr-sandbox-vpc`/`cr-sandbox-subnet`
+  with `vpc-access-egress: all-traffic` (every packet the container sends leaves through the
+  VPC, not the public internet directly) and a custom route forcing that traffic to the
+  gateway. Image: `us-central1-docker.pkg.dev/gen-lang-client-0062239756/cr-detonation/
+  harness:v5`. Service account `cr-detonation-run@gen-lang-client-0062239756.
+  iam.gserviceaccount.com` (`roles/secretmanager.secretAccessor` + `roles/aiplatform.user`)
+  — uses ambient Application Default Credentials, no JSON key. Triggered by
+  `gcloud run jobs execute cr-detonation --update-env-vars=CR_OWNER=...,CR_REPO=...,
+  CR_COMMIT_SHA=...,CR_SCAN_ID=...` from `/api/deep`.
+- **The gateway (`cr-forge-gateway`, zone `us-central1-a`):** a small, persistent, SHARED
+  `e2-small` VM (2 shared vCPUs, ~2GB RAM) — deliberately not per-scan, since Cloud Run
+  containers have confirmed NO `CAP_NET_ADMIN` (no netns/iptables possible inside the
+  container on any Cloud Run generation), so the deceptive-egress forge has to live outside
+  the container. Runs mitmproxy in transparent mode (`sandbox/cloudrun/forge/
+  forge_addon.py`, ported from the old per-run forge — the `Forge` class's registry-
+  passthrough / forge / capture logic is unchanged) + dnsmasq (answer-all-except-allowlist,
+  catch-all resolves to the gateway's own IP `10.200.0.10`) + iptables PREROUTING REDIRECT,
+  re-asserted every 2 minutes by a systemd timer (`cr-forge-iptables.timer`) since this VM
+  is now persistent across many scans, not reimaged per run. A Cloud DNS private zone
+  (`cr-internal-zone`, `cr.internal.`) resolves `cr-harness.cr.internal` to it.
+- **Forensics attribution across concurrent scans:** `sandbox/cloudrun/forge/
+  forensics_api.py` runs on the gateway and is the control-plane API the harness's
+  entrypoint calls. `/register` binds the CALLING connection's real source IP (never
+  trusted from the request body) to a `scan_id`, closing any OLDER registration for that
+  same IP first (Cloud Run reassigns IPs across executions over time, so an IP can be
+  reused). `/forensics` returns only records bounded by BOTH that registration's `since`
+  and `until` timestamps — an unregistered/expired `scan_id` gets an empty list, never
+  another scan's data. This is what keeps concurrent detonations' captured evidence from
+  cross-contaminating (see the concurrency proof below).
+- **`aiplatform.googleapis.com` misattribution guard:** the harness's own agentic-analysis
+  fallback (when OpenCode isn't available) calls Vertex AI directly. Early on this call was
+  forged like any unallowlisted domain and then misattributed in the report as the SCANNED
+  REPO reaching out to Google's infrastructure. Fixed in `forge_addon.py`
+  (`OWN_VERTEX_RE` + `_is_own_vertex_ip` + `_is_own_vertex_path`): passthrough requires
+  BOTH a verified real Google IP (via the same kernel-routed `server_conn.address`
+  primitive used for every other verified-IP category — never trusted from a client-
+  supplied Host/SNI) AND the request path naming `CR_OWN_GCP_PROJECT_ID` specifically — a
+  malicious repo's own Vertex project (different project ID in the path) still gets forged.
+  Requires `aiplatform.googleapis.com` in the gateway's dnsmasq forward list (real DNS
+  answer) — without it the verified-IP check has nothing real to check against and silently
+  never passes.
+- **Secrets:** `CR_DEEP_RUNNER_KEY` (the harness's own entrypoint POSTs its forensic record
+  to `attach-forensics` directly using its own copy) lives in **GCP Secret Manager**
+  (`cr-deep-runner-key`), referenced via `--set-secrets` on the Job — never a plaintext env
+  var. Disposable like every other credential here: rotate (new version, don't reuse) if
+  ever suspected exposed.
 
-`/api/deep` holds at most `MAX_CONCURRENT = 2` simultaneous detonations in-process (the
-host's 4-vCPU budget). A 3rd concurrent request used to get a flat 429 and be dropped; it
-now **queues** instead:
+### Concurrency ceiling — proven live, not estimated (Unit 16)
 
-- **In-process FIFO authority — `lib/deep-queue.ts`.** A pure, dependency-free ordered
-  list of waiter tokens. This is the sole slot arbiter: `/api/deep` runs as a single Node
-  controller process, so the existing `inFlight` counter plus this in-process queue are
-  race-free by construction — ordering never depends on a DB round-trip. Admission is
-  strict head-of-line (`canAcquire` = this token is the head AND a slot is free), so a
-  later arrival can never jump an earlier waiter.
-- **`deep_scan_queue` table (migration `20260702000002`) — observability + honest
-  position only, NOT the slot lock.** One row per queued request (`token`,
-  owner/repo/sha, a `queued`/`active`/`done`/`failed`/`timed_out` status, `created_at` as
-  the FIFO key). SECURITY DEFINER RPCs (`deep_queue_enqueue` / `_position` / `_set_status`)
-  are service-role only; RLS locked, no client access.
-- **`supabase/functions/deep-queue` edge function** — a thin runner-key-gated wrapper
-  over those RPCs (same auth pattern as `attach-forensics`: anon key for the gateway +
-  `CR_DEEP_RUNNER_KEY` for the function). `lib/deep-queue-client.ts` calls it **best
-  effort** — every call fails soft, so a DB/network hiccup never stalls the queue; the
-  reported position falls back to the in-process standing if the DB call fails.
-- **User-facing behavior:** the streaming NDJSON response stays open and emits
-  `"Queued — position N of M, ~X min"`, refreshed periodically, computed from a real
-  measured ~76s-per-detonation estimate (padded to 90s for attach/reset overhead). A
-  waiter that can't get a slot within an 8-minute deadline gets an honest, specific
-  "sandbox was too busy" error — never a silent drop — well under the client's 20-minute
-  overall timeout so the server always speaks first.
+Cloud Run Jobs have no `--max-instances`-style flag (that's a Services concept); the
+platform default is a **1000-concurrent-executions-per-project-region quota**
+(docs.cloud.google.com/run/quotas) — far higher than anything relevant here. The REAL
+constraint is the single shared `e2-small` gateway VM every concurrent detonation's egress
+routes through.
 
-### The on-demand pool — evaluated and reverted; a documented future path, not a running system
+`app/api/deep/route.ts` enforces `MAX_CONCURRENT = 3` as an in-process throttle (the
+`inFlight` counter, race-free — a single Node controller process) — raised from a
+placeholder `2` inherited from the old single-host architecture, after a real test: 3
+simultaneous `gcloud run jobs execute` calls, confirmed genuinely overlapping via each
+execution's start/completion timestamps (not serialized), each assigned its own distinct
+Cloud Run source IP (`10.200.0.192`/`.193`/`.194` in the proof run — the mechanism the
+forensics-attribution guard above relies on), gateway still healthy afterward
+(`cr-forge-mitm`/`cr-forge-api` both active, load average ~0.02). This is a proven floor,
+not a claimed ceiling — the gateway showed comfortable headroom, not its actual limit.
+Raise `MAX_CONCURRENT` again only after a fresh concurrency proof at the higher number.
 
-Earlier this session an on-demand compute-pool architecture was built and measured as a
-scale-out alternative to the single host: a committed golden GCE image
-(`cr-detonation-golden`) driving a Managed Instance Group with a stopped/suspended
-standby pool, so a scan needing capacity could wake a warm standby instead of sharing one
-box. It was fully built, benchmarked live, and then **reverted** (`git revert` of
-`feat(sandbox): on-demand detonation compute pool (golden image + MIG standby pool)
-(#41)`) — the MIG, its instance template, and the golden image baked for it have all
-been **deleted from GCP**; only `cr-host-build` remains as a real instance.
-
-**Why it was reverted:** the real, measured problem was activation latency, not
-architecture. The actual need is a host that is available near-instantly for per-scan
-microVM spin-up; waking a pool member from stopped/suspended did not deliver that.
-
-**The real numbers, measured when the pool was evaluated (worth preserving for the next
-time this is revisited, not currently running):**
-- Cold create-from-image: **≈88s**
-- Start-from-stopped: **≈44s**
-- Resume-from-suspended: **≈21s**
-
-If real concurrent-traffic data ever shows the single host's 2-slot ceiling — now
-cushioned by the real queue above, not a hard reject — is genuinely the product's
-bottleneck, a fleet/pool approach remains a real, previously-prototyped option to
-revisit, informed by these measured numbers rather than re-deriving them from scratch.
-
-**Rollback point:** the git tag `single-host-dispatch-known-good` points at the exact
-commit that restored this single-host state. If this architecture is ever changed again,
-that tag is the real, verified place to roll back to — no need to rediscover it.
+Requests beyond the cap queue (not a flat 429) via the same FIFO mechanism as before —
+**`lib/deep-queue.ts`** (in-process, pure, race-free ordered waiter list) + the
+**`deep_scan_queue`** table (migration `20260702000002`, observability + honest position
+only, not the slot lock) + **`supabase/functions/deep-queue`** (a thin, runner-key-gated
+wrapper over the SECURITY DEFINER RPCs, called best-effort so a DB hiccup never stalls the
+queue). The streaming response emits `"Queued — position N of M, ~X min"` while waiting; a
+waiter that can't get a slot within the deadline gets an honest, specific "sandbox was too
+busy" error, never a silent drop.
 
 ---
 
 ## 9. State at last update
 
-- GCP project set, billing live ($300 credit, expires 24 Sep 2026), `aiplatform` + `compute` APIs enabled.
+- GCP project set, billing live ($300 credit, expires 24 Sep 2026), `aiplatform` + `compute` + `run` APIs enabled.
 - Vertex auth fully provisioned: service account `clauderabbit-vertex` with `roles/aiplatform.user`; key generated, verified, stored in Supabase secrets; local copy deleted.
 - Supabase secrets present: `GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `GEMINI_API_KEY`.
 - Local dev ADC set (developer machine only).
 - `design.md` is inside the Claude Design zip at the repo root; the build unzips it, places it at root, and commits it.
-- Not yet exercised in code: the edge function that reads `GOOGLE_SERVICE_ACCOUNT_JSON` and calls Vertex — that is built and verified in the build session.
+- **Detonation substrate migrated from the single-host microVM architecture to Cloud Run
+  Jobs + the shared NVA gateway (§8b), proven live end-to-end**: a real fresh Google
+  sign-in scanning `AmrDab/clawdcursor` produced a genuine "Sandbox run" badge with
+  confirmed containment, no fabricated data. The old `cr-host-build` VM and its microVM
+  tooling are gone from GCP; the git tag `single-host-dispatch-known-good` is a historical
+  marker only.
+- `CR_DEEP_RUNNER_KEY` lives in GCP Secret Manager (`cr-deep-runner-key`), referenced via
+  `--set-secrets` on the Cloud Run Job — rotated once this session after a local
+  shell-pipe corruption incident (never restored from the corrupted value, generated
+  fresh).
+- Concurrency ceiling for `/api/deep` measured and set to `MAX_CONCURRENT = 3` (§8b),
+  replacing a placeholder `2` inherited from the pre-Cloud-Run architecture that was never
+  re-measured after the migration.
