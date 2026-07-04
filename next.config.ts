@@ -18,6 +18,22 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
+  // @sparticuz/chromium (app/api/export/pdf) ships its Chromium binary as a
+  // brotli file it locates relative to its own package directory at runtime.
+  // Left un-externalized, Next's server bundler relocates/tree-shakes the
+  // package and that lookup fails on Vercel ("input directory .../bin does not
+  // exist" — a documented bundler-compat requirement of the package, verified
+  // live on a real deploy). Externalizing keeps the package's real on-disk
+  // layout intact in the deployed function.
+  serverExternalPackages: ["@sparticuz/chromium"],
+  // Externalizing alone isn't enough: Next's output file tracer decides which
+  // files actually get COPIED into the deployed function by static analysis,
+  // and @sparticuz/chromium resolves its binary path dynamically at runtime,
+  // so the tracer misses it (verified live: the JS loads fine but
+  // ".../bin does not exist" at runtime). Force the trace to include it.
+  outputFileTracingIncludes: {
+    "/api/export/pdf": ["./node_modules/@sparticuz/chromium/**"],
+  },
   // The /api/deep route shells out to `sandbox/orchestrate.sh` and reads
   // `sandbox/results/*` from the REAL filesystem at runtime (process.cwd()), so
   // Next's file tracer can't statically resolve those paths and conservatively
