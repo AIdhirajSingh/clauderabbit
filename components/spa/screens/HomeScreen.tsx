@@ -476,12 +476,12 @@ export function HomeScreen() {
           {[
             {
               title: "MCP server",
-              body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. Two tools: scan a repo, or read back an existing cached report. No API key, no login.",
-              cmd: 'claude mcp add claude-rabbit -- npx claude-rabbit-mcp',
+              body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key, but a free ClaudeRabbit account is required.",
+              cmd: 'claude mcp add clauderabbit -- npx clauderabbit-mcp',
             },
             {
               title: "CLI",
-              body: "Run the same fast-path scan from a terminal, or wire it in as an opt-in shell hook that checks a repo or package before npm install / pnpm install / git clone actually run. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
+              body: "Run the same cache-aware scan from a terminal, or wire it in as an opt-in shell hook that checks a repo or package before npm install / pnpm install / git clone actually run. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
               cmd: "npx clauderabbit scan owner/repo",
             },
           ].map((t) => (

@@ -15,7 +15,7 @@ import { runScanTool, scanInputSchema, scanToolMeta } from "../tools/scan.js";
 
 async function buildServer() {
   const config = loadConfig();
-  const server = new McpServer({ name: "claude-rabbit-mcp-smoke", version: "0.1.0" });
+  const server = new McpServer({ name: "clauderabbit-mcp-smoke", version: "0.1.0" });
 
   server.registerTool(
     scanToolMeta.name,

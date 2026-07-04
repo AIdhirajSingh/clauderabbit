@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
 
   const server = new McpServer({
-    name: "claude-rabbit-mcp",
+    name: "clauderabbit-mcp",
     version: "0.1.0",
   });
 
@@ -45,11 +45,11 @@ async function main(): Promise<void> {
   // MCP stdio servers must never write to stdout outside the protocol frames;
   // stderr is safe for operator-facing diagnostics.
   console.error(
-    `claude-rabbit-mcp running on stdio (target: ${config.supabaseUrl})`,
+    `clauderabbit-mcp running on stdio (target: ${config.supabaseUrl})`,
   );
 }
 
 main().catch((err) => {
-  console.error("claude-rabbit-mcp failed to start:", err);
+  console.error("clauderabbit-mcp failed to start:", err);
   process.exit(1);
 });

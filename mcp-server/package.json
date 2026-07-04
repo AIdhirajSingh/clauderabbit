@@ -1,12 +1,12 @@
 {
-  "name": "claude-rabbit-mcp",
+  "name": "clauderabbit-mcp",
   "version": "0.1.0",
   "private": true,
   "description": "MCP server for ClaudeRabbit — lets AI coding tools scan a public GitHub repo or check for an existing safety report before installing/using it.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "claude-rabbit-mcp": "dist/index.js"
+    "clauderabbit-mcp": "dist/index.js"
   },
   "engines": {
     "node": ">=18"
