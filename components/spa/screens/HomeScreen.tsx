@@ -473,18 +473,26 @@ export function HomeScreen() {
           </p>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 18 }}>
-          {[
-            {
-              title: "MCP server",
-              body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. The command below wires it into Claude Desktop directly; for claude.ai itself, add https://clauderabbit.in/mcp as a custom connector under Settings → Connectors → Add custom connector, then sign in when prompted. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key, but a free ClaudeRabbit account is required.",
-              cmd: "clauderabbit mcp install",
-            },
-            {
-              title: "CLI",
-              body: "Run the same cache-aware scan from a terminal before you install a dependency or clone a repo. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
-              cmd: "npx clauderabbit scan owner/repo",
-            },
-          ].map((t) => (
+          {(
+            [
+              {
+                title: "MCP server",
+                body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key, but a free ClaudeRabbit account is required.",
+                cmds: [
+                  { label: "Claude Code / Claude Desktop — local, stdio", value: "clauderabbit mcp install" },
+                  {
+                    label: "claude.ai — remote, via Settings → Connectors → Add custom connector",
+                    value: "https://clauderabbit.in/mcp",
+                  },
+                ],
+              },
+              {
+                title: "CLI",
+                body: "Run the same cache-aware scan from a terminal before you install a dependency or clone a repo. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
+                cmds: [{ value: "npx clauderabbit scan owner/repo" }],
+              },
+            ] as { title: string; body: string; cmds: { label?: string; value: string }[] }[]
+          ).map((t) => (
             <div
               key={t.title}
               className={styles.useCard}
@@ -502,21 +510,31 @@ export function HomeScreen() {
                 {t.title}
               </div>
               <div style={{ fontSize: 14, color: "var(--t4)", lineHeight: 1.6, marginBottom: 18 }}>{t.body}</div>
-              <div
-                className="tnum"
-                style={{
-                  marginTop: "auto",
-                  fontSize: 13,
-                  color: "var(--t2)",
-                  background: "var(--s2)",
-                  border: "1px solid var(--line)",
-                  borderRadius: 9,
-                  padding: "10px 14px",
-                  overflowX: "auto",
-                  whiteSpace: "pre",
-                }}
-              >
-                {t.cmd}
+              <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+                {t.cmds.map((c, i) => (
+                  <div key={i}>
+                    {c.label && (
+                      <div style={{ fontSize: 11, color: "var(--t4)", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                        {c.label}
+                      </div>
+                    )}
+                    <div
+                      className="tnum"
+                      style={{
+                        fontSize: 13,
+                        color: "var(--t2)",
+                        background: "var(--s2)",
+                        border: "1px solid var(--line)",
+                        borderRadius: 9,
+                        padding: "10px 14px",
+                        overflowX: "auto",
+                        whiteSpace: "pre",
+                      }}
+                    >
+                      {c.value}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
