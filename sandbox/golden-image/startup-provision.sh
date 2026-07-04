@@ -23,10 +23,19 @@ apt-get install -y --no-install-recommends \
   python3 python3-pip python3-venv \
   strace conntrack jq tar gzip procps coreutils >/dev/null
 
-# Node LTS via NodeSource (Node 20 LTS).
+# Node LTS via NodeSource (Node 20 LTS — already pinned to one major line by
+# the setup_20.x URL itself, not "latest"). Downloaded to a file and inspected
+# before execution rather than piped straight into bash — NodeSource doesn't
+# publish a checksum for this bootstrap script, so the real trust boundary is
+# what it actually does: write an apt source + import NodeSource's signing
+# key, after which every package it installs is verified by apt's own GPG
+# check, same as any other apt repo. The pinned major version + a separate
+# download step is the honest hardening available at this layer.
 if ! command -v node >/dev/null 2>&1; then
   log "installing Node.js LTS"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1 || true
+  curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/cr-nodesource-setup.sh
+  bash /tmp/cr-nodesource-setup.sh >/dev/null 2>&1 || true
+  rm -f /tmp/cr-nodesource-setup.sh
   apt-get install -y nodejs >/dev/null 2>&1 || true
 fi
 

@@ -15,6 +15,20 @@
 # real facts, never guessed. Read via: bash setup-host.sh 2>&1 | tee /var/log/cr-host-setup.log
 set -uo pipefail
 KATA_VER="${KATA_VER:-3.32.0}"
+# Pinned, known-good versions for the release-binary installs below (Stage 5,
+# Stage 7) — never resolved dynamically against each vendor's "latest" tag, so
+# a compromised or unexpectedly-changed latest release can't silently ship.
+# Bump these deliberately when adopting a new version.
+FC_PIN_VERSION="v1.16.1"
+NERDCTL_PIN_VERSION="2.3.4"
+# SHA256 of each vendor's own published checksum file for the pinned version +
+# this host's arch (fetched from the vendor's release and verified once at
+# pin time, not recomputed at install time) — a corrupted or tampered download
+# aborts the stage instead of silently installing.
+FC_SHA256_X86_64="382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6"
+FC_SHA256_AARCH64="8d0e69f6d6f9a1724551f607f18504052c16c1828ee3d4d7b6e6c73380871e0e"
+NERDCTL_SHA256_AMD64="40a80a6eec6fc4f225473a87946c2098821b6ec31becef0120c8a50d7b4e432c"
+NERDCTL_SHA256_ARM64="117d65c3992e67fc4449dd501c8fba19c1d9cbf5a01fd63d68e778888f2f46e0"
 ARCH="$(uname -m)"   # x86_64
 # Kata + many release assets name the x86_64 arch "amd64", not "x86_64".
 case "$ARCH" in x86_64) KARCH=amd64 ;; aarch64) KARCH=arm64 ;; *) KARCH="$ARCH" ;; esac
@@ -148,6 +162,12 @@ mark BASEIMGSVC $?
 
 # ── Stage 4: Kata Containers static ──────────────────────────────────────────────────
 # Kata static is zstd-compressed (.tar.zst), named with amd64 (not x86_64).
+# Already pinned (KATA_VER above, not "latest"). Unlike Firecracker/nerdctl
+# below, upstream does NOT publish a checksum for this specific asset (checked
+# live against the kata-containers release: only libseccomp's vendored source
+# ships a signature, not kata-static-*.tar.zst) — noted honestly rather than
+# fabricating one; the version pin + HTTPS from the vendor's own GitHub
+# Releases is the real integrity guarantee available here.
 curl -fsSL "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VER}/kata-static-${KATA_VER}-${KARCH}.tar.zst" -o /tmp/kata.tar.zst
 fact KATA_DL_BYTES "$(stat -c%s /tmp/kata.tar.zst 2>/dev/null || echo 0)"
 tar --use-compress-program=unzstd -xf /tmp/kata.tar.zst -C / 2>/dev/null
@@ -164,12 +184,25 @@ if [ -x /opt/kata/bin/firecracker ]; then
   fact FC_SOURCE "kata-bundled"
   fact FC_VER "$(/opt/kata/bin/firecracker --version 2>/dev/null | head -1)"
 else
-  REL="https://github.com/firecracker-microvm/firecracker/releases"
-  FCV="$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' ${REL}/latest)")"
-  curl -fsSL ${REL}/download/${FCV}/firecracker-${FCV}-${ARCH}.tgz | tar -xz -C /tmp
-  install -m0755 /tmp/release-${FCV}-${ARCH}/firecracker-${FCV}-${ARCH} /usr/local/bin/firecracker
-  install -m0755 /tmp/release-${FCV}-${ARCH}/jailer-${FCV}-${ARCH} /usr/local/bin/jailer
-  fact FC_SOURCE "release-${FCV}"
+  # Pinned version (FC_PIN_VERSION above), not the "latest" release tag — and
+  # downloaded to a file + checksum-verified against the vendor's own
+  # published .sha256.txt before extracting, rather than piping the archive
+  # straight into `tar`. A corrupted/tampered download aborts the stage.
+  REL="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_PIN_VERSION}"
+  case "$ARCH" in
+    x86_64) FC_SHA256="$FC_SHA256_X86_64" ;;
+    aarch64) FC_SHA256="$FC_SHA256_AARCH64" ;;
+    *) FC_SHA256="" ;;
+  esac
+  curl -fsSL "${REL}/firecracker-${FC_PIN_VERSION}-${ARCH}.tgz" -o /tmp/firecracker.tgz
+  if [ -n "$FC_SHA256" ]; then
+    echo "${FC_SHA256}  /tmp/firecracker.tgz" | sha256sum -c - || { mark FIRECRACKER FAIL; echo "firecracker checksum mismatch — abort"; exit 1; }
+  fi
+  tar -xzf /tmp/firecracker.tgz -C /tmp
+  install -m0755 "/tmp/release-${FC_PIN_VERSION}-${ARCH}/firecracker-${FC_PIN_VERSION}-${ARCH}" /usr/local/bin/firecracker
+  install -m0755 "/tmp/release-${FC_PIN_VERSION}-${ARCH}/jailer-${FC_PIN_VERSION}-${ARCH}" /usr/local/bin/jailer
+  rm -f /tmp/firecracker.tgz
+  fact FC_SOURCE "release-${FC_PIN_VERSION}"
   fact FC_VER "$(/usr/local/bin/firecracker --version 2>/dev/null | head -1)"
 fi
 mark FIRECRACKER ok
@@ -212,10 +245,19 @@ mark MITM ok
 # ── Stage 7: nerdctl-full (buildkit + buildctl) — build the per-scan detonation image ─
 # The orchestrator builds a thin per-scan image (base detonation image + the repo clone)
 # via buildkit, then detonates it via kata-fc. nerdctl-full bundles buildkitd + buildctl.
-NCV="$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/containerd/nerdctl/releases/latest)")"
-NCV="${NCV#v}"
-curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NCV}/nerdctl-full-${NCV}-linux-${KARCH}.tar.gz" -o /tmp/nerdctl-full.tgz
+# Pinned version (NERDCTL_PIN_VERSION above), not the "latest" release tag —
+# checksum-verified against the vendor's own published SHA256SUMS before use.
+case "$KARCH" in
+  amd64) NERDCTL_SHA256="$NERDCTL_SHA256_AMD64" ;;
+  arm64) NERDCTL_SHA256="$NERDCTL_SHA256_ARM64" ;;
+  *) NERDCTL_SHA256="" ;;
+esac
+curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_PIN_VERSION}/nerdctl-full-${NERDCTL_PIN_VERSION}-linux-${KARCH}.tar.gz" -o /tmp/nerdctl-full.tgz
+if [ -n "$NERDCTL_SHA256" ]; then
+  echo "${NERDCTL_SHA256}  /tmp/nerdctl-full.tgz" | sha256sum -c - || { mark NERDCTL FAIL; echo "nerdctl checksum mismatch — abort"; exit 1; }
+fi
 tar -xzf /tmp/nerdctl-full.tgz -C /usr/local 2>/dev/null
+rm -f /tmp/nerdctl-full.tgz
 fact NERDCTL_VER "$(/usr/local/bin/nerdctl --version 2>/dev/null | awk '{print $3}')"
 # Use the CONTAINERD worker (not OCI) so buildkit shares containerd's image store: a
 # locally-built base image resolves as `FROM`, and built images land where `ctr run` finds them.

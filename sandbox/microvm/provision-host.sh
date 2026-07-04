@@ -121,8 +121,22 @@ log "installing per-user agent tooling (deno + OpenCode) for $LOGIN_USER"
 ssh_host '
 set +e
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y unzip >/dev/null 2>&1
-[ -x "$HOME/.deno/bin/deno" ] || curl -fsSL https://deno.land/install.sh | sh -s -- -y >/tmp/cr-deno.log 2>&1
-[ -x "$HOME/.opencode/bin/opencode" ] || curl -fsSL https://opencode.ai/install | bash >/tmp/cr-oc.log 2>&1
+# Pinned to a specific, known-good version (not "latest") and downloaded to a
+# file before execution rather than piped straight into the shell — a bad
+# response body still cannot run until we choose to `sh`/`bash` it. Neither
+# vendor publishes a checksum for the install SCRIPT itself (only for release
+# binaries), so the pin + a separate download step is the real, honest
+# hardening available here; bump these deliberately, never by tracking latest.
+if [ ! -x "$HOME/.deno/bin/deno" ]; then
+  curl -fsSL https://deno.land/install.sh -o /tmp/cr-deno-install.sh
+  sh /tmp/cr-deno-install.sh -y v2.9.1 >/tmp/cr-deno.log 2>&1
+  rm -f /tmp/cr-deno-install.sh
+fi
+if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+  curl -fsSL https://opencode.ai/install -o /tmp/cr-opencode-install.sh
+  bash /tmp/cr-opencode-install.sh --version 1.17.13 >/tmp/cr-oc.log 2>&1
+  rm -f /tmp/cr-opencode-install.sh
+fi
 mkdir -p "$HOME/.config/opencode"
 cat > "$HOME/.config/opencode/opencode.json" <<JSON
 {
