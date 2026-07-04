@@ -346,9 +346,13 @@ export function GET(): Response {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  // 1. fail-closed local gate (flag + localhost host/origin).
+  // 1. fail-closed local gate (flag + localhost host/origin). `reason:
+  // "unavailable"` lets the client distinguish "no sandbox controller is
+  // wired up for this deployment" (expected on Vercel — see docs/DEPLOY.md)
+  // from a genuine Cloud Run execution failure, and show a message written
+  // for a real end user rather than this string's own operator-facing detail.
   const gateErr = localGateError(req);
-  if (gateErr) return json({ error: gateErr }, 403);
+  if (gateErr) return json({ error: gateErr, reason: "unavailable" }, 403);
 
   // 2. parse + strictly validate the body (the injection boundary).
   let body: unknown;
