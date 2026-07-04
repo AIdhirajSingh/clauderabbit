@@ -62,21 +62,18 @@ Supabase callback, and Supabase forwards to whichever app URL is on this allowli
 
 ## Step 3 — GitHub sign-in is intentionally NOT offered (a deliberate V1 scope decision, not a TODO)
 
-GitHub is not a configured Supabase auth provider, and — as of a bug-sweep fix this
-session — the "Continue with GitHub" button no longer even attempts it: it shows an
-honest "GitHub sign-in isn't available yet — use Google or email" message instantly,
-rather than trying a real OAuth call that could only fail server-side. This was a real
-fix, not an oversight: CLAUDE.md scopes V1 auth to Google + email only, and the button
-previously produced a generic, misleading failure toast indistinguishable from a network
-blip.
+GitHub is not a configured Supabase auth provider, and there is no "Continue with GitHub"
+button anywhere in the product — it was removed entirely (not disabled, not a
+graceful-failure toast) since CLAUDE.md scopes V1 auth to Google + email only. Google is
+the sole OAuth option on the real login screen (`components/spa/components/LoginForm.tsx`).
 
-If GitHub sign-in is ever actually wanted, it now needs BOTH a Supabase-side provider
-config (GitHub OAuth App → Supabase **Authentication → Providers → GitHub**, same as
-Google) AND a client-code change (`components/spa/state.tsx`'s `signInWithGitHub` would
-need to route through `signInWithProvider` again, and `signInWithProvider`'s type
-signature would need to accept `"github"` again — it was deliberately narrowed to
-`"google"` only so this can't silently regress). Toggling only the Supabase config, as
-this step used to instruct, would NOT turn GitHub sign-in back on by itself anymore.
+If GitHub sign-in is ever actually wanted, it needs to be built back from scratch: a
+Supabase-side provider config (GitHub OAuth App → Supabase **Authentication → Providers →
+GitHub**, same as Google) AND real client code — a `signInWithGitHub` handler
+(`components/spa/state.tsx`'s `signInWithProvider` is typed to accept only `"google"`
+today, deliberately, so this can't silently regress) and a real GitHub button back in
+`LoginForm.tsx`. Toggling only the Supabase config would not turn GitHub sign-in back on
+by itself.
 
 ---
 

@@ -9,17 +9,19 @@
  * its own simplified approximation. Only the click handlers vary by caller
  * (different `redirectTo` targets); the visible form is identical.
  *
+ * Google is the only OAuth option — GitHub sign-in was explicitly skipped
+ * for launch (never a configured Supabase provider) and was removed
+ * entirely rather than left as a disabled/graceful-failure button.
+ *
  * Deliberately just the centered card — not the surrounding full-page
  * wrapper/top nav, since each caller already has its own (the main app's
  * animated full-page shell with an SPA-internal logo click; the standalone
  * `/cli-auth` and `/oauth/authorize` routes' own simpler `<nav><Link>` bar).
  */
 
-import { GithubIcon } from "./glyphs";
 import styles from "../spa.module.css";
 
 export interface LoginFormProps {
-  onGithub: () => void;
   onGoogle: () => void;
   email: string;
   onEmailChange: (email: string) => void;
@@ -29,7 +31,7 @@ export interface LoginFormProps {
   noteColor?: string;
 }
 
-export function LoginForm({ onGithub, onGoogle, email, onEmailChange, onEmailSubmit, note, noteColor = "var(--red)" }: LoginFormProps) {
+export function LoginForm({ onGoogle, email, onEmailChange, onEmailSubmit, note, noteColor = "var(--red)" }: LoginFormProps) {
   return (
     <div style={{ width: "100%", maxWidth: 400, animation: "riseIn .6s var(--ease) both" }}>
       <h1 className="serif" style={{ fontSize: 42, margin: "0 0 12px", color: "var(--t1)", textAlign: "center", lineHeight: 1.02, letterSpacing: "-0.01em" }}>
@@ -41,7 +43,7 @@ export function LoginForm({ onGithub, onGoogle, email, onEmailChange, onEmailSub
 
       <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
         <button
-          onClick={onGithub}
+          onClick={onGoogle}
           className={styles.loginPrimary}
           style={{
             display: "flex",
@@ -58,28 +60,6 @@ export function LoginForm({ onGithub, onGoogle, email, onEmailChange, onEmailSub
             cursor: "pointer",
             boxShadow: "inset 0 1px 0 var(--inkhi)",
             transition: "transform .14s var(--ease)",
-          }}
-        >
-          <GithubIcon size={17} fill="var(--ink-fg)" />
-          Continue with GitHub
-        </button>
-        <button
-          onClick={onGoogle}
-          className={styles.loginSecondary}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 11,
-            background: "var(--s2)",
-            color: "var(--t1)",
-            border: "1px solid var(--line2)",
-            fontSize: 14.5,
-            fontWeight: 500,
-            padding: 14,
-            borderRadius: 13,
-            cursor: "pointer",
-            transition: "border-color .16s var(--ease), background .16s, transform .14s",
           }}
         >
           <svg width="17" height="17" viewBox="0 0 18 18" aria-hidden="true">

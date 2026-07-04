@@ -579,7 +579,6 @@ export interface AppApi {
   openLeaderboard: () => void;
   backFromLeaderboard: () => void;
   signInWithGoogle: () => void;
-  signInWithGitHub: () => void;
   signInWithEmail: (email: string) => void;
   logout: () => void;
   exportPDF: () => void;
@@ -1594,8 +1593,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /** Start an OAuth provider — a full-page redirect; the callback finishes the session.
-   * Google only — GitHub is not a configured Supabase provider in V1 (see
-   * signInWithGitHub below), so this never widens back to accept it. */
+   * Google only — GitHub sign-in was explicitly skipped for launch and is
+   * not a configured Supabase provider, so this never widens back to accept it. */
   const signInWithProvider = useCallback(
     (provider: "google", label: string) => {
       const supabase = getSupabase();
@@ -1621,14 +1620,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const signInWithGoogle = useCallback(
     () => signInWithProvider("google", "Google"),
     [signInWithProvider],
-  );
-  // GitHub is not a configured Supabase provider in V1 (Google + email only, per
-  // CLAUDE.md) — this must surface that clearly rather than attempting a real
-  // OAuth call that can only fail server-side with a generic, indistinguishable-
-  // from-a-network-blip error message.
-  const signInWithGitHub = useCallback(
-    () => toast("GitHub sign-in isn't available yet — use Google or email below.", "var(--amber)"),
-    [toast],
   );
 
   /** Send an email magic-link / OTP. No provider creds needed; works on its own. */
@@ -2086,7 +2077,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openLeaderboard,
       backFromLeaderboard,
       signInWithGoogle,
-      signInWithGitHub,
       signInWithEmail,
       logout,
       exportPDF,
@@ -2142,7 +2132,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openLeaderboard,
       backFromLeaderboard,
       signInWithGoogle,
-      signInWithGitHub,
       signInWithEmail,
       logout,
       exportPDF,

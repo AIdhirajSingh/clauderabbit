@@ -52,8 +52,6 @@ function parsePort(raw: string | null): number | null {
 export default function CliAuthPage() {
   const [stage, setStage] = useState<Stage>("checking");
   const [error, setError] = useState<string>("");
-  /** Informational note on the login form (e.g. "GitHub isn't available yet") — distinct from `error`, which is a real failure. */
-  const [loginNote, setLoginNote] = useState<string>("");
   const portRef = useRef<number | null>(null);
   const [email, setEmail] = useState("");
   const [token, setToken] = useState<string>("");
@@ -94,10 +92,6 @@ export default function CliAuthPage() {
   function redirectTo(): string {
     const next = portRef.current ? `/cli-auth?port=${portRef.current}` : "/cli-auth";
     return `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
-  }
-
-  function withGitHub() {
-    setLoginNote("GitHub sign-in isn't available yet — use Google or email below.");
   }
 
   async function withGoogle() {
@@ -153,13 +147,11 @@ export default function CliAuthPage() {
       {stage === "needs-login" ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <LoginForm
-            onGithub={withGitHub}
             onGoogle={() => void withGoogle()}
             email={email}
             onEmailChange={setEmail}
             onEmailSubmit={() => void withEmail()}
-            note={error || loginNote || undefined}
-            noteColor={error ? "var(--red)" : "var(--t4)"}
+            note={error || undefined}
           />
         </div>
       ) : (

@@ -2,12 +2,11 @@
 
 /**
  * Login — faithful port of `design-source/Claude Rabbit.dc.html`
- * lines ~838–877: a clean, theme-aware sign-in with GitHub / Google / email
- * options. Wired to real Supabase auth: Google → OAuth, email → magic-link/OTP.
- * GitHub is not a configured provider in V1, so its button surfaces a clear
- * note rather than a fake session (CLAUDE.md: no fake data in the real flow).
- * The markup/styling is unchanged from the shipped design — only the handlers
- * and a controlled email input are added.
+ * lines ~838–877: a clean, theme-aware sign-in with Google / email options.
+ * Wired to real Supabase auth: Google → OAuth, email → magic-link/OTP.
+ * GitHub sign-in was explicitly skipped for launch (never a configured
+ * Supabase provider) and removed entirely rather than kept as a
+ * disabled/graceful-failure button.
  *
  * The actual card markup lives in `../components/LoginForm.tsx`, shared with
  * the standalone `/cli-auth` and `/oauth/authorize` routes so the CLI/MCP
@@ -43,7 +42,6 @@ export function LoginScreen() {
       </div>
       <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <LoginForm
-          onGithub={app.signInWithGitHub}
           onGoogle={app.signInWithGoogle}
           email={email}
           onEmailChange={setEmail}

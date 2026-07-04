@@ -46,7 +46,7 @@ function parseParams(search: string): AuthParams | null {
 export default function OAuthAuthorizePage() {
   const [stage, setStage] = useState<Stage>("checking");
   const [error, setError] = useState("");
-  /** Informational note on the login form (e.g. "GitHub isn't available yet") — distinct from `error`, which is a real failure. */
+  /** Informational note on the login form (e.g. "check your email") — distinct from `error`, which is a real failure. */
   const [loginNote, setLoginNote] = useState("");
   const [email, setEmail] = useState("");
   const paramsRef = useRef<AuthParams | null>(null);
@@ -96,10 +96,6 @@ export default function OAuthAuthorizePage() {
     )}`;
   }
 
-  function withGitHub() {
-    setLoginNote("GitHub sign-in isn't available yet — use Google or email below.");
-  }
-
   async function withGoogle() {
     const supabase = createClient();
     await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirectTo() } });
@@ -134,7 +130,6 @@ export default function OAuthAuthorizePage() {
       {stage === "needs-login" ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <LoginForm
-            onGithub={withGitHub}
             onGoogle={() => void withGoogle()}
             email={email}
             onEmailChange={setEmail}

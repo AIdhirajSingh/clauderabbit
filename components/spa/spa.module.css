@@ -207,14 +207,6 @@
 .loginPrimary:active {
   transform: scale(0.98);
 }
-.loginSecondary:hover {
-  border-color: var(--line3);
-  background: var(--s3);
-  transform: translateY(-1px);
-}
-.loginSecondary:active {
-  transform: scale(0.98);
-}
 .loginEmail:focus {
   border-color: var(--line3);
 }
