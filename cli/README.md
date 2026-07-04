@@ -3,8 +3,7 @@
 A command-line client for [ClaudeRabbit](https://github.com/AIdhirajSingh/clauderabbit) — a
 free, no-login web tool that scans a public GitHub repo or npm package and returns an honest
 0–100 safety score. This CLI lets you (or an AI coding agent) get that verdict **before you
-install a dependency or clone a repo**, from the terminal, and optionally wire it in as an
-opt-in shell hook so it runs automatically before `npm install` / `pnpm install` / `git clone`.
+install a dependency or clone a repo**, from the terminal.
 
 It is a thin, self-contained client of the real, deployed ClaudeRabbit API — the same public
 Supabase edge function and database read the web app and the
@@ -20,21 +19,24 @@ never as a clearance. See "What a scan does and does not prove" below.
 
 ## Install
 
+Published to npm as [`clauderabbit`](https://www.npmjs.com/package/clauderabbit):
+
+```bash
+npm install -g clauderabbit
+clauderabbit scan expressjs/express
+# or run it once with no install:
+npx clauderabbit scan expressjs/express
+```
+
 This is a self-contained package — it has its own `package.json` and does **not** touch or
-depend on the root ClaudeRabbit repo's `package.json`, `node_modules`, or build.
+depend on the root ClaudeRabbit repo's `package.json`, `node_modules`, or build. To build from
+source instead (e.g. to work on the CLI itself):
 
 ```bash
 cd cli
 npm install
 npm run build      # produces dist/index.js
-```
-
-Then run it directly, or link it onto your PATH:
-
-```bash
-node dist/index.js scan expressjs/express
-# or, to get the `clauderabbit` command globally:
-npm link           # inside cli/  (uses the "bin" field)
+npm link           # get the `clauderabbit` command globally from this checkout
 clauderabbit scan expressjs/express
 ```
 
@@ -82,88 +84,6 @@ clauderabbit scan left-pad --json          # resolved via npm → stevemao/left-
 clauderabbit scan https://github.com/owner/repo --ref main
 ```
 
-### `npm-install` / `pnpm-install` / `git-clone` — the install wrappers
-
-```
-clauderabbit npm-install  <args...>   [--yes] [--dry-run] [--no-color]
-clauderabbit pnpm-install <args...>   [--yes] [--dry-run] [--no-color]
-clauderabbit git-clone    <args...>   [--yes] [--dry-run] [--no-color]
-```
-
-Each one scans the package/repo being fetched, prints the honest verdict, then runs the real
-underlying command (`npm <args>`, `pnpm <args>`, `git clone <args>`) with stdio inherited.
-
-The **proceed policy** is deliberately honest and never implies bare safety:
-
-- Only a **Trusted** verdict (score ≥ 90) may proceed on a brief one-line confirmation.
-- **Likely safe** and below always print the full hedge (what was / wasn't verified) and the
-  code/behavior findings **before** proceeding, so a human or agent always sees exactly what
-  was and wasn't verified — never just a green light.
-- Scores below 60 (**High risk** / **Malicious**) additionally print a loud STRONG WARNING.
-- It never silently **blocks** either (a wrong auto-deny is also false certainty). In an
-  interactive terminal it prompts; non-interactively it refuses to auto-run unless `--yes` is
-  given, and even then it proceeds only *after* printing the full verdict.
-
-Flags:
-
-- `--yes` (`-y`) — non-interactive/agent mode: proceed after printing the verdict (never a
-  silent green light).
-- `--dry-run` — scan and report only; never run the underlying command.
-
-Exit codes: `0` ran (or dry-run of a non-warning target); `2` user declined at the prompt;
-`3` non-interactive and no `--yes`; `10` dry-run that surfaced a strong warning; `126`
-refused because an argument contained shell metacharacters; otherwise the underlying command's
-own exit code.
-
-### `install-hooks` / `uninstall-hooks` — opt-in shell integration
-
-```
-clauderabbit install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
-clauderabbit uninstall-hooks [--shell bash|zsh|powershell] [--profile <path>]
-```
-
-Adds (or removes) shell **functions** that wrap `npm`/`pnpm`/`git` so an install or clone is
-scanned first. The block is written between clearly delimited markers, so re-installing is
-idempotent and uninstalling removes exactly what was added, leaving the rest of your profile
-untouched. `--print` prints the block to stdout without writing anything.
-
-Default profile per shell: bash → `~/.bashrc`, zsh → `~/.zshrc`, PowerShell →
-`~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1` (Windows) or
-`~/.config/powershell/Microsoft.PowerShell_profile.ps1` (POSIX). Override with `--profile`.
-Restart the shell (or `source` the profile) afterward.
-
-#### Honest coverage — what the hooks DO and DO NOT wrap
-
-Shell functions can only intercept the exact invocation *shapes* they recognize. This is a
-real, bounded blast radius, and pretending otherwise would itself be a false-certainty
-failure. The hooks:
-
-**Wrapped** (scanned before running):
-- `npm install <pkg>`, `npm i <pkg>`, `npm add <pkg>`
-- `pnpm install <pkg>`, `pnpm i <pkg>`, `pnpm add <pkg>`
-- `git clone <url>`
-
-**NOT wrapped** — these fall straight through to the real tool, **unscanned**:
-- **Bare `npm install`** / `pnpm install` with no package argument (installing an existing
-  `package.json` / lockfile) — no single new dependency is being fetched to scan.
-- **`npm ci`** — installs the whole lockfile; not a single-target fetch.
-- **`npx <pkg>`** — runs a package; not routed through the `npm` function.
-- **`corepack`-invoked pnpm/yarn** — corepack spawns the manager binary directly, bypassing
-  the shell function.
-- **`yarn`** (any form) — not wrapped.
-- **Scoped/workspace/monorepo installs** (`-w`, `--filter`, `--workspace`) — the wrapper
-  extracts explicit package targets from the command line but does not fully model every
-  workspace resolution; a workspace-internal dependency graph is not expanded and scanned.
-- **`--save-dev` / `--save` / other flags** — recognized and skipped as flags; they do not
-  change which package targets are scanned, but the wrapper does not special-case dev-vs-prod.
-- **Any other tool that shells out to npm/git**, any aliased or absolute-path invocation
-  (`/usr/bin/npm`, `command npm`), and anything inside a subshell that did not source the
-  hook.
-
-If you need a guarantee that a specific dependency was scanned, run `clauderabbit scan <pkg>`
-explicitly. The hooks are a convenience for the common interactive case, not a security
-boundary.
-
 ### `mcp install` — wire the ClaudeRabbit MCP server into Claude Desktop
 
 ```
@@ -171,7 +91,7 @@ clauderabbit mcp install
 ```
 
 Finds your real `claude_desktop_config.json` and adds the ClaudeRabbit MCP server
-(`scan_repo` / `get_report`, stdio transport) to it — no manual JSON editing.
+(one cache-aware `scan` tool, stdio transport) to it — no manual JSON editing.
 
 - **Finds the real file, including on Windows.** Checks the classic
   `%APPDATA%\Claude\claude_desktop_config.json` first, then — since a Microsoft
@@ -200,8 +120,8 @@ The CLI (and the MCP server) require a signed-in ClaudeRabbit account — a prod
 decision, not a reflection of the scan data being sensitive (reports stay public). `login`
 opens your browser to sign in and saves the session to `~/.clauderabbit/credentials.json`;
 every later command reuses it silently until you `logout`. Any command that needs a session
-(`scan`, the install wrappers, the MCP server) will trigger this sign-in flow automatically
-the first time if you haven't run `login` yet. `--token` skips the browser and saves a token
+(`scan`, the MCP server) will trigger this sign-in flow automatically the first time if you
+haven't run `login` yet. `--token` skips the browser and saves a token
 issued elsewhere (e.g. the link the MCP server prints when called signed out).
 
 ## JSON output schema
@@ -254,7 +174,7 @@ A successful scan object:
   "packages": [ { "name": "…", "score": 0, "note": "…" } ],
   "forensics": null,                  // full forensic record, present ONLY when sandboxActuallyRan === true
 
-  "proceed": { "trusted": false, "strongWarning": false }  // convenience flags for hook/agent logic
+  "proceed": { "trusted": false, "strongWarning": false }  // convenience flags for scripted/agent logic
 }
 ```
 
@@ -317,15 +237,12 @@ npm run dev         # watch mode
   enforces the "never a bare Safe verdict" rail (mirrors the app's `normalizeReport` /
   `enforceVerdict`).
 - `src/lib/format.ts` — the text and `--json` renderers, the score-color logic, the honest
-  hedge/not-verified copy, and the install-wrapper proceed policy. Terminal styling is real
-  (`chalk` for colors/badges, `boxen` for the bordered score/verdict box), gated by an explicit
-  `color: boolean` the caller computes from `--no-color`/`NO_COLOR`/TTY — never chalk's own
-  independent auto-detection, so it can't disagree with the CLI's decision.
+  hedge/not-verified copy, and the proceed policy exposed via `--json`'s `proceed` field.
+  Terminal styling is real (`chalk` for colors/badges, `boxen` for the bordered score/verdict
+  box), gated by an explicit `color: boolean` the caller computes from
+  `--no-color`/`NO_COLOR`/TTY — never chalk's own independent auto-detection, so it can't
+  disagree with the CLI's decision.
 - `src/commands/scan.ts` — the `scan` command.
-- `src/commands/wrap.ts` — the `npm-install` / `pnpm-install` / `git-clone` wrappers (target
-  extraction, proceed policy, safe child spawn with a shell-metacharacter guard).
-- `src/commands/hooks.ts` — `install-hooks` / `uninstall-hooks` (bash/zsh/PowerShell blocks,
-  idempotent write/remove).
 - `src/index.ts` — arg parsing and command dispatch.
 - `src/lib/auth.ts` — the shared login flow (`login`/`logout`/`ensureLoggedIn`), persisted to
   `~/.clauderabbit/credentials.json` (shared with `mcp-server/`).

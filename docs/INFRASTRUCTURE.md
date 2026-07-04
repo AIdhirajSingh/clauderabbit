@@ -1,6 +1,6 @@
-# INFRASTRUCTURE.md — Claude Rabbit
+# INFRASTRUCTURE.md — ClaudeRabbit
 
-This file is the single source of truth for Claude Rabbit's infrastructure: the accounts, services, projects, credentials, secrets, and the server-side secret method. It is a **factual reference**, not a rulebook — `CLAUDE.md` holds the binding rules and SOP and points here for infra facts.
+This file is the single source of truth for ClaudeRabbit's infrastructure: the accounts, services, projects, credentials, secrets, and the server-side secret method. It is a **factual reference**, not a rulebook — `CLAUDE.md` holds the binding rules and SOP and points here for infra facts.
 
 These are facts to use, not re-derive. Do not guess account IDs, project IDs, regions, secret names, model strings, or endpoints — they are recorded here exactly. If something here conflicts with an assumption, this file wins on infra facts.
 
@@ -49,7 +49,7 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
   - `aiplatform.googleapis.com` — Agent Platform API (formerly Vertex AI; same endpoint, renamed at console level). This is the Gemini-via-Vertex backend, AND the harness's own in-sandbox agentic-analysis calls (see §8b — these must never be misattributed as the scanned repo's own traffic).
   - `compute.googleapis.com` — Compute Engine API, for the NVA gateway VM (`cr-forge-gateway`, §8b) — a persistent, small, shared VM, not a per-scan sandbox host.
   - `run.googleapis.com` — Cloud Run API. The actual detonation substrate (`cr-detonation` Job, §8b) — every scan's untrusted-code execution happens here, not on a Compute Engine VM.
-- This project is Claude Rabbit's permanent GCP home: Gemini-via-Vertex, the Cloud Run detonation substrate, and the shared NVA gateway all live here.
+- This project is ClaudeRabbit's permanent GCP home: Gemini-via-Vertex, the Cloud Run detonation substrate, and the shared NVA gateway all live here.
 
 ### Free-trial credit
 - **$300 / ₹28,710 free-trial Welcome credit, active.** Expires **24 September 2026** (90 days).

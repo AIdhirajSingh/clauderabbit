@@ -1,7 +1,7 @@
 {
   "name": "clauderabbit",
   "version": "0.1.1",
-  "description": "CLI for ClaudeRabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it, with opt-in shell hooks that scan before npm/pnpm install and git clone.",
+  "description": "CLI for ClaudeRabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

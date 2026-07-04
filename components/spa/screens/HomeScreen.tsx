@@ -468,7 +468,7 @@ export function HomeScreen() {
           </h2>
           <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
             The web report is one surface. ClaudeRabbit also ships as an MCP server and a CLI, so the same honest,
-            evidence-backed verdict is one call away &mdash; from an AI coding tool, a terminal, or a pre-install hook &mdash;
+            evidence-backed verdict is one call away &mdash; from an AI coding tool or a terminal &mdash;
             without ever leaving where you already are.
           </p>
         </div>
@@ -481,7 +481,7 @@ export function HomeScreen() {
             },
             {
               title: "CLI",
-              body: "Run the same cache-aware scan from a terminal, or wire it in as an opt-in shell hook that checks a repo or package before npm install / pnpm install / git clone actually run. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
+              body: "Run the same cache-aware scan from a terminal before you install a dependency or clone a repo. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
               cmd: "npx clauderabbit scan owner/repo",
             },
           ].map((t) => (
