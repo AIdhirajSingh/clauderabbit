@@ -476,8 +476,8 @@ export function HomeScreen() {
           {[
             {
               title: "MCP server",
-              body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key, but a free ClaudeRabbit account is required.",
-              cmd: 'claude mcp add clauderabbit -- npx clauderabbit-mcp',
+              body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. The command below wires it into Claude Desktop directly; for claude.ai itself, add https://clauderabbit.in/mcp as a custom connector under Settings → Connectors → Add custom connector, then sign in when prompted. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key, but a free ClaudeRabbit account is required.",
+              cmd: "clauderabbit mcp install",
             },
             {
               title: "CLI",

@@ -1,6 +1,6 @@
 {
   "name": "clauderabbit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI for ClaudeRabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it, with opt-in shell hooks that scan before npm/pnpm install and git clone.",
   "type": "module",
   "main": "dist/index.js",
@@ -15,14 +15,16 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/bundle-mcp-server.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "dev": "tsc -p tsconfig.json --watch"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "boxen": "^8.0.1",
-    "chalk": "^5.6.2"
+    "chalk": "^5.6.2",
+    "zod": "^3.25.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -26,15 +26,17 @@ export interface McpInstallOutcome {
 }
 
 /**
- * mcp-server/ isn't published to npm yet (publish is deferred to the
- * coordinated launch — see CLAUDE.md), so this repo checkout is the only
- * place it exists right now. Resolved relative to THIS file's own compiled
- * location (cli/dist/commands/mcp-install.js is always 3 levels below the
- * repo root), so it works regardless of where the repo was cloned.
+ * mcp-server/ isn't published to npm as its own package, so its built output
+ * is bundled directly into this package at build time instead (see
+ * scripts/bundle-mcp-server.mjs and the "build" script in package.json) —
+ * cli/dist/mcp-server/index.js. Resolved relative to THIS file's own
+ * compiled location (cli/dist/commands/mcp-install.js is always one level
+ * below cli/dist/), so it works from a real `npm install -g clauderabbit`,
+ * not just a full repo checkout.
  */
 function resolveMcpServerEntry(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, "..", "..", "..", "mcp-server", "dist", "index.js");
+  return join(here, "..", "mcp-server", "index.js");
 }
 
 /**
