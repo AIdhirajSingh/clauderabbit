@@ -91,8 +91,39 @@ const CRED_PATH_PATTERNS: Array<{ re: RegExp; label: string }> = [
 const NETWORK_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bhttps?:\/\/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, label: "hardcoded IP URL" },
   { re: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}\b/g, label: "hardcoded IP:port" },
-  { re: /\b(curl|wget)\b[\s\S]{0,80}\bhttps?:\/\//g, label: "shell network fetch" },
 ];
+
+// Shell fetch-and-run, host-CAPTURING (separate from NETWORK_PATTERNS above so
+// the matched host can be checked against SOFTWARE_DISTRIBUTION_HOSTS below).
+const SHELL_FETCH_RE = /\b(curl|wget)\b[\s\S]{0,80}\bhttps?:\/\/([A-Za-z0-9.-]+)/g;
+
+/**
+ * Recognized software-distribution / vendor-install hosts — mirrors the
+ * dynamic sandbox's own SOFTWARE_DISTRIBUTION_HOSTS + REGISTRY_HOSTS
+ * (sandbox/cloudrun/harness/assemble-forensics.py): a BUILD/PROVISION-time
+ * fetch to one of these, with no credential access in the same file, is a
+ * supply-chain/provisioning CAUTION, not on its own evidence of an attack.
+ * This is the SAME distinction, applied to the static fast path instead of
+ * the dynamic phase-aware capture — general to any repo, not specific to any
+ * one script or project. A fetch to an unrecognized host, or a file that ALSO
+ * shows credential access, keeps full weight regardless of host.
+ */
+const SOFTWARE_DISTRIBUTION_HOSTS = [
+  "github.com", "githubusercontent.com", "sourceforge.net", "gitlab.com", "bitbucket.org",
+  "npmjs.org", "pypi.org", "pythonhosted.org", "crates.io", "debian.org", "ubuntu.com",
+  "nodejs.org", "yarnpkg.com",
+  // Well-known vendor-install endpoints for common infra/dev tooling — the same
+  // "named, intended tool, from its own known distribution point" shape as the
+  // registry/source hosts above, just extended past package registries.
+  "docker.com", "deno.land", "rustup.rs", "python.org", "apache.org",
+];
+
+function isRecognizedDistributionHost(host: string): boolean {
+  const h = host.toLowerCase();
+  // Anchored suffix match (never a loose `includes`) so `evil-github.com` or
+  // `github.com.evil.example` cannot spoof a recognized host.
+  return SOFTWARE_DISTRIBUTION_HOSTS.some((d) => h === d || h.endsWith("." + d));
+}
 
 const SECRET_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /AKIA[0-9A-Z]{16}/g, label: "AWS access key id" },
@@ -379,15 +410,59 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     // context, but set NO binary signal (no auto-escalation, no score penalty on
     // its own). Legitimate metaprogramming must not read as malware.
     scanText(f.path, f.content, DYNAMIC_CODE_PATTERNS, regions, isDocFile);
-    if (scanText(f.path, f.content, CRED_PATH_PATTERNS, regions, isDocFile)) {
+    const credInThisFile = scanText(f.path, f.content, CRED_PATH_PATTERNS, regions, isDocFile);
+    if (credInThisFile) {
       signals.credAccess = true;
     }
     if (scanText(f.path, f.content, SECRET_PATTERNS, regions, isDocFile)) {
       signals.embeddedSecret = true;
     }
     if (scanText(f.path, f.content, NETWORK_PATTERNS, regions, isDocFile)) {
+      // Hardcoded IP literals are never a "recognized software-distribution
+      // host" shape — always full weight in an install/provisioning script.
       signals.network = true;
       if (isInstallScript) installTimeNetwork = true;
+    }
+
+    // Shell fetch-and-run (curl|wget ... https://host/...), HOST-AWARE: a
+    // PROVISIONING-context fetch to a recognized software-distribution/vendor
+    // host, with no credential access in this SAME file, is a supply-chain
+    // caution — surfaced as a region, but does not on its own set the hard
+    // `installTimeNetwork` escalation trigger. A fetch to an unrecognized
+    // host, or a file that also reads credentials, keeps FULL weight — this
+    // narrows ONE specific false-positive (legitimate infra-provisioning
+    // scripts fetching a named, intended tool from its own known
+    // distribution point) and does not soften a real install-time attack.
+    SHELL_FETCH_RE.lastIndex = 0;
+    let fetchMatch: RegExpExecArray | null;
+    let fetchCount = 0;
+    let sawUnrecognizedFetch = false;
+    let sawAnyFetch = false;
+    while (
+      (fetchMatch = SHELL_FETCH_RE.exec(f.content)) !== null &&
+      fetchCount < MAX_MATCHES_PER_PATTERN
+    ) {
+      sawAnyFetch = true;
+      fetchCount++;
+      const host = fetchMatch[2];
+      const recognized = isRecognizedDistributionHost(host);
+      if (!recognized) sawUnrecognizedFetch = true;
+      regions.push({
+        file: f.path,
+        reason: isDocFile
+          ? "mentioned in documentation/prose — shell network fetch (not an executable access)"
+          : recognized
+          ? `provisioning fetch to a recognized software-distribution host (${host}) — supply-chain caution, not a confirmed attack on its own`
+          : `shell network fetch to an unrecognized host (${host})`,
+        snippet: snippetAround(f.content, fetchMatch.index),
+      });
+      if (fetchMatch.index === SHELL_FETCH_RE.lastIndex) SHELL_FETCH_RE.lastIndex++;
+    }
+    if (sawAnyFetch && !isDocFile) {
+      signals.network = true;
+      if (isInstallScript && (sawUnrecognizedFetch || credInThisFile)) {
+        installTimeNetwork = true;
+      }
     }
   }
 

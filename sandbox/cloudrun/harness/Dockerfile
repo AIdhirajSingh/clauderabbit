@@ -71,9 +71,20 @@ RUN pip3 install --no-cache-dir --break-system-packages google-genai
 # Run's runtime uid/HOME are not guaranteed to match the build-time user).
 ENV DENO_INSTALL=/opt/cr/tools/deno \
     OPENCODE_INSTALL_DIR=/opt/cr/tools/opencode/bin
+# Pinned to specific, known-good versions (not each vendor's "latest") and
+# downloaded to a file before execution rather than piped straight into
+# sh/bash — a bad response body still cannot run until we choose to execute
+# it. Neither vendor publishes a checksum for the install SCRIPT itself (only
+# for release binaries the script goes on to fetch), so the pin + a separate
+# download step is the real, honest hardening available at this layer; bump
+# these deliberately when adopting a new version, never by tracking latest.
 RUN mkdir -p /opt/cr/tools \
-    && curl -fsSL https://deno.land/install.sh | sh -s -- -y \
-    && curl -fsSL https://opencode.ai/install | bash \
+    && curl -fsSL https://deno.land/install.sh -o /tmp/deno-install.sh \
+    && sh /tmp/deno-install.sh -y v2.9.1 \
+    && rm -f /tmp/deno-install.sh \
+    && curl -fsSL https://opencode.ai/install -o /tmp/opencode-install.sh \
+    && bash /tmp/opencode-install.sh --version 1.17.13 \
+    && rm -f /tmp/opencode-install.sh \
     && chmod -R a+rX /opt/cr/tools
 
 # PATH: repo-pinned Node/corepack tools first (already on the base image PATH),
