@@ -28,7 +28,7 @@ import { runMcpInstallCommand } from "./commands/mcp-install.js";
 import { clearToken, login, saveToken } from "./lib/auth.js";
 import { loadConfig } from "./lib/env.js";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 interface ParsedFlags {
   flags: Record<string, string | boolean>;
