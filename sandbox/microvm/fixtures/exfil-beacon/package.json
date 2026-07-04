@@ -1,9 +1,0 @@
-{
-  "name": "exfil-beacon-fixture",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Claude Rabbit forge test fixture — synthetic condition-gated exfil. Beacons a non-resolving example C2, and only on a success answer reads decoy canary credentials and exfiltrates them. Used to prove the sandbox forge intercepts, forges, and captures. NOT malware.",
-  "scripts": {
-    "postinstall": "node beacon.js"
-  }
-}
