@@ -104,7 +104,7 @@ test("benign JSON-LD is unchanged apart from having no unsafe chars to escape", 
   const ld = {
     "@context": "https://schema.org",
     "@type": "Review",
-    name: "owner/repo Claude Rabbit safety report",
+    name: "owner/repo ClaudeRabbit safety report",
     reviewBody: "No malicious behavior observed in our tests. Owner account is new.",
   };
   const out = safeJsonLd(ld);

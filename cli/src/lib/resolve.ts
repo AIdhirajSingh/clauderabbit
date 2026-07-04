@@ -1,6 +1,6 @@
 /**
  * Resolve a user-supplied scan target into an { owner, repo, ref? } that the
- * Claude Rabbit API understands. The API scans GitHub repos, so an npm package
+ * ClaudeRabbit API understands. The API scans GitHub repos, so an npm package
  * name is resolved to its backing GitHub repo via the public npm registry.
  *
  * Accepted target shapes:
@@ -125,7 +125,7 @@ async function resolveNpmPackage(pkg: string): Promise<{ owner: string; repo: st
   if (!repoUrl) {
     throw new Error(
       `npm package "${pkg}" has no "repository" field, so its source repo can't be resolved automatically. ` +
-        `Pass the GitHub owner/repo directly (e.g. claude-rabbit scan owner/repo).`,
+        `Pass the GitHub owner/repo directly (e.g. clauderabbit scan owner/repo).`,
     );
   }
 
@@ -133,7 +133,7 @@ async function resolveNpmPackage(pkg: string): Promise<{ owner: string; repo: st
   if (!gh) {
     throw new Error(
       `npm package "${pkg}" points at a non-GitHub repository (${repoUrl}). ` +
-        `Claude Rabbit currently scans GitHub repos; pass a GitHub owner/repo directly.`,
+        `ClaudeRabbit currently scans GitHub repos; pass a GitHub owner/repo directly.`,
     );
   }
   return gh;

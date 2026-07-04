@@ -1,5 +1,5 @@
 /**
- * `get_report` — fetch an EXISTING cached Claude Rabbit report for a public
+ * `get_report` — fetch an EXISTING cached ClaudeRabbit report for a public
  * GitHub repo, without triggering a new scan. Returns not-found rather than
  * an error when no report row exists yet.
  */
@@ -18,9 +18,9 @@ const getReportInput = z.object(getReportInputSchema);
 
 export const getReportToolMeta = {
   name: "get_report",
-  title: "Get an existing Claude Rabbit report",
+  title: "Get an existing ClaudeRabbit report",
   description:
-    "Fetches the most recent EXISTING Claude Rabbit report for a public GitHub repo directly from the public report database, without triggering a new scan. Returns a not-found result (not an error) if the repo has never been scanned — call scan_repo in that case. Also returns a link to the public, permanent /owner/repo report page. Never returns a bare \"Safe\" verdict.",
+    "Fetches the most recent EXISTING ClaudeRabbit report for a public GitHub repo directly from the public report database, without triggering a new scan. Returns a not-found result (not an error) if the repo has never been scanned — call scan_repo in that case. Also returns a link to the public, permanent /owner/repo report page. Never returns a bare \"Safe\" verdict.",
 };
 
 export async function runGetReportTool(config: ClaudeRabbitConfig, rawInput: unknown) {
@@ -37,7 +37,7 @@ export async function runGetReportTool(config: ClaudeRabbitConfig, rawInput: unk
         content: [
           {
             type: "text" as const,
-            text: `No cached Claude Rabbit report exists yet for ${owner}/${repo}. Call scan_repo to run one. (Would-be report page: ${reportUrl})`,
+            text: `No cached ClaudeRabbit report exists yet for ${owner}/${repo}. Call scan_repo to run one. (Would-be report page: ${reportUrl})`,
           },
         ],
         structuredContent: { found: false, owner, repo, reportUrl },
@@ -48,7 +48,7 @@ export async function runGetReportTool(config: ClaudeRabbitConfig, rawInput: unk
       content: [
         {
           type: "text" as const,
-          text: `Failed to fetch the Claude Rabbit report for ${owner}/${repo}: ${result.error}`,
+          text: `Failed to fetch the ClaudeRabbit report for ${owner}/${repo}: ${result.error}`,
         },
       ],
     };

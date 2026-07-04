@@ -1,5 +1,5 @@
 /**
- * `scan_repo` — trigger a Claude Rabbit fast-path scan (or hit its cache) for
+ * `scan_repo` — trigger a ClaudeRabbit fast-path scan (or hit its cache) for
  * a public GitHub repo, and return an honest, structured safety summary.
  */
 
@@ -24,10 +24,10 @@ export type ScanRepoInput = z.infer<typeof scanRepoInput>;
 
 export const scanRepoToolMeta = {
   name: "scan_repo",
-  title: "Scan a GitHub repo with Claude Rabbit",
+  title: "Scan a GitHub repo with ClaudeRabbit",
   description:
-    "Runs a Claude Rabbit fast-path safety scan (or returns its cached result) for a public GitHub repo and returns a 0-100 score, a verdict, and an honest breakdown of what was and was NOT verified. " +
-    "IMPORTANT: this tool call only guarantees the static fast path (clone + static scanners + reputation + a fast model read) ran. Claude Rabbit's dynamic sandbox detonation is a separate, privileged process — this tool call may report that escalation to it was decided (`escalationDecided`) without the sandbox having actually executed yet (`sandboxActuallyRan`). Always check `sandboxActuallyRan` / the forensics section before treating a result as runtime-verified. This tool NEVER returns a bare \"Safe\" verdict — every result states what was and was not observed.",
+    "Runs a ClaudeRabbit fast-path safety scan (or returns its cached result) for a public GitHub repo and returns a 0-100 score, a verdict, and an honest breakdown of what was and was NOT verified. " +
+    "IMPORTANT: this tool call only guarantees the static fast path (clone + static scanners + reputation + a fast model read) ran. ClaudeRabbit's dynamic sandbox detonation is a separate, privileged process — this tool call may report that escalation to it was decided (`escalationDecided`) without the sandbox having actually executed yet (`sandboxActuallyRan`). Always check `sandboxActuallyRan` / the forensics section before treating a result as runtime-verified. This tool NEVER returns a bare \"Safe\" verdict — every result states what was and was not observed.",
 };
 
 export async function runScanRepoTool(config: ClaudeRabbitConfig, rawInput: unknown) {
@@ -43,7 +43,7 @@ export async function runScanRepoTool(config: ClaudeRabbitConfig, rawInput: unkn
       content: [
         {
           type: "text" as const,
-          text: `Claude Rabbit scan failed for ${owner}/${repo}: ${result.error}`,
+          text: `ClaudeRabbit scan failed for ${owner}/${repo}: ${result.error}`,
         },
       ],
     };

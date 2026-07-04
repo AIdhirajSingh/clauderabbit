@@ -1,6 +1,6 @@
 /**
  * Privacy Policy — a real, reachable page (required before Google OAuth brand
- * verification). Scoped to what Claude Rabbit actually collects: the product
+ * verification). Scoped to what ClaudeRabbit actually collects: the product
  * is free and no-login-required, so most visitors hand over nothing at all.
  * Facts here are sourced from the real schema (supabase/migrations) and the
  * real auth flow (app/auth/callback), not invented boilerplate.
@@ -13,8 +13,8 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 const REPO_ISSUES_URL = "https://github.com/AIdhirajSingh/clauderabbit/issues";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — Claude Rabbit",
-  description: "What Claude Rabbit collects, why, and what it never does with your data.",
+  title: "Privacy Policy — ClaudeRabbit",
+  description: "What ClaudeRabbit collects, why, and what it never does with your data.",
   alternates: { canonical: `${siteUrl}/privacy` },
 };
 
@@ -45,7 +45,7 @@ export default function PrivacyPolicy() {
         <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
           <RabbitMark size={26} />
           <span className="serif" style={{ fontSize: 19, color: "var(--t1)", letterSpacing: "-0.01em" }}>
-            Claude Rabbit
+            ClaudeRabbit
           </span>
         </Link>
       </nav>
@@ -57,7 +57,7 @@ export default function PrivacyPolicy() {
         <p style={{ fontSize: 13.5, color: "var(--t4)", margin: "0 0 32px" }}>Last updated July 4, 2026</p>
 
         <P>
-          Claude Rabbit is a free, no-login-required tool: paste a public GitHub repo and get back a safety score.
+          ClaudeRabbit is a free, no-login-required tool: paste a public GitHub repo and get back a safety score.
           You can use the entire product — scanning, reports, the CLI, the MCP server — without ever creating an
           account. This page covers what we collect on the rare path where you do sign in, and what little else we
           collect for everyone.
@@ -94,7 +94,7 @@ export default function PrivacyPolicy() {
 
         <H2>Who processes it on our behalf</H2>
         <P>
-          Running Claude Rabbit requires a small number of infrastructure providers acting strictly on our
+          Running ClaudeRabbit requires a small number of infrastructure providers acting strictly on our
           instructions, never on their own:
         </P>
         <ul style={{ fontSize: 15, color: "var(--t2)", lineHeight: 1.7, margin: "0 0 14px", paddingLeft: 20 }}>
@@ -135,7 +135,7 @@ export default function PrivacyPolicy() {
         </P>
 
         <H2>Children&apos;s privacy</H2>
-        <P>Claude Rabbit is not directed at children under 13, and we don&apos;t knowingly collect their data.</P>
+        <P>ClaudeRabbit is not directed at children under 13, and we don&apos;t knowingly collect their data.</P>
 
         <H2>Changes to this policy</H2>
         <P>

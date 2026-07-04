@@ -1,6 +1,6 @@
 /**
- * `claude-rabbit install-hooks [--shell bash|zsh|powershell] [--print]`
- * `claude-rabbit uninstall-hooks [--shell ...]`
+ * `clauderabbit install-hooks [--shell bash|zsh|powershell] [--print]`
+ * `clauderabbit uninstall-hooks [--shell ...]`
  *
  * Manages OPT-IN shell-profile integration that scans a package/repo before an
  * install/clone actually fetches it. This is honest about its real coverage
@@ -19,27 +19,27 @@ import { join } from "node:path";
 
 export type Shell = "bash" | "zsh" | "powershell";
 
-const BEGIN = "# >>> claude-rabbit install-hooks >>>";
-const END = "# <<< claude-rabbit install-hooks <<<";
-const PS_BEGIN = "# >>> claude-rabbit install-hooks >>>";
-const PS_END = "# <<< claude-rabbit install-hooks <<<";
+const BEGIN = "# >>> clauderabbit install-hooks >>>";
+const END = "# <<< clauderabbit install-hooks <<<";
+const PS_BEGIN = "# >>> clauderabbit install-hooks >>>";
+const PS_END = "# <<< clauderabbit install-hooks <<<";
 
 /** POSIX (bash/zsh) shell functions that wrap npm, pnpm, and git. */
 function posixBlock(): string {
   return `${BEGIN}
-# Opt-in Claude Rabbit safety scan before install/clone.
+# Opt-in ClaudeRabbit safety scan before install/clone.
 # COVERAGE (honest — see the CLI README):
 #   Wrapped: \`npm install/i/add <pkg>\`, \`pnpm install/i/add <pkg>\`,
 #            \`git clone <url>\` — when a NEW package/repo target is present.
 #   NOT wrapped (fall straight through, unscanned): bare \`npm install\`
 #   (lockfile/package.json), \`npm ci\`, \`npx\`, \`corepack\`-spawned pnpm,
 #   \`yarn\`, other tools that shell out, and any subshell/aliased path that
-#   does not go through these functions. Removal: \`claude-rabbit uninstall-hooks\`.
-if command -v claude-rabbit >/dev/null 2>&1; then
+#   does not go through these functions. Removal: \`clauderabbit uninstall-hooks\`.
+if command -v clauderabbit >/dev/null 2>&1; then
   npm() {
     case "$1" in
       install|i|add)
-        claude-rabbit npm-install "$@" ;;
+        clauderabbit npm-install "$@" ;;
       *)
         command npm "$@" ;;
     esac
@@ -47,7 +47,7 @@ if command -v claude-rabbit >/dev/null 2>&1; then
   pnpm() {
     case "$1" in
       install|i|add)
-        claude-rabbit pnpm-install "$@" ;;
+        clauderabbit pnpm-install "$@" ;;
       *)
         command pnpm "$@" ;;
     esac
@@ -55,7 +55,7 @@ if command -v claude-rabbit >/dev/null 2>&1; then
   git() {
     if [ "$1" = "clone" ]; then
       shift
-      claude-rabbit git-clone "$@"
+      clauderabbit git-clone "$@"
     else
       command git "$@"
     fi
@@ -67,31 +67,31 @@ ${END}`;
 /** PowerShell functions that wrap npm, pnpm, and git. */
 function powershellBlock(): string {
   return `${PS_BEGIN}
-# Opt-in Claude Rabbit safety scan before install/clone.
+# Opt-in ClaudeRabbit safety scan before install/clone.
 # COVERAGE (honest — see the CLI README):
 #   Wrapped: \`npm install/i/add <pkg>\`, \`pnpm install/i/add <pkg>\`,
 #            \`git clone <url>\` — when a NEW package/repo target is present.
 #   NOT wrapped (fall straight through, unscanned): bare \`npm install\`,
 #   \`npm ci\`, \`npx\`, \`corepack\`-spawned pnpm, \`yarn\`, other tools that
-#   shell out. Removal: \`claude-rabbit uninstall-hooks\`.
-if (Get-Command claude-rabbit -ErrorAction SilentlyContinue) {
+#   shell out. Removal: \`clauderabbit uninstall-hooks\`.
+if (Get-Command clauderabbit -ErrorAction SilentlyContinue) {
   function npm {
     if ($args.Count -ge 1 -and @('install','i','add') -contains $args[0]) {
-      claude-rabbit npm-install @args
+      clauderabbit npm-install @args
     } else {
       npm.cmd @args
     }
   }
   function pnpm {
     if ($args.Count -ge 1 -and @('install','i','add') -contains $args[0]) {
-      claude-rabbit pnpm-install @args
+      clauderabbit pnpm-install @args
     } else {
       pnpm.cmd @args
     }
   }
   function git {
     if ($args.Count -ge 1 -and $args[0] -eq 'clone') {
-      claude-rabbit git-clone @($args | Select-Object -Skip 1)
+      clauderabbit git-clone @($args | Select-Object -Skip 1)
     } else {
       git.exe @args
     }
@@ -180,8 +180,8 @@ export function installHooks(
     path,
     action: already ? "updated" : "installed",
     message: already
-      ? `Updated the Claude Rabbit hook block in ${path}.`
-      : `Installed the Claude Rabbit hook block in ${path}.`,
+      ? `Updated the ClaudeRabbit hook block in ${path}.`
+      : `Installed the ClaudeRabbit hook block in ${path}.`,
   };
 }
 
@@ -198,12 +198,12 @@ export function uninstallHooks(shell: Shell, opts: { profile?: string } = {}): H
     return {
       path,
       action: "absent",
-      message: `No Claude Rabbit hook block found in ${path}; nothing to remove.`,
+      message: `No ClaudeRabbit hook block found in ${path}; nothing to remove.`,
     };
   }
   const cleaned = stripExistingBlock(existing, begin, end);
   writeFileSync(path, cleaned, "utf8");
-  return { path, action: "removed", message: `Removed the Claude Rabbit hook block from ${path}.` };
+  return { path, action: "removed", message: `Removed the ClaudeRabbit hook block from ${path}.` };
 }
 
 /** Human-facing post-install reminder about re-sourcing the profile. */

@@ -22,7 +22,7 @@ export default function NotFound() {
         <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
           <RabbitMark size={26} />
           <span className="serif" style={{ fontSize: 19, color: "var(--t1)", letterSpacing: "-0.01em" }}>
-            Claude Rabbit
+            ClaudeRabbit
           </span>
         </Link>
       </nav>
@@ -59,7 +59,7 @@ export default function NotFound() {
             borderRadius: 13,
           }}
         >
-          Back to Claude Rabbit
+          Back to ClaudeRabbit
         </Link>
       </div>
     </main>

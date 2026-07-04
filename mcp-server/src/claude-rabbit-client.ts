@@ -1,5 +1,5 @@
 /**
- * Thin HTTP client for the real, deployed Claude Rabbit API — the same public
+ * Thin HTTP client for the real, deployed ClaudeRabbit API — the same public
  * Supabase edge function and PostgREST route the Next.js frontend calls
  * (`lib/scan.ts` runScan, `lib/report-fetch.ts` fetchLatestReportRest). No
  * scanning or scoring logic is reimplemented here; this module only sends the
@@ -179,7 +179,7 @@ async function consumeScanStream(
 }
 
 /**
- * Trigger (or hit the cache for) a Claude Rabbit fast-path scan by calling the
+ * Trigger (or hit the cache for) a ClaudeRabbit fast-path scan by calling the
  * real deployed edge function — POST {supabaseUrl}/functions/v1/scan.
  *
  * IMPORTANT (honesty rail): this call, by itself, only ever runs the static
@@ -219,11 +219,11 @@ export async function scanRepo(config: ClaudeRabbitConfig, args: ScanArgs): Prom
       if (controller.signal.aborted) {
         return { ok: false, error: `The scan timed out after ${config.scanTimeoutMs}ms. Please retry.` };
       }
-      return { ok: false, error: `Network error reaching Claude Rabbit: ${(err as Error).message}` };
+      return { ok: false, error: `Network error reaching ClaudeRabbit: ${(err as Error).message}` };
     }
 
     if (!res.ok) {
-      let message = `Claude Rabbit returned HTTP ${res.status}.`;
+      let message = `ClaudeRabbit returned HTTP ${res.status}.`;
       try {
         const body = (await res.json()) as { error?: string };
         if (typeof body.error === "string" && body.error) message = body.error;
@@ -249,7 +249,7 @@ export async function scanRepo(config: ClaudeRabbitConfig, args: ScanArgs): Prom
     try {
       payload = await res.json();
     } catch {
-      return { ok: false, error: "Claude Rabbit returned an unreadable response." };
+      return { ok: false, error: "ClaudeRabbit returned an unreadable response." };
     }
     return { ok: true, report: normalizeReport(payload), stageCount: 0 };
   } finally {
@@ -291,16 +291,16 @@ export async function getReport(
         signal: controller.signal,
       });
     } catch (err) {
-      return { ok: false, notFound: false, error: `Network error reaching Claude Rabbit: ${(err as Error).message}` };
+      return { ok: false, notFound: false, error: `Network error reaching ClaudeRabbit: ${(err as Error).message}` };
     }
     if (!res.ok) {
-      return { ok: false, notFound: false, error: `Claude Rabbit returned HTTP ${res.status}.` };
+      return { ok: false, notFound: false, error: `ClaudeRabbit returned HTTP ${res.status}.` };
     }
     let rows: unknown;
     try {
       rows = await res.json();
     } catch {
-      return { ok: false, notFound: false, error: "Claude Rabbit returned an unreadable response." };
+      return { ok: false, notFound: false, error: "ClaudeRabbit returned an unreadable response." };
     }
     if (!Array.isArray(rows) || rows.length === 0) {
       return {

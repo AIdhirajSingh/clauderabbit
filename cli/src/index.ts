@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * claude-rabbit — CLI entrypoint.
+ * clauderabbit — CLI entrypoint.
  *
  * Commands:
  *   scan <target> [--json] [--ref <r>] [--no-color]
@@ -95,21 +95,21 @@ function normalizeShell(raw: string | boolean | undefined): Shell {
   return detectShell();
 }
 
-const HELP = `claude-rabbit — scan a public GitHub repo or npm package for a 0-100 safety
+const HELP = `clauderabbit — scan a public GitHub repo or npm package for a 0-100 safety
 score before you install or clone it. Free, no login. Never states a bare "Safe".
 
 USAGE
-  claude-rabbit <command> [options]
+  clauderabbit <command> [options]
 
 COMMANDS
   scan <target> [--json] [--ref <ref>]
-      Run (or hit the cache for) a Claude Rabbit fast-path scan and print the
+      Run (or hit the cache for) a ClaudeRabbit fast-path scan and print the
       verdict. <target> is owner/repo, a GitHub URL, owner/repo@ref, or an npm
       package name (resolved to its GitHub repo via the npm registry).
       --json  Emit the documented machine-readable object (see README).
 
   report <target> [--json]
-      Read an EXISTING cached report from Claude Rabbit's public DB without
+      Read an EXISTING cached report from ClaudeRabbit's public DB without
       triggering a new scan. Prints an honest "not found" if none exists.
 
   npm-install  <args...> [--yes] [--dry-run]
@@ -157,7 +157,7 @@ async function main(argv: string[]): Promise<number> {
     case "scan": {
       const target = positionals[1];
       if (!target) {
-        process.stderr.write("scan: missing <target>. Try: claude-rabbit scan owner/repo\n");
+        process.stderr.write("scan: missing <target>. Try: clauderabbit scan owner/repo\n");
         return 1;
       }
       const outcome = await runScanCommand(target, {
@@ -172,7 +172,7 @@ async function main(argv: string[]): Promise<number> {
     case "report": {
       const target = positionals[1];
       if (!target) {
-        process.stderr.write("report: missing <target>. Try: claude-rabbit report owner/repo\n");
+        process.stderr.write("report: missing <target>. Try: clauderabbit report owner/repo\n");
         return 1;
       }
       return runReportCommand(target, { json: flags.json === true, color });
@@ -217,7 +217,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     default:
-      process.stderr.write(`Unknown command "${command}". Run \`claude-rabbit help\`.\n`);
+      process.stderr.write(`Unknown command "${command}". Run \`clauderabbit help\`.\n`);
       return 1;
   }
 }

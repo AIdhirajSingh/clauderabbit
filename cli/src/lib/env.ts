@@ -1,9 +1,9 @@
 /**
- * Configuration for the Claude Rabbit CLI.
+ * Configuration for the ClaudeRabbit CLI.
  *
- * Claude Rabbit is a free, no-login, public product: the Supabase URL and the
+ * ClaudeRabbit is a free, no-login, public product: the Supabase URL and the
  * Supabase PUBLISHABLE key are not secrets. They are the exact two values the
- * Claude Rabbit web app itself ships in its client bundle (see the repo root
+ * ClaudeRabbit web app itself ships in its client bundle (see the repo root
  * `.env.example` and `docs/INFRASTRUCTURE.md` — the publishable key is
  * explicitly documented as safe client-side). This CLI ships with them as
  * built-in defaults so it works with zero setup, and lets them be overridden
@@ -13,7 +13,7 @@
  * uses, so the CLI hits the same live API.
  */
 
-/** Default Supabase project URL (Claude Rabbit's production project). */
+/** Default Supabase project URL (ClaudeRabbit's production project). */
 const DEFAULT_SUPABASE_URL = "https://mjvlczaytkhvsolnhhkz.supabase.co";
 
 /** Default Supabase publishable key (client-safe, matches the web app). */

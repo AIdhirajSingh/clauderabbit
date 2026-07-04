@@ -1,5 +1,5 @@
 /**
- * Claude Rabbit — fast-path scan orchestrator (Supabase Edge Function).
+ * ClaudeRabbit — fast-path scan orchestrator (Supabase Edge Function).
  *
  * The two-speed funnel's fast path (PRD §3-4):
  *   paste URL → resolve SHA → cache check → static scan (flag regions) →
@@ -372,7 +372,7 @@ function buildScoreChapter(score: number, breakdown: ScoreDelta[]): LogChapter {
 
 function buildSystemPrompt(): string {
   return [
-    "You are the Claude Rabbit security analyst. Claude Rabbit is a free tool that",
+    "You are the ClaudeRabbit security analyst. ClaudeRabbit is a free tool that",
     "tells a developer whether a stranger's public GitHub repo is safe to run.",
     "You score 0-100 and write an honest, plain-language report.",
     "",
@@ -774,7 +774,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // to analyze or persist a repo whose metadata is not public.
   if (metadata.isPrivate || metadata.visibility !== "public") {
     return jsonResponse(
-      { error: "Claude Rabbit only scans public repositories." },
+      { error: "ClaudeRabbit only scans public repositories." },
       403,
     );
   }

@@ -1,5 +1,5 @@
 /**
- * Shared CORS + JSON-response helpers for Claude Rabbit edge functions.
+ * Shared CORS + JSON-response helpers for ClaudeRabbit edge functions.
  *
  * The scan endpoint is a public, no-login surface (the first scan is free with
  * no auth — see CLAUDE.md V1 scope), so we allow any origin for now. Auth and

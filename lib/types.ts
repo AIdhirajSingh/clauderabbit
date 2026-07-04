@@ -1,5 +1,5 @@
 /**
- * Domain types for Claude Rabbit, derived from the Claude Design prototype's
+ * Domain types for ClaudeRabbit, derived from the Claude Design prototype's
  * data shapes (`design-source/Claude Rabbit.dc.html`, REPOS / LEADERBOARD /
  * ACTIVITY / useCases, lines ~1009–1110 and ~1285–1290).
  *

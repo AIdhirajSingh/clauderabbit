@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Claude Rabbit MCP server — stdio entrypoint.
+ * ClaudeRabbit MCP server — stdio entrypoint.
  *
- * Exposes two tools that call the REAL, deployed, public Claude Rabbit API
+ * Exposes two tools that call the REAL, deployed, public ClaudeRabbit API
  * (the same Supabase edge function + PostgREST route the Next.js frontend
  * uses) so any MCP-compatible AI coding tool can check a public GitHub repo's
  * safety score before installing or running it:
@@ -11,7 +11,7 @@
  *   - get_report(owner, repo)       — read an existing cached report only.
  *
  * No scanning or scoring logic lives here — this process is a pure client of
- * Claude Rabbit's public API surface. See README.md for setup.
+ * ClaudeRabbit's public API surface. See README.md for setup.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

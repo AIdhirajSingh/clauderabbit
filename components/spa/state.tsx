@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The Claude Rabbit SPA "brain" — a faithful React port of the DC prototype's
+ * The ClaudeRabbit SPA "brain" — a faithful React port of the DC prototype's
  * single-component logic (`design-source/Claude Rabbit.dc.html`, the
  * <script> at lines ~983–1374).
  *
@@ -347,7 +347,7 @@ const PAGE_COL_B: SnapProps[] = [
       { n: "4", w: "52%", c: "var(--t4)" },
     ],
   },
-  { kind: "web", title: "Claude Rabbit", sub: "Free open-source malware scanning.", accent: "var(--green)" },
+  { kind: "web", title: "ClaudeRabbit", sub: "Free open-source malware scanning.", accent: "var(--green)" },
   { kind: "web", title: "requests.readthedocs.io", sub: "HTTP for humans.", accent: "var(--blue)" },
   { kind: "repo", title: "AdhirajSinghEntrepreneur/pockit", lang: "Dart", langColor: "var(--blue)", stars: "1.2k", score: "88", color: "var(--blue)" },
   {
@@ -1728,7 +1728,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const params = new URLSearchParams({ owner: r.owner, repo: r.name, theme: cur.theme });
     void downloadExport(
       `/api/export/pdf?${params.toString()}`,
-      `${r.owner}-${r.name}-claude-rabbit-report.pdf`,
+      `${r.owner}-${r.name}-clauderabbit-report.pdf`,
       "PDF",
     );
   }, [downloadExport, toast]);
@@ -1743,7 +1743,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const params = new URLSearchParams({ owner: r.owner, repo: r.name });
     void downloadExport(
       `/api/export/markdown?${params.toString()}`,
-      `${r.owner}-${r.name}-claude-rabbit-report.md`,
+      `${r.owner}-${r.name}-clauderabbit-report.md`,
       "Markdown file",
     );
   }, [downloadExport, toast]);

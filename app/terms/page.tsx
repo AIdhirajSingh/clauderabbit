@@ -12,8 +12,8 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 const REPO_URL = "https://github.com/AIdhirajSingh/clauderabbit";
 
 export const metadata: Metadata = {
-  title: "Terms of Service — Claude Rabbit",
-  description: "The terms that govern using Claude Rabbit's free repo-scanning service.",
+  title: "Terms of Service — ClaudeRabbit",
+  description: "The terms that govern using ClaudeRabbit's free repo-scanning service.",
   alternates: { canonical: `${siteUrl}/terms` },
 };
 
@@ -44,7 +44,7 @@ export default function TermsOfService() {
         <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
           <RabbitMark size={26} />
           <span className="serif" style={{ fontSize: 19, color: "var(--t1)", letterSpacing: "-0.01em" }}>
-            Claude Rabbit
+            ClaudeRabbit
           </span>
         </Link>
       </nav>
@@ -56,13 +56,13 @@ export default function TermsOfService() {
         <p style={{ fontSize: 13.5, color: "var(--t4)", margin: "0 0 32px" }}>Last updated July 4, 2026</p>
 
         <P>
-          By using Claude Rabbit — the website, the CLI, or the MCP server — you agree to these terms. If you
+          By using ClaudeRabbit — the website, the CLI, or the MCP server — you agree to these terms. If you
           don&apos;t agree, don&apos;t use the service.
         </P>
 
         <H2>What the service is</H2>
         <P>
-          Claude Rabbit scans a public GitHub repository, npm package, or dependency you give it: it reads the
+          ClaudeRabbit scans a public GitHub repository, npm package, or dependency you give it: it reads the
           code, checks reputation signals, and — for a share of scans — runs the code in an isolated, disposable
           sandbox to observe its real behavior. It returns a 0–100 safety score and a plain-language report,
           published permanently at a public <code>/owner/repo</code> URL.
@@ -70,9 +70,9 @@ export default function TermsOfService() {
 
         <H2>Results are informational, not a guarantee</H2>
         <P>
-          A Claude Rabbit score is a best-effort signal, not a certification of safety. We never state a bare
+          A ClaudeRabbit score is a best-effort signal, not a certification of safety. We never state a bare
           &quot;Safe&quot; verdict, and every report tells you plainly what was and was not verified. You are
-          responsible for your own decisions about what code to run, install, or trust — Claude Rabbit is one
+          responsible for your own decisions about what code to run, install, or trust — ClaudeRabbit is one
           input to that decision, not a substitute for it.
         </P>
 
@@ -80,7 +80,7 @@ export default function TermsOfService() {
         <P>You agree not to:</P>
         <ul style={{ fontSize: 15, color: "var(--t2)", lineHeight: 1.7, margin: "0 0 14px", paddingLeft: 20 }}>
           <li>Attempt to attack, break out of, or abuse the scanning sandbox or our infrastructure.</li>
-          <li>Use the service to flood, spam, or deny service to Claude Rabbit or the repos it scans.</li>
+          <li>Use the service to flood, spam, or deny service to ClaudeRabbit or the repos it scans.</li>
           <li>Submit content for the purpose of harassment, or to publish a report about a repo you don&apos;t
             have the right to have scanned under applicable law.</li>
           <li>Circumvent rate limits or abuse mechanisms meant to keep the service free for everyone.</li>
@@ -102,14 +102,14 @@ export default function TermsOfService() {
 
         <H2>Advertising</H2>
         <P>
-          Claude Rabbit is currently ad-free. We may show advertising on the site in the future to help keep the
+          ClaudeRabbit is currently ad-free. We may show advertising on the site in the future to help keep the
           service free and self-sustaining; if we do, these terms will be updated first and any ads will be
           clearly labeled as such.
         </P>
 
         <H2>Open source</H2>
         <P>
-          Claude Rabbit&apos;s source is available at{" "}
+          ClaudeRabbit&apos;s source is available at{" "}
           <a href={REPO_URL} target="_blank" rel="noopener noreferrer" style={{ color: "var(--t1)" }}>
             our GitHub repository
           </a>
@@ -127,9 +127,9 @@ export default function TermsOfService() {
 
         <H2>Limitation of liability</H2>
         <P>
-          To the fullest extent permitted by law, Claude Rabbit and its maintainers are not liable for any
+          To the fullest extent permitted by law, ClaudeRabbit and its maintainers are not liable for any
           indirect, incidental, or consequential damages arising from your use of the service, including damages
-          from running code based on a Claude Rabbit score or report.
+          from running code based on a ClaudeRabbit score or report.
         </P>
 
         <H2>Changes</H2>

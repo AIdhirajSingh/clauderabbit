@@ -148,7 +148,7 @@ export async function GET(req: Request): Promise<Response> {
       margin: { top: "0in", bottom: "0in", left: "0in", right: "0in" },
     });
 
-    const filename = `${owner}-${repo}-claude-rabbit-report.pdf`;
+    const filename = `${owner}-${repo}-clauderabbit-report.pdf`;
     return new Response(new Uint8Array(pdfBuffer), {
       status: 200,
       headers: {

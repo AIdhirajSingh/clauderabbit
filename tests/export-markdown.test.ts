@@ -24,7 +24,7 @@ const SITE_URL = "http://localhost:2311";
 
 test("reportToMarkdown renders title, score, and verdict for a static-read report", () => {
   const md = reportToMarkdown(flask, SITE_URL);
-  assert.match(md, /^# pallets\/flask — Claude Rabbit safety report/);
+  assert.match(md, /^# pallets\/flask — ClaudeRabbit safety report/);
   assert.match(md, /\*\*Score:\*\* 98 \/ 100/);
   assert.match(md, /\*\*Verdict:\*\* Trusted/);
   assert.match(md, /Static read/);

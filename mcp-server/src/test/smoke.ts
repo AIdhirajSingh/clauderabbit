@@ -1,7 +1,7 @@
 /**
  * Live end-to-end smoke test — actually invokes this server's tools through a
  * real MCP `Client`/`Server` pair (linked in-memory transport, same code path
- * as stdio) against the REAL deployed Claude Rabbit Supabase project. Not a
+ * as stdio) against the REAL deployed ClaudeRabbit Supabase project. Not a
  * mock: every HTTP call goes out over the network to the real API.
  *
  * Run with: npm run build && npm run test:smoke

@@ -1,5 +1,5 @@
 /**
- * Minimal, standalone mirror of the Claude Rabbit `Report` shape this server
+ * Minimal, standalone mirror of the ClaudeRabbit `Report` shape this server
  * needs (see the main app's `lib/types.ts`). Reimplemented here rather than
  * imported because `mcp-server/` is a fully separate package with no
  * dependency on the Next.js app's `lib/`. Fields not used by this server's
@@ -78,7 +78,7 @@ export interface Forensics {
   [key: string]: unknown;
 }
 
-/** A Claude Rabbit safety report for a single repo. */
+/** A ClaudeRabbit safety report for a single repo. */
 export interface Report {
   id: string;
   owner: string;

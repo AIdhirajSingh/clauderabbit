@@ -9,7 +9,7 @@ import { ImageResponse } from "next/og";
  * generic card. Static, on-brand, dark-theme colors (the design's default
  * theme) — matches app/globals.css's dark palette exactly, not approximated.
  */
-export const alt = "Claude Rabbit — a free, open-source security product";
+export const alt = "ClaudeRabbit — a free, open-source security product";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -45,7 +45,7 @@ export default function OpengraphImage() {
           <circle cx="16" cy="19.8" r="1.8" fill="#f4f1ea" />
         </svg>
         <div style={{ display: "flex", marginTop: 28, fontSize: 64, fontWeight: 600, color: "#f4f1ea", letterSpacing: "-0.02em" }}>
-          Claude Rabbit
+          ClaudeRabbit
         </div>
         <div style={{ display: "flex", marginTop: 18, fontSize: 30, color: "#a39c90" }}>
           Open source ships malware, too.
