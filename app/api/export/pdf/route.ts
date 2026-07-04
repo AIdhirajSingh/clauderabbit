@@ -3,20 +3,21 @@
  * export of a report (Task 1, report-export features).
  *
  * Replaces the old `window.print()` "export" (manual Ctrl+P → Save as PDF) with
- * a genuine server-rendered PDF: this route launches a headless Chromium
- * (Puppeteer, bundled Chromium — see rationale below), navigates to the REAL
- * rendered report page (`/[owner]/[repo]`, the same server-rendered page every
- * visitor and search engine sees), forces the requested theme, waits for full
- * render (fonts + hydration), and captures the entire report as ONE continuous
- * pageless PDF (no default page-break slicing) with backgrounds preserved.
+ * a genuine server-rendered PDF: this route launches a headless Chromium,
+ * navigates to the REAL rendered report page (`/[owner]/[repo]`, the same
+ * server-rendered page every visitor and search engine sees), forces the
+ * requested theme, waits for full render (fonts + hydration), and captures the
+ * entire report as ONE continuous pageless PDF (no default page-break slicing)
+ * with backgrounds preserved.
  *
- * Library choice: plain `puppeteer` (not `puppeteer-core` + `@sparticuz/chromium`).
- * This app is self-hosted (it already spawns real child processes and SSHes to a
- * GCP host for the sandbox — see `app/api/deep/route.ts`), not deployed to
- * Vercel/edge, so there is no serverless cold-start or bundle-size constraint that
- * would justify the lighter `puppeteer-core` + separately-managed Chromium
- * binary. Plain `puppeteer` bundles a matching Chromium build, needs no extra
- * infra, and is the simplest thing that is actually correct here.
+ * Library choice: `puppeteer-core` + `@sparticuz/chromium` in production,
+ * plain `puppeteer`'s bundled Chromium locally. This app is deployed to Vercel
+ * (serverless functions, read-only filesystem outside `/tmp`, no system Chrome
+ * libs) — plain `puppeteer`'s full Chromium download does not run there
+ * (verified live: "Could not find Chrome" on the deployed function). Locally,
+ * `puppeteer` is still the simplest thing that works (its bundled Chromium
+ * needs no extra setup), so we borrow its executable path there instead of
+ * requiring a second local Chromium install.
  *
  * Navigating to the real page (rather than rendering the React tree out-of-band)
  * guarantees the PDF is byte-for-byte what a visitor sees — same CSS variables,
@@ -26,10 +27,35 @@
  * server serves; no credentials are read or forwarded.
  */
 
-import puppeteer from "puppeteer";
+import chromium from "@sparticuz/chromium";
+import puppeteer from "puppeteer-core";
+import type { Browser } from "puppeteer-core";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
+
+/** Vercel sets this on every deployment (any environment); absent in local dev. */
+const IS_VERCEL = !!process.env.VERCEL;
+
+async function launchBrowser(): Promise<Browser> {
+  if (IS_VERCEL) {
+    return puppeteer.launch({
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+    });
+  }
+  // Local dev: reuse the full `puppeteer` package's bundled Chromium binary
+  // (already a project dependency) via puppeteer-core's launcher, so no
+  // separate local Chromium install is required.
+  const { default: fullPuppeteer } = await import("puppeteer");
+  return puppeteer.launch({
+    executablePath: await fullPuppeteer.executablePath(),
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+}
 
 const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311").replace(/\/+$/, "");
@@ -68,12 +94,9 @@ export async function GET(req: Request): Promise<Response> {
 
   const targetUrl = `${SITE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
-  let browser;
+  let browser: Browser;
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    browser = await launchBrowser();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return json({ error: `could not launch headless browser: ${msg}` }, 500);

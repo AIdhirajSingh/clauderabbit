@@ -65,3 +65,6 @@ yarn-error.log*
 ClaudeRabbit Claude Design.zip
 *.zip
 .impeccable/
+
+.vercel
+.env*
