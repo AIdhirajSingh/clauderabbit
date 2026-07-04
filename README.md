@@ -33,8 +33,9 @@ credentials, locked egress, resource caps) and **reimaged/deleted after every sc
 
 ## Using it
 
-**On the web** — go to the site, paste a GitHub URL (or `owner/repo`), hit scan. No
-login required; signing in with Google or email just saves your scan history.
+**On the web** — go to **[clauderabbit.in](https://clauderabbit.in)**, paste a GitHub URL (or
+`owner/repo`), hit scan. No login required; signing in with Google or email just saves your
+scan history.
 
 **From the terminal** — the [CLI](cli/) (`clauderabbit`) scans a repo or npm
 package before you install or clone it:
@@ -127,8 +128,10 @@ components/spa/          the faithful design port (8 screens + shared chrome + s
 lib/                     score logic, types, demo seed, supabase clients, scan client, report view
 supabase/migrations/     schema + RLS + scan-limit function
 supabase/functions/scan/ the fast-path orchestrator (Vertex seam, GitHub fetch, static signals)
-sandbox/                 the dynamic sandbox engine (the moat) — see sandbox/README.md;
-                         sandbox/microvm/ holds the golden-image + on-demand compute-pool scripts
+sandbox/                 the dynamic sandbox engine (the moat) — production runs as Cloud Run
+                         Job executions (sandbox/cloudrun/), which replaced the earlier
+                         microVM-on-persistent-host substrate (sandbox/microvm/, superseded but
+                         kept — see sandbox/cloudrun/harness/README.md for what changed and why)
 cli/                     the clauderabbit CLI (scan / install-clone wrappers / shell hooks)
 mcp-server/              MCP server (one cache-aware scan tool over stdio for AI coding tools)
 docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
