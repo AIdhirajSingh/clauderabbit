@@ -15,9 +15,9 @@
  * second "read-only" tool would add.
  *
  * Path is domain-portable by construction: everything below is relative
- * (`req.url`'s origin), so swapping the placeholder *.vercel.app domain for
- * a real one later requires no code change — the endpoint is just
- * `<domain>/mcp`.
+ * (`req.url`'s origin, via `siteOrigin()`), so the endpoint is just
+ * `<domain>/mcp` — it moved from the placeholder `*.vercel.app` domain to
+ * the real `clauderabbit.in` with no code change.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -61,7 +61,7 @@ function unauthorized(req: Request): Response {
   });
 }
 
-function buildServer(accessToken: string): McpServer {
+function buildServer(accessToken: string, req: Request): McpServer {
   const server = new McpServer({ name: "clauderabbit-mcp-remote", version: "0.1.0" });
 
   server.registerTool(
@@ -94,7 +94,7 @@ function buildServer(accessToken: string): McpServer {
         };
       }
       const view = buildReportView(result.report);
-      const reportUrl = `${process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") ?? "https://clauderabbit.vercel.app"}/${owner}/${repo}`;
+      const reportUrl = `${siteOrigin(req)}/${owner}/${repo}`;
       const fresh = !result.report.cached;
       const text = formatReportText(view, reportUrl, fresh);
       const structured = structuredReport(view, reportUrl, fresh);
@@ -118,7 +118,7 @@ async function handle(req: Request): Promise<Response> {
   const userId = token ? await verifyToken(token) : null;
   if (!userId || !token) return unauthorized(req);
 
-  const server = buildServer(token);
+  const server = buildServer(token, req);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — a fresh server+transport per request, safe for serverless
     enableJsonResponse: true, // plain JSON response; no long-lived SSE stream to keep alive in a serverless function

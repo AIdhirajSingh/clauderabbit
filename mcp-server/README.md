@@ -38,13 +38,13 @@ This produces `dist/index.js`, a stdio MCP server.
 
 ClaudeRabbit is a free, public, no-login product, so the Supabase URL and the Supabase **publishable** key are not secrets — they are the exact two values the ClaudeRabbit web app itself ships in its client bundle. This server ships with ClaudeRabbit's production values built in as defaults, so **it works with zero configuration.**
 
-Optional environment variables (see `.env.example`) let you point the server at a different deployment (a fork, staging, or a future production domain):
+Optional environment variables (see `.env.example`) let you point the server at a different deployment (a fork or a staging environment):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_RABBIT_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` | Supabase project URL to call. |
 | `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | (ClaudeRabbit's public key) | Supabase publishable key — safe client-side, same one the web app uses. |
-| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.vercel.app` | Base URL used to build the "full report" link and sign-in link in tool output. |
+| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.in` | Base URL used to build the "full report" link and sign-in link in tool output. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long `scan` will wait for a fresh (uncached) scan to finish streaming before giving up. |
 
 No API key is ever required, but a **signed-in ClaudeRabbit account is required to call the
@@ -60,7 +60,7 @@ Called without one, it returns an `isError` result whose text gives you the exac
 to run:
 
 ```
-Sign in required. Visit https://clauderabbit.vercel.app/cli-auth to sign in, then run:
+Sign in required. Visit https://clauderabbit.in/cli-auth to sign in, then run:
   clauderabbit login --token <token>
 ```
 
@@ -122,7 +122,7 @@ Any client that supports stdio MCP servers uses the same shape: a `command` of `
 ### Remote (Streamable HTTP) — claude.ai custom connector
 
 For clients that connect over HTTP instead of spawning a local process (e.g. a claude.ai
-custom connector), the same `scan` tool is also served remotely at `https://clauderabbit.vercel.app/mcp`
+custom connector), the same `scan` tool is also served remotely at `https://clauderabbit.in/mcp`
 (Streamable HTTP, OAuth 2.1 with PKCE for sign-in — no separate setup needed, the connector's
 own "Connect" flow handles login). Add it in claude.ai under Settings → Connectors → Add
 custom connector, using that URL.

@@ -46,7 +46,7 @@ clauderabbit scan expressjs/express                  # run a real scan
 
 **From an AI coding agent** — the [MCP server](mcp-server/) exposes one cache-aware `scan`
 tool over stdio so an agent can check a dependency before running it (also served remotely
-over Streamable HTTP at `clauderabbit.vercel.app/mcp` for claude.ai custom connectors). Build
+over Streamable HTTP at `clauderabbit.in/mcp` for claude.ai custom connectors). Build
 it once (`cd mcp-server && npm install && npm run build`), then wire it into Claude Desktop
 with `cd cli && npm install && npm run build && node dist/index.js mcp install` — it finds
 your real `claude_desktop_config.json` (including the Windows MSIX/Store install's different

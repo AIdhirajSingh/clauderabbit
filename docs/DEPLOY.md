@@ -34,7 +34,7 @@ Import the repo in Vercel and set exactly these **Project Environment Variables*
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B` |
-| `NEXT_PUBLIC_SITE_URL` | your final Vercel URL, e.g. `https://clauderabbit.vercel.app` |
+| `NEXT_PUBLIC_SITE_URL` | the real production domain, `https://clauderabbit.in` |
 
 Do **not** add `CR_*`, `CLOUDSDK_PYTHON`, or any secret to Vercel — those are for the
 local deep-scan controller only and must never reach a deploy. Then deploy. Once you
@@ -48,11 +48,13 @@ Google sign-in redirects back to `NEXT_PUBLIC_SITE_URL`, and Supabase only honor
 redirect URLs on its allowlist. In the Supabase dashboard →
 **Authentication → URL Configuration**:
 
-- **Site URL:** set to your Vercel URL (e.g. `https://clauderabbit.vercel.app`).
+- **Site URL:** set to the real production domain (`https://clauderabbit.in`).
 - **Redirect URLs:** add both
-  - `https://<your-vercel-domain>/auth/callback`
-  - `https://<your-vercel-domain>/**` (wildcard, so previews/paths work)
-  - keep `http://localhost:2311/auth/callback` for local dev.
+  - `https://<your-domain>/auth/callback`
+  - `https://<your-domain>/**` (wildcard, so previews/paths work)
+  - keep `http://localhost:2311/auth/callback` for local dev, and keep any prior
+    `*.vercel.app` entries around during a domain transition rather than removing
+    them immediately.
 
 That's all Google sign-in needs on prod — the Google OAuth client already trusts the
 Supabase callback, and Supabase forwards to whichever app URL is on this allowlist.

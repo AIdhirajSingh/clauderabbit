@@ -220,7 +220,7 @@ A successful scan object:
   "score": 96,                        // 0–100
   "verdict": "Trusted",               // "Trusted" | "Likely safe" | "Caution" | "High risk" | "Malicious"
   "scoreColor": "green",              // "green" | "blue" | "yellow" | "red" (fixed product color logic)
-  "reportUrl": "https://clauderabbit.vercel.app/expressjs/express",
+  "reportUrl": "https://clauderabbit.in/expressjs/express",
   "cached": false,
   "fresh": true,                      // true = a fresh scan just ran; false = served from cache
   "escalationDecided": false,         // the fast path DECIDED to escalate (NOT proof the sandbox ran)
@@ -293,7 +293,7 @@ All optional — the CLI works with zero setup against ClaudeRabbit's production
 |---|---|---|
 | `CLAUDE_RABBIT_SUPABASE_URL` | ClaudeRabbit's project URL | Supabase project to call. |
 | `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | ClaudeRabbit's public key | Publishable key — safe client-side, same one the web app uses. |
-| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.vercel.app` | Base URL used to build the report links in output. |
+| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.in` | Base URL used to build the report links in output. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long a fresh (uncached) scan will stream before giving up. |
 | `NO_COLOR` | — | Set to disable ANSI color (also auto-disabled when stdout is not a TTY). |
 
