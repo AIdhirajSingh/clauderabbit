@@ -8,6 +8,7 @@
  * the star CTA, the Orbit conveyor, the huge wordmark, and link columns.
  */
 
+import Link from "next/link";
 import { onActivate, useApp } from "../state";
 import { FOOTER_COLS } from "../state";
 import styles from "../spa.module.css";
@@ -651,7 +652,15 @@ export function HomeScreen() {
               fontSize: 12.5,
             }}
           >
-            <span>© 2026 Claude Rabbit · A free, open-source security product, protecting the open-source community from malware.</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              © 2026 Claude Rabbit · A free, open-source security product, protecting the open-source community from malware.
+              <Link href="/privacy" style={{ color: "var(--t5)", textDecoration: "underline" }}>
+                Privacy
+              </Link>
+              <Link href="/terms" style={{ color: "var(--t5)", textDecoration: "underline" }}>
+                Terms
+              </Link>
+            </span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)", boxShadow: "0 0 7px var(--green)" }} />
               All systems operational

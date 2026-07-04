@@ -2,7 +2,7 @@
   "name": "claude-rabbit",
   "version": "0.1.0",
   "private": true,
-  "description": "Claude Rabbit — paste a public GitHub repo, get an honest 0-100 safety score. Everyone reads the code; we run it.",
+  "description": "Claude Rabbit — paste a public GitHub repo, get an honest 0-100 safety score. Open source ships malware, too; we clone it into a sandbox and run it for real.",
   "scripts": {
     "dev": "next dev -p 2311",
     "build": "next build",
