@@ -20,8 +20,8 @@ const DEFAULT_SUPABASE_URL = "https://mjvlczaytkhvsolnhhkz.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
   "sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B";
 
-/** Default public site origin for building report-page links. */
-const DEFAULT_SITE_URL = "http://localhost:2311";
+/** Default public site origin for building report-page and sign-in links. */
+const DEFAULT_SITE_URL = "https://clauderabbit.vercel.app";
 
 /** Default ceiling on how long `scan` will wait for a fresh scan to finish. */
 const DEFAULT_SCAN_TIMEOUT_MS = 120_000;

@@ -10,6 +10,7 @@
  *   git-clone    <args...> [--yes] [--dry-run]
  *   install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
  *   uninstall-hooks [--shell ...] [--profile <path>]
+ *   login | logout
  *   help | --help | -h
  *   version | --version | -v
  *
@@ -27,6 +28,7 @@ import {
   type Shell,
 } from "./commands/hooks.js";
 import { getReport } from "./lib/client.js";
+import { clearToken, ensureLoggedIn, login, saveToken } from "./lib/auth.js";
 import { loadConfig } from "./lib/env.js";
 import {
   colorPalette,
@@ -52,7 +54,7 @@ function parseArgs(argv: string[]): ParsedFlags {
   const positionals: string[] = [];
   const passthrough: string[] = [];
   let afterDashDash = false;
-  const VALUE_FLAGS = new Set(["--ref", "--shell", "--profile"]);
+  const VALUE_FLAGS = new Set(["--ref", "--shell", "--profile", "--token"]);
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -96,7 +98,8 @@ function normalizeShell(raw: string | boolean | undefined): Shell {
 }
 
 const HELP = `clauderabbit — scan a public GitHub repo or npm package for a 0-100 safety
-score before you install or clone it. Free, no login. Never states a bare "Safe".
+score before you install or clone it. Requires a signed-in ClaudeRabbit account
+(opens your browser the first time). Never states a bare "Safe".
 
 USAGE
   clauderabbit <command> [options]
@@ -127,6 +130,14 @@ COMMANDS
       clone. Coverage is intentionally scoped — see the README for exactly
       which invocation shapes are and are NOT wrapped. --print shows the block
       without writing it.
+
+  login [--token <token>]
+      Sign in (opens your browser). Saved to ~/.clauderabbit/credentials.json
+      and reused silently on every future run until \`logout\`. --token skips
+      the browser and saves a token issued elsewhere (e.g. by the MCP
+      server's sign-in link).
+  logout
+      Forget the saved sign-in.
 
   help | version
 
@@ -216,6 +227,32 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case "login": {
+      if (typeof flags.token === "string" && flags.token) {
+        if (!flags.token.startsWith("cr_cli_")) {
+          process.stderr.write("login: that doesn't look like a ClaudeRabbit token.\n");
+          return 1;
+        }
+        saveToken(flags.token);
+        process.stderr.write("Signed in.\n");
+        return 0;
+      }
+      try {
+        await login(loadConfig());
+        process.stderr.write("Signed in.\n");
+        return 0;
+      } catch (err) {
+        process.stderr.write(`Sign-in failed: ${(err as Error).message}\n`);
+        return 1;
+      }
+    }
+
+    case "logout": {
+      const cleared = clearToken();
+      process.stderr.write(cleared ? "Signed out.\n" : "Not signed in.\n");
+      return 0;
+    }
+
     default:
       process.stderr.write(`Unknown command "${command}". Run \`clauderabbit help\`.\n`);
       return 1;
@@ -228,6 +265,21 @@ async function runReportCommand(
 ): Promise<number> {
   const config = loadConfig();
   const palette = opts.color ? colorPalette : plainPalette;
+
+  // Require sign-in — reports are public data, but the CLI/MCP tools
+  // themselves are gated (real product/access decision; see CLAUDE.md).
+  try {
+    await ensureLoggedIn(config);
+  } catch (err) {
+    const msg = `Sign-in failed: ${(err as Error).message}`;
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify({ error: msg, target: rawTarget }, null, 2)}\n`);
+    } else {
+      process.stderr.write(`${palette.red("Error:")} ${msg}\n`);
+    }
+    return 1;
+  }
+
   let resolved;
   try {
     resolved = await resolveTarget(rawTarget);

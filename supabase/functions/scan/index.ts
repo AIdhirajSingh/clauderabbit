@@ -239,10 +239,15 @@ async function sha256Hex(input: string): Promise<string> {
  * Extract a TRUSTED user id from the request's Authorization bearer, or null.
  *
  * The publishable (anon) key is the logged-out caller's bearer — it is NOT a
- * user, so it yields null. Any other bearer is treated as a user session JWT
- * and verified against GoTrue via `auth.getUser(token)`; a valid token yields
- * its user id. Verification failure (expired/garbage token, network error)
- * degrades to null so the scan still proceeds as the logged-out free flow.
+ * user, so it yields null. A `cr_cli_`-prefixed bearer is a CLI/MCP login
+ * token (see `issue_cli_token`/`verify_cli_token`, migration
+ * 20260704000001_cli_tokens.sql) and is verified against that table. Any
+ * other bearer is treated as a user session JWT and verified against GoTrue
+ * via `auth.getUser(token)`; a valid token yields its user id. Verification
+ * failure (expired/garbage token, network error) degrades to null so the web
+ * app's scan still proceeds as the logged-out free flow — the CLI/MCP login
+ * GATE (below, in the request handler) is what actually turns a null id into
+ * a refusal for those two callers specifically.
  */
 async function verifiedUserId(req: Request): Promise<string | null> {
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -256,6 +261,18 @@ async function verifiedUserId(req: Request): Promise<string | null> {
     Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
   if ((publishable && token === publishable) || token.startsWith("sb_publishable_")) {
     return null;
+  }
+
+  if (token.startsWith("cr_cli_")) {
+    try {
+      const db = serviceClient();
+      const { data, error } = await db.rpc("verify_cli_token", { p_token: token });
+      if (error || typeof data !== "string") return null;
+      return data;
+    } catch (e) {
+      console.error("cli token verify failed:", e instanceof Error ? e.message : e);
+      return null;
+    }
   }
 
   const url = Deno.env.get("SUPABASE_URL");
@@ -276,6 +293,21 @@ async function verifiedUserId(req: Request): Promise<string | null> {
     console.error("token verify failed:", e instanceof Error ? e.message : e);
     return null;
   }
+}
+
+/**
+ * CLI/MCP calls identify themselves with this header (never sent by the web
+ * app) and, as of the login requirement, MUST resolve to a real user via
+ * `verifiedUserId` above or be refused — a real product/access decision
+ * (CLAUDE.md: the web app itself stays fully anonymous-friendly; this gate
+ * is scoped to the two distribution surfaces only, via this header).
+ */
+const CLI_CLIENT_HEADER = "x-clauderabbit-client";
+const SIGN_IN_URL = `${(Deno.env.get("SITE_URL") ?? "https://clauderabbit.vercel.app").replace(/\/+$/, "")}/cli-auth`;
+
+function clientKind(req: Request): "cli" | "mcp" | null {
+  const v = (req.headers.get(CLI_CLIENT_HEADER) ?? "").trim().toLowerCase();
+  return v === "cli" || v === "mcp" ? v : null;
 }
 
 // --- Helpers -----------------------------------------------------------------
@@ -701,6 +733,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // other Bearer is treated as a user JWT and verified via GoTrue. Verification
   // failure degrades to anon (userId=null) — it never fails the scan.
   const userId = await verifiedUserId(req);
+
+  // CLI/MCP login gate: a real product/access decision, scoped to these two
+  // distribution surfaces only via the client-identifying header — the web
+  // app never sends it and stays fully anonymous-friendly (CLAUDE.md).
+  const caller = clientKind(req);
+  if (caller && !userId) {
+    return jsonResponse(
+      {
+        error: `Sign in to use the ClaudeRabbit ${caller === "cli" ? "CLI" : "MCP server"}.`,
+        signInUrl: SIGN_IN_URL,
+      },
+      401,
+    );
+  }
 
   let db: SupabaseClient;
   try {

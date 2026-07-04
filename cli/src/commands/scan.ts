@@ -7,6 +7,7 @@
  */
 
 import { scanRepo } from "../lib/client.js";
+import { ensureLoggedIn } from "../lib/auth.js";
 import { loadConfig } from "../lib/env.js";
 import {
   colorPalette,
@@ -51,6 +52,16 @@ export async function runScanCommand(
     return { exitCode: 1 };
   };
 
+  // 0. Require sign-in — the CLI only works for a logged-in ClaudeRabbit
+  // user (real product/access decision; the web app itself stays free and
+  // anonymous). Logs in interactively (opens the browser) if not already.
+  let token: string;
+  try {
+    token = await ensureLoggedIn(config);
+  } catch (err) {
+    return fail(`Sign-in failed: ${(err as Error).message}`);
+  }
+
   // 1. Resolve the target (may hit the npm registry).
   let resolved;
   try {
@@ -78,6 +89,7 @@ export async function runScanCommand(
   const result = await scanRepo(
     config,
     { owner: resolved.owner, repo: resolved.repo, ...(ref ? { ref } : {}) },
+    token,
     onStage,
   );
 

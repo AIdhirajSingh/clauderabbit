@@ -72,6 +72,14 @@ interface ScanArgs {
    * omitted (or when the response is a non-streamed cache hit) no stages fire.
    */
   onStage?: (stage: ScanStage) => void;
+  /**
+   * Set ONLY by the remote MCP server (app/mcp/route.ts) to identify itself to
+   * the edge function's CLI/MCP login gate. The web app never sets this, so its
+   * existing anonymous-scan behavior is completely unaffected — the gate only
+   * triggers when this header is present (see supabase/functions/scan/index.ts
+   * `clientKind`).
+   */
+  clientKind?: "mcp";
 }
 
 /** Hard ceiling for a single scan request — longer than the slowest deep read. */
@@ -456,6 +464,7 @@ export async function runScan(args: ScanArgs): Promise<ScanResult> {
           // falls back to the publishable key for the logged-out free scan.
           apikey: key,
           Authorization: `Bearer ${args.accessToken ?? key}`,
+          ...(args.clientKind ? { "X-ClaudeRabbit-Client": args.clientKind } : {}),
         },
         body: JSON.stringify({
           owner: args.owner,

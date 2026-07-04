@@ -26,6 +26,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 import { scanRepo } from "../lib/client.js";
+import { ensureLoggedIn } from "../lib/auth.js";
 import { loadConfig } from "../lib/env.js";
 import {
   colorPalette,
@@ -241,6 +242,16 @@ export async function runWrapCommand(
     return { exitCode: code };
   }
 
+  // A real target will be scanned, so ClaudeRabbit's login requirement
+  // applies here too (opens the browser to sign in if not already).
+  let token: string;
+  try {
+    token = await ensureLoggedIn(config);
+  } catch (err) {
+    process.stderr.write(p.red(`Sign-in failed: ${(err as Error).message}\n`));
+    return { exitCode: 1 };
+  }
+
   let anyStrongWarning = false;
 
   for (const rawTarget of targets) {
@@ -265,7 +276,7 @@ export async function runWrapCommand(
       owner: resolved.owner,
       repo: resolved.repo,
       ...(resolved.ref ? { ref: resolved.ref } : {}),
-    });
+    }, token);
 
     if (!result.ok) {
       process.stderr.write(

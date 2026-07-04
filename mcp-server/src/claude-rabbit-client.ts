@@ -193,7 +193,11 @@ async function consumeScanStream(
  * Callers of this client MUST key "did the sandbox really run" off
  * `report.forensics` being present, never off `report.deep` alone.
  */
-export async function scanRepo(config: ClaudeRabbitConfig, args: ScanArgs): Promise<ScanResult> {
+export async function scanRepo(
+  config: ClaudeRabbitConfig,
+  args: ScanArgs,
+  token: string,
+): Promise<ScanResult> {
   const url = `${config.supabaseUrl}/functions/v1/scan`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.scanTimeoutMs);
@@ -206,7 +210,8 @@ export async function scanRepo(config: ClaudeRabbitConfig, args: ScanArgs): Prom
         headers: {
           "Content-Type": "application/json",
           apikey: config.supabasePublishableKey,
-          Authorization: `Bearer ${config.supabasePublishableKey}`,
+          Authorization: `Bearer ${token}`,
+          "X-ClaudeRabbit-Client": "mcp",
         },
         body: JSON.stringify({
           owner: args.owner,
