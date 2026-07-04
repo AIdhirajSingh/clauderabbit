@@ -139,18 +139,27 @@ with `gcloud compute instances list` **empty**.
    reported as **UNVERIFIED**, never clean — absence of captured malice is not a
    clean bill.
 
-## Synthetic fixtures (authored locally — NEVER published)
+## Synthetic fixtures (removed 2026-07-04 — pending redesign)
 
-All emulate attack *shapes*; none is real malware.
+`sandbox/fixtures/` and `sandbox/microvm/fixtures/` were deleted from the repo:
+shipping deliberately malicious-looking code (even synthetic, never-published,
+attack-*shape*-only code) in-tree meant this repo's own self-scan through
+ClaudeRabbit scored itself "Malicious" — a static reader has no way to tell
+"test fixture used to prove our own detector" from real product behavior. The
+proof runs below are real and stay as the historical record; the fixture
+*files* themselves are gone and will be redesigned/restored later (likely
+synthesized on demand or kept outside the main repo tree, not checked in
+as-is). `sandbox/agent/test_knowledge_graph.py`'s fixture-dependent tests are
+skipped (not failing) until then — see that file's module docstring.
 
-| Fixture | Source | Emulates |
+All emulated attack *shapes*; none was real malware.
+
+| Fixture (removed) | Source | Emulated |
 |---|---|---|
 | `fixtures/exfil-c2` | `index.js` | RUN-phase credential exfil: resolves `exfil.evil-c2.example` and HTTPS-POSTs decoy "loot". The sinkhole/forge proof. |
 | `fixtures/cred-stealer` | `scripts/postinstall.js` | Install-time supply-chain exfil (postinstall reads creds + exfils + `eval(atob())` obfuscation). |
 | `fixtures/miner` | `index.js` | Crypto-miner: pins CPU + beacons a mining pool. |
 | `fixtures/benign-deps` | `package.json` deps | A genuinely benign repo with a real npm dependency — proves the registry-allowlist path actually installs deps and builds, then runs clean. |
-
-Build them: `bash sandbox/fixtures/build-fixtures.sh` (the `*.tar.gz` are gitignored).
 
 ## Proven live — on the microVM substrate (project `redacted-gcp-project`, us-central1-a)
 

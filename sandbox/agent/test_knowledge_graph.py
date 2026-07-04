@@ -3,12 +3,21 @@
 test_knowledge_graph.py — proves the knowledge graph surfaces what a
 flagged-region-only scan would miss.
 
-Runs build_graph() against the EXISTING synthetic fixtures in sandbox/fixtures/
-and asserts the buried malicious files rank HIGH in `hotspots`, the benign
-fixture stays low, and the structural extraction (install scripts, manifests,
-import edges) is correct. stdlib unittest only.
+Runs build_graph() against the synthetic fixtures that used to live in
+sandbox/fixtures/ and asserts the buried malicious files rank HIGH in
+`hotspots`, the benign fixture stays low, and the structural extraction
+(install scripts, manifests, import edges) is correct. stdlib unittest only.
 
 Run: python sandbox/agent/test_knowledge_graph.py
+
+sandbox/fixtures/ was deleted (2026-07-04): it shipped deliberately
+malicious-looking code (cred-stealer, exfil-c2, miner) so the sandbox's own
+detection pipeline could be proven — but that made this repo's own self-scan
+score itself "Malicious", since a static reader can't tell "test fixture" from
+real product behavior. The fixtures are planned to be redesigned/restored
+(likely outside the main repo tree, or synthesized on demand instead of
+checked in) rather than dropped for good. Until then, every test class below
+is skipped rather than left to fail on a missing path — see FIXTURES.exists().
 
 Note on the miner fixture: a crypto-miner's malice is RUNTIME behavior (CPU burn
 + a beacon to a plain hostname). The existing static-scan pattern set — which we
@@ -32,6 +41,10 @@ from knowledge_graph import build_graph  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 DENO_AVAILABLE = shutil.which("deno") is not None
+FIXTURES_REMOVED_REASON = (
+    "sandbox/fixtures/ removed 2026-07-04 (made the repo self-scan as "
+    "\"Malicious\"); pending redesign/restore — see this file's module docstring"
+)
 
 
 def _hotspot_for(graph: dict, path: str) -> dict | None:
@@ -49,6 +62,7 @@ def _rank_of(graph: dict, path: str) -> int | None:
     return None
 
 
+@unittest.skipUnless(FIXTURES.exists(), FIXTURES_REMOVED_REASON)
 class CredStealerTests(unittest.TestCase):
     """The malice is buried in scripts/postinstall.js — a stage-1 flagged-region
     scan over a few top-level files might never read it."""
@@ -93,6 +107,7 @@ class CredStealerTests(unittest.TestCase):
         self.assertIn("https", specs)
 
 
+@unittest.skipUnless(FIXTURES.exists(), FIXTURES_REMOVED_REASON)
 class ExfilC2Tests(unittest.TestCase):
     """The exfil logic lives in index.js (credential reads + C2 POST)."""
 
@@ -120,6 +135,7 @@ class ExfilC2Tests(unittest.TestCase):
         self.assertIn("dns", specs)
 
 
+@unittest.skipUnless(FIXTURES.exists(), FIXTURES_REMOVED_REASON)
 class MinerTests(unittest.TestCase):
     """The miner's index.js is RUNTIME-malicious (CPU burn + beacon). Static
     signals can't separate it from benign code; the graph still elevates it as
@@ -142,6 +158,7 @@ class MinerTests(unittest.TestCase):
         self.assertIn("package.json", types)
 
 
+@unittest.skipUnless(FIXTURES.exists(), FIXTURES_REMOVED_REASON)
 class BenignDepsTests(unittest.TestCase):
     """The benign fixture must stay LOW: no high hotspot, low max suspicion."""
 
@@ -169,6 +186,7 @@ class BenignDepsTests(unittest.TestCase):
         self.assertIn("leftpad", pkg["deps"])
 
 
+@unittest.skipUnless(FIXTURES.exists(), FIXTURES_REMOVED_REASON)
 class CrossFixtureTests(unittest.TestCase):
     """The headline property: buried/malicious fixtures out-rank the benign one."""
 
@@ -190,6 +208,7 @@ class CrossFixtureTests(unittest.TestCase):
         self.assertIsNone(self.cred["summary"]["static_scan_note"])
 
 
+@unittest.skipUnless(FIXTURES.exists(), FIXTURES_REMOVED_REASON)
 class StructureTests(unittest.TestCase):
     """Graph hygiene: bounds, noise handling, no crash on the fixture set."""
 
