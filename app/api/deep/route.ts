@@ -51,6 +51,7 @@ import {
 import { enqueueRow, fetchPosition, fetchStage, setStatus } from "@/lib/deep-queue-client";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { fetchLatestReport } from "@/lib/report-fetch";
+import { deriveGitUsrBin } from "@/lib/git-bash-path";
 
 // Real, live-diagnosed bug (a scan reporting "forensic record was not
 // confirmed" despite the write genuinely landing — verified directly against
@@ -111,16 +112,26 @@ function resolveBash(): string {
 }
 
 function resolvePathPrepend(): string {
-  if (process.env.CR_SANDBOX_PATH_PREPEND) return process.env.CR_SANDBOX_PATH_PREPEND;
-  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+  const dirs: string[] = [];
+  if (process.env.CR_SANDBOX_PATH_PREPEND) {
+    dirs.push(process.env.CR_SANDBOX_PATH_PREPEND);
+  } else if (process.platform === "win32" && process.env.LOCALAPPDATA) {
     const candidate = `${process.env.LOCALAPPDATA}\\Google\\Cloud SDK\\google-cloud-sdk\\bin`;
     try {
-      if (existsSync(candidate)) return candidate;
+      if (existsSync(candidate)) dirs.push(candidate);
     } catch {
       /* fall through */
     }
   }
-  return "";
+  if (process.platform === "win32") {
+    const gitUsrBin = deriveGitUsrBin(BASH);
+    try {
+      if (gitUsrBin && existsSync(gitUsrBin)) dirs.push(gitUsrBin);
+    } catch {
+      /* fall through */
+    }
+  }
+  return dirs.join(";");
 }
 
 const BASH = resolveBash();
