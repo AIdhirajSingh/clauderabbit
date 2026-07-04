@@ -1,6 +1,6 @@
 {
   "name": "clauderabbit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CLI for ClaudeRabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it.",
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/bundle-mcp-server.mjs",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json && node scripts/bundle-mcp-server.mjs",
+    "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "dev": "tsc -p tsconfig.json --watch"
