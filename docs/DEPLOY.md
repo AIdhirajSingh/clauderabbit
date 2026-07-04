@@ -22,6 +22,26 @@ you on purpose. Everything else is done.
   `/api/deep` is **inert on Vercel by default** (`CR_ALLOW_LOCAL_DEEP` unset → 403), so a
   deploy cannot trigger detonations. Deep scans keep running from your local controller
   and land in the shared DB; Vercel serves those cached deep reports to the world.
+  When the website's own automatic follow-up call to `/api/deep` hits this gate (the
+  normal case on Vercel), the report still renders honestly — the "Sandbox run
+  incomplete" badge (tested, `tests/report-view-honesty.test.ts`) — and the toast shown
+  to the visitor is a plain, real-user-facing sentence (`lib/scan.ts`'s `runDeepScan`),
+  not this gate's own operator-facing error text.
+- **The `scan` edge function itself never dispatches** — deciding escalation and
+  triggering a real detonation are deliberately decoupled (the escalation decision is
+  persisted regardless of whether a detonation ever runs). Only the website's SPA
+  automatically follows up with `/api/deep` after an escalation. **The CLI and MCP
+  server never call `/api/deep` at all** — by design, not an oversight — because
+  neither can reach this developer-machine-only controller from wherever they actually
+  run. Both surfaces are honest about it on every escalated result instead: the CLI's
+  text/`--json` output and the MCP tool's response both carry `escalationDecided` /
+  `sandboxActuallyRan`, and the CLI prints an explicit "flagged as ambiguous enough to
+  escalate, but escalation being decided is not the same as a sandbox run happening" note
+  (`cli/src/lib/format.ts`) rather than ever implying a detonation happened. A caller
+  that wants the real detonation to run must do so from the machine actually operating
+  the local controller (the same one this section documents) — a raw API call
+  bypassing all three of these real surfaces is the only way to end up with an
+  escalation decision and no path to an honest explanation of it.
 
 ---
 

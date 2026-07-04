@@ -661,8 +661,19 @@ export async function runDeepScan(args: DeepScanArgs): Promise<DeepScanResult> {
     if (!res.ok || !res.body) {
       let msg = "The sandbox run could not start.";
       try {
-        const b = (await res.json()) as { error?: string };
-        if (typeof b.error === "string" && b.error) msg = b.error;
+        const b = (await res.json()) as { error?: string; reason?: string };
+        if (b.reason === "unavailable") {
+          // The route's own gate-rejection text (`b.error`) is written for the
+          // person operating the sandbox controller ("set CR_ALLOW_LOCAL_DEEP=1
+          // ..."), not for a real visitor — this is the expected, documented
+          // state on Vercel (docs/DEPLOY.md), not an error to alarm them with.
+          msg =
+            "A live sandbox detonation isn't available from this deployment right now — this result reflects the static read only.";
+        } else if (typeof b.error === "string" && b.error) {
+          // A genuine failure from a controller that WAS available (e.g. a
+          // real Cloud Run execution error) — keep the real, specific detail.
+          msg = b.error;
+        }
       } catch {
         // non-JSON body — keep the default message
       }
