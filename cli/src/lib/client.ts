@@ -209,6 +209,7 @@ async function consumeScanStream(
 export async function scanRepo(
   config: ClaudeRabbitConfig,
   args: ScanArgs,
+  token: string,
   onStage?: StageListener,
 ): Promise<ScanResult> {
   const url = `${config.supabaseUrl}/functions/v1/scan`;
@@ -223,7 +224,8 @@ export async function scanRepo(
         headers: {
           "Content-Type": "application/json",
           apikey: config.supabasePublishableKey,
-          Authorization: `Bearer ${config.supabasePublishableKey}`,
+          Authorization: `Bearer ${token}`,
+          "X-ClaudeRabbit-Client": "cli",
         },
         body: JSON.stringify({
           owner: args.owner,
@@ -242,8 +244,11 @@ export async function scanRepo(
     if (!res.ok) {
       let message = `ClaudeRabbit returned HTTP ${res.status}.`;
       try {
-        const body = (await res.json()) as { error?: string };
+        const body = (await res.json()) as { error?: string; signInUrl?: string };
         if (typeof body.error === "string" && body.error) message = body.error;
+        if (res.status === 401 && typeof body.signInUrl === "string") {
+          message = `${message} Run \`clauderabbit login\`, or visit ${body.signInUrl}`;
+        }
       } catch {
         // non-JSON error body — keep the status-derived fallback
       }

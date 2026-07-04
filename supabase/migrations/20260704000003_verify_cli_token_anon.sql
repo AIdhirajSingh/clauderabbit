@@ -1,0 +1,25 @@
+-- =============================================================================
+-- Claude Rabbit — let the Next.js app verify CLI/MCP tokens too
+-- Migration: 20260704000003_verify_cli_token_anon.sql
+--
+-- WHY THIS EXISTS:
+--   The remote (Streamable HTTP) MCP server lives in the Next.js app
+--   (app/mcp/route.ts), which — per CLAUDE.md's secrets rule — holds only the
+--   public Supabase URL + publishable key, never a service-role credential.
+--   It still needs to authenticate incoming `cr_cli_...` bearer tokens the
+--   same way supabase/functions/scan already does via `verify_cli_token`
+--   (20260704000001_cli_tokens.sql, currently service_role-only).
+--
+--   This is safe to widen: `verify_cli_token` is SECURITY DEFINER and only
+--   ever returns a user id (or null) — it never exposes token_hash or any
+--   other row content, and the underlying `cli_tokens` table itself stays
+--   fully RLS-locked (no anon policy added here). Granting EXECUTE to anon
+--   is exactly what SECURITY DEFINER is for: the function encapsulates the
+--   one narrow, safe operation (verify a token the caller already holds) an
+--   anon-keyed client legitimately needs, without touching a real secret.
+--
+-- Scope: ADDITIVE only. Widens one function's grant; changes no other
+-- migration's columns/functions/data.
+-- =============================================================================
+
+grant execute on function public.verify_cli_token(text) to anon;

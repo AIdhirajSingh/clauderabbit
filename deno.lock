@@ -22,6 +22,8 @@
   "workspace": {
     "packageJson": {
       "dependencies": [
+        "npm:@modelcontextprotocol/sdk@^1.29.0",
+        "npm:@sparticuz/chromium@149",
         "npm:@supabase/ssr@0.8",
         "npm:@supabase/supabase-js@^2.108.2",
         "npm:@types/node@^26.0.1",
@@ -32,12 +34,14 @@
         "npm:eslint-config-next@^16.2.9",
         "npm:eslint@^10.5.0",
         "npm:next@^16.2.9",
+        "npm:puppeteer-core@^25.3.0",
         "npm:puppeteer@^25.3.0",
         "npm:react-dom@^19.2.7",
         "npm:react@^19.2.7",
         "npm:topojson-client@^3.1.0",
         "npm:typescript@^6.0.3",
-        "npm:world-atlas@^2.0.2"
+        "npm:world-atlas@^2.0.2",
+        "npm:zod@^4.4.3"
       ],
       "overrides": {
         "postcss": "^8.5.10"

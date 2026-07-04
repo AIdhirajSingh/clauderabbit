@@ -20,12 +20,22 @@ async function buildServer() {
 
   server.registerTool(
     scanRepoToolMeta.name,
-    { title: scanRepoToolMeta.title, description: scanRepoToolMeta.description, inputSchema: scanRepoInputSchema },
+    {
+      title: scanRepoToolMeta.title,
+      description: scanRepoToolMeta.description,
+      inputSchema: scanRepoInputSchema,
+      annotations: scanRepoToolMeta.annotations,
+    },
     async (args) => runScanRepoTool(config, args),
   );
   server.registerTool(
     getReportToolMeta.name,
-    { title: getReportToolMeta.title, description: getReportToolMeta.description, inputSchema: getReportInputSchema },
+    {
+      title: getReportToolMeta.title,
+      description: getReportToolMeta.description,
+      inputSchema: getReportInputSchema,
+      annotations: getReportToolMeta.annotations,
+    },
     async (args) => runGetReportTool(config, args),
   );
 

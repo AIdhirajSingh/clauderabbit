@@ -34,6 +34,7 @@ async function main(): Promise<void> {
       title: scanRepoToolMeta.title,
       description: scanRepoToolMeta.description,
       inputSchema: scanRepoInputSchema,
+      annotations: scanRepoToolMeta.annotations,
     },
     async (args) => runScanRepoTool(config, args),
   );
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
       title: getReportToolMeta.title,
       description: getReportToolMeta.description,
       inputSchema: getReportInputSchema,
+      annotations: getReportToolMeta.annotations,
     },
     async (args) => runGetReportTool(config, args),
   );
