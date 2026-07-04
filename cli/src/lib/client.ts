@@ -34,7 +34,15 @@ function splitNdjson(prevRest: string, chunk: string): { lines: string[]; rest: 
   return { lines: parts.map((l) => l.trim()).filter((l) => l.length > 0), rest };
 }
 
-export type StageListener = (chapter: string) => void;
+/**
+ * Each phase of a scan (e.g. "Static scan") emits two real stage events from
+ * the edge function: `status: "active"` when it starts, `status: "done"` when
+ * it finishes — a genuine start/complete pair, not a duplicate. `Resolve` and
+ * `Verdict` are `done`-only (already-resolved/final steps with no separate
+ * "starting" moment). Callers render the two statuses distinctly.
+ */
+export type StageStatus = "active" | "done";
+export type StageListener = (chapter: string, status: StageStatus) => void;
 
 /** Consume an NDJSON scan stream, returning the terminal `result` or `error` event. */
 async function consumeScanStream(
@@ -66,7 +74,7 @@ async function consumeScanStream(
             : typeof e.label === "string"
               ? e.label
               : `stage ${stageCount}`;
-        onStage(label);
+        onStage(label, e.status === "active" ? "active" : "done");
       }
     } else if (e.t === "result") {
       report = normalizeReport(e.report);

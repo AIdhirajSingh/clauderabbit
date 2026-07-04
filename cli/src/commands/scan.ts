@@ -6,7 +6,7 @@
  * `--json` structured object (consumed by scripts and agents).
  */
 
-import { scanRepo } from "../lib/client.js";
+import { scanRepo, type StageStatus } from "../lib/client.js";
 import { ensureLoggedIn } from "../lib/auth.js";
 import { loadConfig } from "../lib/env.js";
 import {
@@ -81,9 +81,16 @@ export async function runScanCommand(
   }
 
   // 2. Call the real API. Stage events go to stderr in interactive text mode.
+  // Each phase emits a real "active" (starting) then "done" (finished) event
+  // — render them distinctly rather than printing the same bare label twice.
   const onStage =
     !opts.json && !opts.quiet
-      ? (chapter: string) => process.stderr.write(palette.dim(`  · ${chapter}\n`))
+      ? (chapter: string, status: StageStatus) =>
+          process.stderr.write(
+            status === "active"
+              ? palette.dim(`  · ${chapter}…\n`)
+              : `  ${palette.green("✓")} ${chapter}\n`,
+          )
       : undefined;
 
   const result = await scanRepo(

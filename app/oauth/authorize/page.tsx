@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { RabbitMark } from "@/components/spa/components/glyphs";
+import { LoginForm } from "@/components/spa/components/LoginForm";
 
 type Stage = "checking" | "needs-login" | "authorizing" | "error";
 
@@ -45,6 +46,8 @@ function parseParams(search: string): AuthParams | null {
 export default function OAuthAuthorizePage() {
   const [stage, setStage] = useState<Stage>("checking");
   const [error, setError] = useState("");
+  /** Informational note on the login form (e.g. "GitHub isn't available yet") — distinct from `error`, which is a real failure. */
+  const [loginNote, setLoginNote] = useState("");
   const [email, setEmail] = useState("");
   const paramsRef = useRef<AuthParams | null>(null);
 
@@ -93,6 +96,10 @@ export default function OAuthAuthorizePage() {
     )}`;
   }
 
+  function withGitHub() {
+    setLoginNote("GitHub sign-in isn't available yet — use Google or email below.");
+  }
+
   async function withGoogle() {
     const supabase = createClient();
     await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirectTo() } });
@@ -106,7 +113,11 @@ export default function OAuthAuthorizePage() {
       email: addr,
       options: { emailRedirectTo: redirectTo() },
     });
-    setError(otpError ? "Could not send the sign-in link. Try again." : "Check your email for the sign-in link.");
+    if (otpError) {
+      setError("Could not send the sign-in link. Try again.");
+    } else {
+      setLoginNote("Check your email for the sign-in link.");
+    }
   }
 
   return (
@@ -120,6 +131,19 @@ export default function OAuthAuthorizePage() {
         </Link>
       </nav>
 
+      {stage === "needs-login" ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <LoginForm
+            onGithub={withGitHub}
+            onGoogle={() => void withGoogle()}
+            email={email}
+            onEmailChange={setEmail}
+            onEmailSubmit={() => void withEmail()}
+            note={error || loginNote || undefined}
+            noteColor={error ? "var(--red)" : "var(--t4)"}
+          />
+        </div>
+      ) : (
       <div
         style={{
           maxWidth: 420,
@@ -144,71 +168,8 @@ export default function OAuthAuthorizePage() {
             <p style={{ fontSize: 15, color: "var(--t3)", lineHeight: 1.6 }}>{error}</p>
           </>
         )}
-
-        {stage === "needs-login" && (
-          <>
-            <h1 className="serif" style={{ fontSize: 28, color: "var(--t1)", margin: "0 0 4px" }}>
-              Connect ClaudeRabbit
-            </h1>
-            <p style={{ fontSize: 15, color: "var(--t3)", lineHeight: 1.6, margin: "0 0 8px" }}>
-              Sign in to let this app scan repos on your behalf.
-            </p>
-            <button
-              onClick={() => void withGoogle()}
-              style={{
-                width: "100%",
-                padding: "12px 20px",
-                borderRadius: 12,
-                border: "1px solid var(--line2)",
-                background: "var(--paper)",
-                color: "var(--t1)",
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              Continue with Google
-            </button>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", margin: "4px 0" }}>
-              <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
-              <span style={{ fontSize: 12, color: "var(--t4)" }}>or</span>
-              <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
-            </div>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              style={{
-                width: "100%",
-                padding: "12px 14px",
-                borderRadius: 12,
-                border: "1px solid var(--line2)",
-                background: "var(--paper)",
-                color: "var(--t1)",
-                fontSize: 14,
-              }}
-            />
-            <button
-              onClick={() => void withEmail()}
-              style={{
-                width: "100%",
-                padding: "12px 20px",
-                borderRadius: 12,
-                border: "none",
-                background: "var(--ink)",
-                color: "var(--ink-fg)",
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              Continue with email
-            </button>
-            {error && <p style={{ fontSize: 13, color: "var(--red)" }}>{error}</p>}
-          </>
-        )}
       </div>
+      )}
     </main>
   );
 }

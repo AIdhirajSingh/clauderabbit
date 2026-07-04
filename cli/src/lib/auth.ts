@@ -63,10 +63,57 @@ function openBrowser(url: string): void {
   });
 }
 
-const SUCCESS_HTML = `<!doctype html><html><head><title>ClaudeRabbit</title></head>
-<body style="font-family:system-ui;background:#16130f;color:#f4f1ea;display:flex;
-align-items:center;justify-content:center;height:100vh;margin:0;">
-<p>Signed in — return to your terminal. You can close this tab.</p></body></html>`;
+/**
+ * The real, branded confirmation page — same dark-theme colors, serif
+ * heading, and RabbitMark glyph as the rest of the product (`app/globals.css`
+ * `--bg`/`--t1`/`--t3`, `components/spa/components/glyphs.tsx`'s RabbitMark).
+ * `/cli-auth` navigates the browser here directly (a real top-level
+ * navigation to `http://127.0.0.1` isn't blocked by Chrome's Private Network
+ * Access policy the way a `fetch()` from an HTTPS page is — confirmed live,
+ * `fetch` throws `TypeError: Failed to fetch` here even though this server is
+ * genuinely listening), so this small hand-rolled page — not a React one —
+ * really is what the user's browser shows for a moment. `<meta charset>` is
+ * the actual fix for the previous mojibake bug: without it, a browser can
+ * mis-decode the UTF-8 em dash as Windows-1252, rendering it as "â€"".
+ */
+function renderPage(ok: boolean): string {
+  const heading = ok ? "Connected" : "Something went wrong";
+  const body = ok
+    ? "Return to your terminal — you can close this tab."
+    : "This sign-in link is invalid or has expired. Close this tab and run <code>clauderabbit login</code> again.";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClaudeRabbit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%}
+  body{
+    background:#16130f;color:#f4f1ea;
+    font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:16px;text-align:center;padding:24px;
+  }
+  h1{font-family:'Instrument Serif',Georgia,serif;font-weight:400;font-size:28px;margin:0;letter-spacing:-0.01em}
+  p{font-size:15px;line-height:1.6;color:#a39c90;margin:0;max-width:420px}
+  code{font-family:monospace;background:#1d1916;border:1px solid rgba(255,255,255,0.13);border-radius:4px;padding:2px 6px}
+</style>
+</head>
+<body>
+<svg width="40" height="40" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+  <path d="M10.2 14.5 C8.3 9.8 8.6 4.4 10.2 4 C11.8 3.6 13.1 8 13.3 12.3" stroke="#f4f1ea" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M21.8 14.5 C23.7 9.8 23.4 4.4 21.8 4 C20.2 3.6 18.9 8 18.7 12.3" stroke="#f4f1ea" stroke-width="1.7" stroke-linecap="round"/>
+  <circle cx="16" cy="19.6" r="7" stroke="#f4f1ea" stroke-width="1.7"/>
+  <circle cx="16" cy="19.8" r="1.6" fill="#f4f1ea"/>
+</svg>
+<h1>${heading}</h1>
+<p>${body}</p>
+</body>
+</html>`;
+}
 
 /**
  * Interactive login: starts a short-lived local callback server, opens
@@ -84,15 +131,16 @@ export function login(config: ClaudeRabbitConfig, timeoutMs = 5 * 60_000): Promi
         return;
       }
       const token = url.searchParams.get("token");
-      res.writeHead(200, { "Content-Type": "text/html" }).end(SUCCESS_HTML);
+      const valid = !!token && token.startsWith("cr_cli_");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(renderPage(valid));
       server.close();
       clearTimeout(timer);
-      if (!token || !token.startsWith("cr_cli_")) {
+      if (!valid) {
         reject(new Error("Sign-in did not return a valid token."));
         return;
       }
-      saveToken(token);
-      resolve(token);
+      saveToken(token as string);
+      resolve(token as string);
     });
 
     const timer = setTimeout(() => {

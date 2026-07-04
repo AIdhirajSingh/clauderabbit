@@ -15,6 +15,14 @@
  *     already listening on that local port, so we redirect the browser
  *     straight there with the token; the CLI's own server receives and
  *     saves it, and this tab can close itself with zero manual steps.
+ *     (An earlier version of this tried handing the token over via a
+ *     background `fetch(..., {mode:"no-cors"})` to avoid navigating away —
+ *     that's blocked outright by Chrome's Private Network Access policy for
+ *     an HTTPS page fetching a loopback address, confirmed via a real
+ *     `TypeError: Failed to fetch`. A real top-level navigation isn't
+ *     subject to that restriction, so it's the one that actually works —
+ *     the local server's OWN response page is what's fixed to be properly
+ *     branded/encoded instead; see cli/src/lib/auth.ts.)
  *   - no `port` — the manual/MCP path. The MCP server can't run a listener
  *     mid-tool-call, so its response is just this page's plain URL. Here we
  *     show the issued token on-screen once, with the exact command to paste
@@ -31,6 +39,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { RabbitMark } from "@/components/spa/components/glyphs";
+import { LoginForm } from "@/components/spa/components/LoginForm";
 
 type Stage = "checking" | "needs-login" | "email-sent" | "issuing" | "connected" | "token-ready" | "error";
 
@@ -43,6 +52,8 @@ function parsePort(raw: string | null): number | null {
 export default function CliAuthPage() {
   const [stage, setStage] = useState<Stage>("checking");
   const [error, setError] = useState<string>("");
+  /** Informational note on the login form (e.g. "GitHub isn't available yet") — distinct from `error`, which is a real failure. */
+  const [loginNote, setLoginNote] = useState<string>("");
   const portRef = useRef<number | null>(null);
   const [email, setEmail] = useState("");
   const [token, setToken] = useState<string>("");
@@ -83,6 +94,10 @@ export default function CliAuthPage() {
   function redirectTo(): string {
     const next = portRef.current ? `/cli-auth?port=${portRef.current}` : "/cli-auth";
     return `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
+  }
+
+  function withGitHub() {
+    setLoginNote("GitHub sign-in isn't available yet — use Google or email below.");
   }
 
   async function withGoogle() {
@@ -135,6 +150,19 @@ export default function CliAuthPage() {
         </Link>
       </nav>
 
+      {stage === "needs-login" ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <LoginForm
+            onGithub={withGitHub}
+            onGoogle={() => void withGoogle()}
+            email={email}
+            onEmailChange={setEmail}
+            onEmailSubmit={() => void withEmail()}
+            note={error || loginNote || undefined}
+            noteColor={error ? "var(--red)" : "var(--t4)"}
+          />
+        </div>
+      ) : (
       <div
         style={{
           maxWidth: 460,
@@ -233,70 +261,8 @@ export default function CliAuthPage() {
           </>
         )}
 
-        {stage === "needs-login" && (
-          <>
-            <h1 className="serif" style={{ fontSize: 28, color: "var(--t1)", margin: "0 0 4px" }}>
-              Connect the CLI
-            </h1>
-            <p style={{ fontSize: 15, color: "var(--t3)", lineHeight: 1.6, margin: "0 0 8px" }}>
-              Sign in to link this terminal to your ClaudeRabbit account.
-            </p>
-            <button
-              onClick={() => void withGoogle()}
-              style={{
-                width: "100%",
-                padding: "12px 20px",
-                borderRadius: 12,
-                border: "1px solid var(--line2)",
-                background: "var(--paper)",
-                color: "var(--t1)",
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              Continue with Google
-            </button>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", margin: "4px 0" }}>
-              <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
-              <span style={{ fontSize: 12, color: "var(--t4)" }}>or</span>
-              <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
-            </div>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              style={{
-                width: "100%",
-                padding: "12px 14px",
-                borderRadius: 12,
-                border: "1px solid var(--line2)",
-                background: "var(--paper)",
-                color: "var(--t1)",
-                fontSize: 14,
-              }}
-            />
-            <button
-              onClick={() => void withEmail()}
-              style={{
-                width: "100%",
-                padding: "12px 20px",
-                borderRadius: 12,
-                border: "none",
-                background: "var(--ink)",
-                color: "var(--ink-fg)",
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              Continue with email
-            </button>
-            {error && <p style={{ fontSize: 13, color: "var(--red)" }}>{error}</p>}
-          </>
-        )}
       </div>
+      )}
     </main>
   );
 }
