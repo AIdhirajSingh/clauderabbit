@@ -303,7 +303,7 @@ async function verifiedUserId(req: Request): Promise<string | null> {
  * is scoped to the two distribution surfaces only, via this header).
  */
 const CLI_CLIENT_HEADER = "x-clauderabbit-client";
-const SIGN_IN_URL = `${(Deno.env.get("SITE_URL") ?? "https://clauderabbit.vercel.app").replace(/\/+$/, "")}/cli-auth`;
+const SIGN_IN_URL = `${(Deno.env.get("SITE_URL") ?? "https://clauderabbit.in").replace(/\/+$/, "")}/cli-auth`;
 
 function clientKind(req: Request): "cli" | "mcp" | null {
   const v = (req.headers.get(CLI_CLIENT_HEADER) ?? "").trim().toLowerCase();
