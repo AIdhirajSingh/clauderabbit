@@ -45,17 +45,49 @@ Optional environment variables (see `.env.example`) let you point the server at 
 |---|---|---|
 | `CLAUDE_RABBIT_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` | Supabase project URL to call. |
 | `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | (ClaudeRabbit's public key) | Supabase publishable key — safe client-side, same one the web app uses. |
-| `CLAUDE_RABBIT_SITE_URL` | `http://localhost:2311` | Base URL used to build the "full report" link in tool output. Update once a production domain exists. |
+| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.vercel.app` | Base URL used to build the "full report" link and sign-in link in tool output. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long `scan_repo` will wait for a fresh (uncached) scan to finish streaming before giving up. |
 
-No API key, login, or auth token is ever required — every call this server makes is the same anonymous, public call the ClaudeRabbit website makes for a logged-out visitor.
+No API key is ever required, but a **signed-in ClaudeRabbit account is required to call either
+tool** — a real product/access decision, not because the scan data is sensitive (report pages
+stay public either way). Called signed out, both tools return a clear, clickable sign-in link
+instead of a confusing error or a silent failure — see [Sign-in](#sign-in) below.
+
+## Sign-in
+
+Both tools check for a session at `~/.clauderabbit/credentials.json` (the same file the
+[CLI](../cli) writes to `login`/`logout` — sign in once with either tool and both work).
+Called without one, a tool returns an `isError` result whose text gives you the exact command
+to run:
+
+```
+Sign in required. Visit https://clauderabbit.vercel.app/cli-auth to sign in, then run:
+  clauderabbit login --token <token>
+```
+
+Once signed in, neither tool re-prompts on later calls — the session persists until
+`clauderabbit logout` is run.
 
 ## Adding this server to an MCP client
 
-### Claude Code
+### The easy way: `clauderabbit mcp install`
+
+The [CLI](../cli) ships a real installer that finds your actual `claude_desktop_config.json`
+(handling the Windows MSIX/Store install's different, undocumented config location) and adds
+this server's entry for you, without touching anything else already in the file:
 
 ```bash
-claude mcp add claude-rabbit -- node "/absolute/path/to/clauderabbit/mcp-server/dist/index.js"
+cd cli && npm install && npm run build
+node dist/index.js mcp install
+```
+
+See the [CLI README](../cli/README.md#mcp-install--wire-the-clauderabbit-mcp-server-into-claude-desktop)
+for exactly what it does. Restart Claude Desktop afterward.
+
+### Manual setup — Claude Code
+
+```bash
+claude mcp add clauderabbit -- node "/absolute/path/to/clauderabbit/mcp-server/dist/index.js"
 ```
 
 Or add it to `.mcp.json` in a project (or `~/.claude.json` for a user-level server):
@@ -63,7 +95,7 @@ Or add it to `.mcp.json` in a project (or `~/.claude.json` for a user-level serv
 ```json
 {
   "mcpServers": {
-    "claude-rabbit": {
+    "clauderabbit": {
       "command": "node",
       "args": ["/absolute/path/to/clauderabbit/mcp-server/dist/index.js"]
     }
@@ -71,26 +103,30 @@ Or add it to `.mcp.json` in a project (or `~/.claude.json` for a user-level serv
 }
 ```
 
-### Claude Desktop
+### Manual setup — Claude Desktop
 
-Edit your Claude Desktop config (`claude_desktop_config.json` — on Windows at `%APPDATA%\Claude\claude_desktop_config.json`, on macOS at `~/Library/Application Support/Claude/claude_desktop_config.json`) and add:
-
-```json
-{
-  "mcpServers": {
-    "claude-rabbit": {
-      "command": "node",
-      "args": ["/absolute/path/to/clauderabbit/mcp-server/dist/index.js"]
-    }
-  }
-}
-```
+Edit your Claude Desktop config and add the same entry as above. The file's real location
+depends on how Claude Desktop was installed — the classic path is
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows or
+`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, but a Microsoft
+Store/MSIX install on Windows keeps it instead under
+`%LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude\claude_desktop_config.json` —
+`clauderabbit mcp install` (above) detects and handles both automatically rather than assuming
+the commonly-documented classic path is the only one.
 
 Restart Claude Desktop. The two tools (`scan_repo`, `get_report`) should appear under the MCP tools icon.
 
 ### Other MCP-compatible clients (Codex, Cursor, Windsurf, etc.)
 
 Any client that supports stdio MCP servers uses the same shape: a `command` of `node` and an `args` array pointing at the absolute path to `dist/index.js`. Consult your client's MCP configuration docs for where that JSON snippet goes — the server itself is a standard stdio MCP server with no client-specific behavior.
+
+### Remote (Streamable HTTP) — claude.ai custom connector
+
+For clients that connect over HTTP instead of spawning a local process (e.g. a claude.ai
+custom connector), the same two tools are also served remotely at `https://clauderabbit.vercel.app/mcp`
+(Streamable HTTP, OAuth 2.1 with PKCE for sign-in — no separate setup needed, the connector's
+own "Connect" flow handles login). Add it in claude.ai under Settings → Connectors → Add
+custom connector, using that URL.
 
 ## Running standalone / testing
 
@@ -100,6 +136,10 @@ Run the server directly (it will sit waiting for JSON-RPC frames on stdin — th
 npm start
 # or: node dist/index.js
 ```
+
+Both tools require a signed-in session (see [Sign-in](#sign-in)) — run `clauderabbit login`
+(from the [CLI](../cli)) at least once first, since it writes the same
+`~/.clauderabbit/credentials.json` this server reads.
 
 To exercise both tools end-to-end against the **real, live, deployed ClaudeRabbit API** without wiring up a full MCP client, use the built-in smoke test. It spins up this exact server and a real MCP `Client` connected over an in-memory transport (the same code paths as stdio), then calls both tools for real:
 
@@ -117,7 +157,14 @@ This calls `get_report` for a repo expected to already have a cached report, `sc
 - `src/normalize.ts` — coerces an arbitrary API payload into a strict `Report` shape and enforces the "never a bare Safe verdict" rail, mirroring the main app's `normalizeReport`/`enforceVerdict`.
 - `src/format.ts` — shapes a `Report` into the tool output: score, verdict, the honest sandbox-ran-vs-static-read distinction, and separated code/behavior vs. reputation sections.
 - `src/tools/scan-repo.ts`, `src/tools/get-report.ts` — the two MCP tool definitions and handlers.
+- `src/auth.ts` — reads the shared `~/.clauderabbit/credentials.json` session (written by the
+  [CLI](../cli)'s `login`) and builds the sign-in-required tool result when it's missing.
 - `src/index.ts` — stdio server entrypoint.
 - `src/test/smoke.ts` — live end-to-end verification harness (see above).
+
+The Next.js app's `app/mcp/route.ts` (in the main repo) serves the same two tools remotely over
+Streamable HTTP with OAuth 2.1 — see [Remote (Streamable HTTP)](#remote-streamable-http--claudeai-custom-connector)
+above. It reuses this package's tool logic conceptually but is a separate deployment (it runs
+on Vercel, not as a local stdio process), so its code lives in the main app, not here.
 
 No scanning, scoring, or sandboxing logic is reimplemented anywhere in this package — it is a pure client of ClaudeRabbit's existing public API.

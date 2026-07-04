@@ -10,6 +10,7 @@
  *   git-clone    <args...> [--yes] [--dry-run]
  *   install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
  *   uninstall-hooks [--shell ...] [--profile <path>]
+ *   mcp install
  *   login | logout
  *   help | --help | -h
  *   version | --version | -v
@@ -20,6 +21,7 @@
 
 import { runScanCommand } from "./commands/scan.js";
 import { runWrapCommand, type Manager } from "./commands/wrap.js";
+import { runMcpInstallCommand } from "./commands/mcp-install.js";
 import {
   detectShell,
   installHooks,
@@ -131,6 +133,12 @@ COMMANDS
       which invocation shapes are and are NOT wrapped. --print shows the block
       without writing it.
 
+  mcp install
+      Wire the ClaudeRabbit MCP server into Claude Desktop's
+      claude_desktop_config.json — finds the real file (including Windows'
+      MSIX/Store dual-path, not just the commonly-documented classic one)
+      and appends the entry, leaving every other server/setting untouched.
+
   login [--token <token>]
       Sign in (opens your browser). Saved to ~/.clauderabbit/credentials.json
       and reused silently on every future run until \`logout\`. --token skips
@@ -225,6 +233,19 @@ async function main(argv: string[]): Promise<number> {
       });
       process.stderr.write(`${res.message}\n`);
       return 0;
+    }
+
+    case "mcp": {
+      const sub = positionals[1];
+      if (sub !== "install") {
+        process.stderr.write(
+          `Unknown "mcp" subcommand "${sub ?? ""}". Try: clauderabbit mcp install\n`,
+        );
+        return 1;
+      }
+      const outcome = await runMcpInstallCommand();
+      process.stderr.write(`${outcome.message}\n`);
+      return outcome.exitCode;
     }
 
     case "login": {

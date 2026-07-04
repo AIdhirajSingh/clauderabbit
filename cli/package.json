@@ -13,7 +13,6 @@
   },
   "files": [
     "dist",
-    "shell",
     "README.md"
   ],
   "scripts": {

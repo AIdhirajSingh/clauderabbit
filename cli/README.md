@@ -38,12 +38,16 @@ npm link           # inside cli/  (uses the "bin" field)
 clauderabbit scan expressjs/express
 ```
 
-Requires Node.js >= 18 (uses the built-in `fetch`). No API key, login, or token is ever
-needed — every call is the same anonymous, public call the website makes for a logged-out
-visitor. The Supabase URL and **publishable** key are shipped as built-in defaults (they are
-not secrets — they are the exact two client-safe values the web app ships; see the repo root
-`.env.example` and `docs/INFRASTRUCTURE.md`). Override them for a fork via the env vars in the
-[Configuration](#configuration) table.
+Requires Node.js >= 18 (uses the built-in `fetch`). No API key is ever needed, but a signed-in
+ClaudeRabbit account is required to use this CLI (and the [MCP server](../mcp-server)) — a
+real product/access decision, not because the scan data itself is sensitive; report pages stay
+public either way. The first command that needs one triggers `clauderabbit login`
+automatically (opens your browser); the session is then saved to
+`~/.clauderabbit/credentials.json` and reused silently until you `logout` — see
+[`login` / `logout`](#login---token-token--logout). The Supabase URL and **publishable** key
+are shipped as built-in defaults (they are not secrets — they are the exact two client-safe
+values the web app ships; see the repo root `.env.example` and `docs/INFRASTRUCTURE.md`).
+Override them for a fork via the env vars in the [Configuration](#configuration) table.
 
 ## Commands
 
@@ -156,6 +160,46 @@ If you need a guarantee that a specific dependency was scanned, run `clauderabbi
 explicitly. The hooks are a convenience for the common interactive case, not a security
 boundary.
 
+### `mcp install` — wire the ClaudeRabbit MCP server into Claude Desktop
+
+```
+clauderabbit mcp install
+```
+
+Finds your real `claude_desktop_config.json` and adds the ClaudeRabbit MCP server
+(`scan_repo` / `get_report`, stdio transport) to it — no manual JSON editing.
+
+- **Finds the real file, including on Windows.** Checks the classic
+  `%APPDATA%\Claude\claude_desktop_config.json` first, then — since a Microsoft
+  Store/MSIX install of Claude Desktop keeps its real config in a different,
+  undocumented place — globs `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`
+  for it. Uses whichever one actually exists.
+- **Only ever touches its own entry.** Reads the existing file, adds/updates the
+  `"clauderabbit"` key under `mcpServers`, and writes the file back — every other server
+  and setting already in the file is left exactly as it was. Refuses to touch a file that
+  isn't valid JSON rather than risk clobbering it.
+- **No hardcoded path baked into the launched command.** The server's on-disk location is
+  passed via the `CLAUDE_RABBIT_MCP_SERVER_ENTRY` environment variable in the entry's own
+  `env`, not as a literal string in `args`.
+- **Tells you exactly what happened** — which file it found (and how), whether the entry
+  was added or updated, and reminds you to restart Claude Desktop to pick it up.
+
+### `login [--token <token>]` / `logout`
+
+```
+clauderabbit login
+clauderabbit login --token <token>
+clauderabbit logout
+```
+
+The CLI (and the MCP server) require a signed-in ClaudeRabbit account — a product/access
+decision, not a reflection of the scan data being sensitive (reports stay public). `login`
+opens your browser to sign in and saves the session to `~/.clauderabbit/credentials.json`;
+every later command reuses it silently until you `logout`. Any command that needs a session
+(`scan`, `report`, the install wrappers, the MCP server) will trigger this sign-in flow
+automatically the first time if you haven't run `login` yet. `--token` skips the browser and
+saves a token issued elsewhere (e.g. the link the MCP server prints when called signed out).
+
 ## JSON output schema
 
 `clauderabbit scan <target> --json` (and `report <target> --json`) print a single JSON object
@@ -173,7 +217,7 @@ A successful scan object:
   "score": 96,                        // 0–100
   "verdict": "Trusted",               // "Trusted" | "Likely safe" | "Caution" | "High risk" | "Malicious"
   "scoreColor": "green",              // "green" | "blue" | "yellow" | "red" (fixed product color logic)
-  "reportUrl": "http://localhost:2311/expressjs/express",
+  "reportUrl": "https://clauderabbit.vercel.app/expressjs/express",
   "cached": false,
   "fresh": true,                      // true = a fresh scan just ran; false = served from cache
   "escalationDecided": false,         // the fast path DECIDED to escalate (NOT proof the sandbox ran)
@@ -246,7 +290,7 @@ All optional — the CLI works with zero setup against ClaudeRabbit's production
 |---|---|---|
 | `CLAUDE_RABBIT_SUPABASE_URL` | ClaudeRabbit's project URL | Supabase project to call. |
 | `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | ClaudeRabbit's public key | Publishable key — safe client-side, same one the web app uses. |
-| `CLAUDE_RABBIT_SITE_URL` | `http://localhost:2311` | Base URL used to build the report links in output. |
+| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.vercel.app` | Base URL used to build the report links in output. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long a fresh (uncached) scan will stream before giving up. |
 | `NO_COLOR` | — | Set to disable ANSI color (also auto-disabled when stdout is not a TTY). |
 
@@ -278,4 +322,8 @@ npm run dev         # watch mode
 - `src/commands/hooks.ts` — `install-hooks` / `uninstall-hooks` (bash/zsh/PowerShell blocks,
   idempotent write/remove).
 - `src/index.ts` — arg parsing and command dispatch.
-```
+- `src/lib/auth.ts` — the shared login flow (`login`/`logout`/`ensureLoggedIn`), persisted to
+  `~/.clauderabbit/credentials.json` (shared with `mcp-server/`).
+- `src/lib/claude-desktop-config.ts` — locates the real `claude_desktop_config.json`
+  (classic path or, on Windows, the MSIX/Store package path) and merges an entry into it.
+- `src/commands/mcp-install.ts` — the `mcp install` command.
