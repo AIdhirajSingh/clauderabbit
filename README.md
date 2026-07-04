@@ -1,12 +1,15 @@
 # Claude Rabbit
 
-> **Everyone reads the code. We run it.**
+> **Open source ships malware, too.**
 
-A free, no-login-for-your-first-scan web tool: paste a public GitHub repo, fork, or
-dependency, and get back a single honest **0–100 safety score** with a plain-language
-report. Static scanners *read* source; Claude Rabbit clones the repo into a disposable,
-isolated cloud sandbox and **actually runs it**, then watches what it does. Every report
-is public and permanent at `/owner/repo`, shareable, and embeddable as a trust badge.
+More than 454,600 new malicious open-source packages appeared in 2025 — up 75% in a
+year — and the attacks that matter carry no CVE at all; they only exist at runtime.
+Claude Rabbit is a free, open-source security product for the developer community.
+Paste any public GitHub repo and we clone it into an isolated sandbox, run it for real,
+and hand back one honest **0–100 safety score**: what the project is, what it did when
+we ran it, and what we could not verify. Every report is public and permanent at
+`/owner/repo`, shareable, and embeddable as a trust badge — a public good, not a
+paywalled one. Signing in only saves your own scan history; it never buys you more.
 
 ## How it works — a two-speed funnel
 
@@ -28,12 +31,45 @@ Two safety rails, always: **(1)** no surface ever states a bare "Safe" — every
 shows its evidence and what was *not* verified; **(2)** the sandbox is hermetic (no real
 credentials, locked egress, resource caps) and **reimaged/deleted after every scan**.
 
+## Using it
+
+**On the web** — go to the site, paste a GitHub URL (or `owner/repo`), hit scan. No
+login required; signing in with Google or email just saves your scan history.
+
+**From the terminal** — the [CLI](cli/) (`claude-rabbit-cli`) scans a repo or npm
+package before you install or clone it:
+
+```bash
+cd cli && npm install && npm run build && npm link   # one-time setup
+claude-rabbit scan expressjs/express                 # run a real scan
+```
+
+**From an AI coding agent** — the [MCP server](mcp-server/) exposes `scan_repo` and
+`get_report` over stdio so an agent can check a dependency before running it. Build it
+once (`cd mcp-server && npm install && npm run build`), then add it to your MCP
+client's config — for Claude Desktop, `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "claude-rabbit": {
+      "command": "node",
+      "args": ["/absolute/path/to/clauderabbit/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+Both are thin clients of the same public, no-key-required scan API the website uses —
+see [cli/README.md](cli/README.md) and [mcp-server/README.md](mcp-server/README.md) for
+the full command/tool reference.
+
 ## Stack
 
 | Layer | Choice |
 |---|---|
 | Web | **Next.js 16 (App Router) + React 19 + TypeScript** — homepage SPA, SSR `/owner/repo` SEO pages, API |
-| DB / Auth / Edge | **Supabase** (Postgres + RLS, Google/GitHub/email auth, Deno edge functions) |
+| DB / Auth / Edge | **Supabase** (Postgres + RLS, Google + email/OTP auth, Deno edge functions) |
 | Models | **All-Gemini via Vertex AI** — fast `gemini-3.1-flash-lite`, deep/agent `gemini-3.5-flash` (swap seam intact for a future Kimi K2.7 deep-path swap) |
 | Scoring | **Code-computed** deterministic formula (`_shared/scoring.ts`) — the model feeds weighted signals; code decides the cited 0–100 |
 | Sandbox | **Agentic behavioral analyzer** on Google Cloud — knowledge-graph explore + sinkhole detonate, code-verified facts (`sandbox/`) |
@@ -52,19 +88,12 @@ escalation gate are real and unchanged.
 
 ## Distribution surfaces (scan at the moment of install)
 
-The same server-side scan pipeline is shipped to the terminal and to AI coding agents,
-where the "is this safe to run?" question actually lives:
-
-- **CLI** (`cli/`, `claude-rabbit-cli`) — `claude-rabbit scan owner/repo` (or an npm package
-  name), a cached-only `report`, and `npm-install` / `pnpm-install` / `git-clone` wrappers that
-  scan the target and print the honest verdict before running the real command. Opt-in
-  bash/zsh/PowerShell hooks (`install-hooks`) put that check in front of every install/clone.
-- **MCP server** (`mcp-server/`) — `scan_repo` and `get_report` tools over stdio, calling the
-  production scan API, so an agent about to clone-and-run can check first.
-
-Both honor the same rails as the web report — reputation kept separate from code/behavior,
-sandbox-actually-ran reported honestly (keyed to a real forensic record, not the escalation flag),
-and never a bare "Safe."
+Beyond `scan`, the CLI also wraps `npm-install` / `pnpm-install` / `git-clone` so it can
+scan the target and print the honest verdict before running the real command, with
+opt-in bash/zsh/PowerShell hooks (`install-hooks`) that put that check in front of every
+install/clone. Both the CLI and the MCP server honor the same rails as the web report —
+reputation kept separate from code/behavior, sandbox-actually-ran reported honestly
+(keyed to a real forensic record, not the escalation flag), and never a bare "Safe."
 
 ## Local development
 
@@ -112,4 +141,6 @@ docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)
 ```
 
-Free, source-available, ad-supported. The accumulating database of vetted repos is the asset.
+Free and unlimited, no login or ads ever required to scan. The accumulating database of
+vetted repos is the real asset — see `docs/INFRASTRUCTURE.md` for the honest current
+state of the (currently unsolved) monetization question.

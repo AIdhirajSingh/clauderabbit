@@ -48,7 +48,7 @@ export default function OpengraphImage() {
           Claude Rabbit
         </div>
         <div style={{ display: "flex", marginTop: 18, fontSize: 30, color: "#a39c90" }}>
-          Everyone else reads the code. We run it.
+          Open source ships malware, too.
         </div>
       </div>
     ),
