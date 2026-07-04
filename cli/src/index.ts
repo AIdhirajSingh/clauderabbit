@@ -6,11 +6,6 @@
  *   scan <target> [--json] [--ref <r>] [--no-color]  (cache-aware: instant if
  *                                                     already scanned, else a
  *                                                     real scan runs)
- *   npm-install  <args...> [--yes] [--dry-run]
- *   pnpm-install <args...> [--yes] [--dry-run]
- *   git-clone    <args...> [--yes] [--dry-run]
- *   install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
- *   uninstall-hooks [--shell ...] [--profile <path>]
  *   mcp install
  *   login | logout
  *   help | --help | -h
@@ -18,48 +13,36 @@
  *
  * A "target" is: owner/repo, a GitHub URL, owner/repo@ref, or an npm package
  * name (resolved to its GitHub repo via the npm registry).
+ *
+ * An earlier opt-in shell-hook feature (`install-hooks`/`uninstall-hooks`,
+ * `npm-install`/`pnpm-install`/`git-clone`) was built and then removed: it
+ * scanned a package's linked GitHub repo, not the actual published registry
+ * artifact, so it couldn't catch the exact attack an install-time check most
+ * needs to (a compromised maintainer publishing a malicious version directly
+ * to the registry). It will be planned and built properly against the real
+ * published artifact, not shipped with that gap.
  */
 
 import { runScanCommand } from "./commands/scan.js";
-import { runWrapCommand, type Manager } from "./commands/wrap.js";
 import { runMcpInstallCommand } from "./commands/mcp-install.js";
-import {
-  detectShell,
-  installHooks,
-  reloadHint,
-  uninstallHooks,
-  type Shell,
-} from "./commands/hooks.js";
 import { clearToken, login, saveToken } from "./lib/auth.js";
 import { loadConfig } from "./lib/env.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 interface ParsedFlags {
   flags: Record<string, string | boolean>;
   positionals: string[];
-  /** Everything after a literal `--`, passed through untouched. */
-  passthrough: string[];
 }
 
-/** Parse argv into flags/positionals. `--` ends option parsing (rest is passthrough). */
+/** Parse argv into flags/positionals. */
 function parseArgs(argv: string[]): ParsedFlags {
   const flags: Record<string, string | boolean> = {};
   const positionals: string[] = [];
-  const passthrough: string[] = [];
-  let afterDashDash = false;
-  const VALUE_FLAGS = new Set(["--ref", "--shell", "--profile", "--token"]);
+  const VALUE_FLAGS = new Set(["--ref", "--token"]);
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (afterDashDash) {
-      passthrough.push(a);
-      continue;
-    }
-    if (a === "--") {
-      afterDashDash = true;
-      continue;
-    }
     if (a.startsWith("--")) {
       const eq = a.indexOf("=");
       if (eq !== -1) {
@@ -76,7 +59,7 @@ function parseArgs(argv: string[]): ParsedFlags {
       positionals.push(a);
     }
   }
-  return { flags, positionals, passthrough };
+  return { flags, positionals };
 }
 
 function wantsColor(flags: Record<string, string | boolean>): boolean {
@@ -85,13 +68,7 @@ function wantsColor(flags: Record<string, string | boolean>): boolean {
   return process.stdout.isTTY === true;
 }
 
-function normalizeShell(raw: string | boolean | undefined): Shell {
-  if (raw === "bash" || raw === "zsh" || raw === "powershell") return raw;
-  if (raw === "pwsh" || raw === "ps") return "powershell";
-  return detectShell();
-}
-
-const HELP = `clauderabbit — scan a public GitHub repo or npm package for a 0-100 safety
+const HELP =`clauderabbit — scan a public GitHub repo or npm package for a 0-100 safety
 score before you install or clone it. Requires a signed-in ClaudeRabbit account
 (opens your browser the first time). Never states a bare "Safe".
 
@@ -106,22 +83,6 @@ COMMANDS
       has a report it comes back immediately; otherwise a real fast-path scan
       runs. You never need to choose which case applies.
       --json  Emit the documented machine-readable object (see README).
-
-  npm-install  <args...> [--yes] [--dry-run]
-  pnpm-install <args...> [--yes] [--dry-run]
-  git-clone    <args...> [--yes] [--dry-run]
-      Scan the package/repo being fetched, print the honest verdict, then run
-      the real command. Only a Trusted (>=90) verdict proceeds on a brief
-      confirm; everything else prints the full hedge first. --yes proceeds
-      non-interactively AFTER printing the verdict (never a silent green light);
-      --dry-run scans and reports only.
-
-  install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
-  uninstall-hooks [--shell ...] [--profile <path>]
-      Add/remove opt-in shell functions that wrap npm/pnpm install and git
-      clone. Coverage is intentionally scoped — see the README for exactly
-      which invocation shapes are and are NOT wrapped. --print shows the block
-      without writing it.
 
   mcp install
       Wire the ClaudeRabbit MCP server into Claude Desktop's
@@ -148,7 +109,7 @@ NOTES
 `;
 
 async function main(argv: string[]): Promise<number> {
-  const { flags, positionals, passthrough } = parseArgs(argv);
+  const { flags, positionals } = parseArgs(argv);
   const command = positionals[0];
 
   if (!command || command === "help" || flags.help || flags.h) {
@@ -176,44 +137,6 @@ async function main(argv: string[]): Promise<number> {
         quiet: flags.quiet === true,
       });
       return outcome.exitCode;
-    }
-
-    case "npm-install":
-    case "pnpm-install":
-    case "git-clone": {
-      const manager: Manager =
-        command === "npm-install" ? "npm" : command === "pnpm-install" ? "pnpm" : "git";
-      // Everything after the subcommand word (positionals[1..]) plus anything
-      // after `--` are the args for the underlying tool.
-      const args = [...positionals.slice(1), ...passthrough];
-      const outcome = await runWrapCommand(manager, args, {
-        color,
-        yes: flags.yes === true || flags.y === true,
-        dryRun: flags["dry-run"] === true,
-      });
-      return outcome.exitCode;
-    }
-
-    case "install-hooks": {
-      const shell = normalizeShell(flags.shell);
-      const res = installHooks(shell, {
-        ...(typeof flags.profile === "string" ? { profile: flags.profile } : {}),
-        print: flags.print === true,
-      });
-      process.stderr.write(`${res.message}\n`);
-      if (res.action === "installed" || res.action === "updated") {
-        process.stderr.write(`${reloadHint(shell, res.path)}\n`);
-      }
-      return 0;
-    }
-
-    case "uninstall-hooks": {
-      const shell = normalizeShell(flags.shell);
-      const res = uninstallHooks(shell, {
-        ...(typeof flags.profile === "string" ? { profile: flags.profile } : {}),
-      });
-      process.stderr.write(`${res.message}\n`);
-      return 0;
     }
 
     case "mcp": {

@@ -1,8 +1,8 @@
-# Claude Rabbit — UX Document
+# ClaudeRabbit — UX Document
 
 > Screens, elements, and flow. The visual design is already shipped (Claude Design export, dual-theme); the build ports it faithfully. This document governs which screens exist, what must be on them, and how they behave.
 
-**The promise:** *Paste a repo, know if it's safe to run.* A person pastes a GitHub link, and Claude Rabbit reads it, runs it when warranted, and returns a single trustworthy safety score with an honest report — free, in seconds.
+**The promise:** *Paste a repo, know if it's safe to run.* A person pastes a GitHub link, and ClaudeRabbit reads it, runs it when warranted, and returns a single trustworthy safety score with an honest report — free, in seconds.
 
 ---
 
@@ -56,7 +56,7 @@ The whole product is one action.
 - **Top nav:** wordmark (left); right side: GitHub repo link with **live star count fetched and shown**, and Login.
 - **Centered hero:** headline + one-line subhead.
 - **Prompt bar:** large centered input to paste a GitHub repo link — the dominant element.
-- **On scroll, in order:** Leaderboard (most dangerous repos; with an open-full-screen control) → "What is Claude Rabbit" + use cases → Star on GitHub button / request.
+- **On scroll, in order:** Leaderboard (most dangerous repos; with an open-full-screen control) → "We protect the world from open-source malware" + use cases → "Use it everywhere you already work" (MCP server + CLI cards) → Star on GitHub button / request.
 
 ### 2. Processing
 - **Beautified live logs** as a **vertical, chapter-wise timeline** (clone → static scan → reputation → read → [escalation] → dynamic run). Placeholder log content.
@@ -101,7 +101,7 @@ The report is generated on the frontend from the shipped Claude Design `design.m
 - Home → paste an already-scanned repo → instant Report, no processing, no gate of any kind (behavior B)
 - Report → open full end-to-end logs → back to Report
 - Home → scroll → Leaderboard → open full-screen Leaderboard
-- Home → scroll → "What is Claude Rabbit" → Star on GitHub
+- Home → scroll → "We protect the world from open-source malware" → "Use it everywhere you already work" → Star on GitHub
 - Home → optional Login → Dashboard
 - Dashboard → paste repo (default panel) → Processing → Report
 - Dashboard → History → click a past scan → its Report

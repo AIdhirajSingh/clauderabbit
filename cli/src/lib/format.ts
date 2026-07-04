@@ -1,7 +1,7 @@
 /**
  * Shape a `Report` into the CLI's two outputs — human-readable text and the
- * `--json` structured object — and centralize the "proceed?" policy that the
- * install wrappers use.
+ * `--json` structured object — and centralize the "proceed?" policy exposed
+ * via the JSON output's `proceed` field for scripts/agents to key off.
  *
  * Per CLAUDE.md the copy here must obey the product's core rails:
  *  - NEVER state a bare "Safe". The verdict itself is already rail-enforced by
@@ -90,8 +90,8 @@ export function notVerifiedList(ranSandbox: boolean): string[] {
 
 /**
  * A single honest one-line hedge/summary describing exactly what was and
- * wasn't verified — used by the install wrappers so an agent or human ALWAYS
- * sees the real caveat before proceeding, never just a green light.
+ * wasn't verified — surfaced in `--json`'s `hedge` field so a script or agent
+ * always sees the real caveat, never just a bare score.
  */
 export function honestHedge(report: Report): string {
   const ran = !!report.forensics;
@@ -116,12 +116,12 @@ export function ranSandbox(report: Report): boolean {
 }
 
 /**
- * The proceed policy for the install wrappers. Per the reviewer's concern #1,
- * ONLY a "Trusted" (>=90) verdict may proceed with a brief one-line
- * confirmation; everything else must print the full honest hedge before
- * proceeding, and anything below "Caution" (i.e. High risk / Malicious) is a
- * strong warning the caller should treat as a stop-and-think, never an
- * automatic green light. This never emits a bare "Safe".
+ * The proceed policy exposed via `--json`'s `proceed` field. ONLY a "Trusted"
+ * (>=90) verdict is flagged as safe to proceed on a brief confirmation;
+ * everything else carries the full honest hedge, and anything below
+ * "Caution" (i.e. High risk / Malicious) is a strong warning a caller should
+ * treat as a stop-and-think, never an automatic green light. This never
+ * emits a bare "Safe".
  */
 export interface ProceedPolicy {
   /** True only for a Trusted (>=90) verdict — the sole "brief confirm" case. */
@@ -181,7 +181,7 @@ export interface ScanJson {
   packages: Report["packages"];
   /** The full forensic record, present ONLY when the sandbox actually ran. */
   forensics: Report["forensics"] | null;
-  /** Convenience flags for install-hook / agent decision logic. */
+  /** Convenience flags for scripted/agent decision logic. */
   proceed: {
     trusted: boolean;
     strongWarning: boolean;

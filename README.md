@@ -37,11 +37,12 @@ credentials, locked egress, resource caps) and **reimaged/deleted after every sc
 `owner/repo`), hit scan. No login required; signing in with Google or email just saves your
 scan history.
 
-**From the terminal** — the [CLI](cli/) (`clauderabbit`) scans a repo or npm
-package before you install or clone it:
+**From the terminal** — the [CLI](cli/), published to npm as
+[`clauderabbit`](https://www.npmjs.com/package/clauderabbit), scans a repo or npm package
+before you install or clone it:
 
 ```bash
-cd cli && npm install && npm run build && npm link   # one-time setup
+npm install -g clauderabbit                          # one-time setup
 clauderabbit scan expressjs/express                  # run a real scan
 ```
 
@@ -80,15 +81,6 @@ through `supabase/functions/_shared/vertex.ts`; the agentic sandbox tier
 `VERTEX_LOCATION`). The seam stays intact for a future **Kimi K2.7 Code** deep-path swap —
 change the secret / that one module; orchestration, the code-computed scoring, and the
 escalation gate are real and unchanged.
-
-## Distribution surfaces (scan at the moment of install)
-
-Beyond `scan`, the CLI also wraps `npm-install` / `pnpm-install` / `git-clone` so it can
-scan the target and print the honest verdict before running the real command, with
-opt-in bash/zsh/PowerShell hooks (`install-hooks`) that put that check in front of every
-install/clone. Both the CLI and the MCP server honor the same rails as the web report —
-reputation kept separate from code/behavior, sandbox-actually-ran reported honestly
-(keyed to a real forensic record, not the escalation flag), and never a bare "Safe."
 
 ## Local development
 
@@ -132,7 +124,7 @@ sandbox/                 the dynamic sandbox engine (the moat) — production ru
                          Job executions (sandbox/cloudrun/), which replaced the earlier
                          microVM-on-persistent-host substrate (sandbox/microvm/, superseded but
                          kept — see sandbox/cloudrun/harness/README.md for what changed and why)
-cli/                     the clauderabbit CLI (scan / install-clone wrappers / shell hooks)
+cli/                     the clauderabbit CLI (scan, mcp install, login/logout)
 mcp-server/              MCP server (one cache-aware scan tool over stdio for AI coding tools)
 docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)
