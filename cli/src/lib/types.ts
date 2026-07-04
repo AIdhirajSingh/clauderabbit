@@ -1,5 +1,5 @@
 /**
- * Minimal, standalone mirror of the Claude Rabbit `Report` shape this CLI
+ * Minimal, standalone mirror of the ClaudeRabbit `Report` shape this CLI
  * needs (see the main app's `lib/types.ts`). Reimplemented here rather than
  * imported because `cli/` is a fully separate package with no dependency on
  * the Next.js app's `lib/`. Fields not used by this CLI's output are typed
@@ -81,7 +81,7 @@ export interface Forensics {
   [key: string]: unknown;
 }
 
-/** A Claude Rabbit safety report for a single repo. */
+/** A ClaudeRabbit safety report for a single repo. */
 export interface Report {
   id: string;
   owner: string;

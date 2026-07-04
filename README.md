@@ -1,10 +1,10 @@
-# Claude Rabbit
+# ClaudeRabbit
 
 > **Open source ships malware, too.**
 
 More than 454,600 new malicious open-source packages appeared in 2025 — up 75% in a
 year — and the attacks that matter carry no CVE at all; they only exist at runtime.
-Claude Rabbit is a free, open-source security product for the developer community.
+ClaudeRabbit is a free, open-source security product for the developer community.
 Paste any public GitHub repo and we clone it into an isolated sandbox, run it for real,
 and hand back one honest **0–100 safety score**: what the project is, what it did when
 we ran it, and what we could not verify. Every report is public and permanent at
@@ -36,12 +36,12 @@ credentials, locked egress, resource caps) and **reimaged/deleted after every sc
 **On the web** — go to the site, paste a GitHub URL (or `owner/repo`), hit scan. No
 login required; signing in with Google or email just saves your scan history.
 
-**From the terminal** — the [CLI](cli/) (`claude-rabbit-cli`) scans a repo or npm
+**From the terminal** — the [CLI](cli/) (`clauderabbit`) scans a repo or npm
 package before you install or clone it:
 
 ```bash
 cd cli && npm install && npm run build && npm link   # one-time setup
-claude-rabbit scan expressjs/express                 # run a real scan
+clauderabbit scan expressjs/express                  # run a real scan
 ```
 
 **From an AI coding agent** — the [MCP server](mcp-server/) exposes `scan_repo` and
@@ -135,7 +135,7 @@ supabase/migrations/     schema + RLS + scan-limit function
 supabase/functions/scan/ the fast-path orchestrator (Vertex seam, GitHub fetch, static signals)
 sandbox/                 the dynamic sandbox engine (the moat) — see sandbox/README.md;
                          sandbox/microvm/ holds the golden-image + on-demand compute-pool scripts
-cli/                     the claude-rabbit CLI (scan / install-clone wrappers / shell hooks)
+cli/                     the clauderabbit CLI (scan / install-clone wrappers / shell hooks)
 mcp-server/              MCP server (scan_repo / get_report tools over stdio for AI coding tools)
 docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)

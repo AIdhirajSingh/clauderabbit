@@ -1,5 +1,5 @@
 /**
- * Coerce an arbitrary payload from the Claude Rabbit API into the `Report`
+ * Coerce an arbitrary payload from the ClaudeRabbit API into the `Report`
  * shape this CLI relies on. Reimplemented standalone from the main app's
  * `lib/scan.ts` (`normalizeReport`) and `lib/report-view.ts`
  * (`enforceVerdict`), mirroring the production-verified `mcp-server/`

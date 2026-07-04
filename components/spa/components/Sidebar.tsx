@@ -125,7 +125,7 @@ export function Sidebar() {
             >
               <RabbitMark size={23} stroke="1.8" />
               <span style={{ fontSize: 14.5, fontWeight: 600, color: "var(--t1)", whiteSpace: "nowrap" }}>
-                Claude Rabbit
+                ClaudeRabbit
               </span>
             </div>
             <button
@@ -365,7 +365,7 @@ export function Sidebar() {
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", height: "100%", minHeight: 0, gap: 6 }}>
           <button
             onClick={app.goDashboard}
-            title="Claude Rabbit"
+            title="ClaudeRabbit"
             className={styles.sbRailBtn}
             style={{
               width: 48,

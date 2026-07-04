@@ -1,12 +1,12 @@
 {
-  "name": "claude-rabbit-cli",
+  "name": "clauderabbit",
   "version": "0.1.0",
   "private": true,
-  "description": "CLI for Claude Rabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it, with opt-in shell hooks that scan before npm/pnpm install and git clone.",
+  "description": "CLI for ClaudeRabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it, with opt-in shell hooks that scan before npm/pnpm install and git clone.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "claude-rabbit": "dist/index.js"
+    "clauderabbit": "dist/index.js"
   },
   "engines": {
     "node": ">=18"

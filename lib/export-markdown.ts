@@ -57,7 +57,7 @@ export function reportToMarkdown(report: Report, siteUrl: string): string {
   const lines: string[] = [];
 
   const slug = `${view.owner}/${view.name}`;
-  lines.push(heading(1, `${slug} — Claude Rabbit safety report`));
+  lines.push(heading(1, `${slug} — ClaudeRabbit safety report`));
   lines.push("");
   lines.push(`**Score:** ${view.score} / 100 (${view._band})`);
   lines.push("");

@@ -36,7 +36,7 @@ const COL_A: SnapProps[] = [
 ];
 
 const COL_B: SnapProps[] = [
-  { kind: "web", title: "Claude Rabbit", sub: "Free open-source malware scanning.", accent: G },
+  { kind: "web", title: "ClaudeRabbit", sub: "Free open-source malware scanning.", accent: G },
   { kind: "repo", title: "gorilla/mux", score: "95", color: G, lang: "Go", langColor: A, stars: "21.8k" },
   { kind: "code", title: "index.ts", color: G, lines: code(G, "var(--t5)", "var(--blue)") },
   { kind: "web", title: "flask.palletsprojects.com", sub: "Web development, one drop at a time.", accent: B },

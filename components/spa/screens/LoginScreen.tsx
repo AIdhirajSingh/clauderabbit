@@ -34,7 +34,7 @@ export function LoginScreen() {
       <div style={{ position: "relative", padding: "20px 28px" }}>
         <div {...onActivate(app.goHome)} style={{ display: "inline-flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
           <RabbitMark size={26} stroke="1.7" />
-          <span style={{ fontSize: 15.5, fontWeight: 600, color: "var(--t1)" }}>Claude Rabbit</span>
+          <span style={{ fontSize: 15.5, fontWeight: 600, color: "var(--t1)" }}>ClaudeRabbit</span>
         </div>
       </div>
       <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>

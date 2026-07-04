@@ -1,31 +1,31 @@
-# Claude Rabbit MCP server
+# ClaudeRabbit MCP server
 
-An [MCP](https://modelcontextprotocol.io) server for [Claude Rabbit](https://github.com/AIdhirajSingh/clauderabbit) — a free, no-login, open web tool that scans a public GitHub repo and returns an honest 0-100 safety score. This server lets any MCP-compatible AI coding tool (Claude Code, Claude Desktop, Codex, etc.) check a repo or dependency's safety score **before installing or running it**, without leaving the tool.
+An [MCP](https://modelcontextprotocol.io) server for [ClaudeRabbit](https://github.com/AIdhirajSingh/clauderabbit) — a free, no-login, open web tool that scans a public GitHub repo and returns an honest 0-100 safety score. This server lets any MCP-compatible AI coding tool (Claude Code, Claude Desktop, Codex, etc.) check a repo or dependency's safety score **before installing or running it**, without leaving the tool.
 
-It is a thin, self-contained client of the real, deployed Claude Rabbit API — the same public Supabase edge function and database read the [claude Rabbit web app](https://github.com/AIdhirajSingh/clauderabbit) itself calls. It does not reimplement any scanning, scoring, or sandboxing logic; it only calls the existing API and formats the response.
+It is a thin, self-contained client of the real, deployed ClaudeRabbit API — the same public Supabase edge function and database read the [ClaudeRabbit web app](https://github.com/AIdhirajSingh/clauderabbit) itself calls. It does not reimplement any scanning, scoring, or sandboxing logic; it only calls the existing API and formats the response.
 
 ## What it does — and is honest about what it doesn't
 
-Per Claude Rabbit's core rule, **this server never returns a bare "Safe" verdict.** Every result states the score, the verdict, and explicitly what was and was not verified.
+Per ClaudeRabbit's core rule, **this server never returns a bare "Safe" verdict.** Every result states the score, the verdict, and explicitly what was and was not verified.
 
 Two tools:
 
-- **`scan_repo(owner, repo, ref?)`** — triggers a Claude Rabbit fast-path scan (clone + static scanners + reputation lookup + a fast model read), or returns the cached result if one already exists for the current commit. Returns the score, verdict, code/behavior findings, and reputation signals.
-- **`get_report(owner, repo)`** — reads an **existing** cached report for a repo directly from Claude Rabbit's public database, without triggering a new scan. Returns a clear "not found" result (not an error, and never fabricated data) if the repo has never been scanned.
+- **`scan_repo(owner, repo, ref?)`** — triggers a ClaudeRabbit fast-path scan (clone + static scanners + reputation lookup + a fast model read), or returns the cached result if one already exists for the current commit. Returns the score, verdict, code/behavior findings, and reputation signals.
+- **`get_report(owner, repo)`** — reads an **existing** cached report for a repo directly from ClaudeRabbit's public database, without triggering a new scan. Returns a clear "not found" result (not an error, and never fabricated data) if the repo has never been scanned.
 
 ### Important: what a scan result does and does NOT prove
 
-Claude Rabbit is a two-speed system. The fast path (what both tools above call) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use VM.
+ClaudeRabbit is a two-speed system. The fast path (what both tools above call) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use VM.
 
-**Triggering `scan_repo` only runs the fast path.** It can determine that a repo *should* be escalated (reflected as `escalationDecided: true` in the structured output) without the dynamic sandbox having actually executed yet — that detonation is a separate, privileged process gated to Claude Rabbit's own sandbox controller and is not something this public API call can force to complete synchronously.
+**Triggering `scan_repo` only runs the fast path.** It can determine that a repo *should* be escalated (reflected as `escalationDecided: true` in the structured output) without the dynamic sandbox having actually executed yet — that detonation is a separate, privileged process gated to ClaudeRabbit's own sandbox controller and is not something this public API call can force to complete synchronously.
 
 Both tools always report the honest signal for this: `sandboxActuallyRan` in the structured output (and the "What was actually verified" section in the text) is `true` **only** when a forensic record from a real sandbox execution is attached to the report. If you need confirmation of real runtime behavior, call `get_report` again later, or check the full report page — either will show a "Sandbox run" (not "Static read") result once/if the dynamic run has completed and attached its forensics.
 
-Every result also keeps **reputation signals** (owner account age, stars, sentiment) and **code/behavior signals** (what the code contains, what running it showed) in visibly separate sections, per Claude Rabbit's structural rule that the two are never blended into one signal.
+Every result also keeps **reputation signals** (owner account age, stars, sentiment) and **code/behavior signals** (what the code contains, what running it showed) in visibly separate sections, per ClaudeRabbit's structural rule that the two are never blended into one signal.
 
 ## Setup
 
-This is a self-contained package — it has its own `package.json` and does not touch or depend on the root Claude Rabbit repo's `package.json`, `node_modules`, or build.
+This is a self-contained package — it has its own `package.json` and does not touch or depend on the root ClaudeRabbit repo's `package.json`, `node_modules`, or build.
 
 ```bash
 cd mcp-server
@@ -37,18 +37,18 @@ This produces `dist/index.js`, a stdio MCP server.
 
 ### Configuration
 
-Claude Rabbit is a free, public, no-login product, so the Supabase URL and the Supabase **publishable** key are not secrets — they are the exact two values the Claude Rabbit web app itself ships in its client bundle. This server ships with Claude Rabbit's production values built in as defaults, so **it works with zero configuration.**
+ClaudeRabbit is a free, public, no-login product, so the Supabase URL and the Supabase **publishable** key are not secrets — they are the exact two values the ClaudeRabbit web app itself ships in its client bundle. This server ships with ClaudeRabbit's production values built in as defaults, so **it works with zero configuration.**
 
 Optional environment variables (see `.env.example`) let you point the server at a different deployment (a fork, staging, or a future production domain):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_RABBIT_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` | Supabase project URL to call. |
-| `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | (Claude Rabbit's public key) | Supabase publishable key — safe client-side, same one the web app uses. |
+| `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | (ClaudeRabbit's public key) | Supabase publishable key — safe client-side, same one the web app uses. |
 | `CLAUDE_RABBIT_SITE_URL` | `http://localhost:2311` | Base URL used to build the "full report" link in tool output. Update once a production domain exists. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long `scan_repo` will wait for a fresh (uncached) scan to finish streaming before giving up. |
 
-No API key, login, or auth token is ever required — every call this server makes is the same anonymous, public call the Claude Rabbit website makes for a logged-out visitor.
+No API key, login, or auth token is ever required — every call this server makes is the same anonymous, public call the ClaudeRabbit website makes for a logged-out visitor.
 
 ## Adding this server to an MCP client
 
@@ -101,7 +101,7 @@ npm start
 # or: node dist/index.js
 ```
 
-To exercise both tools end-to-end against the **real, live, deployed Claude Rabbit API** without wiring up a full MCP client, use the built-in smoke test. It spins up this exact server and a real MCP `Client` connected over an in-memory transport (the same code paths as stdio), then calls both tools for real:
+To exercise both tools end-to-end against the **real, live, deployed ClaudeRabbit API** without wiring up a full MCP client, use the built-in smoke test. It spins up this exact server and a real MCP `Client` connected over an in-memory transport (the same code paths as stdio), then calls both tools for real:
 
 ```bash
 npm run build
@@ -120,4 +120,4 @@ This calls `get_report` for a repo expected to already have a cached report, `sc
 - `src/index.ts` — stdio server entrypoint.
 - `src/test/smoke.ts` — live end-to-end verification harness (see above).
 
-No scanning, scoring, or sandboxing logic is reimplemented anywhere in this package — it is a pure client of Claude Rabbit's existing public API.
+No scanning, scoring, or sandboxing logic is reimplemented anywhere in this package — it is a pure client of ClaudeRabbit's existing public API.

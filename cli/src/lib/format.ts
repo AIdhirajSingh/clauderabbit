@@ -103,7 +103,7 @@ export function honestHedge(report: Report): string {
   const base =
     "Static read only (static scanners + a model read the source); this repo was NOT executed in a sandbox on this pass, so this is not a proof of safety.";
   if (report.deep) {
-    return `${base} Claude Rabbit flagged it as ambiguous enough to escalate, but no forensic record is attached, so a full dynamic run has not been confirmed for this report yet.`;
+    return `${base} ClaudeRabbit flagged it as ambiguous enough to escalate, but no forensic record is attached, so a full dynamic run has not been confirmed for this report yet.`;
   }
   return base;
 }
@@ -262,7 +262,7 @@ export function toText(
   const lines: string[] = [];
 
   lines.push("");
-  lines.push(p.bold(`  ${report.owner}/${report.name} — Claude Rabbit safety report`));
+  lines.push(p.bold(`  ${report.owner}/${report.name} — ClaudeRabbit safety report`));
   if (opts.resolvedVia === "npm" && opts.npmPackage) {
     lines.push(p.dim(`  (resolved from npm package "${opts.npmPackage}")`));
   }

@@ -2,7 +2,7 @@
   "name": "claude-rabbit-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "MCP server for Claude Rabbit — lets AI coding tools scan a public GitHub repo or check for an existing safety report before installing/using it.",
+  "description": "MCP server for ClaudeRabbit — lets AI coding tools scan a public GitHub repo or check for an existing safety report before installing/using it.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

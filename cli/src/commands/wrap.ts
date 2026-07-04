@@ -1,8 +1,8 @@
 /**
  * Install/clone wrapper subcommands:
- *   claude-rabbit npm-install  <args...>   → scan target(s), then run `npm install <args...>`
- *   claude-rabbit pnpm-install <args...>   → scan target(s), then run `pnpm install/add <args...>`
- *   claude-rabbit git-clone    <args...>   → scan target,    then run `git clone <args...>`
+ *   clauderabbit npm-install  <args...>   → scan target(s), then run `npm install <args...>`
+ *   clauderabbit pnpm-install <args...>   → scan target(s), then run `pnpm install/add <args...>`
+ *   clauderabbit git-clone    <args...>   → scan target,    then run `git clone <args...>`
  *
  * The design (per the reviewer's concern #1) is deliberately honest:
  *   - We scan the NEW dependency/repo being fetched, print the real verdict
@@ -121,7 +121,7 @@ function bannerFor(report: Report, p: Palette): string[] {
   const lines: string[] = [];
   lines.push(
     paint(
-      `  Claude Rabbit: ${report.owner}/${report.name} — ${report.score}/100 (${report.verdict})`,
+      `  ClaudeRabbit: ${report.owner}/${report.name} — ${report.score}/100 (${report.verdict})`,
     ),
   );
   // Honest hedge ALWAYS printed — never a bare green light.
@@ -233,7 +233,7 @@ export async function runWrapCommand(
     // Pass straight through — honest: we make no safety claim about it.
     process.stderr.write(
       p.dim(
-        `Claude Rabbit: no new dependency/repo target on the command line — nothing to scan, running ${manager} as-is.\n`,
+        `ClaudeRabbit: no new dependency/repo target on the command line — nothing to scan, running ${manager} as-is.\n`,
       ),
     );
     if (opts.dryRun) return { exitCode: 0 };
@@ -245,7 +245,7 @@ export async function runWrapCommand(
 
   for (const rawTarget of targets) {
     const scanSpec = manager === "git" ? rawTarget : scanSpecFor(rawTarget);
-    process.stderr.write(p.dim(`Claude Rabbit: scanning ${scanSpec}…\n`));
+    process.stderr.write(p.dim(`ClaudeRabbit: scanning ${scanSpec}…\n`));
 
     let resolved;
     try {
@@ -255,7 +255,7 @@ export async function runWrapCommand(
       // vouch for it, but we don't block — print a caveat and move on.
       process.stderr.write(
         p.yellow(
-          `  Could not scan "${scanSpec}": ${(err as Error).message} — proceeding WITHOUT a Claude Rabbit verdict for it.\n`,
+          `  Could not scan "${scanSpec}": ${(err as Error).message} — proceeding WITHOUT a ClaudeRabbit verdict for it.\n`,
         ),
       );
       continue;

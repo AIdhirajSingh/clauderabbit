@@ -1,5 +1,5 @@
 /**
- * Coerce an arbitrary payload from the Claude Rabbit API into the `Report`
+ * Coerce an arbitrary payload from the ClaudeRabbit API into the `Report`
  * shape this server relies on. Reimplemented standalone from the main app's
  * `lib/scan.ts` (`normalizeReport`) and `lib/report-view.ts`
  * (`enforceVerdict`) — this package has no dependency on `lib/`.

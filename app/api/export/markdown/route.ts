@@ -65,7 +65,7 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const markdown = reportToMarkdown(report, SITE_URL);
-  const filename = `${owner}-${repo}-claude-rabbit-report.md`;
+  const filename = `${owner}-${repo}-clauderabbit-report.md`;
 
   return new Response(markdown, {
     status: 200,

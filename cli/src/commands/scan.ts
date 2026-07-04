@@ -1,8 +1,8 @@
 /**
- * `claude-rabbit scan <target> [--json] [--ref <ref>] [--no-color]`
+ * `clauderabbit scan <target> [--json] [--ref <ref>] [--no-color]`
  *
  * Resolves the target (owner/repo, GitHub URL, or npm package name), calls the
- * real Claude Rabbit API, and prints either a human report or the documented
+ * real ClaudeRabbit API, and prints either a human report or the documented
  * `--json` structured object (consumed by scripts and agents).
  */
 

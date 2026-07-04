@@ -1,7 +1,7 @@
 /**
  * Vertex AI Gemini model seam (server-side only).
  *
- * This is THE swap seam for Claude Rabbit's model layer. Today it calls Gemini
+ * This is THE swap seam for ClaudeRabbit's model layer. Today it calls Gemini
  * via the Vertex backend (the $300 GCP credit pays for Vertex, not AI Studio —
  * see docs/INFRASTRUCTURE.md §6). The real models (DeepSeek fast-path, Kimi K2.7
  * in the sandbox) drop in behind the same `generate()` interface later without

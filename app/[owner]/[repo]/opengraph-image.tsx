@@ -15,7 +15,7 @@ import { band } from "@/lib/score";
  * never a bare "Safe" (the verdict is rendered verbatim from buildReportView,
  * which already guards that).
  */
-export const alt = "Claude Rabbit safety report";
+export const alt = "ClaudeRabbit safety report";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -77,7 +77,7 @@ export default async function ReportOpengraphImage({ params }: RouteParams) {
           {slug}
         </div>
         <div style={{ display: "flex", marginTop: 28, fontSize: 24, color: "#6d665b" }}>
-          Claude Rabbit — an honest, evidence-backed safety score
+          ClaudeRabbit — an honest, evidence-backed safety score
         </div>
       </div>
     ),

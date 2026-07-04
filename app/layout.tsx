@@ -39,9 +39,9 @@ const instrumentSerif = Instrument_Serif({
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: "Claude Rabbit",
+  title: "ClaudeRabbit",
   description:
-    "Claude Rabbit is a free, open-source security product protecting the open-source community from malware. We clone any public GitHub repo into an isolated sandbox, run it, and return one honest safety score.",
+    "ClaudeRabbit is a free, open-source security product protecting the open-source community from malware. We clone any public GitHub repo into an isolated sandbox, run it, and return one honest safety score.",
   alternates: { canonical: siteUrl },
 };
 

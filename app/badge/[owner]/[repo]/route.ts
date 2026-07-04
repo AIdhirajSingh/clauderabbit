@@ -77,8 +77,8 @@ export async function GET(_req: Request, { params }: RouteParams): Promise<Respo
 
   const svg =
     score == null
-      ? badgeSvg("Claude Rabbit", "unscanned", "#6b7280")
-      : badgeSvg("Claude Rabbit", `${score}/100`, BAND_HEX[band(score)]);
+      ? badgeSvg("ClaudeRabbit", "unscanned", "#6b7280")
+      : badgeSvg("ClaudeRabbit", `${score}/100`, BAND_HEX[band(score)]);
 
   return new Response(svg, {
     status: 200,

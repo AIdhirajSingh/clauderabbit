@@ -57,7 +57,7 @@ export function HomeScreen() {
         >
           <RabbitMark size={24} stroke="1.7" />
           <span style={{ fontSize: 15.5, fontWeight: 600, letterSpacing: "-0.015em", color: "var(--t1)" }}>
-            Claude Rabbit
+            ClaudeRabbit
           </span>
         </div>
         <div
@@ -206,7 +206,7 @@ export function HomeScreen() {
               maxWidth: 480,
             }}
           >
-            Claude Rabbit is a free, open-source security product for the developer community. Paste any public GitHub repo
+            ClaudeRabbit is a free, open-source security product for the developer community. Paste any public GitHub repo
             and we clone it into an isolated sandbox, run it for real, and hand back one honest safety score: what the project
             is, what it did when we ran it, and what we could not verify.
           </p>
@@ -421,7 +421,7 @@ export function HomeScreen() {
             We protect the world from open-source malware.
           </h2>
           <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
-            Claude Rabbit is a real security product &mdash; free and open-source &mdash; with one mission: protect the world
+            ClaudeRabbit is a real security product &mdash; free and open-source &mdash; with one mission: protect the world
             from open-source malware, and grow from there toward cybersecurity more broadly. We start where the threat is most
             personal: the developers who clone and run unknown code every day. A repo or package can run hostile code the
             moment you install it, draining GitHub tokens, cloud keys, and crypto wallets before a build even finishes. More
@@ -467,7 +467,7 @@ export function HomeScreen() {
             Use it everywhere you already work.
           </h2>
           <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.65, margin: 0 }}>
-            The web report is one surface. Claude Rabbit also ships as an MCP server and a CLI, so the same honest,
+            The web report is one surface. ClaudeRabbit also ships as an MCP server and a CLI, so the same honest,
             evidence-backed verdict is one call away &mdash; from an AI coding tool, a terminal, or a pre-install hook &mdash;
             without ever leaving where you already are.
           </p>
@@ -482,7 +482,7 @@ export function HomeScreen() {
             {
               title: "CLI",
               body: "Run the same fast-path scan from a terminal, or wire it in as an opt-in shell hook that checks a repo or package before npm install / pnpm install / git clone actually run. Never a bare “Safe” — always the score, the verdict, and what was and wasn’t verified.",
-              cmd: "npx claude-rabbit-cli scan owner/repo",
+              cmd: "npx clauderabbit scan owner/repo",
             },
           ].map((t) => (
             <div
@@ -559,7 +559,7 @@ export function HomeScreen() {
             <p style={{ fontSize: 16, color: "var(--t3)", margin: "0 0 30px", maxWidth: 440, lineHeight: 1.62 }}>
               We are a free, open-source security product on a mission to protect the open-source community from malware.
               Every scan grows a public database of vetted repositories &mdash; a community asset that belongs to everyone.
-              If Claude Rabbit ever stops you running the wrong thing, a star is the only thanks we ask.
+              If ClaudeRabbit ever stops you running the wrong thing, a star is the only thanks we ask.
             </p>
             <a
               href="https://github.com/AIdhirajSingh/clauderabbit"
@@ -604,7 +604,7 @@ export function HomeScreen() {
               whiteSpace: "nowrap",
             }}
           >
-            <span>Claude Rabbit</span>
+            <span>ClaudeRabbit</span>
           </div>
         </div>
 
@@ -653,7 +653,7 @@ export function HomeScreen() {
             }}
           >
             <span style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-              © 2026 Claude Rabbit · A free, open-source security product, protecting the open-source community from malware.
+              © 2026 ClaudeRabbit · A free, open-source security product, protecting the open-source community from malware.
               <Link href="/privacy" style={{ color: "var(--t5)", textDecoration: "underline" }}>
                 Privacy
               </Link>

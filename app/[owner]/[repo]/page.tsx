@@ -64,10 +64,10 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
   // in a sandbox" in search results (honesty rail), matching the on-page prose.
   const view = report ? buildReportView(report) : null;
 
-  const title = `${slug} — Claude Rabbit safety report`;
+  const title = `${slug} — ClaudeRabbit safety report`;
   const description = view
     ? `${view.verdict} · ${view.score}/100. ${view.summary}`.slice(0, 300)
-    : `Safety report for ${slug}. Claude Rabbit reads the code and runs unknown repos in an isolated sandbox to return an honest 0–100 safety score.`;
+    : `Safety report for ${slug}. ClaudeRabbit reads the code and runs unknown repos in an isolated sandbox to return an honest 0–100 safety score.`;
   const url = `${SITE_URL}/${slug}`;
 
   return {
@@ -78,7 +78,7 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
       title,
       description,
       url,
-      siteName: "Claude Rabbit",
+      siteName: "ClaudeRabbit",
       type: "article",
     },
     twitter: {
@@ -101,7 +101,7 @@ function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
   const ld = {
     "@context": "https://schema.org",
     "@type": "Review",
-    name: `${slug} — Claude Rabbit safety report`,
+    name: `${slug} — ClaudeRabbit safety report`,
     reviewBody: view.summary,
     itemReviewed: {
       "@type": "SoftwareSourceCode",
@@ -116,7 +116,7 @@ function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
       worstRating: 0,
       alternateName: view.verdict,
     },
-    author: { "@type": "Organization", name: "Claude Rabbit", url: SITE_URL },
+    author: { "@type": "Organization", name: "ClaudeRabbit", url: SITE_URL },
   };
   // `view.summary` (→ `ld.reviewBody`) is LLM-generated and can echo
   // attacker-influenced text (repo name/README, or a sandbox-captured hostname).
@@ -189,7 +189,7 @@ function ServerNav() {
       >
         <RabbitMark size={26} />
         <span className="serif" style={{ fontSize: 19, color: "var(--t1)", letterSpacing: "-0.01em" }}>
-          Claude Rabbit
+          ClaudeRabbit
         </span>
       </Link>
       <Link
@@ -275,7 +275,7 @@ function ServerFooter() {
         color: "var(--t4)",
       }}
     >
-      Claude Rabbit — a free, open-source security product, protecting the open-source community from malware.
+      ClaudeRabbit — a free, open-source security product, protecting the open-source community from malware.
     </footer>
   );
 }
@@ -325,7 +325,7 @@ function NotScanned({ owner, repo }: { owner: string; repo: string }) {
         </h1>
         <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.6, margin: "0 0 30px", textWrap: "pretty" }}>
           This repository has not been scanned yet. Run a free safety scan to
-          generate its public report — Claude Rabbit reads the code and, when
+          generate its public report — ClaudeRabbit reads the code and, when
           warranted, runs it in an isolated sandbox.
         </p>
         <Link

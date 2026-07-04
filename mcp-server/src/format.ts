@@ -43,7 +43,7 @@ export function formatReport(report: Report, reportUrl: string, opts: { fresh: b
   const repRisky = report.risky.filter((r) => r.kind === "rep");
 
   const lines: string[] = [];
-  lines.push(`# ${report.owner}/${report.name} — Claude Rabbit safety report`);
+  lines.push(`# ${report.owner}/${report.name} — ClaudeRabbit safety report`);
   lines.push("");
   lines.push(`Score: ${report.score}/100 (${scoreBand(report.score)})`);
   lines.push(`Verdict: ${report.verdict}`);
@@ -73,7 +73,7 @@ export function formatReport(report: Report, reportUrl: string, opts: { fresh: b
     );
     if (escalationDecided) {
       lines.push(
-        "- NOTE: Claude Rabbit's fast path flagged this repo as ambiguous enough to escalate to a dynamic sandbox run (`deep: true`), but escalation being DECIDED is not the same as the sandbox having EXECUTED. No forensic record is attached, so a full dynamic run has not been confirmed for this report yet. Re-check get_report later, or view the full report page, for an updated result.",
+        "- NOTE: ClaudeRabbit's fast path flagged this repo as ambiguous enough to escalate to a dynamic sandbox run (`deep: true`), but escalation being DECIDED is not the same as the sandbox having EXECUTED. No forensic record is attached, so a full dynamic run has not been confirmed for this report yet. Re-check get_report later, or view the full report page, for an updated result.",
       );
     }
     lines.push("- Full runtime behavior (this repo has not been executed in a sandbox for this report)");

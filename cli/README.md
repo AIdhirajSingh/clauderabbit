@@ -1,19 +1,19 @@
-# claude-rabbit CLI
+# clauderabbit CLI
 
-A command-line client for [Claude Rabbit](https://github.com/AIdhirajSingh/clauderabbit) — a
+A command-line client for [ClaudeRabbit](https://github.com/AIdhirajSingh/clauderabbit) — a
 free, no-login web tool that scans a public GitHub repo or npm package and returns an honest
 0–100 safety score. This CLI lets you (or an AI coding agent) get that verdict **before you
 install a dependency or clone a repo**, from the terminal, and optionally wire it in as an
 opt-in shell hook so it runs automatically before `npm install` / `pnpm install` / `git clone`.
 
-It is a thin, self-contained client of the real, deployed Claude Rabbit API — the same public
+It is a thin, self-contained client of the real, deployed ClaudeRabbit API — the same public
 Supabase edge function and database read the web app and the
 [MCP server](../mcp-server) use. It does not reimplement any scanning, scoring, or sandboxing
 logic; it only calls the existing API and formats the response.
 
 ## The one rule it never breaks
 
-Per Claude Rabbit's core rail, **this CLI never states a bare "Safe."** Every result shows the
+Per ClaudeRabbit's core rail, **this CLI never states a bare "Safe."** Every result shows the
 score, the verdict, the evidence behind it, and — critically — states plainly what was **not**
 verified. A scan that has not run the dynamic sandbox is reported honestly as a *static read*,
 never as a clearance. See "What a scan does and does not prove" below.
@@ -21,7 +21,7 @@ never as a clearance. See "What a scan does and does not prove" below.
 ## Install
 
 This is a self-contained package — it has its own `package.json` and does **not** touch or
-depend on the root Claude Rabbit repo's `package.json`, `node_modules`, or build.
+depend on the root ClaudeRabbit repo's `package.json`, `node_modules`, or build.
 
 ```bash
 cd cli
@@ -33,9 +33,9 @@ Then run it directly, or link it onto your PATH:
 
 ```bash
 node dist/index.js scan expressjs/express
-# or, to get the `claude-rabbit` command globally:
+# or, to get the `clauderabbit` command globally:
 npm link           # inside cli/  (uses the "bin" field)
-claude-rabbit scan expressjs/express
+clauderabbit scan expressjs/express
 ```
 
 Requires Node.js >= 18 (uses the built-in `fetch`). No API key, login, or token is ever
@@ -49,7 +49,7 @@ not secrets — they are the exact two client-safe values the web app ships; see
 
 ### `scan <target> [--json] [--ref <ref>] [--no-color]`
 
-Run (or hit the cache for) a Claude Rabbit fast-path scan and print the verdict.
+Run (or hit the cache for) a ClaudeRabbit fast-path scan and print the verdict.
 
 `<target>` may be:
 
@@ -63,23 +63,23 @@ Run (or hit the cache for) a Claude Rabbit fast-path scan and print the verdict.
 `--json` emits the machine-readable object documented in [JSON output](#json-output-schema).
 
 ```bash
-claude-rabbit scan expressjs/express
-claude-rabbit scan left-pad --json          # resolved via npm → stevemao/left-pad
-claude-rabbit scan https://github.com/owner/repo --ref main
+clauderabbit scan expressjs/express
+clauderabbit scan left-pad --json          # resolved via npm → stevemao/left-pad
+clauderabbit scan https://github.com/owner/repo --ref main
 ```
 
 ### `report <target> [--json]`
 
-Read an **existing** cached report from Claude Rabbit's public database **without** triggering
+Read an **existing** cached report from ClaudeRabbit's public database **without** triggering
 a new scan. Prints an honest "not found" (exit code 4) if the repo has never been scanned —
 never fabricated data.
 
 ### `npm-install` / `pnpm-install` / `git-clone` — the install wrappers
 
 ```
-claude-rabbit npm-install  <args...>   [--yes] [--dry-run] [--no-color]
-claude-rabbit pnpm-install <args...>   [--yes] [--dry-run] [--no-color]
-claude-rabbit git-clone    <args...>   [--yes] [--dry-run] [--no-color]
+clauderabbit npm-install  <args...>   [--yes] [--dry-run] [--no-color]
+clauderabbit pnpm-install <args...>   [--yes] [--dry-run] [--no-color]
+clauderabbit git-clone    <args...>   [--yes] [--dry-run] [--no-color]
 ```
 
 Each one scans the package/repo being fetched, prints the honest verdict, then runs the real
@@ -110,8 +110,8 @@ own exit code.
 ### `install-hooks` / `uninstall-hooks` — opt-in shell integration
 
 ```
-claude-rabbit install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
-claude-rabbit uninstall-hooks [--shell bash|zsh|powershell] [--profile <path>]
+clauderabbit install-hooks   [--shell bash|zsh|powershell] [--profile <path>] [--print]
+clauderabbit uninstall-hooks [--shell bash|zsh|powershell] [--profile <path>]
 ```
 
 Adds (or removes) shell **functions** that wrap `npm`/`pnpm`/`git` so an install or clone is
@@ -152,13 +152,13 @@ failure. The hooks:
   (`/usr/bin/npm`, `command npm`), and anything inside a subshell that did not source the
   hook.
 
-If you need a guarantee that a specific dependency was scanned, run `claude-rabbit scan <pkg>`
+If you need a guarantee that a specific dependency was scanned, run `clauderabbit scan <pkg>`
 explicitly. The hooks are a convenience for the common interactive case, not a security
 boundary.
 
 ## JSON output schema
 
-`claude-rabbit scan <target> --json` (and `report <target> --json`) print a single JSON object
+`clauderabbit scan <target> --json` (and `report <target> --json`) print a single JSON object
 to **stdout**. On error, the object is `{ "error": string, "target": string }` (and, for a
 cache miss on `report`, also `"notFound": true`) — so a consumer always gets parseable JSON,
 never a torn stream. Progress/log lines go to **stderr** and never pollute the JSON.
@@ -226,7 +226,7 @@ A successful scan object:
 
 ## What a scan does and does NOT prove
 
-Claude Rabbit is a two-speed system. The fast path (what `scan`/`report` call) runs on
+ClaudeRabbit is a two-speed system. The fast path (what `scan`/`report` call) runs on
 essentially every request: static analysis, reputation lookup, and a fast model reading only
 the flagged regions. A small share of ambiguous repos get **escalated** to a full
 dynamic-sandbox detonation — the repo is actually built and run inside a hermetic,
@@ -240,12 +240,12 @@ So a scan result reflects the fast-path read plus reputation. When `sandboxActua
 
 ## Configuration
 
-All optional — the CLI works with zero setup against Claude Rabbit's production project.
+All optional — the CLI works with zero setup against ClaudeRabbit's production project.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CLAUDE_RABBIT_SUPABASE_URL` | Claude Rabbit's project URL | Supabase project to call. |
-| `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | Claude Rabbit's public key | Publishable key — safe client-side, same one the web app uses. |
+| `CLAUDE_RABBIT_SUPABASE_URL` | ClaudeRabbit's project URL | Supabase project to call. |
+| `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | ClaudeRabbit's public key | Publishable key — safe client-side, same one the web app uses. |
 | `CLAUDE_RABBIT_SITE_URL` | `http://localhost:2311` | Base URL used to build the report links in output. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long a fresh (uncached) scan will stream before giving up. |
 | `NO_COLOR` | — | Set to disable ANSI color (also auto-disabled when stdout is not a TTY). |
@@ -261,7 +261,7 @@ npm run dev         # watch mode
 ## Architecture
 
 - `src/lib/env.ts` — configuration (public defaults + env overrides); never reads a secret.
-- `src/lib/client.ts` — the only module that makes Claude Rabbit HTTP calls. Mirrors the main
+- `src/lib/client.ts` — the only module that makes ClaudeRabbit HTTP calls. Mirrors the main
   app's `lib/scan.ts` (`runScan`, NDJSON stream + cache-hit JSON) and `lib/report-fetch.ts`
   (`fetchLatestReportRest`), reimplemented standalone (mirrors the production-verified
   `mcp-server/` client).
