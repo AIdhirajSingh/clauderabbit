@@ -116,6 +116,7 @@ export async function runScanCommand(
           ...(resolved.npmPackage ? { npmPackage: resolved.npmPackage } : {}),
         },
         palette,
+        opts.color,
       ),
     );
   }

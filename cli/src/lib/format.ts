@@ -16,9 +16,16 @@
  *    off `deep`.
  */
 
+import { Chalk, type ChalkInstance } from "chalk";
+import boxen from "boxen";
 import type { Report, RiskyItem } from "./types.js";
 
-/** ANSI color helpers — only emitted when stdout is a TTY (set by caller). */
+/**
+ * Real terminal styling (chalk), not hand-rolled ANSI codes. `level: 0`
+ * fully disables styling for --no-color / non-TTY / NO_COLOR, matching the
+ * CLI's own explicit color decision (wantsColor() in index.ts) rather than
+ * relying on chalk's independent auto-detection, which could disagree with it.
+ */
 export interface Palette {
   green: (s: string) => string;
   blue: (s: string) => string;
@@ -28,24 +35,19 @@ export interface Palette {
   bold: (s: string) => string;
 }
 
-const wrap = (code: number) => (s: string) => `[${code}m${s}[0m`;
-export const colorPalette: Palette = {
-  green: wrap(32),
-  blue: wrap(34),
-  yellow: wrap(33),
-  red: wrap(31),
-  dim: wrap(2),
-  bold: wrap(1),
-};
-const identity = (s: string) => s;
-export const plainPalette: Palette = {
-  green: identity,
-  blue: identity,
-  yellow: identity,
-  red: identity,
-  dim: identity,
-  bold: identity,
-};
+function paletteFor(color: boolean): Palette {
+  const c = new Chalk({ level: color ? 3 : 0 });
+  return {
+    green: (s) => c.green(s),
+    blue: (s) => c.blue(s),
+    yellow: (s) => c.yellow(s),
+    red: (s) => c.red(s),
+    dim: (s) => c.dim(s),
+    bold: (s) => c.bold(s),
+  };
+}
+export const colorPalette: Palette = paletteFor(true);
+export const plainPalette: Palette = paletteFor(false);
 
 /** Score-color band, matching the product's fixed logic everywhere a score appears. */
 export type ScoreColor = "green" | "blue" | "yellow" | "red";
@@ -235,18 +237,36 @@ export function toJson(
 
 // ─────────────────────────── text output ───────────────────────────
 
-function paintScore(p: Palette, score: number): string {
-  const s = `${score}/100`;
-  switch (scoreColor(score)) {
-    case "green":
-      return p.green(p.bold(s));
-    case "blue":
-      return p.blue(p.bold(s));
-    case "yellow":
-      return p.yellow(p.bold(s));
-    case "red":
-      return p.red(p.bold(s));
+/** boxen only accepts these literal color names — the exact set scoreColor() returns. */
+const BOX_BORDER_COLOR: Record<ScoreColor, "green" | "blue" | "yellow" | "red"> = {
+  green: "green",
+  blue: "blue",
+  yellow: "yellow",
+  red: "red",
+};
+
+/** A colored background "chip" for a severity, e.g. a red HIGH badge. Falls back to a plain bracketed label when color is off. */
+function severityBadge(c: ChalkInstance, color: boolean, severity: string): string {
+  const label = severityLabel(severity);
+  if (!color) return `[${label}]`;
+  switch (severity) {
+    case "high":
+      return c.bgRed.white.bold(` ${label} `);
+    case "med":
+      return c.bgYellow.black.bold(` ${label} `);
+    default:
+      return c.bgGray.white.bold(` ${label} `);
   }
+}
+
+/** A small dim tag distinguishing static/behavior/reputation findings. */
+function kindTag(c: ChalkInstance, color: boolean, kind: string): string {
+  const label = kindLabel(kind);
+  return color ? c.dim(`(${label})`) : `(${label})`;
+}
+
+function sectionHeader(c: ChalkInstance, color: boolean, icon: string, title: string): string {
+  return color ? `${c.bold(icon)} ${c.bold.underline(title)}` : `${icon} ${title}`;
 }
 
 /** Render a full human-readable report to a string. */
@@ -255,105 +275,108 @@ export function toText(
   siteUrl: string,
   opts: { fresh: boolean; resolvedVia: "github" | "npm"; npmPackage?: string },
   p: Palette,
+  color = true,
 ): string {
+  const c = new Chalk({ level: color ? 3 : 0 });
   const ran = ranSandbox(report);
   const behavior = report.risky.filter((r) => r.kind !== "rep");
   const repFindings = report.risky.filter((r) => r.kind === "rep");
+  const band = scoreColor(report.score);
   const lines: string[] = [];
 
-  lines.push("");
-  lines.push(p.bold(`  ${report.owner}/${report.name} — ClaudeRabbit safety report`));
-  if (opts.resolvedVia === "npm" && opts.npmPackage) {
-    lines.push(p.dim(`  (resolved from npm package "${opts.npmPackage}")`));
-  }
-  lines.push("");
-  lines.push(`  Score:   ${paintScore(p, report.score)}   ${p.dim(scoreBandLabel(report.score))}`);
-  lines.push(`  Verdict: ${p.bold(report.verdict)}`);
-  lines.push(
-    `  Source:  ${opts.fresh ? "fresh scan just run" : "cached report"}${
-      report.commit_sha ? ` @ ${report.commit_sha.slice(0, 12)}` : ""
+  // ── Score / verdict / source, in a clean bordered box colored by the
+  // product's fixed score-color logic (green/blue/yellow/red everywhere).
+  const boxLines = [
+    c.bold(`${report.owner}/${report.name}`) +
+      (opts.resolvedVia === "npm" && opts.npmPackage ? c.dim(` (npm: ${opts.npmPackage})`) : ""),
+    "",
+    `${c.dim("Score")}    ${p.bold(`${report.score}/100`)}  ${c.dim(`(${scoreBandLabel(report.score)})`)}`,
+    `${c.dim("Verdict")}  ${c.bold(report.verdict)}`,
+    `${c.dim("Source")}   ${opts.fresh ? "fresh scan just run" : "cached report"}${
+      report.commit_sha ? c.dim(` @ ${report.commit_sha.slice(0, 12)}`) : ""
     }`,
+  ].join("\n");
+  lines.push(
+    boxen(boxLines, {
+      padding: { top: 0, bottom: 0, left: 1, right: 1 },
+      borderStyle: "round",
+      ...(color ? { borderColor: BOX_BORDER_COLOR[band] } : {}),
+    }),
   );
   lines.push("");
 
-  lines.push(p.bold("  What was actually verified"));
+  // ── What was actually verified.
+  lines.push(sectionHeader(c, color, "🔎", "What was actually verified"));
   if (ran) {
     lines.push(
-      "    - RAN in a hermetic, network-locked-down sandbox that is reimaged after every scan.",
+      c.green("  ✓ RAN in a hermetic, network-locked-down sandbox that is reimaged after every scan."),
     );
-    lines.push("      Findings below reflect observed runtime behavior, not just a code read.");
+    lines.push(c.dim("    Findings below reflect observed runtime behavior, not just a code read."));
     if (report.forensics?.verdict.attack_egress_intercepted) {
       lines.push(
-        p.red(
-          "    - The sandbox caught an outbound exfiltration/callback attempt. Every attempt was",
-        ),
+        c.red.bold("  ✗ The sandbox caught an outbound exfiltration/callback attempt."),
       );
-      lines.push(p.red("      intercepted and never reached its real destination."));
+      lines.push(c.red("    Every attempt was intercepted and never reached its real destination."));
     } else {
-      lines.push(
-        "    - No malicious behavior, credential access, or outbound exfiltration was observed.",
-      );
+      lines.push(c.green("  ✓ No malicious behavior, credential access, or outbound exfiltration observed."));
     }
     if (report.forensics?.honesty.possibly_dormant_unverified) {
       lines.push(
-        "    - The code may be dormant/conditional (time- or trigger-gated); the run did not",
+        c.yellow("  ⚠ The code may be dormant/conditional (time- or trigger-gated); the run did"),
       );
-      lines.push("      necessarily exercise every code path.");
+      lines.push(c.yellow("    not necessarily exercise every code path."));
     }
   } else {
-    lines.push(
-      p.dim("    - STATIC READ ONLY: static scanners + a model read the source. No dynamic"),
-    );
-    lines.push(p.dim("      sandbox execution has produced a forensic record for this report."));
+    lines.push(c.dim("  ○ STATIC READ ONLY: static scanners + a model read the source. No dynamic"));
+    lines.push(c.dim("    sandbox execution has produced a forensic record for this report."));
     if (report.deep) {
-      lines.push(
-        p.yellow(
-          "    - NOTE: flagged as ambiguous enough to escalate, but escalation being DECIDED is",
-        ),
-      );
-      lines.push(
-        p.yellow("      not the sandbox having EXECUTED. No forensic record is attached yet."),
-      );
+      lines.push(c.yellow("  ⚠ NOTE: flagged as ambiguous enough to escalate, but escalation being"));
+      lines.push(c.yellow("    DECIDED is not the sandbox having EXECUTED — no forensic record yet."));
     }
-    lines.push(p.dim("    Not verified:"));
-    for (const nv of notVerifiedList(false)) lines.push(p.dim(`      - ${nv}`));
+    lines.push(c.dim("  Not verified:"));
+    for (const nv of notVerifiedList(false)) lines.push(c.dim(`    · ${nv}`));
   }
   lines.push("");
 
-  lines.push(p.bold("  Code / behavior findings (separate from reputation)"));
+  // ── Code / behavior findings — always visually separate from reputation.
+  lines.push(sectionHeader(c, color, "🧩", "Code / behavior findings"));
+  lines.push(c.dim("  (separate from reputation, below)"));
   if (behavior.length === 0) {
-    lines.push("    - None flagged.");
+    lines.push(c.green("  None flagged."));
   } else {
     for (const it of behavior) {
-      lines.push(`    - [${severityLabel(it.severity)}] (${kindLabel(it.kind)}) ${it.title}`);
-      if (it.detail) lines.push(p.dim(`        ${it.detail}`));
+      lines.push(`  ${severityBadge(c, color, it.severity)} ${kindTag(c, color, it.kind)} ${it.title}`);
+      if (it.detail) lines.push(c.dim(`      ${it.detail}`));
     }
   }
   lines.push("");
 
-  lines.push(p.bold("  Reputation signals (owner / community — separate from code behavior)"));
+  // ── Reputation signals — owner/community, kept visibly separate above.
+  lines.push(sectionHeader(c, color, "👤", "Reputation signals"));
+  lines.push(c.dim("  (owner / community — separate from code behavior, above)"));
   lines.push(
-    `    - Owner: ${report.ownerHistory.handle} (${report.ownerHistory.name}) — account age ${report.ownerHistory.age}, ${
-      report.ownerHistory.established ? "established" : "not yet long-established"
+    `  Owner:     ${c.bold(report.ownerHistory.handle)} (${report.ownerHistory.name}) — ${report.ownerHistory.age}, ${
+      report.ownerHistory.established ? c.green("established") : c.yellow("not yet long-established")
     }, ${report.ownerHistory.repos} public repos.`,
   );
   lines.push(
-    `    - Community: ${report.reputation.stars} stars, ${report.reputation.forks} forks${
+    `  Community: ${report.reputation.stars} stars, ${report.reputation.forks} forks${
       report.reputation.sentiment
         ? `, sentiment "${report.reputation.sentiment}" (${report.reputation.sentScore}/100)`
         : ""
     }.`,
   );
   for (const it of repFindings) {
-    lines.push(`    - [${severityLabel(it.severity)}] ${it.title}`);
-    if (it.detail) lines.push(p.dim(`        ${it.detail}`));
+    lines.push(`  ${severityBadge(c, color, it.severity)} ${it.title}`);
+    if (it.detail) lines.push(c.dim(`      ${it.detail}`));
   }
   lines.push("");
 
-  lines.push(p.bold("  Summary"));
-  lines.push(`    ${report.summary || "(no summary text returned)"}`);
+  // ── Summary.
+  lines.push(sectionHeader(c, color, "📋", "Summary"));
+  lines.push(`  ${report.summary || "(no summary text returned)"}`);
   lines.push("");
-  lines.push(p.dim(`  Full report: ${reportUrlFor(siteUrl, report)}`));
+  lines.push(c.dim(`Full report: ${reportUrlFor(siteUrl, report)}`));
   lines.push("");
 
   return lines.join("\n");

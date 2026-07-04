@@ -68,6 +68,14 @@ fast-path scan runs. You never need to know or choose which case applies.
 
 `--json` emits the machine-readable object documented in [JSON output](#json-output-schema).
 
+Without `--json`, the report renders as real styled terminal output (via
+[chalk](https://github.com/chalk/chalk) and [boxen](https://github.com/sindresorhus/boxen), not
+hand-rolled ANSI codes): the score/verdict/source in a bordered box colored by the product's
+fixed score-color logic (green/blue/yellow/red), colored severity badges (`HIGH`/`MED`/`LOW`) on
+every finding, and code/behavior findings kept in a visually separate section from reputation
+signals. Falls back to a clean, unstyled plain-text layout for `--no-color`, `NO_COLOR`, or a
+non-TTY stdout (e.g. piped output) — never raw escape codes in that case.
+
 ```bash
 clauderabbit scan expressjs/express
 clauderabbit scan left-pad --json          # resolved via npm → stevemao/left-pad
@@ -309,7 +317,10 @@ npm run dev         # watch mode
   enforces the "never a bare Safe verdict" rail (mirrors the app's `normalizeReport` /
   `enforceVerdict`).
 - `src/lib/format.ts` — the text and `--json` renderers, the score-color logic, the honest
-  hedge/not-verified copy, and the install-wrapper proceed policy.
+  hedge/not-verified copy, and the install-wrapper proceed policy. Terminal styling is real
+  (`chalk` for colors/badges, `boxen` for the bordered score/verdict box), gated by an explicit
+  `color: boolean` the caller computes from `--no-color`/`NO_COLOR`/TTY — never chalk's own
+  independent auto-detection, so it can't disagree with the CLI's decision.
 - `src/commands/scan.ts` — the `scan` command.
 - `src/commands/wrap.ts` — the `npm-install` / `pnpm-install` / `git-clone` wrappers (target
   extraction, proceed policy, safe child spawn with a shell-metacharacter guard).
