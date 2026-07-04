@@ -35,7 +35,7 @@ Claude Rabbit is a free web tool. Scanning is free and unlimited, with no login 
 
 These are roadmap. They live in the founder's head, not in v1 scope.
 
-**Shipped beyond the original v1 plan (scope expansion, now real).** A **CLI** (`claude-rabbit-cli` — `scan`/`report` plus `npm-install`/`pnpm-install`/`git-clone` wrappers and opt-in shell hooks) and an **MCP server** (`scan_repo`/`get_report` tools over stdio for AI coding tools) exist in the repo (`cli/`, `mcp-server/`). They were added under a direct instruction authorizing them as the primary growth channel for a free, ad-free product. Each is a thin distribution layer over the same server-side scan pipeline — same rails, same never-a-bare-"Safe" honesty — not a separate product. (A Claude Code plugin approach was tried and dropped; the CLI and MCP server are the only supported distribution surfaces.)
+**Shipped beyond the original v1 plan (scope expansion, now real).** A **CLI** (`clauderabbit` — a single cache-aware `scan` command plus `npm-install`/`pnpm-install`/`git-clone` wrappers, `mcp install`, and opt-in shell hooks) and an **MCP server** (one cache-aware `scan` tool over stdio for AI coding tools, also served remotely over Streamable HTTP for claude.ai custom connectors) exist in the repo (`cli/`, `mcp-server/`). Both require a signed-in ClaudeRabbit account. They were added under a direct instruction authorizing them as the primary growth channel for a free, ad-free product. Each is a thin distribution layer over the same server-side scan pipeline — same rails, same never-a-bare-"Safe" honesty — not a separate product. (A Claude Code plugin approach was tried and dropped; the CLI and MCP server are the only supported distribution surfaces.)
 
 ---
 

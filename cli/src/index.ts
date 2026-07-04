@@ -3,8 +3,9 @@
  * clauderabbit — CLI entrypoint.
  *
  * Commands:
- *   scan <target> [--json] [--ref <r>] [--no-color]
- *   report <target> [--json] [--no-color]          (cached-only read, no new scan)
+ *   scan <target> [--json] [--ref <r>] [--no-color]  (cache-aware: instant if
+ *                                                     already scanned, else a
+ *                                                     real scan runs)
  *   npm-install  <args...> [--yes] [--dry-run]
  *   pnpm-install <args...> [--yes] [--dry-run]
  *   git-clone    <args...> [--yes] [--dry-run]
@@ -29,17 +30,8 @@ import {
   uninstallHooks,
   type Shell,
 } from "./commands/hooks.js";
-import { getReport } from "./lib/client.js";
-import { clearToken, ensureLoggedIn, login, saveToken } from "./lib/auth.js";
+import { clearToken, login, saveToken } from "./lib/auth.js";
 import { loadConfig } from "./lib/env.js";
-import {
-  colorPalette,
-  plainPalette,
-  reportUrlFor,
-  toJson,
-  toText,
-} from "./lib/format.js";
-import { resolveTarget } from "./lib/resolve.js";
 
 const VERSION = "0.1.0";
 
@@ -108,14 +100,12 @@ USAGE
 
 COMMANDS
   scan <target> [--json] [--ref <ref>]
-      Run (or hit the cache for) a ClaudeRabbit fast-path scan and print the
-      verdict. <target> is owner/repo, a GitHub URL, owner/repo@ref, or an npm
-      package name (resolved to its GitHub repo via the npm registry).
+      Print a ClaudeRabbit verdict for <target> — owner/repo, a GitHub URL,
+      owner/repo@ref, or an npm package name (resolved to its GitHub repo via
+      the npm registry). Cache-aware: if the repo's current commit already
+      has a report it comes back immediately; otherwise a real fast-path scan
+      runs. You never need to choose which case applies.
       --json  Emit the documented machine-readable object (see README).
-
-  report <target> [--json]
-      Read an EXISTING cached report from ClaudeRabbit's public DB without
-      triggering a new scan. Prints an honest "not found" if none exists.
 
   npm-install  <args...> [--yes] [--dry-run]
   pnpm-install <args...> [--yes] [--dry-run]
@@ -186,15 +176,6 @@ async function main(argv: string[]): Promise<number> {
         quiet: flags.quiet === true,
       });
       return outcome.exitCode;
-    }
-
-    case "report": {
-      const target = positionals[1];
-      if (!target) {
-        process.stderr.write("report: missing <target>. Try: clauderabbit report owner/repo\n");
-        return 1;
-      }
-      return runReportCommand(target, { json: flags.json === true, color });
     }
 
     case "npm-install":
@@ -278,77 +259,6 @@ async function main(argv: string[]): Promise<number> {
       process.stderr.write(`Unknown command "${command}". Run \`clauderabbit help\`.\n`);
       return 1;
   }
-}
-
-async function runReportCommand(
-  rawTarget: string,
-  opts: { json: boolean; color: boolean },
-): Promise<number> {
-  const config = loadConfig();
-  const palette = opts.color ? colorPalette : plainPalette;
-
-  // Require sign-in — reports are public data, but the CLI/MCP tools
-  // themselves are gated (real product/access decision; see CLAUDE.md).
-  try {
-    await ensureLoggedIn(config);
-  } catch (err) {
-    const msg = `Sign-in failed: ${(err as Error).message}`;
-    if (opts.json) {
-      process.stdout.write(`${JSON.stringify({ error: msg, target: rawTarget }, null, 2)}\n`);
-    } else {
-      process.stderr.write(`${palette.red("Error:")} ${msg}\n`);
-    }
-    return 1;
-  }
-
-  let resolved;
-  try {
-    resolved = await resolveTarget(rawTarget);
-  } catch (err) {
-    const msg = (err as Error).message;
-    if (opts.json) {
-      process.stdout.write(`${JSON.stringify({ error: msg, target: rawTarget }, null, 2)}\n`);
-    } else {
-      process.stderr.write(`${palette.red("Error:")} ${msg}\n`);
-    }
-    return 1;
-  }
-
-  const result = await getReport(config, resolved.owner, resolved.repo);
-  if (!result.ok) {
-    if (opts.json) {
-      process.stdout.write(
-        `${JSON.stringify(
-          { error: result.error, notFound: result.notFound, target: `${resolved.owner}/${resolved.repo}` },
-          null,
-          2,
-        )}\n`,
-      );
-    } else {
-      process.stderr.write(`${result.notFound ? "" : palette.red("Error: ")}${result.error}\n`);
-    }
-    return result.notFound ? 4 : 1;
-  }
-
-  if (opts.json) {
-    const json = toJson(result.report, config.siteUrl, {
-      fresh: false,
-      resolvedVia: resolved.via,
-      ...(resolved.npmPackage ? { npmPackage: resolved.npmPackage } : {}),
-    });
-    process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
-  } else {
-    process.stdout.write(
-      toText(
-        result.report,
-        config.siteUrl,
-        { fresh: false, resolvedVia: resolved.via, ...(resolved.npmPackage ? { npmPackage: resolved.npmPackage } : {}) },
-        palette,
-      ),
-    );
-    process.stderr.write(palette.dim(`\n(cached read — did not trigger a new scan; ${reportUrlFor(config.siteUrl, result.report)})\n`));
-  }
-  return 0;
 }
 
 main(process.argv.slice(2))

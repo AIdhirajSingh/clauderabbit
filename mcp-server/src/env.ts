@@ -20,7 +20,7 @@ const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
 /** Default public site origin for building report-page and sign-in links. */
 const DEFAULT_SITE_URL = "https://clauderabbit.vercel.app";
 
-/** Default ceiling on how long scan_repo will wait for a fresh scan to finish. */
+/** Default ceiling on how long scan will wait for a fresh scan to finish. */
 const DEFAULT_SCAN_TIMEOUT_MS = 120_000;
 
 export interface ClaudeRabbitConfig {

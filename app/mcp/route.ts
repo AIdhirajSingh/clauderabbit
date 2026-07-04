@@ -6,10 +6,13 @@
  * OAuth (see app/oauth/, app/.well-known/) instead — see CLAUDE.md and the
  * `20260704000002_oauth_for_remote_mcp.sql` migration for why.
  *
- * The tool logic itself is NOT reimplemented here: `runScan` (lib/scan.ts),
- * `fetchLatestReportRest` (lib/report-fetch.ts), and `buildReportView`
- * (lib/report-view.ts) are the exact same functions the SSR report page and
- * the SPA already use — this route is a thin MCP-shaped wrapper around them.
+ * The tool logic itself is NOT reimplemented here: `runScan` (lib/scan.ts)
+ * and `buildReportView` (lib/report-view.ts) are the exact same functions
+ * the SSR report page and the SPA already use — this route is a thin
+ * MCP-shaped wrapper around them. One cache-aware tool (`scan`): `runScan`
+ * itself already returns the existing report instantly when one exists for
+ * the current commit, or runs a real scan otherwise, so there's nothing a
+ * second "read-only" tool would add.
  *
  * Path is domain-portable by construction: everything below is relative
  * (`req.url`'s origin), so swapping the placeholder *.vercel.app domain for
@@ -22,7 +25,6 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import { runScan } from "@/lib/scan";
-import { fetchLatestReportRest } from "@/lib/report-fetch";
 import { buildReportView } from "@/lib/report-view";
 import { formatReportText, structuredReport } from "./format";
 
@@ -63,11 +65,11 @@ function buildServer(accessToken: string): McpServer {
   const server = new McpServer({ name: "clauderabbit-mcp-remote", version: "0.1.0" });
 
   server.registerTool(
-    "scan_repo",
+    "scan",
     {
       title: "Scan a GitHub repo with ClaudeRabbit",
       description:
-        "Runs a ClaudeRabbit fast-path safety scan (or returns its cached result) for a public GitHub repo and returns a 0-100 score, a verdict, and an honest breakdown of what was and was NOT verified. This tool call only guarantees the static fast path ran; the dynamic sandbox is a separate, privileged process — check `sandboxActuallyRan`, never `escalationDecided` alone, before treating a result as runtime-verified. Never returns a bare \"Safe\" verdict.",
+        "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo. Cache-aware: if a report already exists for the repo's current commit it comes back immediately (no rescan); otherwise a real fast-path scan runs and its result comes back. Callers don't need to know or choose which case applies. This tool call only guarantees the static fast path ran; the dynamic sandbox is a separate, privileged process — check `sandboxActuallyRan`, never `escalationDecided` alone, before treating a result as runtime-verified. Never returns a bare \"Safe\" verdict.",
       inputSchema: {
         owner: z.string().min(1).describe('GitHub repository owner or org, e.g. "sindresorhus".'),
         repo: z.string().min(1).describe('GitHub repository name, e.g. "is".'),
@@ -93,49 +95,9 @@ function buildServer(accessToken: string): McpServer {
       }
       const view = buildReportView(result.report);
       const reportUrl = `${process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") ?? "https://clauderabbit.vercel.app"}/${owner}/${repo}`;
-      const text = formatReportText(view, reportUrl, true);
-      const structured = structuredReport(view, reportUrl, true);
-      return {
-        content: [
-          { type: "text" as const, text },
-          { type: "text" as const, text: `\n<structured-data>${JSON.stringify(structured)}</structured-data>` },
-        ],
-        structuredContent: structured,
-      };
-    },
-  );
-
-  server.registerTool(
-    "get_report",
-    {
-      title: "Get an existing ClaudeRabbit report",
-      description:
-        "Fetches the most recent EXISTING ClaudeRabbit report for a public GitHub repo without triggering a new scan. Returns a not-found result (not an error) if the repo has never been scanned — call scan_repo in that case. Never returns a bare \"Safe\" verdict.",
-      inputSchema: {
-        owner: z.string().min(1).describe('GitHub repository owner or org, e.g. "chalk".'),
-        repo: z.string().min(1).describe('GitHub repository name, e.g. "chalk".'),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-    },
-    async (args) => {
-      const owner = args.owner.trim();
-      const repo = args.repo.trim();
-      const reportUrl = `${process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") ?? "https://clauderabbit.vercel.app"}/${owner}/${repo}`;
-      const report = await fetchLatestReportRest(SUPABASE_URL, SUPABASE_KEY, owner, repo);
-      if (!report) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `No cached ClaudeRabbit report exists yet for ${owner}/${repo}. Call scan_repo to run one. (Would-be report page: ${reportUrl})`,
-            },
-          ],
-          structuredContent: { found: false, owner, repo, reportUrl },
-        };
-      }
-      const view = buildReportView(report);
-      const text = formatReportText(view, reportUrl, false);
-      const structured = { found: true, ...structuredReport(view, reportUrl, false) };
+      const fresh = !result.report.cached;
+      const text = formatReportText(view, reportUrl, fresh);
+      const structured = structuredReport(view, reportUrl, fresh);
       return {
         content: [
           { type: "text" as const, text },

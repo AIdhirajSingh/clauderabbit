@@ -44,25 +44,19 @@ cd cli && npm install && npm run build && npm link   # one-time setup
 clauderabbit scan expressjs/express                  # run a real scan
 ```
 
-**From an AI coding agent** — the [MCP server](mcp-server/) exposes `scan_repo` and
-`get_report` over stdio so an agent can check a dependency before running it. Build it
-once (`cd mcp-server && npm install && npm run build`), then add it to your MCP
-client's config — for Claude Desktop, `claude_desktop_config.json`:
+**From an AI coding agent** — the [MCP server](mcp-server/) exposes one cache-aware `scan`
+tool over stdio so an agent can check a dependency before running it (also served remotely
+over Streamable HTTP at `clauderabbit.vercel.app/mcp` for claude.ai custom connectors). Build
+it once (`cd mcp-server && npm install && npm run build`), then wire it into Claude Desktop
+with `cd cli && npm install && npm run build && node dist/index.js mcp install` — it finds
+your real `claude_desktop_config.json` (including the Windows MSIX/Store install's different
+path) and adds the entry for you.
 
-```json
-{
-  "mcpServers": {
-    "claude-rabbit": {
-      "command": "node",
-      "args": ["/absolute/path/to/clauderabbit/mcp-server/dist/index.js"]
-    }
-  }
-}
-```
-
-Both are thin clients of the same public, no-key-required scan API the website uses —
-see [cli/README.md](cli/README.md) and [mcp-server/README.md](mcp-server/README.md) for
-the full command/tool reference.
+Both the CLI and the MCP server call the same public scan API the website uses and require a
+signed-in ClaudeRabbit account (a real product/access decision, not because the data is
+sensitive — report pages stay public either way); the first call opens your browser to sign in
+once, then stays silent until you log out. See [cli/README.md](cli/README.md) and
+[mcp-server/README.md](mcp-server/README.md) for the full command/tool reference.
 
 ## Stack
 
@@ -136,7 +130,7 @@ supabase/functions/scan/ the fast-path orchestrator (Vertex seam, GitHub fetch, 
 sandbox/                 the dynamic sandbox engine (the moat) — see sandbox/README.md;
                          sandbox/microvm/ holds the golden-image + on-demand compute-pool scripts
 cli/                     the clauderabbit CLI (scan / install-clone wrappers / shell hooks)
-mcp-server/              MCP server (scan_repo / get_report tools over stdio for AI coding tools)
+mcp-server/              MCP server (one cache-aware scan tool over stdio for AI coding tools)
 docs/                    north star, system design / PRD, UX, INFRASTRUCTURE
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)
 ```

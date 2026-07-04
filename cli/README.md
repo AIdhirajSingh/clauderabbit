@@ -53,7 +53,9 @@ Override them for a fork via the env vars in the [Configuration](#configuration)
 
 ### `scan <target> [--json] [--ref <ref>] [--no-color]`
 
-Run (or hit the cache for) a ClaudeRabbit fast-path scan and print the verdict.
+Print a ClaudeRabbit verdict for `<target>`. Cache-aware, one command either way: if the
+repo's current commit already has a report, it comes back immediately; if not, a real
+fast-path scan runs. You never need to know or choose which case applies.
 
 `<target>` may be:
 
@@ -71,12 +73,6 @@ clauderabbit scan expressjs/express
 clauderabbit scan left-pad --json          # resolved via npm → stevemao/left-pad
 clauderabbit scan https://github.com/owner/repo --ref main
 ```
-
-### `report <target> [--json]`
-
-Read an **existing** cached report from ClaudeRabbit's public database **without** triggering
-a new scan. Prints an honest "not found" (exit code 4) if the repo has never been scanned —
-never fabricated data.
 
 ### `npm-install` / `pnpm-install` / `git-clone` — the install wrappers
 
@@ -196,15 +192,14 @@ The CLI (and the MCP server) require a signed-in ClaudeRabbit account — a prod
 decision, not a reflection of the scan data being sensitive (reports stay public). `login`
 opens your browser to sign in and saves the session to `~/.clauderabbit/credentials.json`;
 every later command reuses it silently until you `logout`. Any command that needs a session
-(`scan`, `report`, the install wrappers, the MCP server) will trigger this sign-in flow
-automatically the first time if you haven't run `login` yet. `--token` skips the browser and
-saves a token issued elsewhere (e.g. the link the MCP server prints when called signed out).
+(`scan`, the install wrappers, the MCP server) will trigger this sign-in flow automatically
+the first time if you haven't run `login` yet. `--token` skips the browser and saves a token
+issued elsewhere (e.g. the link the MCP server prints when called signed out).
 
 ## JSON output schema
 
-`clauderabbit scan <target> --json` (and `report <target> --json`) print a single JSON object
-to **stdout**. On error, the object is `{ "error": string, "target": string }` (and, for a
-cache miss on `report`, also `"notFound": true`) — so a consumer always gets parseable JSON,
+`clauderabbit scan <target> --json` prints a single JSON object to **stdout**. On error, the
+object is `{ "error": string, "target": string }` — so a consumer always gets parseable JSON,
 never a torn stream. Progress/log lines go to **stderr** and never pollute the JSON.
 
 A successful scan object:
@@ -270,7 +265,7 @@ A successful scan object:
 
 ## What a scan does and does NOT prove
 
-ClaudeRabbit is a two-speed system. The fast path (what `scan`/`report` call) runs on
+ClaudeRabbit is a two-speed system. The fast path (what `scan` calls) runs on
 essentially every request: static analysis, reputation lookup, and a fast model reading only
 the flagged regions. A small share of ambiguous repos get **escalated** to a full
 dynamic-sandbox detonation — the repo is actually built and run inside a hermetic,
@@ -306,9 +301,8 @@ npm run dev         # watch mode
 
 - `src/lib/env.ts` — configuration (public defaults + env overrides); never reads a secret.
 - `src/lib/client.ts` — the only module that makes ClaudeRabbit HTTP calls. Mirrors the main
-  app's `lib/scan.ts` (`runScan`, NDJSON stream + cache-hit JSON) and `lib/report-fetch.ts`
-  (`fetchLatestReportRest`), reimplemented standalone (mirrors the production-verified
-  `mcp-server/` client).
+  app's `lib/scan.ts` (`runScan`, NDJSON stream + cache-hit JSON), reimplemented standalone
+  (mirrors the production-verified `mcp-server/` client).
 - `src/lib/resolve.ts` — turns a user target (owner/repo, URL, or npm name) into an
   `{ owner, repo, ref? }`; npm names are resolved via the public npm registry `repository` field.
 - `src/lib/normalize.ts` — coerces an arbitrary API payload into a strict `Report` and

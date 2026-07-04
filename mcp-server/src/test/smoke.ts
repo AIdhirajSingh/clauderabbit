@@ -1,5 +1,5 @@
 /**
- * Live end-to-end smoke test — actually invokes this server's tools through a
+ * Live end-to-end smoke test — actually invokes this server's tool through a
  * real MCP `Client`/`Server` pair (linked in-memory transport, same code path
  * as stdio) against the REAL deployed ClaudeRabbit Supabase project. Not a
  * mock: every HTTP call goes out over the network to the real API.
@@ -11,32 +11,21 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "../env.js";
-import { getReportInputSchema, getReportToolMeta, runGetReportTool } from "../tools/get-report.js";
-import { runScanRepoTool, scanRepoInputSchema, scanRepoToolMeta } from "../tools/scan-repo.js";
+import { runScanTool, scanInputSchema, scanToolMeta } from "../tools/scan.js";
 
 async function buildServer() {
   const config = loadConfig();
   const server = new McpServer({ name: "claude-rabbit-mcp-smoke", version: "0.1.0" });
 
   server.registerTool(
-    scanRepoToolMeta.name,
+    scanToolMeta.name,
     {
-      title: scanRepoToolMeta.title,
-      description: scanRepoToolMeta.description,
-      inputSchema: scanRepoInputSchema,
-      annotations: scanRepoToolMeta.annotations,
+      title: scanToolMeta.title,
+      description: scanToolMeta.description,
+      inputSchema: scanInputSchema,
+      annotations: scanToolMeta.annotations,
     },
-    async (args) => runScanRepoTool(config, args),
-  );
-  server.registerTool(
-    getReportToolMeta.name,
-    {
-      title: getReportToolMeta.title,
-      description: getReportToolMeta.description,
-      inputSchema: getReportInputSchema,
-      annotations: getReportToolMeta.annotations,
-    },
-    async (args) => runGetReportTool(config, args),
+    async (args) => runScanTool(config, args),
   );
 
   return { server, config };
@@ -59,38 +48,68 @@ async function main(): Promise<void> {
 
   const tools = await client.listTools();
   console.log(
-    `\nDiscovered ${tools.tools.length} tools: ${tools.tools.map((t) => t.name).join(", ")}`,
+    `\nDiscovered ${tools.tools.length} tool(s): ${tools.tools.map((t) => t.name).join(", ")}`,
   );
 
-  // 1. get_report against a repo very likely to already have a cached report
-  //    (a tiny, extremely common, long-lived package). Exercises the pure
-  //    PostgREST read path with no scan triggered.
-  const getReportResult = await client.callTool({
-    name: "get_report",
+  // 1. scan(sindresorhus/is) at the default ref — a tiny, extremely common,
+  //    long-lived package almost certainly already scanned by someone.
+  //    Proves the cache-hit path: `cached: true`, no scan re-run.
+  const cachedResult = await client.callTool({
+    name: "scan",
     arguments: { owner: "sindresorhus", repo: "is" },
   });
-  printResult("get_report(sindresorhus/is)", getReportResult);
+  printResult("scan(sindresorhus/is) [expect cache hit]", cachedResult);
 
-  // 2. scan_repo against a small, real, public repo — exercises the live
-  //    edge-function call end-to-end (cache hit or fresh NDJSON stream,
-  //    whichever the deployed project actually returns).
-  const scanResult = await client.callTool({
-    name: "scan_repo",
-    arguments: { owner: "sindresorhus", repo: "is" },
+  // 2. scan(sindresorhus/is) pinned to that repo's very FIRST commit — a real,
+  //    valid ref (so the scan can succeed) that is virtually guaranteed to
+  //    never have been scanned before (cache keys by commit SHA, and nobody
+  //    scans a package's initial commit). Proves the real-fresh-scan path.
+  const firstCommitSha = await fetchFirstCommitSha("sindresorhus", "is");
+  console.log(`\nResolved sindresorhus/is's first commit for a guaranteed cache miss: ${firstCommitSha}`);
+  const freshResult = await client.callTool({
+    name: "scan",
+    arguments: { owner: "sindresorhus", repo: "is", ref: firstCommitSha },
   });
-  printResult("scan_repo(sindresorhus/is)", scanResult);
-
-  // 3. get_report against a repo that (almost certainly) has never been
-  //    scanned, to prove the honest not-found path (no fabricated data).
-  const notFoundOwner = `cr-mcp-smoke-test-${Date.now()}`;
-  const notFoundResult = await client.callTool({
-    name: "get_report",
-    arguments: { owner: notFoundOwner, repo: "does-not-exist" },
-  });
-  printResult(`get_report(${notFoundOwner}/does-not-exist) [expect not found]`, notFoundResult);
+  printResult(`scan(sindresorhus/is @ ${firstCommitSha.slice(0, 12)}) [expect a real fresh scan]`, freshResult);
 
   await client.close();
   await server.close();
+}
+
+/**
+ * The oldest commit on a repo's default branch — a real ref nobody scans,
+ * for a guaranteed cache miss. Standard GitHub pagination trick: a page=1
+ * request's `Link` header names the last page (= total commit count, at
+ * per_page=1); that last page's sole commit is the first one ever made.
+ */
+async function fetchFirstCommitSha(owner: string, repo: string): Promise<string> {
+  const headers = { Accept: "application/vnd.github+json", "User-Agent": "clauderabbit-mcp-smoke-test" };
+  const firstRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1&page=1`, {
+    headers,
+  });
+  if (!firstRes.ok) throw new Error(`GitHub commits API returned HTTP ${firstRes.status} for ${owner}/${repo}`);
+  const linkHeader = firstRes.headers.get("link") ?? "";
+  const lastPageMatch = linkHeader.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/);
+
+  if (!lastPageMatch) {
+    // No "last" link at all means there's only one page — i.e. exactly one
+    // commit total — so page 1's own result IS the first commit.
+    const commits = (await firstRes.json()) as Array<{ sha: string }>;
+    const sha = commits[0]?.sha;
+    if (!sha) throw new Error(`Could not resolve a first commit for ${owner}/${repo}`);
+    return sha;
+  }
+
+  const lastPage = Number(lastPageMatch[1]);
+  const lastRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits?per_page=1&page=${lastPage}`,
+    { headers },
+  );
+  if (!lastRes.ok) throw new Error(`GitHub commits API returned HTTP ${lastRes.status} for ${owner}/${repo}`);
+  const commits = (await lastRes.json()) as Array<{ sha: string }>;
+  const sha = commits[0]?.sha;
+  if (!sha) throw new Error(`Could not resolve a first commit for ${owner}/${repo}`);
+  return sha;
 }
 
 main().catch((err) => {

@@ -8,18 +8,17 @@ It is a thin, self-contained client of the real, deployed ClaudeRabbit API — t
 
 Per ClaudeRabbit's core rule, **this server never returns a bare "Safe" verdict.** Every result states the score, the verdict, and explicitly what was and was not verified.
 
-Two tools:
+One tool:
 
-- **`scan_repo(owner, repo, ref?)`** — triggers a ClaudeRabbit fast-path scan (clone + static scanners + reputation lookup + a fast model read), or returns the cached result if one already exists for the current commit. Returns the score, verdict, code/behavior findings, and reputation signals.
-- **`get_report(owner, repo)`** — reads an **existing** cached report for a repo directly from ClaudeRabbit's public database, without triggering a new scan. Returns a clear "not found" result (not an error, and never fabricated data) if the repo has never been scanned.
+- **`scan(owner, repo, ref?)`** — cache-aware by construction. If a report already exists for the repo's current commit, it comes back immediately (no rescan); otherwise a real ClaudeRabbit fast-path scan runs (clone + static scanners + reputation lookup + a fast model read) and its result comes back. Callers never need to know or choose which case applies. Returns the score, verdict, code/behavior findings, and reputation signals.
 
 ### Important: what a scan result does and does NOT prove
 
-ClaudeRabbit is a two-speed system. The fast path (what both tools above call) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use VM.
+ClaudeRabbit is a two-speed system. The fast path (what `scan` calls, whether it's a fresh run or a cache hit) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use VM.
 
-**Triggering `scan_repo` only runs the fast path.** It can determine that a repo *should* be escalated (reflected as `escalationDecided: true` in the structured output) without the dynamic sandbox having actually executed yet — that detonation is a separate, privileged process gated to ClaudeRabbit's own sandbox controller and is not something this public API call can force to complete synchronously.
+**A fresh `scan` only runs the fast path.** It can determine that a repo *should* be escalated (reflected as `escalationDecided: true` in the structured output) without the dynamic sandbox having actually executed yet — that detonation is a separate, privileged process gated to ClaudeRabbit's own sandbox controller and is not something this public API call can force to complete synchronously.
 
-Both tools always report the honest signal for this: `sandboxActuallyRan` in the structured output (and the "What was actually verified" section in the text) is `true` **only** when a forensic record from a real sandbox execution is attached to the report. If you need confirmation of real runtime behavior, call `get_report` again later, or check the full report page — either will show a "Sandbox run" (not "Static read") result once/if the dynamic run has completed and attached its forensics.
+Every result reports the honest signal for this: `sandboxActuallyRan` in the structured output (and the "What was actually verified" section in the text) is `true` **only** when a forensic record from a real sandbox execution is attached to the report. If you need confirmation of real runtime behavior, call `scan` again later, or check the full report page — either will show a "Sandbox run" (not "Static read") result once/if the dynamic run has completed and attached its forensics.
 
 Every result also keeps **reputation signals** (owner account age, stars, sentiment) and **code/behavior signals** (what the code contains, what running it showed) in visibly separate sections, per ClaudeRabbit's structural rule that the two are never blended into one signal.
 
@@ -46,18 +45,18 @@ Optional environment variables (see `.env.example`) let you point the server at 
 | `CLAUDE_RABBIT_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` | Supabase project URL to call. |
 | `CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY` | (ClaudeRabbit's public key) | Supabase publishable key — safe client-side, same one the web app uses. |
 | `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.vercel.app` | Base URL used to build the "full report" link and sign-in link in tool output. |
-| `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long `scan_repo` will wait for a fresh (uncached) scan to finish streaming before giving up. |
+| `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | `120000` | How long `scan` will wait for a fresh (uncached) scan to finish streaming before giving up. |
 
-No API key is ever required, but a **signed-in ClaudeRabbit account is required to call either
+No API key is ever required, but a **signed-in ClaudeRabbit account is required to call the
 tool** — a real product/access decision, not because the scan data is sensitive (report pages
-stay public either way). Called signed out, both tools return a clear, clickable sign-in link
+stay public either way). Called signed out, `scan` returns a clear, clickable sign-in link
 instead of a confusing error or a silent failure — see [Sign-in](#sign-in) below.
 
 ## Sign-in
 
-Both tools check for a session at `~/.clauderabbit/credentials.json` (the same file the
+`scan` checks for a session at `~/.clauderabbit/credentials.json` (the same file the
 [CLI](../cli) writes to `login`/`logout` — sign in once with either tool and both work).
-Called without one, a tool returns an `isError` result whose text gives you the exact command
+Called without one, it returns an `isError` result whose text gives you the exact command
 to run:
 
 ```
@@ -65,7 +64,7 @@ Sign in required. Visit https://clauderabbit.vercel.app/cli-auth to sign in, the
   clauderabbit login --token <token>
 ```
 
-Once signed in, neither tool re-prompts on later calls — the session persists until
+Once signed in, it doesn't re-prompt on later calls — the session persists until
 `clauderabbit logout` is run.
 
 ## Adding this server to an MCP client
@@ -114,7 +113,7 @@ Store/MSIX install on Windows keeps it instead under
 `clauderabbit mcp install` (above) detects and handles both automatically rather than assuming
 the commonly-documented classic path is the only one.
 
-Restart Claude Desktop. The two tools (`scan_repo`, `get_report`) should appear under the MCP tools icon.
+Restart Claude Desktop. The `scan` tool should appear under the MCP tools icon.
 
 ### Other MCP-compatible clients (Codex, Cursor, Windsurf, etc.)
 
@@ -123,7 +122,7 @@ Any client that supports stdio MCP servers uses the same shape: a `command` of `
 ### Remote (Streamable HTTP) — claude.ai custom connector
 
 For clients that connect over HTTP instead of spawning a local process (e.g. a claude.ai
-custom connector), the same two tools are also served remotely at `https://clauderabbit.vercel.app/mcp`
+custom connector), the same `scan` tool is also served remotely at `https://clauderabbit.vercel.app/mcp`
 (Streamable HTTP, OAuth 2.1 with PKCE for sign-in — no separate setup needed, the connector's
 own "Connect" flow handles login). Add it in claude.ai under Settings → Connectors → Add
 custom connector, using that URL.
@@ -137,32 +136,32 @@ npm start
 # or: node dist/index.js
 ```
 
-Both tools require a signed-in session (see [Sign-in](#sign-in)) — run `clauderabbit login`
+`scan` requires a signed-in session (see [Sign-in](#sign-in)) — run `clauderabbit login`
 (from the [CLI](../cli)) at least once first, since it writes the same
 `~/.clauderabbit/credentials.json` this server reads.
 
-To exercise both tools end-to-end against the **real, live, deployed ClaudeRabbit API** without wiring up a full MCP client, use the built-in smoke test. It spins up this exact server and a real MCP `Client` connected over an in-memory transport (the same code paths as stdio), then calls both tools for real:
+To exercise `scan` end-to-end against the **real, live, deployed ClaudeRabbit API** without wiring up a full MCP client, use the built-in smoke test. It spins up this exact server and a real MCP `Client` connected over an in-memory transport (the same code paths as stdio), then calls the tool twice for real:
 
 ```bash
 npm run build
 npm run test:smoke
 ```
 
-This calls `get_report` for a repo expected to already have a cached report, `scan_repo` for a small real repo (exercising either a cache hit or a genuinely fresh scan, whichever the deployed project currently has), and `get_report` for a repo that has never been scanned (to confirm the honest not-found path). All three print the full JSON tool result to stdout.
+The first call scans a tiny, extremely common, long-lived package at its default ref — almost certainly already cached, proving the cache-hit path (`cached: true`, instant). The second call scans that same repo pinned to its very first commit ever — a real, valid ref that's virtually guaranteed to have never been scanned before, proving a genuine fresh scan runs (`cached: false`) rather than a stale/duplicated result. Both print the full JSON tool result to stdout.
 
 ## Architecture notes
 
 - `src/env.ts` — configuration (public defaults + env var overrides), never reads a secret key.
-- `src/claude-rabbit-client.ts` — the only module that makes HTTP calls. Mirrors the main app's `lib/scan.ts` (`runScan`, handling both the plain-JSON cache-hit response and the NDJSON streamed-scan response) and `lib/report-fetch.ts` (`fetchLatestReportRest`) exactly, reimplemented standalone since this package does not depend on the Next.js app's `lib/`.
+- `src/claude-rabbit-client.ts` — the only module that makes HTTP calls. Mirrors the main app's `lib/scan.ts` (`runScan`, handling both the plain-JSON cache-hit response and the NDJSON streamed-scan response) exactly, reimplemented standalone since this package does not depend on the Next.js app's `lib/`.
 - `src/normalize.ts` — coerces an arbitrary API payload into a strict `Report` shape and enforces the "never a bare Safe verdict" rail, mirroring the main app's `normalizeReport`/`enforceVerdict`.
 - `src/format.ts` — shapes a `Report` into the tool output: score, verdict, the honest sandbox-ran-vs-static-read distinction, and separated code/behavior vs. reputation sections.
-- `src/tools/scan-repo.ts`, `src/tools/get-report.ts` — the two MCP tool definitions and handlers.
+- `src/tools/scan.ts` — the one MCP tool definition and handler. Cache-aware by construction: it just reflects whatever `claude-rabbit-client.ts`'s `scanRepo` returns, which is itself already a cache-hit-or-fresh-scan call against the real edge function.
 - `src/auth.ts` — reads the shared `~/.clauderabbit/credentials.json` session (written by the
   [CLI](../cli)'s `login`) and builds the sign-in-required tool result when it's missing.
 - `src/index.ts` — stdio server entrypoint.
 - `src/test/smoke.ts` — live end-to-end verification harness (see above).
 
-The Next.js app's `app/mcp/route.ts` (in the main repo) serves the same two tools remotely over
+The Next.js app's `app/mcp/route.ts` (in the main repo) serves the same `scan` tool remotely over
 Streamable HTTP with OAuth 2.1 — see [Remote (Streamable HTTP)](#remote-streamable-http--claudeai-custom-connector)
 above. It reuses this package's tool logic conceptually but is a separate deployment (it runs
 on Vercel, not as a local stdio process), so its code lives in the main app, not here.
