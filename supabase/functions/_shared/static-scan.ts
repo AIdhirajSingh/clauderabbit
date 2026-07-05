@@ -37,8 +37,23 @@ export interface StaticScanResult {
   signals: StaticSignals;
   /** Overall code-signal severity hint for the escalation gate. */
   severityHint: "clean" | "low" | "medium" | "high";
-  /** Network hosts/IPs seen in install context (for the read prompt). */
+  /** Network hosts/IPs seen in install context (for the read prompt). Pre-
+   * live-verification value: true if EITHER `installTimeNetworkHard` or
+   * `unrecognizedInstallHosts` is non-empty — kept for any caller that
+   * doesn't do live host verification. */
   installTimeNetwork: boolean;
+  /** installTimeNetwork driven by a reason that must NEVER be downgraded by
+   * live host verification: a hardcoded IP literal, an npm/setup.py install
+   * hook with network/shell tokens, or a fetch to an unrecognized host in a
+   * file that ALSO reads credentials. None of these become legitimate just
+   * because the host happens to respond to an HTTP request. */
+  installTimeNetworkHard: boolean;
+  /** Deduped unrecognized hostnames seen ONLY via a plain provisioning-script
+   * fetch (no credential access in that same file, no hardcoded IP) — the
+   * caller may live-verify these (a cheap real HTTP check) and, if ALL verify
+   * as a normal responding host, downgrade `installTimeNetwork` to false when
+   * `installTimeNetworkHard` is also false. See scan/index.ts. */
+  unrecognizedInstallHosts: string[];
 }
 
 const SNIPPET_MAX = 240;
@@ -373,7 +388,8 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     embeddedSecret: false,
     typosquat: false,
   };
-  let installTimeNetwork = false;
+  let installTimeNetworkHard = false;
+  const unrecognizedInstallHosts = new Set<string>();
   let packageName: string | null = null;
 
   for (const f of files) {
@@ -382,7 +398,12 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     if (name === "package.json") {
       const r = analyzePackageJson(f.path, f.content, regions);
       if (r.installHook) signals.installHook = true;
-      if (r.networkInScript) installTimeNetwork = true;
+      // An npm lifecycle hook (preinstall/install/postinstall) running network/
+      // shell code is the core real supply-chain attack vector — it fires
+      // automatically on `npm install`, unlike a standalone provisioning
+      // script a human must run deliberately. Always full weight; no host to
+      // even check here (the heuristic is token-based, not host-extracted).
+      if (r.networkInScript) installTimeNetworkHard = true;
       if (r.name && !packageName) packageName = r.name;
     }
 
@@ -419,9 +440,10 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     }
     if (scanText(f.path, f.content, NETWORK_PATTERNS, regions, isDocFile)) {
       // Hardcoded IP literals are never a "recognized software-distribution
-      // host" shape — always full weight in an install/provisioning script.
+      // host" shape — always full weight in an install/provisioning script,
+      // never eligible for live-host-verification downgrade.
       signals.network = true;
-      if (isInstallScript) installTimeNetwork = true;
+      if (isInstallScript) installTimeNetworkHard = true;
     }
 
     // Shell fetch-and-run (curl|wget ... https://host/...), HOST-AWARE: a
@@ -436,7 +458,7 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     SHELL_FETCH_RE.lastIndex = 0;
     let fetchMatch: RegExpExecArray | null;
     let fetchCount = 0;
-    let sawUnrecognizedFetch = false;
+    const unrecognizedHostsThisFile = new Set<string>();
     let sawAnyFetch = false;
     while (
       (fetchMatch = SHELL_FETCH_RE.exec(f.content)) !== null &&
@@ -446,22 +468,29 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
       fetchCount++;
       const host = fetchMatch[2];
       const recognized = isRecognizedDistributionHost(host);
-      if (!recognized) sawUnrecognizedFetch = true;
+      if (!recognized) unrecognizedHostsThisFile.add(host);
       regions.push({
         file: f.path,
         reason: isDocFile
           ? "mentioned in documentation/prose — shell network fetch (not an executable access)"
           : recognized
           ? `provisioning fetch to a recognized software-distribution host (${host}) — supply-chain caution, not a confirmed attack on its own`
-          : `shell network fetch to an unrecognized host (${host})`,
+          : `shell network fetch to an unrecognized host (${host}) — pending live verification`,
         snippet: snippetAround(f.content, fetchMatch.index),
       });
       if (fetchMatch.index === SHELL_FETCH_RE.lastIndex) SHELL_FETCH_RE.lastIndex++;
     }
     if (sawAnyFetch && !isDocFile) {
       signals.network = true;
-      if (isInstallScript && (sawUnrecognizedFetch || credInThisFile)) {
-        installTimeNetwork = true;
+      if (isInstallScript) {
+        if (credInThisFile) {
+          // Credential access anywhere in a file that also fetches (whether
+          // the fetch is to a recognized or unrecognized host) keeps full
+          // weight — never eligible for a live-verification downgrade.
+          installTimeNetworkHard = true;
+        } else if (unrecognizedHostsThisFile.size > 0) {
+          for (const h of unrecognizedHostsThisFile) unrecognizedInstallHosts.add(h);
+        }
       }
     }
   }
@@ -476,15 +505,40 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     });
   }
 
-  // Severity hint from code signals only (reputation handled elsewhere).
-  let severityHint: StaticScanResult["severityHint"] = "clean";
-  if (signals.obfuscation || signals.credAccess || signals.embeddedSecret) {
-    severityHint = "high";
-  } else if (installTimeNetwork || (signals.installHook && signals.network)) {
-    severityHint = "medium";
-  } else if (signals.installHook || signals.network || signals.typosquat) {
-    severityHint = "low";
-  }
+  // Pre-live-verification value — true if EITHER sub-reason fired. A caller
+  // doing live host verification should use `installTimeNetworkHard` and
+  // `unrecognizedInstallHosts` directly instead (see scan/index.ts).
+  const installTimeNetwork = installTimeNetworkHard || unrecognizedInstallHosts.size > 0;
+  const severityHint = computeSeverityHint(signals, installTimeNetwork);
 
-  return { flaggedRegions: regions, signals, severityHint, installTimeNetwork };
+  return {
+    flaggedRegions: regions,
+    signals,
+    severityHint,
+    installTimeNetwork,
+    installTimeNetworkHard,
+    unrecognizedInstallHosts: Array.from(unrecognizedInstallHosts),
+  };
+}
+
+/**
+ * Severity hint from code signals only (reputation handled elsewhere).
+ * Exported so a caller that live-verifies `unrecognizedInstallHosts` (see
+ * scan/index.ts) can recompute this against the POST-verification
+ * `installTimeNetwork` value rather than leaving it stale.
+ */
+export function computeSeverityHint(
+  signals: StaticSignals,
+  installTimeNetwork: boolean,
+): StaticScanResult["severityHint"] {
+  if (signals.obfuscation || signals.credAccess || signals.embeddedSecret) {
+    return "high";
+  }
+  if (installTimeNetwork || (signals.installHook && signals.network)) {
+    return "medium";
+  }
+  if (signals.installHook || signals.network || signals.typosquat) {
+    return "low";
+  }
+  return "clean";
 }
