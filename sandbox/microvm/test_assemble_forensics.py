@@ -204,6 +204,23 @@ check("clean supply-chain-only run: no crash / no empty-parens in containment no
       "()" not in rec["containment"]["containment_notes"],
       f'notes={rec["containment"]["containment_notes"]!r}')
 
+# ── 8) Real bug fix: the SAME underlying request captured twice (identical
+#      host/method/path/body/timestamp — e.g. logged by two observers) must
+#      collapse to ONE row in network_intent.attempts, never a visible
+#      duplicate. A genuine RETRY (same everything, but a DIFFERENT capture
+#      timestamp) must still show as its own, distinct row. ────────────────
+rec = run_assemble([
+    http_line("storage.googleapis.com", 100.0, path="/x", body="dup"),
+    http_line("storage.googleapis.com", 100.0, path="/x", body="dup"),  # exact duplicate capture
+    http_line("storage.googleapis.com", 150.0, path="/x", body="dup"),  # a real retry, later
+])
+_dupe_matches = [
+    a for a in rec["network_intent"]["attempts"]
+    if a["intended_host"] == "storage.googleapis.com" and a["http_path"] == "/x"
+]
+check("an exact duplicate capture (same request, same timestamp) shows once, not twice",
+      len(_dupe_matches) == 2, f"got {len(_dupe_matches)} rows: {_dupe_matches}")
+
 print()
 if _fails:
     print(f"FAILED: {len(_fails)} check(s): {_fails}")

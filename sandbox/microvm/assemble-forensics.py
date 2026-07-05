@@ -155,11 +155,25 @@ def _agentic_findings(agentic: dict) -> tuple[list[dict], dict]:
         infs = c.get("inferences", []) or []
         detail = infs[0].get("text", "") if infs and isinstance(infs[0], dict) else ""
         corroborated = bool(c.get("corroborated"))
+        # Real bug fix: the old 1000-char cap was applied AFTER prefixing (the
+        # 58-char prefix alone ate into the budget), so a genuinely detailed
+        # analysis silently cut off mid-sentence (observed live: a narrative
+        # ending "### Verdict\nT") with no indication anything was missing.
+        # Raised to a still-bounded but realistic limit for a multi-sentence
+        # analysis, and — when a cut genuinely happens — say so plainly rather
+        # than let prose end mid-word.
+        full_detail = "Agent analysis (code read, not a runtime observation): " + detail
+        detail_cap = 4000
+        shown_detail = (
+            full_detail[:detail_cap].rstrip() + " …[truncated]"
+            if len(full_detail) > detail_cap
+            else full_detail
+        )
         findings.append({
             "signal": f"{lenses} agent flagged {c.get('target', '?')}"
                       + (" (corroborated by 2+ agents)" if corroborated else ""),
             "severity": severity,
-            "detail": ("Agent analysis (code read, not a runtime observation): " + detail)[:1000],
+            "detail": shown_detail,
         })
     summary = {
         "mode": agentic.get("mode"),
@@ -194,6 +208,14 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
     supply_chain_hosts: dict[str, list[str]] = {}
     cred_exfil = False
     decoded_payloads: list[dict] = []
+    # Real bug fix: the same underlying network event can be captured by more
+    # than one observer (host-side monitor + in-guest trace), producing two
+    # byte-identical rows in the raw capture for the SAME attempt. Dedupe on
+    # the full request identity INCLUDING the capture timestamp `t` — a
+    # genuine retry to the same host/path/payload gets a DIFFERENT timestamp,
+    # so it still shows as its own row; only a true duplicate (same event,
+    # same instant) collapses to one.
+    seen_attempts: set[tuple] = set()
     for r in c2:
         host = r.get("host") or r.get("sni") or "?"
         body = _b64body(r)
@@ -220,6 +242,10 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
         # code is executing, not installing), a BUILD-phase fetch to an unrecognized
         # host, or an attempt with unknown phase all keep FULL weight, unchanged.
         is_supply_chain_only = (not is_exfil) and is_build_phase and _is_software_distribution_host(host)
+        dedup_key = (host, r.get("method"), r.get("path"), r.get("port", 443), body, t)
+        if dedup_key in seen_attempts:
+            continue
+        seen_attempts.add(dedup_key)
         attempts.append({
             "intended_host": host,
             "sni": r.get("sni"),
