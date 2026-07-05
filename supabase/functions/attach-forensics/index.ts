@@ -35,6 +35,7 @@ import {
   sanitizeTimeline,
   timelineToChapters,
 } from "../_shared/run-timeline.ts";
+import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
 
 /** Max bytes we will read for a forensic record before rejecting (DoS guard). */
 const MAX_BODY_BYTES = 512 * 1024;
@@ -153,31 +154,80 @@ interface RuntimeFacts {
 
 // Exported (not just for the handler above) so the phase-aware classification
 // contract can be unit-tested directly — see index.test.ts.
-export function extractRuntime(forensics: Record<string, unknown>): RuntimeFacts {
+//
+// Async: assemble-forensics.py's own host-recognition list (SOFTWARE_DISTRIBUTION_HOSTS,
+// see sandbox/*/assemble-forensics.py) is static and finite — the exact same limitation
+// the fast-path classifier had before scan/index.ts started live-verifying unrecognized
+// install-time hosts (see _shared/host-verify.ts). This applies that identical fix here:
+// an attack-grade host the Python side didn't recognize gets one cheap live HTTPS check.
+// This requires NO change to the sandbox's live network/containment boundary — by the
+// time this function runs, the container is long gone; it is reading an already-captured
+// hostname out of the forensics JSON the same way the fast path reads a hostname out of a
+// package.json/install script, and verifying it against the real internet from here.
+export async function extractRuntime(forensics: Record<string, unknown>): Promise<RuntimeFacts> {
   const verdict = asObj(forensics.verdict);
   const ran = asObj(forensics.what_it_ran);
   const inVm = asObj(forensics.in_vm_behavior);
   const net = asObj(forensics.network_intent);
+  const payloadAnalysis = asObj(forensics.payload_analysis);
   const builtOk = ran.auto_build_succeeded === true;
   const ranOk = ran.ran_without_crash === true;
   const credReads = asNum(inVm.high_value_credential_reads);
   // These two are already ATTACK-GRADE only by the time they reach here — a benign
   // build-phase fetch to a recognized software-distribution host is classified
   // separately (below) and never appears in either array (see assemble-forensics.py).
-  const capturedIntent = asArr(verdict.captured_network_intent)
+  let capturedIntent = asArr(verdict.captured_network_intent)
     .map((h) => (typeof h === "string" ? h.trim() : ""))
     .filter((h) => h.length > 0);
-  const destHosts = asArr(net.intended_destinations)
+  let destHosts = asArr(net.intended_destinations)
     .map((d) => {
       const h = asObj(d).host;
       return typeof h === "string" ? h.trim() : "";
     })
     .filter((h) => h.length > 0);
-  const supplyChainHosts = asArr(verdict.supply_chain_egress)
+  let supplyChainHosts = asArr(verdict.supply_chain_egress)
     .map((h) => (typeof h === "string" ? h.trim() : ""))
     .filter((h) => h.length > 0);
+  let attackEgressIntercepted = verdict.attack_egress_intercepted === true;
+
+  // A host tied to a request assemble-forensics.py body-matched as credential exfil
+  // (canary / AWS keys / SSH private key / _authToken) is attack-grade no matter what
+  // the destination host turns out to be — never eligible for the downgrade below.
+  const exfilHosts = new Set(
+    asArr(payloadAnalysis.decoded_payloads)
+      .map((p) => asObj(p))
+      .filter((p) => p.kind === "credential_exfil")
+      .map((p) => (typeof p.host === "string" ? p.host.trim() : ""))
+      .filter((h) => h.length > 0),
+  );
+
+  // Mirrors the fast path's credential-negates-downgrade guard: any credential file
+  // read at all keeps every host at full attack weight, regardless of what it verifies as.
+  if (credReads === 0) {
+    const candidates = Array.from(new Set([...capturedIntent, ...destHosts])).filter(
+      (h) => !exfilHosts.has(h),
+    );
+    if (candidates.length > 0) {
+      const verified = await verifyUnrecognizedHosts(candidates);
+      const legitimate = candidates.filter((h) => verified.get(h)?.legitimate === true);
+      if (legitimate.length > 0) {
+        const legitimateSet = new Set(legitimate);
+        capturedIntent = capturedIntent.filter((h) => !legitimateSet.has(h));
+        destHosts = destHosts.filter((h) => !legitimateSet.has(h));
+        supplyChainHosts = Array.from(new Set([...supplyChainHosts, ...legitimate]));
+        // Recompute rather than trust the stale flag: attack_egress_intercepted was
+        // derived solely from these same arrays being non-empty (plus cred_exfil, already
+        // excluded above, and cred_reads, already zero on this branch) — see
+        // assemble-forensics.py's `attack = cred_exfil or cred_reads > 0 or attack_intent_present`.
+        if (capturedIntent.length === 0 && destHosts.length === 0) {
+          attackEgressIntercepted = false;
+        }
+      }
+    }
+  }
+
   const caughtAttack =
-    verdict.attack_egress_intercepted === true ||
+    attackEgressIntercepted ||
     credReads > 0 ||
     capturedIntent.length > 0 ||
     destHosts.length > 0;
@@ -452,7 +502,7 @@ export async function handler(req: Request): Promise<Response> {
     ? asObj(row.owners[0])
     : asObj(row.owners);
 
-  const rt = extractRuntime(forensics as Record<string, unknown>);
+  const rt = await extractRuntime(forensics as Record<string, unknown>);
   const rep = repFromOwner(Object.keys(ownerRow).length ? ownerRow : null);
   const { score, breakdown } = computeEscalatedScore({
     dynamicScore: rt.dynamicScore,
