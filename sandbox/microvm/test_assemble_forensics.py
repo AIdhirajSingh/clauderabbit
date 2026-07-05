@@ -221,6 +221,36 @@ _dupe_matches = [
 check("an exact duplicate capture (same request, same timestamp) shows once, not twice",
       len(_dupe_matches) == 2, f"got {len(_dupe_matches)} rows: {_dupe_matches}")
 
+# ── 9) Real bug fix: the honesty note must name WHICH phase actually failed —
+#      install/build itself vs. a build that succeeded but whose run crashed —
+#      rather than one generic "did not build" sentence for both. Real repos
+#      (this project's own, and AmrDab/clawdcursor) have a genuine root
+#      package.json the harness correctly detects and builds; a report
+#      claiming "did not build" when the build genuinely succeeded is simply
+#      false. ─────────────────────────────────────────────────────────────
+rec = run_assemble([
+    observation_line(600.0, auto_build_succeeded=False, ran_without_crash=False),
+])
+check("build itself failed: honesty note says install/build, not a blanket 'did not build'",
+      any("install/build step did not complete" in n for n in rec["honesty"]["notes"]),
+      f'notes={rec["honesty"]["notes"]!r}')
+
+rec = run_assemble([
+    observation_line(600.0, auto_build_succeeded=True, ran_without_crash=False),
+])
+check("build succeeded but run crashed: honesty note says so precisely, not 'did not build'",
+      any("built successfully, but its run command did not complete cleanly" in n for n in rec["honesty"]["notes"]),
+      f'notes={rec["honesty"]["notes"]!r}')
+check("build succeeded but run crashed: does NOT falsely claim the build failed",
+      not any("did not build and run to clean completion" in n for n in rec["honesty"]["notes"]),
+      f'notes={rec["honesty"]["notes"]!r}')
+
+rec = run_assemble([
+    observation_line(600.0, auto_build_succeeded=True, ran_without_crash=True),
+])
+check("build AND run both succeeded: no dormant/unverified honesty note at all",
+      len(rec["honesty"]["notes"]) == 0, f'notes={rec["honesty"]["notes"]!r}')
+
 print()
 if _fails:
     print(f"FAILED: {len(_fails)} check(s): {_fails}")

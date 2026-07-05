@@ -355,15 +355,30 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
     # ── honesty: a run that did NOT build+execute to clean completion did not exercise
     # time- or condition-gated branches, so absence of captured malice is NOT proof of
     # safety (the never-bare-Safe rail applied to the dynamic record). Never hardcode this.
+    #
+    # Real fix (not a one-off): the old single sentence collapsed "install/build itself
+    # failed" and "it built fine but the run crashed/hung/exited non-zero" into one
+    # generic "did not build" claim, even though auto_build_succeeded and
+    # ran_without_crash are ALREADY two separate, real signals — this said "did not
+    # build" for repos whose build genuinely succeeded (a real report on this exact
+    # project's own repo, and on AmrDab/clawdcursor, both of which have a real root
+    # package.json the harness correctly detects). Name the actual phase that failed.
     built_ok = bool(obs.get("auto_build_succeeded"))
     ran_ok = bool(obs.get("ran_without_crash"))
     dormant_unverified = not (built_ok and ran_ok)
     honesty_notes: list[str] = []
-    if dormant_unverified:
+    if not built_ok:
         honesty_notes.append(
-            "The repo did not build and run to clean completion in the sandbox, so time- "
-            "or condition-gated branches may not have executed. Absence of captured malice "
-            "is not proof of safety.")
+            "The project's install/build step did not complete successfully in the "
+            "sandbox — it never reached a state where its own run command could even "
+            "be attempted, so its full behavior could not be exercised. Absence of "
+            "captured malice is not proof of safety.")
+    elif not ran_ok:
+        honesty_notes.append(
+            "The project built successfully, but its run command did not complete "
+            "cleanly (it crashed, exited with an error, or was still running when the "
+            "detonation window ended) — time- or condition-gated branches may not have "
+            "executed. Absence of captured malice is not proof of safety.")
     if agentic.get("crashed"):
         honesty_notes.append(
             "The three-agent code analysis did not complete for this run; agent findings "
