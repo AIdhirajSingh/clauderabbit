@@ -35,6 +35,7 @@ import {
   resolveRepo,
 } from "../_shared/github.ts";
 import {
+  computeSeverityHint,
   type FlaggedRegion,
   staticScan,
   type StaticScanResult,
@@ -45,6 +46,7 @@ import {
   type ScoringInputs,
 } from "../_shared/scoring.ts";
 import { generate } from "../_shared/vertex.ts";
+import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
 
 // --- Types mirroring lib/types.ts Report shape (what the UI expects) --------
 
@@ -435,10 +437,15 @@ function buildSystemPrompt(): string {
     "   its own known distribution point — github, a package registry, docker,",
     "   deno.land, etc.) with no credential access. Treat it as a minor, worth-",
     "   mentioning caution, not as evidence of malice, and do not let it alone",
-    "   push the verdict toward 'Malicious'. A region reason phrased as 'shell",
-    "   network fetch to an UNRECOGNIZED host', or any credential-access finding,",
-    "   is a genuine signal and must be weighted normally — this narrows ONE",
-    "   specific false-positive class, it does not soften real attack detection.",
+    "   push the verdict toward 'Malicious'. The SAME treatment applies to a",
+    "   region reason phrased as '...live-verified as a real responding host...'",
+    "   — a real, live HTTPS check (not a static list) already confirmed this",
+    "   host is a genuine, reachable web service; treat it identically to a",
+    "   recognized-host caution, not as an unresolved risk needing more hedging.",
+    "   A region phrased as '...could not be live-verified — treated as a",
+    "   confirmed attack', or any credential-access finding, is a genuine signal",
+    "   and must be weighted normally — this narrows ONE specific false-positive",
+    "   class, it does not soften real attack detection.",
     "",
     "Set `escalate` to true if you cannot confidently clear the repo from the",
     "static read alone — obfuscation, credential access, install-time network,",
@@ -916,7 +923,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
       // 3. Static scan → flagged regions (code signals only).
       await emit({ t: "stage", ch: "Static scan", status: "active" });
-      const scan = staticScan(files);
+      let scan = staticScan(files);
       const flaggedCount = scan.flaggedRegions.length;
       await emit({
         t: "stage",
@@ -930,6 +937,70 @@ Deno.serve(async (req: Request): Promise<Response> => {
           `Static severity: ${scan.severityHint}`,
         ],
       });
+
+      // 3b. Live host verification — a static allowlist is necessarily
+      // incomplete, so an unrecognized-but-real host (this already produced
+      // a false "Malicious" on this project's own repo: storage.googleapis.
+      // com, opencode.ai — both real, legitimate hosts simply not on the
+      // list) must not, on its own, keep full attack-grade weight. A cheap,
+      // real HTTPS check (no headless browser — unnecessary cost for this
+      // question) to each still-unrecognized host's own root, run ONLY when
+      // installTimeNetwork wasn't ALSO independently triggered by a harder
+      // signal (installTimeNetworkHard — a hardcoded IP, an npm lifecycle
+      // hook, or credential access in the same file), which is never
+      // eligible for this downgrade.
+      if (!scan.installTimeNetworkHard && scan.unrecognizedInstallHosts.length > 0) {
+        await emit({ t: "stage", ch: "Host verification", status: "active" });
+        const t0 = Date.now();
+        const verified = await verifyUnrecognizedHosts(scan.unrecognizedInstallHosts);
+        const elapsedMs = Date.now() - t0;
+        const allLegitimate = scan.unrecognizedInstallHosts.every(
+          (h) => verified.get(h)?.legitimate === true,
+        );
+        const detailLines = scan.unrecognizedInstallHosts.map(
+          (h) => `${h}: ${verified.get(h)?.signal ?? "check did not complete"}`,
+        );
+        // Resolve each affected region's "pending live verification" text to
+        // the real per-host outcome — a persisted report must never leave a
+        // permanently-unresolved-sounding "pending" in a finding a user reads
+        // after the fact.
+        const resolvedRegions = scan.flaggedRegions.map((r) => {
+          const match = scan.unrecognizedInstallHosts.find(
+            (h) => r.reason === `shell network fetch to an unrecognized host (${h}) — pending live verification`,
+          );
+          if (!match) return r;
+          const v = verified.get(match);
+          return {
+            ...r,
+            reason: v?.legitimate === true
+              ? `provisioning fetch to ${match}, live-verified as a real responding host — supply-chain caution, not a confirmed attack on its own`
+              : `shell network fetch to ${match}, an unrecognized host that could not be live-verified — treated as a confirmed attack`,
+          };
+        });
+        if (allLegitimate) {
+          const installTimeNetwork = false;
+          scan = {
+            ...scan,
+            flaggedRegions: resolvedRegions,
+            installTimeNetwork,
+            severityHint: computeSeverityHint(scan.signals, installTimeNetwork),
+          };
+        } else {
+          scan = { ...scan, flaggedRegions: resolvedRegions };
+        }
+        await emit({
+          t: "stage",
+          ch: "Host verification",
+          status: "done",
+          kind: allLegitimate ? "ok" : "warn",
+          lines: [
+            allLegitimate
+              ? `${scan.unrecognizedInstallHosts.length} unrecognized host(s) verified live (${elapsedMs}ms) — real, responding services, not confirmed attacks`
+              : `${scan.unrecognizedInstallHosts.length} unrecognized host(s) checked (${elapsedMs}ms) — not all confirmed live, keeping full weight`,
+            ...detailLines,
+          ],
+        });
+      }
 
       // 4. Owner reputation signal (kept SEPARATE from code/behavior).
       await emit({ t: "stage", ch: "Reputation", status: "active" });
