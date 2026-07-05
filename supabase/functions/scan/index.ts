@@ -26,6 +26,7 @@ import {
   rateLimitedResponseInit,
 } from "../_shared/rate-limit.ts";
 import {
+  type FetchedFile,
   GitHubRateLimitError,
   type OwnerSignal,
   ownerSignal,
@@ -410,9 +411,10 @@ function buildSystemPrompt(): string {
     "tells a developer whether a stranger's public GitHub repo is safe to run.",
     "You score 0-100 and write an honest, plain-language report.",
     "",
-    "You are given: repository metadata, an OWNER reputation signal, and a set of",
-    "STATIC-FLAGGED REGIONS (file + reason + snippet). Read ONLY the flagged",
-    "regions and the metadata — you are not given the full repo. Comprehend the",
+    "You are given: repository metadata, an OWNER reputation signal, a set of",
+    "STATIC-FLAGGED REGIONS (file + reason + snippet), and the repo's own README",
+    "as DECLARED SETUP/INSTALL INTENT. Read ONLY the flagged regions, the",
+    "metadata, and the README — you are not given the full repo. Comprehend the",
     "project, fold in reputation, and produce a structured verdict.",
     "",
     "SCORE BANDS: >=90 Trusted, 80-89 Likely safe, 60-79 Caution, <60 dangerous",
@@ -446,6 +448,19 @@ function buildSystemPrompt(): string {
     "   confirmed attack', or any credential-access finding, is a genuine signal",
     "   and must be weighted normally — this narrows ONE specific false-positive",
     "   class, it does not soften real attack detection.",
+    "5. CROSS-REFERENCE declared intent (the README) against actual flagged",
+    "   behavior — a real legitimacy signal, not decoration. If the README",
+    "   describes needing to fetch/install/build something specific during",
+    "   setup, and a flagged region shows exactly that (the same host, tool, or",
+    "   package), that consistency is real evidence the code does what it",
+    "   documents — cite it and let it REDUCE severity for that specific",
+    "   finding, same spirit as a recognized-host caution. This NEVER softens",
+    "   anything the README does not mention: install-time network/shell",
+    "   activity, credential access, or obfuscation with NO corresponding",
+    "   disclosure in the README is undisclosed behavior — a worse signal than",
+    "   silence, not a neutral one, and must be named as such. A repo with no",
+    "   README, or one that says nothing about setup, gives you no cross-",
+    "   reference either way — do not penalize or credit its absence.",
     "",
     "Set `escalate` to true if you cannot confidently clear the repo from the",
     "static read alone — obfuscation, credential access, install-time network,",
@@ -458,12 +473,37 @@ function buildSystemPrompt(): string {
   ].join("\n");
 }
 
+/** Cap on the README excerpt handed to the model — enough for a real setup/
+ * install section, bounded so the fast path stays cheap. */
+const DECLARED_INTENT_MAX_CHARS = 2000;
+
+/**
+ * Extract a bounded excerpt of the repo's own README, if one was fetched —
+ * the model's own reading comprehension of "what does this project SAY it
+ * does during setup" (a legitimacy cross-reference: a fetch/behavior the
+ * code performs that the README already discloses is a real positive signal;
+ * one that goes UNDISCLOSED or contradicts stated purpose is not softened).
+ * README is always fetched when present (github.ts selectPaths) but is
+ * treated as a doc file by staticScan — plain prose in it does NOT trip the
+ * regex-based flagged-region patterns, so without this it would never reach
+ * the model at all despite being read into `files` already.
+ */
+export function extractDeclaredIntent(files: FetchedFile[]): string | null {
+  const readme = files.find((f) => /^readme(\.|$)/i.test(f.path.split("/").pop() ?? ""));
+  if (!readme || !readme.content.trim()) return null;
+  const text = readme.content.trim();
+  return text.length > DECLARED_INTENT_MAX_CHARS
+    ? text.slice(0, DECLARED_INTENT_MAX_CHARS) + "\n…[README truncated for length]"
+    : text;
+}
+
 function buildUserPrompt(
   metadata: RepoMetadata,
   owner: OwnerSignal,
   scan: StaticScanResult,
   commitSha: string,
   fileCount: number,
+  declaredIntent: string | null,
 ): string {
   const regions = scan.flaggedRegions.length === 0
     ? "(none — static scanners found no flagged regions)"
@@ -505,6 +545,11 @@ function buildUserPrompt(
     "",
     "=== FLAGGED REGIONS (read ONLY these) ===",
     regions,
+    "",
+    "=== DECLARED SETUP/INSTALL INTENT (the repo's own README, informational — ",
+    "cross-reference against the flagged regions above, do not treat by itself ",
+    "as a code/behavior finding) ===",
+    declaredIntent ?? "(no README fetched, or it was empty)",
     "",
     "Produce the structured safety report now.",
   ].join("\n");
@@ -1043,7 +1088,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           responseSchema: RESPONSE_SCHEMA,
           maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
           system: buildSystemPrompt(),
-          prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length),
+          prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length, extractDeclaredIntent(files)),
         });
         model = result.json as ModelOutput;
       } catch (e) {
