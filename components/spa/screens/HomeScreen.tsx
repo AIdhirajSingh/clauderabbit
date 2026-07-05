@@ -14,10 +14,12 @@ import { FOOTER_COLS } from "../state";
 import styles from "../spa.module.css";
 import { Orbit } from "../components/Orbit";
 import { Chevron, GithubIcon, RabbitMark, StarIcon, ThemeIcon } from "../components/glyphs";
+import { useIsMobile } from "../components/useMediaQuery";
 
 export function HomeScreen() {
   const app = useApp();
   const { state } = app;
+  const isMobile = useIsMobile();
 
   return (
     <div style={{ position: "relative", animation: "fadeIn .6s ease both" }}>
@@ -33,7 +35,7 @@ export function HomeScreen() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0 26px",
+          padding: isMobile ? "0 12px" : "0 26px",
           pointerEvents: "none",
         }}
       >
@@ -97,7 +99,7 @@ export function HomeScreen() {
             rel="noopener noreferrer"
             className={styles.navRepoLink}
             style={{
-              display: "flex",
+              display: isMobile ? "none" : "flex",
               alignItems: "center",
               gap: 8,
               textDecoration: "none",
@@ -159,15 +161,15 @@ export function HomeScreen() {
           zIndex: 1,
           maxWidth: 1280,
           margin: "0 auto",
-          minHeight: "100vh",
-          padding: "0 32px",
+          minHeight: isMobile ? "auto" : "100vh",
+          padding: isMobile ? "0 18px" : "0 32px",
           display: "grid",
-          gridTemplateColumns: "1.02fr 0.98fr",
-          gap: 48,
+          gridTemplateColumns: isMobile ? "1fr" : "1.02fr 0.98fr",
+          gap: isMobile ? 0 : 48,
           alignItems: "center",
         }}
       >
-        <div style={{ padding: "40px 0" }}>
+        <div style={{ padding: "40px 0", minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 26 }}>
             <span style={{ height: 1, width: 40, background: "linear-gradient(90deg, transparent, var(--line3))" }} />
             <span
@@ -435,7 +437,7 @@ export function HomeScreen() {
             history and adds to that shared record; it never buys you more.
           </p>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2,1fr)", gap: 18, minWidth: 0 }}>
           {app.useCases.map((u) => (
             <div
               key={u.no}
@@ -472,7 +474,7 @@ export function HomeScreen() {
             without ever leaving where you already are.
           </p>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2,1fr)", gap: 18 }}>
           {(
             [
               {
@@ -548,14 +550,14 @@ export function HomeScreen() {
           style={{
             maxWidth: 1240,
             margin: "0 auto",
-            padding: "88px 24px 96px",
+            padding: isMobile ? "56px 18px 64px" : "88px 24px 96px",
             display: "grid",
-            gridTemplateColumns: "1.05fr 0.95fr",
-            gap: 56,
+            gridTemplateColumns: isMobile ? "1fr" : "1.05fr 0.95fr",
+            gap: isMobile ? 32 : 56,
             alignItems: "center",
           }}
         >
-          <div>
+          <div style={{ minWidth: 0 }}>
             <div
               style={{
                 display: "inline-flex",
@@ -615,7 +617,7 @@ export function HomeScreen() {
               display: "flex",
               alignItems: "flex-start",
               justifyContent: "center",
-              fontSize: "clamp(72px,17vw,260px)",
+              fontSize: isMobile ? "clamp(40px,17vw,72px)" : "clamp(72px,17vw,260px)",
               lineHeight: 0.82,
               color: "var(--t1)",
               letterSpacing: "-0.03em",
@@ -627,7 +629,7 @@ export function HomeScreen() {
         </div>
 
         <div style={{ maxWidth: 1240, margin: "0 auto", padding: "56px 24px 0" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 32, maxWidth: 760 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)", gap: isMobile ? 24 : 32, maxWidth: 760 }}>
             {FOOTER_COLS.map((col, ci) => (
               <div key={ci} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 {col.links.map((lnk) => (
