@@ -744,7 +744,23 @@ class AgentLoop:
             }]
             response = self.model_call(SYSTEM_PROMPT, messages, self._tool_schemas())
             self._account_tokens(response)
-            inference = (response or {}).get("text", "") or f"Reviewed {target}; no model narrative."
+            # model_call() never silently swallows a real failure — it either returns a
+            # successfully-parsed response or raises (OpenCodeUnavailable / a Vertex
+            # error), which propagates uncaught. So an empty "text" here is never a
+            # hidden timeout or dropped exception; it means the model genuinely
+            # responded with valid decision JSON but left narrative empty this turn.
+            # Distinguish the two real shapes that produces, honestly, rather than one
+            # generic string that reads like something broke either way:
+            #  - the model still requested tool_calls (reading on, still working) — a
+            #    real next step exists, just no commentary attached to it yet;
+            #  - the model requested NOTHING for this file — genuinely unexamined.
+            text = (response or {}).get("text", "")
+            if text:
+                inference = text
+            elif (response or {}).get("tool_calls"):
+                inference = f"Reviewed {target}: the model took tool action but attached no narrative to this turn."
+            else:
+                inference = f"Reviewed {target}: the model returned no narrative and requested no further action for this file."
 
             # 2) MED-4: DISPATCH the model's tool_calls. The model may choose to
             #    detonate(runtime, target), read_file, grep, or graph_query. Every

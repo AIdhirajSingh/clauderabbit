@@ -354,10 +354,18 @@ export function buildForensicsView(f: Forensics | undefined): ForensicsView | un
     ),
   );
 
+  // Real bug fix: merely CAPTURING a host (capturedHosts.length > 0) is not
+  // itself evidence of an attack — a build-time fetch to an unrecognized-but-
+  // benign host with no credential involvement is classified by the verdict
+  // itself as a supply-chain caution (`attack_egress_intercepted: false`), yet
+  // this OR'd in `capturedHosts.length > 0` regardless, so the report's own
+  // final-verdict sentence overstated it as "caught it attempting credential
+  // access or outbound exfiltration" even when neither was observed. Only the
+  // verdict's own attack-grade classification or an actual credential read
+  // counts as a caught attack; `capturedHosts` still drives the (separate,
+  // honestly-labeled) board marker and network-intent table below.
   const caughtAttack =
-    !!v.attack_egress_intercepted ||
-    f.in_vm_behavior.high_value_credential_reads > 0 ||
-    capturedHosts.length > 0;
+    !!v.attack_egress_intercepted || f.in_vm_behavior.high_value_credential_reads > 0;
 
   const possiblyDormant = f.honesty.possibly_dormant_unverified;
   const notVerified =

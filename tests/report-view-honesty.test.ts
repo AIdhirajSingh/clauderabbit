@@ -139,6 +139,32 @@ test("a run that DID catch an attack earns the strong runtime-malice language", 
   assert.ok(!HEDGE.test(v._finalNote), "even a caught attack carries no 'unverified' hedge: " + v._finalNote);
 });
 
+test("a merely-captured, non-attack-grade host does NOT overstate the verdict as a caught attack (real bug fix)", () => {
+  // The exact shape that produced the overstated sentence: the verdict's OWN
+  // classification says this was NOT an attack (attack_egress_intercepted:
+  // false — e.g. a supply-chain-classified fetch to an unrecognized host),
+  // no credential reads happened, but a host was still captured/logged for
+  // transparency. Merely capturing a host must not itself imply malice.
+  const v = buildReportView(
+    makeReport({
+      score: 25,
+      deep: true,
+      forensics_json: {
+        schema: "claude-rabbit/forensic-record@1",
+        verdict: { attack_egress_intercepted: false, captured_network_intent: ["storage.googleapis.com"] },
+        in_vm_behavior: { high_value_credential_reads: 0 },
+      },
+    }),
+  );
+  assert.equal(v._ranSandbox, true);
+  assert.equal(v._forensics?._caughtAttack, false, "a non-attack-grade capture must not read as a caught attack");
+  assert.ok(
+    !/caught it attempting credential access or outbound exfiltration/i.test(v._finalNote),
+    "must not overstate a benign capture as credential access or exfiltration: " + v._finalNote,
+  );
+  assert.ok(/observed no malicious behavior/i.test(v._finalNote), v._finalNote);
+});
+
 test("an escalated report carries NO 'what we could not verify' list and NO hedge anywhere (U1)", () => {
   // The de-hedging of the SUMMARY happens at the backend (the attach edge fn writes
   // a runtime-first summary); the frontend's U1 job is to drop the hedge LIST + the

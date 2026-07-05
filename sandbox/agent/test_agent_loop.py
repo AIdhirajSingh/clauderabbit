@@ -795,6 +795,41 @@ class RelayResilienceTests(unittest.TestCase):
                 self.assertEqual(f.get("facts", []), [], "failed detonation must not invent a fact")
 
 
+class EmptyNarrativeTests(unittest.TestCase):
+    """Real bug fix: an empty model `text` used to collapse into one generic
+    "no model narrative" string regardless of cause — genuinely ambiguous
+    between "the model is still working" and "nothing happened at all".
+    model_call() never silently swallows a real failure (it raises on a
+    genuine error), so an empty text here is always the model's own choice,
+    never a hidden timeout — these tests lock the two honestly-distinguished
+    cases that choice can take."""
+
+    def test_empty_text_with_tool_calls_says_the_model_is_still_working(self):
+        model = ToolCallModel(
+            per_call=[[{"name": "read_file", "arguments": {"path": "b.js"}}]],
+            text="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, {"a.js": "x"})
+            graph = make_graph(["a.js"], hotspots=["a.js"])
+            loop = make_loop(tmp, repo, graph, model=model)
+            loop.run()
+            findings = [f for f in loop.findings if f.target == "a.js"]
+            self.assertEqual(len(findings), 1)
+            self.assertIn("took tool action but attached no narrative", findings[0].inference)
+
+    def test_empty_text_with_no_tool_calls_says_genuinely_unexamined(self):
+        model = ScriptedModel(texts=[""])
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp, {"a.js": "x"})
+            graph = make_graph(["a.js"], hotspots=["a.js"])
+            loop = make_loop(tmp, repo, graph, model=model)
+            loop.run()
+            findings = [f for f in loop.findings if f.target == "a.js"]
+            self.assertEqual(len(findings), 1)
+            self.assertIn("returned no narrative and requested no further action", findings[0].inference)
+
+
 class MethodologyTests(unittest.TestCase):
     """The 2026 malware methodology must actually load into the system prompt — a
     packaging regression (file not shipped) would silently degrade the analyst to
