@@ -10,6 +10,12 @@
  * an attack claim — while a genuine attack indicator (credential reads, or any host in
  * the ATTACK-GRADE `captured_network_intent` / `intended_destinations`) still drives
  * `caughtAttack` exactly as before.
+ *
+ * extractRuntime is ASYNC: assemble-forensics.py's own host-recognition list is static
+ * and finite (the same limitation the fast-path classifier had), so an attack-grade
+ * host it didn't recognize gets one live HTTPS check here — see _shared/host-verify.ts,
+ * already proven for the fast path. `fetch` is mocked below so these tests stay fast
+ * and deterministic.
  */
 
 import { assert, assertEquals } from "jsr:@std/assert@1";
@@ -23,6 +29,17 @@ const NEUTRAL_REP: ScoringReputation = {
   stars: 0,
 };
 
+function withMockedFetch<T>(impl: typeof fetch, fn: () => Promise<T>): Promise<T> {
+  const orig = globalThis.fetch;
+  globalThis.fetch = impl;
+  return fn().finally(() => {
+    globalThis.fetch = orig;
+  });
+}
+
+/** Every host in this test file that has no legitimate-fetch mock is "unreachable". */
+const UNREACHABLE_FETCH = (() => Promise.reject(new Error("getaddrinfo ENOTFOUND"))) as typeof fetch;
+
 /** A minimal forensic record, overridable per test — mirrors assemble-forensics.py's schema. */
 function forensics(overrides: {
   autoBuildSucceeded?: boolean;
@@ -33,6 +50,7 @@ function forensics(overrides: {
   attackEgressIntercepted?: boolean;
   supplyChainEgress?: string[];
   dynamicScore?: number;
+  exfilHosts?: string[];
 }): Record<string, unknown> {
   return {
     what_it_ran: {
@@ -46,6 +64,12 @@ function forensics(overrides: {
     in_vm_behavior: {
       high_value_credential_reads: overrides.credReads ?? 0,
     },
+    payload_analysis: {
+      decoded_payloads: (overrides.exfilHosts ?? []).map((host) => ({
+        host,
+        kind: "credential_exfil",
+      })),
+    },
     verdict: {
       dynamic_score: overrides.dynamicScore ?? 100,
       captured_network_intent: overrides.capturedNetworkIntent ?? [],
@@ -56,8 +80,8 @@ function forensics(overrides: {
 }
 
 // ── extractRuntime: the false positive this fix exists for ──────────────────────
-Deno.test("extractRuntime: a pure supply-chain-caution record is NOT a caught attack", () => {
-  const rt = extractRuntime(
+Deno.test("extractRuntime: a pure supply-chain-caution record is NOT a caught attack", async () => {
+  const rt = await extractRuntime(
     forensics({
       autoBuildSucceeded: false,
       attackEgressIntercepted: false,
@@ -70,20 +94,21 @@ Deno.test("extractRuntime: a pure supply-chain-caution record is NOT a caught at
   assertEquals(rt.supplyChainHost, "downloads.sourceforge.net");
 });
 
-Deno.test("extractRuntime: an attack-grade captured_network_intent IS a caught attack", () => {
-  const rt = extractRuntime(
-    forensics({
-      attackEgressIntercepted: true,
-      capturedNetworkIntent: ["evil-c2.example"],
-      supplyChainEgress: [],
-    }),
-  );
+Deno.test("extractRuntime: an attack-grade captured_network_intent IS a caught attack", async () => {
+  const rt = await withMockedFetch(UNREACHABLE_FETCH, () =>
+    extractRuntime(
+      forensics({
+        attackEgressIntercepted: true,
+        capturedNetworkIntent: ["evil-c2.example"],
+        supplyChainEgress: [],
+      }),
+    ));
   assertEquals(rt.caughtAttack, true);
   assertEquals(rt.capturedHost, "evil-c2.example");
 });
 
-Deno.test("extractRuntime: a credential read is a caught attack regardless of supply_chain_egress", () => {
-  const rt = extractRuntime(
+Deno.test("extractRuntime: a credential read is a caught attack regardless of supply_chain_egress", async () => {
+  const rt = await extractRuntime(
     forensics({
       credReads: 2,
       attackEgressIntercepted: false,
@@ -94,23 +119,97 @@ Deno.test("extractRuntime: a credential read is a caught attack regardless of su
   assertEquals(rt.caughtAttack, true, "a real credential read must never be masked by an unrelated supply-chain fetch");
 });
 
-Deno.test("extractRuntime: intended_destinations alone (legacy field) still drives caughtAttack", () => {
+Deno.test("extractRuntime: intended_destinations alone (legacy field) still drives caughtAttack", async () => {
   // Defensive fallback: even if attack_egress_intercepted/captured_network_intent were
   // somehow missing, a non-empty intended_destinations must still fail toward "attack".
-  const rt = extractRuntime(
-    forensics({
-      attackEgressIntercepted: false,
-      capturedNetworkIntent: [],
-      intendedDestinations: ["evil-c2.example"],
-      supplyChainEgress: [],
-    }),
-  );
+  const rt = await withMockedFetch(UNREACHABLE_FETCH, () =>
+    extractRuntime(
+      forensics({
+        attackEgressIntercepted: false,
+        capturedNetworkIntent: [],
+        intendedDestinations: ["evil-c2.example"],
+        supplyChainEgress: [],
+      }),
+    ));
   assertEquals(rt.caughtAttack, true);
 });
 
+// ── extractRuntime: the dynamic-path live-verification extension ────────────────
+// Same root-cause fix as the fast path (scan/index.ts): assemble-forensics.py's static
+// SOFTWARE_DISTRIBUTION_HOSTS list can't know every legitimate host in the world, so an
+// unrecognized-but-real host it flagged attack-grade gets one live check here before the
+// verdict is final.
+Deno.test("extractRuntime: an unrecognized host that verifies live-legitimate is downgraded, not a caught attack", async () => {
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () =>
+      extractRuntime(
+        forensics({
+          attackEgressIntercepted: true,
+          capturedNetworkIntent: ["storage.googleapis.com"],
+        }),
+      ),
+  );
+  assertEquals(rt.caughtAttack, false, "a live-verified real host with no credential involvement must not be a caught attack");
+  assertEquals(rt.capturedHost, null);
+  assertEquals(rt.supplyChainHost, "storage.googleapis.com");
+});
+
+Deno.test("extractRuntime: a credential read blocks the live-verification downgrade even for a real host", async () => {
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () =>
+      extractRuntime(
+        forensics({
+          credReads: 1,
+          attackEgressIntercepted: true,
+          capturedNetworkIntent: ["storage.googleapis.com"],
+        }),
+      ),
+  );
+  assertEquals(rt.caughtAttack, true, "credential involvement must never be masked by a host verifying legitimate");
+  assertEquals(rt.capturedHost, "storage.googleapis.com");
+});
+
+Deno.test("extractRuntime: a credential-exfil-tagged host is never eligible for the live-verification downgrade", async () => {
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () =>
+      extractRuntime(
+        forensics({
+          attackEgressIntercepted: true,
+          capturedNetworkIntent: ["storage.googleapis.com"],
+          exfilHosts: ["storage.googleapis.com"],
+        }),
+      ),
+  );
+  assertEquals(rt.caughtAttack, true, "a host tied to a credential-exfil payload stays attack-grade regardless of what it verifies as");
+  assertEquals(rt.capturedHost, "storage.googleapis.com");
+});
+
+Deno.test("extractRuntime: a mix of one real host and one unreachable host only downgrades the real one", async () => {
+  const rt = await withMockedFetch(
+    ((url: string) => {
+      const host = new URL(url).hostname;
+      if (host === "storage.googleapis.com") return Promise.resolve(new Response(null, { status: 200 }));
+      return Promise.reject(new Error("unreachable"));
+    }) as typeof fetch,
+    () =>
+      extractRuntime(
+        forensics({
+          attackEgressIntercepted: true,
+          capturedNetworkIntent: ["storage.googleapis.com", "evil-c2.example"],
+        }),
+      ),
+  );
+  assertEquals(rt.caughtAttack, true, "the remaining unreachable host must still keep this a caught attack");
+  assertEquals(rt.capturedHost, "evil-c2.example");
+  assertEquals(rt.supplyChainHost, "storage.googleapis.com");
+});
+
 // ── buildRuntimeSummary: the honest supply-chain note, and no regressions ────────
-Deno.test("buildRuntimeSummary: supply-chain-only run gets an honest note, not an attack claim", () => {
-  const rt = extractRuntime(
+Deno.test("buildRuntimeSummary: supply-chain-only run gets an honest note, not an attack claim", async () => {
+  const rt = await extractRuntime(
     forensics({
       autoBuildSucceeded: false,
       attackEgressIntercepted: false,
@@ -132,13 +231,14 @@ Deno.test("buildRuntimeSummary: supply-chain-only run gets an honest note, not a
   );
 });
 
-Deno.test("buildRuntimeSummary: a real caught attack is unaffected by the supply-chain branch", () => {
-  const rt = extractRuntime(
-    forensics({
-      attackEgressIntercepted: true,
-      capturedNetworkIntent: ["evil-c2.example"],
-    }),
-  );
+Deno.test("buildRuntimeSummary: a real caught attack is unaffected by the supply-chain branch", async () => {
+  const rt = await withMockedFetch(UNREACHABLE_FETCH, () =>
+    extractRuntime(
+      forensics({
+        attackEgressIntercepted: true,
+        capturedNetworkIntent: ["evil-c2.example"],
+      }),
+    ));
   const summary = buildRuntimeSummary("owner", "repo", rt, NEUTRAL_REP, null);
   assert(
     summary.includes("We caught it") && summary.includes("evil-c2.example"),
@@ -146,8 +246,8 @@ Deno.test("buildRuntimeSummary: a real caught attack is unaffected by the supply
   );
 });
 
-Deno.test("buildRuntimeSummary: a plain clean run has no supply-chain text bleeding in", () => {
-  const rt = extractRuntime(forensics({}));
+Deno.test("buildRuntimeSummary: a plain clean run has no supply-chain text bleeding in", async () => {
+  const rt = await extractRuntime(forensics({}));
   const summary = buildRuntimeSummary("owner", "repo", rt, NEUTRAL_REP, null);
   assertEquals(
     summary,
