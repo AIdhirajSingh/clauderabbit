@@ -27,6 +27,7 @@ import { RING_CIRC } from "@/lib/report-view";
 import { formatCount } from "@/lib/format";
 import { StarIcon } from "./glyphs";
 import { OwnerAvatar, RepoLink } from "./github";
+import styles from "../spa.module.css";
 
 interface ReportBodyProps {
   r: RepoView;
@@ -135,7 +136,7 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
         </div>
 
         {/* stats row */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, margin: "36px 0" }}>
+        <div className={styles.reportGrid4} style={{ display: "grid", gap: 14, margin: "36px 0" }}>
           <StatCard label="Repository size">
             <span className="serif tnum" style={{ fontSize: 26, color: "var(--t1)", lineHeight: 1 }}>
               {r.stats.loc}
@@ -164,7 +165,7 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
         </div>
 
         {/* two signal columns */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 }}>
+        <div className={styles.reportGrid2} style={{ display: "grid", gap: 18, marginBottom: 18 }}>
           {/* Reputation signals */}
           <div style={{ border: "1px solid var(--line)", borderRadius: 20, padding: 26, background: "var(--s1)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 22 }}>
@@ -569,7 +570,7 @@ function ForensicSection({ f }: { f: ForensicsView }) {
           <Eyebrow>In-VM behavior</Eyebrow>
         </div>
         <Block>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14, marginBottom: beh.credential_reads_detail.some((c) => c.high_value) ? 18 : 0 }}>
+          <div className={styles.reportGrid2} style={{ display: "grid", gap: 14, marginBottom: beh.credential_reads_detail.some((c) => c.high_value) ? 18 : 0 }}>
             <BehaviorStat
               value={beh.high_value_credential_reads}
               label="High-value credential reads"
@@ -701,8 +702,14 @@ function NetworkIntentTable({
   attempts: ForensicsAttemptView[];
   blockedNoHostCount: number;
 }) {
+  // A real data table (4 columns of genuinely tabular content) — a narrow
+  // viewport gets a horizontally-scrollable table (the standard, well-
+  // understood mobile pattern for tables) rather than a stacked-card
+  // restructure, so no column's real data is ever hidden or squeezed.
+  const NETWORK_TABLE_MIN_WIDTH = 620;
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "var(--s1)" }}>
+      <div style={{ overflowX: "auto" }}>
       <div
         style={{
           display: "grid",
@@ -710,6 +717,7 @@ function NetworkIntentTable({
           gap: 12,
           padding: "12px 20px",
           borderBottom: "1px solid var(--line)",
+          minWidth: NETWORK_TABLE_MIN_WIDTH,
         }}
       >
         <ColHead>Domain called</ColHead>
@@ -729,6 +737,7 @@ function NetworkIntentTable({
               padding: "14px 20px",
               borderBottom: "1px solid var(--line)",
               alignItems: "center",
+              minWidth: NETWORK_TABLE_MIN_WIDTH,
             }}
           >
             <div style={{ minWidth: 0 }}>
@@ -756,6 +765,7 @@ function NetworkIntentTable({
           </div>
         );
       })}
+      </div>
       {blockedNoHostCount > 0 && (
         <div style={{ padding: "12px 20px", fontSize: 12, color: "var(--t4)", lineHeight: 1.5 }}>
           + {blockedNoHostCount} further outbound attempt(s) intercepted with no resolved destination.

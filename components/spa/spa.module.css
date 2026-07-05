@@ -238,3 +238,21 @@
 .logoutBtn:active {
   transform: scale(0.98);
 }
+
+/* ── report page — real narrow-viewport collapse (ReportBody.tsx is used both
+   server- and client-side, so a JS media-query hook can't be used there; pure
+   CSS is the only approach that works in both render contexts) ── */
+.reportGrid4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+.reportGrid2 {
+  grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 720px) {
+  .reportGrid4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .reportGrid2 {
+    grid-template-columns: 1fr;
+  }
+}
