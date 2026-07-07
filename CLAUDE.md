@@ -12,7 +12,7 @@ Infrastructure facts — accounts, services, GCP, the $300 credit, secrets, the 
 
 A free, open-source, no-login web tool. A person pastes a public GitHub repo, fork, or dependency link. The system reads the code, checks reputation, and runs it in an isolated sandbox when warranted, then returns a single 0–100 safety score with an honest, plain-language report. The report is public and permanent at `/owner/repo`, shareable, and embeddable as a trust badge.
 
-The wedge, and the one thing protected at all costs: **everyone else reads the code; we run it.** Running unknown code in a throwaway sandbox to observe real behavior is the differentiator. Nothing in the build is allowed to quietly erode it.
+The moat, and the one thing protected at all costs: **we run unknown code in a throwaway sandbox and observe what it actually does.** Open source ships malware that runs at install with no CVE, and anything that only reads the code and guesses is blind to it — actually running it is the differentiator. Nothing in the build is allowed to quietly erode it. (The comparative "everyone else reads the code; we run it" line is retired as the *headline/lead* framing across the product and docs — the problem leads now; the sandbox mechanism stays, just not as the tagline.)
 
 The architecture is a two-speed funnel: roughly 95% of scans resolve on a fast path (static scanners + a fast model reading only flagged regions + reputation lookup), and roughly 5% escalate to the deep dynamic sandbox run. That ratio is a load-bearing assumption for both performance and cost.
 

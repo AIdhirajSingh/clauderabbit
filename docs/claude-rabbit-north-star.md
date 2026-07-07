@@ -1,6 +1,6 @@
 # Claude Rabbit — Product North Star
 
-> Everyone else reads the code. We run it.
+> Open source ships malware, too. We run the code in a disposable sandbox and show you exactly what it does.
 
 ---
 
@@ -18,7 +18,7 @@ Now read the other half of the story — the developers. Walk any GitHub communi
 
 Claude Rabbit is a free web tool. Scanning is free and unlimited, with no login ever required — a deliberate, settled decision (an earlier login-wall-plus-demo-ad gate was removed as fake scaffolding that contradicted the product's own honesty rail). You paste any public GitHub link — a repo, a fork, a specific dependency you're about to install — and you get back a single, honest verdict: a score out of 100 and a plain-language report telling you what the project is, what it actually did when we ran it, and what we couldn't verify. Signing in is optional and only saves your scan history.
 
-The distinction that defines us, and that nobody serves to this audience, is one sentence: **everyone else reads the code; we run it.** Static scanners, package-reputation tools, and the existing free repo-checkers all *read* source and guess at intent. They are structurally blind to the install-time and condition-triggered behavior that defines modern open-source malware. Claude Rabbit clones the repo into a disposable, isolated cloud sandbox and actually executes it — and watches what happens.
+The install-time, condition-triggered behavior that defines modern open-source malware is invisible to anything that only *reads* source and guesses at intent — static scanners, package-reputation tools, and the existing free repo-checkers are all structurally blind to it. **So we don't guess; we run it.** Claude Rabbit clones the repo into a disposable, isolated cloud sandbox and actually executes it — and watches what happens. That is the distinction, and nobody serves it to this audience.
 
 The audience is deliberately wide: anyone who wants safety from malicious open source. A student cloning a tutorial. A solo developer evaluating a library. A team lead vetting a dependency. A company doing a quick gut-check before adoption. An autonomous AI coding agent about to clone-and-run with no human watching. We do not narrow it, because the anxiety is universal.
 

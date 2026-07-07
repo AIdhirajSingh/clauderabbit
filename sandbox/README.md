@@ -1,6 +1,6 @@
 # Claude Rabbit — Dynamic Sandbox Engine (the moat)
 
-> Everyone reads the code. We run it.
+> Open source ships malware that only shows itself at runtime. This is the engine that runs it — hermetically — and watches everything.
 
 This is the deep-path engine: it clones, builds, runs, and **observes** an unknown
 repository, hermetically isolated and reset after every scan. The fast path (the

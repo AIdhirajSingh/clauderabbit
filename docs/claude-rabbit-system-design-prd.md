@@ -1,6 +1,6 @@
 # Claude Rabbit — System Design & PRD
 
-> The execution north star. Everyone else reads the code. We run it.
+> The execution north star. Open source ships malware, too — and the attacks that matter run at install with no CVE. We run the code to catch them.
 > This document defines what we build and how it fits together. If a feature isn't here, it isn't in v1.
 
 ---
@@ -9,7 +9,7 @@
 
 Claude Rabbit is a free web tool. Scanning is free and unlimited, with no login required and no ads — a deliberate, settled product decision (a real, reviewed commit removed an earlier login-wall-plus-demo-ad gate after it was recognized as fake scaffolding, not a real integration, contradicting the product's no-fabricated-data rail). A user pastes any public GitHub repo, fork, or dependency. The system analyzes it — reading the code, checking reputation, and *running it in a sandbox when warranted* — and returns a single 0–100 safety score with a plain-language report. The report is public, permanently hosted at `/owner/repo`, shareable, and embeddable as a trust badge. Signing in only saves scan history and attributes it to the growing public database — it never gates a scan or a result.
 
-**The wedge:** every other tool (Socket, static scanners, the free repo-checkers) only *reads* code. We run it. That is the one thing nobody ships to the individual developer, and it is the only feature we protect at all costs.
+**The differentiator:** modern open-source malware runs at install time with no CVE, so anything that only *reads* code (Socket, static scanners, the free repo-checkers) is structurally blind to it. We run the code in a sandbox and watch what it actually does — the one thing nobody ships to the individual developer, and the feature we protect at all costs.
 
 **Audience:** anyone about to run a stranger's code — students, hobbyists, vibe-coders, devs cloning from tutorials or take-home interview tasks, and AI coding agents that clone-and-run unattended. Individuals and companies alike; no narrowing.
 
