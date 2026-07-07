@@ -37,15 +37,29 @@ const nextConfig: NextConfig = {
   // The /api/deep route shells out to `sandbox/orchestrate.sh` and reads
   // `sandbox/results/*` from the REAL filesystem at runtime (process.cwd()), so
   // Next's file tracer can't statically resolve those paths and conservatively
-  // bundles the whole project into that function. The route is a localhost
-  // sandbox-controller capability and is inert on any deploy (gated off), so it
-  // never needs those files bundled — exclude the heavy/irrelevant trees to keep
-  // the serverless function small and under platform size limits.
+  // bundles the whole project into that function. Exclude those heavy/irrelevant
+  // SOURCE trees to keep the serverless function small and under platform size
+  // limits.
+  //
+  // Real production bug this caused (fixed): `node_modules/**` AND `.next/**`
+  // were ALSO in this list. The route is gated closed on Vercel
+  // (CR_ALLOW_LOCAL_DEEP unset), but that gate check runs INSIDE the handler —
+  // Vercel still has to load and evaluate the route module's top-level imports
+  // (including `@supabase/supabase-js`, used by `confirmForensicsAttached`) on
+  // every cold start, gate or no gate. Turbopack bundles that kind of
+  // node_modules dependency into its OWN compiled chunk file under
+  // `.next/server/chunks/` (not a raw copy of the `node_modules/` source), so
+  // excluding `.next/**` stripped that chunk out of the deployed function too —
+  // both exclusions pointed at the same real dependency by two different
+  // paths. Every real invocation 500'd with `Error [ChunkLoadError] ... Cannot
+  // find module '.next/server/chunks/[root-of-the-server]__*.js`
+  // (MODULE_NOT_FOUND)` before the gate ever ran — silently, since the
+  // client-facing toast treats any dispatch failure as the same honest
+  // "sandbox unavailable" message. Removing both lets the tracer include only
+  // what this route actually needs (still nowhere near the full project).
   outputFileTracingExcludes: {
     "/api/deep": [
-      "node_modules/**",
       "sandbox/**",
-      ".next/**",
       "docs/**",
       "design-source/**",
       "supabase/**",
