@@ -1,7 +1,7 @@
 # Claude Rabbit — DESIGN.md
 
 > The baseline visual specification for Claude Rabbit.
-> Everyone reads the code. We run it.
+> Open source ships malware, too. We run the code in a disposable sandbox and show exactly what it does.
 >
 > The single source of truth for the product UI and the on-the-fly report renderer. Every
 > generated `/owner/repo` report is fed this spec so it reads as a member of the same family.
