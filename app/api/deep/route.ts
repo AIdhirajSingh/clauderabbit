@@ -50,8 +50,9 @@ import {
 } from "@/lib/deep-queue";
 import { enqueueRow, fetchPosition, fetchStage, setStatus } from "@/lib/deep-queue-client";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
-import { fetchLatestReport } from "@/lib/report-fetch";
+import { fetchLatestReport, fetchLatestReportRest } from "@/lib/report-fetch";
 import { deriveGitUsrBin } from "@/lib/git-bash-path";
+import { withTimeout } from "@/lib/with-timeout";
 import {
   cloudRunDispatchConfigured,
   getOperation,
@@ -366,17 +367,37 @@ function buildSlug(owner: string, repo: string): string {
 
 // ── Vercel-native REST dispatch ────────────────────────────────────────────────
 // How long the streaming response waits for forensics to attach before ending
-// honestly. Kept under maxDuration (300s) so the function finishes cleanly rather
-// than being cut off mid-write; observed detonations land in ~2.5–3.5 min.
-const REST_MAX_WAIT_MS = 285_000;
+// gracefully. Kept safely under maxDuration (300s) — with EVERY await in the poll
+// loop hard-bounded (below), the loop can never stall, so THIS deadline (not
+// Vercel's 300s hard cap) is what ends a slow run. Observed detonations land in
+// ~2.5–3.5 min, so this normally resolves on forensics well before the deadline.
+const REST_MAX_WAIT_MS = 270_000;
 const REST_POLL_MS = 3_000;
+// Hard cap on any single network read inside the poll loop. This is the fix for a
+// real production bug: the poll used the @supabase/supabase-js `reports` read
+// (fetchLatestReport), which HANGS on serverless (the exact reason
+// fetchLatestReportRest exists — see report-fetch.ts). One hung read stalled the
+// whole loop, so neither forensics-detection NOR the deadline above ever fired, and
+// the function ran until Vercel's 300s hard cap ("Task timed out after 300 seconds")
+// — on every real production scan. Every read below is now the bounded raw-REST
+// path AND additionally raced against this timeout, so a stall is impossible.
+const REST_READ_TIMEOUT_MS = 8_000;
 
 type DeepPrecondition = "attached" | "needs" | "missing";
 
+/** Read the latest report for owner/repo via the BOUNDED raw-REST path (never hangs). */
+async function readReport(owner: string, repo: string) {
+  if (!CONFIRM_SUPABASE_URL || !CONFIRM_SUPABASE_ANON_KEY) return null;
+  return await withTimeout(
+    fetchLatestReportRest(CONFIRM_SUPABASE_URL, CONFIRM_SUPABASE_ANON_KEY, owner, repo, REST_READ_TIMEOUT_MS),
+    REST_READ_TIMEOUT_MS + 1_000,
+    null,
+  );
+}
+
 /**
  * Decide whether this owner/repo/sha may be detonated. Reads the latest report row
- * (anonymous, public — same row the SSR page reads) and mirrors
- * confirmForensicsAttached's field checks:
+ * (anonymous, public — same row the SSR page reads):
  *   - "attached": already has a confirmed sandbox run for THIS sha → no re-detonation.
  *   - "needs":    a real escalated fast-path row exists for THIS sha, no forensics yet.
  *   - "missing":  no matching row → refuse (don't burn a detonation on an un-scanned repo).
@@ -388,11 +409,7 @@ async function checkDeepPrecondition(
   repo: string,
   sha: string,
 ): Promise<DeepPrecondition> {
-  if (!CONFIRM_SUPABASE_URL || !CONFIRM_SUPABASE_ANON_KEY) return "missing";
-  const supabase = createSupabaseClient(CONFIRM_SUPABASE_URL, CONFIRM_SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const report = await fetchLatestReport(supabase, owner, repo).catch(() => null);
+  const report = await readReport(owner, repo);
   if (!report || report.commit_sha !== sha) return "missing";
   if (report.deep && report.forensics) return "attached";
   return "needs";
@@ -400,11 +417,7 @@ async function checkDeepPrecondition(
 
 /** One-shot check: has the container's forensics POST landed for THIS sha yet? */
 async function forensicsAttachedOnce(owner: string, repo: string, sha: string): Promise<boolean> {
-  if (!CONFIRM_SUPABASE_URL || !CONFIRM_SUPABASE_ANON_KEY) return false;
-  const supabase = createSupabaseClient(CONFIRM_SUPABASE_URL, CONFIRM_SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const report = await fetchLatestReport(supabase, owner, repo).catch(() => null);
+  const report = await readReport(owner, repo);
   return !!(report && report.deep && report.commit_sha === sha && report.forensics);
 }
 
@@ -458,6 +471,7 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
       if (pre === "missing") {
         emit({
           t: "error",
+          fatal: true,
           error:
             "This commit hasn't been scanned yet, so there's no report to attach a sandbox run to. Run a fresh scan first.",
         });
@@ -491,6 +505,7 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
         void setStatus(slug, "failed");
         emit({
           t: "error",
+          fatal: true,
           error:
             "The sandbox couldn't be started right now. This is a server-side issue, not a problem with the repository — please try again in a few minutes.",
         });
@@ -504,12 +519,12 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
       let lastStage: string | null = null;
       while (!closed) {
         if (Date.now() > deadline) {
-          void setStatus(slug, "timed_out");
-          emit({
-            t: "error",
-            error:
-              "The sandbox run is taking longer than usual. It's still finishing in the background — your report will update automatically once it completes.",
-          });
+          // NOT an error — the detonation is still running and the container will
+          // attach its own forensics. Signal "pending" so the client keeps polling
+          // the report row (client-side, timeout-proof) rather than concluding a
+          // failure. (With every await bounded, this deadline is a true safety net
+          // that a ~2.5–3.5 min detonation normally resolves long before.)
+          emit({ t: "pending" });
           finish();
           return;
         }
@@ -532,7 +547,9 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
         }
 
         // Granular progress from the container (container_start → … → persisting).
-        const s = await fetchStage(slug).catch(() => null);
+        // Bounded: deep-queue-client's fetch has no timeout of its own, so a slow
+        // edge function must never stall this loop.
+        const s = await withTimeout(fetchStage(slug), REST_READ_TIMEOUT_MS, null).catch(() => null);
         if (s && s.stage && s.stage !== lastStage) {
           lastStage = s.stage;
           emit({
@@ -548,7 +565,10 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
         }
 
         // Terminal execution failure (surfaced honestly rather than as a timeout).
-        const op = await getOperation(operationName).catch(() => null);
+        // Bounded so a slow Cloud Run operations read can never stall the loop.
+        const op = await withTimeout(getOperation(operationName), REST_READ_TIMEOUT_MS, null).catch(
+          () => null,
+        );
         if (op && op.done && op.error) {
           // The execution finished with an error. Give the container's own
           // forensics POST a brief grace check (a "did not build" run still

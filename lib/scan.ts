@@ -630,10 +630,20 @@ export interface DeepScanArgs {
   onStage?: (stage: ScanStage) => void;
 }
 
-/** Result of an inline deep run. `persisted` = forensics attached to the report row. */
+/**
+ * Result of an inline deep run.
+ * - `{ ok: true, persisted: true }` — forensics attached to the report row (done).
+ * - `{ ok: true, persisted: false, pending: true }` — the detonation was dispatched
+ *   and was still running when the stream ended (the server's bounded wait elapsed,
+ *   or the serverless platform cut the long-held stream). The Cloud Run container
+ *   attaches its own forensics independently, so the caller should POLL the report
+ *   row until they appear rather than concluding a failure.
+ * - `{ ok: false, error, fatal: true }` — a genuine failure (nothing is running):
+ *   dispatch failed, or the repo was never scanned. Do not poll.
+ */
 export type DeepScanResult =
-  | { ok: true; persisted: boolean }
-  | { ok: false; error: string };
+  | { ok: true; persisted: boolean; pending?: boolean }
+  | { ok: false; error: string; fatal?: boolean };
 
 /**
  * Run the dynamic sandbox INLINE via the local deep-scan controller route
@@ -680,24 +690,43 @@ export async function runDeepScan(args: DeepScanArgs): Promise<DeepScanResult> {
       return { ok: false, error: msg };
     }
     let persisted = false;
+    let pending = false;
     let error: string | null = null;
+    let fatal = false;
+    let sawResult = false;
     try {
       await readNdjsonStream(res.body, (e) => {
         const stage = toScanStage(e);
         if (stage) {
           args.onStage?.(stage);
         } else if (e.t === "result") {
+          sawResult = true;
           persisted = e.persisted === true;
+        } else if (e.t === "pending") {
+          pending = true;
         } else if (e.t === "error") {
           error = typeof e.error === "string" && e.error ? e.error : "The sandbox run failed.";
+          fatal = e.fatal === true;
         }
       });
     } catch {
       if (controller.signal.aborted) return { ok: false, error: "The sandbox run timed out." };
-      return { ok: false, error: "The sandbox stream was unreadable." };
+      // A mid-stream read failure isn't itself proof of failure — the detonation
+      // may still be running and attaching forensics. Treat it as pending so the
+      // caller polls the report row rather than declaring a failure.
+      return { ok: true, persisted: false, pending: true };
     }
-    if (error) return { ok: false, error };
-    return { ok: true, persisted };
+    // A genuine, nothing-is-running failure — do not poll.
+    if (error && fatal) return { ok: false, error, fatal: true };
+    if (persisted) return { ok: true, persisted: true };
+    // Anything else — an explicit "pending", a non-fatal error, or a stream that
+    // simply ended without a result (the serverless platform cut the long-held
+    // connection) — means the detonation was dispatched and is likely still
+    // running. Signal pending so the caller polls the report row for forensics.
+    if (pending || error || !sawResult) {
+      return { ok: true, persisted: false, pending: true };
+    }
+    return { ok: true, persisted: false };
   } finally {
     clearTimeout(timeout);
   }

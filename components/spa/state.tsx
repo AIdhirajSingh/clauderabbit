@@ -81,6 +81,15 @@ const TOAST_MS = 3400;
 /** Delay between picking a suggestion chip and firing the scan. */
 const SUGGESTION_PICK_MS = 140;
 /**
+ * After the inline deep run is DISPATCHED, the Cloud Run container attaches its own
+ * forensics to the report row independently of the /api/deep response — so the
+ * client confirms the result by POLLING the public report row, immune to any
+ * serverless streaming-duration cap. A real detonation lands in ~2.5–3.5 min; poll
+ * up to 5 min before falling back to an honest "still finishing" message.
+ */
+const DEEP_FORENSICS_POLL_MS = 5 * 60 * 1000;
+const DEEP_FORENSICS_POLL_INTERVAL_MS = 3000;
+/**
  * localStorage key for a repo to restore into the scan box after an optional
  * sign-in. Sign-in NEVER gates a scan (BUG-11), but a user who signs in mid-flow
  * goes through a full-page OAuth/magic-link redirect that wipes React state, so
@@ -1227,23 +1236,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
             const deep = await runDeepScan({ owner: dOwner, repo: dRepo, sha, onStage });
             if (token !== liveScanToken.current) return;
 
-            // Re-fetch the (now forensics-bearing) row, retrying a few times for
-            // read-after-write. attach_forensics UPDATEs the row in place, so the
-            // latest-by-created_at read returns the same row now carrying forensics.
+            // A genuine, nothing-is-running failure (dispatch failed / repo never
+            // scanned): stop here and show the static read + an honest note. Do NOT
+            // poll — there is no detonation to wait for.
+            if (!deep.ok && deep.fatal) {
+              const curF = stateRef.current;
+              patch({
+                screen: "report",
+                procLive: false,
+                procDeep: false,
+                activeRepoId: id,
+                liveReports: { ...curF.liveReports, [id]: report },
+                scanCount: curF.scanCount + 1,
+                scannedIds: curF.scannedIds.includes(id) ? curF.scannedIds : [...curF.scannedIds, id],
+                showLogs: false,
+              });
+              toast(deep.error, "var(--amber)");
+              return;
+            }
+
+            // Otherwise the detonation was dispatched. The Cloud Run container
+            // attaches its own forensics to the report row INDEPENDENTLY of the
+            // /api/deep response lifetime — so a serverless platform cutting the
+            // long-held stream (or the server's bounded wait elapsing) never means
+            // failure. POLL the public report row until forensics land (or a
+            // generous deadline), showing honest progress. This is the timeout-proof
+            // half of the dispatch: the server triggers + streams early stages, the
+            // client confirms the result.
             let updated: typeof report | null = null;
-            if (deep.ok && deep.persisted && SUPABASE_URL && SUPABASE_ANON_KEY) {
-              for (let i = 0; i < 4 && token === liveScanToken.current; i++) {
-                const rep = await fetchLatestReportRest(
-                  SUPABASE_URL,
-                  SUPABASE_ANON_KEY,
-                  dOwner,
-                  dRepo,
-                );
-                if (rep?.forensics) {
+            if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+              const startedAt = Date.now();
+              const deadline = startedAt + DEEP_FORENSICS_POLL_MS;
+              while (token === liveScanToken.current) {
+                const rep = await fetchLatestReportRest(SUPABASE_URL, SUPABASE_ANON_KEY, dOwner, dRepo);
+                if (token !== liveScanToken.current) return;
+                if (rep?.forensics && rep.commit_sha === sha) {
                   updated = rep;
                   break;
                 }
-                await new Promise((res) => setTimeout(res, 800));
+                if (Date.now() >= deadline) break;
+                // Honest live progress while the sandbox runs (the granular per-step
+                // timeline is preserved in the final report's own logs).
+                const secs = Math.round((Date.now() - startedAt) / 1000);
+                patch({
+                  procActiveCh: "Running in the isolated sandbox",
+                  procActiveLines: [`Detonating the repo and capturing its real behavior… (${secs}s)`],
+                });
+                await new Promise((res) => setTimeout(res, DEEP_FORENSICS_POLL_INTERVAL_MS));
               }
             }
             if (token !== liveScanToken.current) return;
@@ -1275,13 +1314,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   .catch(() => {});
               }
               toast("Sandbox run complete. Forensics attached.", bandColor(finalReport.score));
-            } else if (deep.ok) {
-              // Ran but produced/persisted no record — never imply a clean result.
-              toast("Sandbox ran, but no forensic record was captured.", "var(--amber)");
-            } else {
-              // deep.error is already a plain, self-contained statement of what broke
-              // (e.g. "Cloud Run execution failed (exit 1): ...") — no prefix needed.
+            } else if (!deep.ok) {
+              // A non-fatal error, and forensics never landed within the poll window.
               toast(deep.error, "var(--amber)");
+            } else {
+              // Dispatched and still running past the poll window — honest, not a
+              // false "no record": the report updates itself once it finishes.
+              toast(
+                "The sandbox run is still finishing — refresh in a moment to see the full result.",
+                "var(--amber)",
+              );
             }
             return;
           }
