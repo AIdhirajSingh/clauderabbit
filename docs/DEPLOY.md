@@ -17,48 +17,68 @@ you on purpose. Everything else is done.
 - Google sign-in works today (the Google OAuth client + the Supabase callback
   `https://mjvlczaytkhvsolnhhkz.supabase.co/auth/v1/callback` are configured).
 - The dynamic sandbox runs as Cloud Run Job executions (`cr-detonation`, region
-  `us-central1`), triggered by the local `/api/deep` controller via the Cloud Run API —
-  there is no per-scan host to SSH into anymore (see `docs/INFRASTRUCTURE.md` §8b).
-  `/api/deep` is **inert on Vercel by default** (`CR_ALLOW_LOCAL_DEEP` unset → 403), so a
-  deploy cannot trigger detonations. Deep scans keep running from your local controller
-  and land in the shared DB; Vercel serves those cached deep reports to the world.
-  When the website's own automatic follow-up call to `/api/deep` hits this gate (the
-  normal case on Vercel), the report still renders honestly — the "Sandbox run
-  incomplete" badge (tested, `tests/report-view-honesty.test.ts`) — and the toast shown
-  to the visitor is a plain, real-user-facing sentence (`lib/scan.ts`'s `runDeepScan`),
-  not this gate's own operator-facing error text.
+  `us-central1`; see `docs/INFRASTRUCTURE.md` §8b). **The deployed website itself
+  triggers these executions** — `app/api/deep/route.ts` calls the Cloud Run Admin v2
+  REST API directly over HTTPS (`lib/cloud-run-dispatch.ts`), authenticating with a
+  dedicated least-privilege service account (`cr-dispatch@…`, `CR_RUN_SA_JSON`). There
+  is no dependency on a local `gcloud` CLI or an operator machine: a real visitor's scan
+  on `clauderabbit.in` that escalates gets a **real detonation, run by Vercel**, and a
+  genuine "Sandbox run" badge with real forensics.
+  - This is the primary path and it requires `CR_RUN_SA_JSON` (+ `CR_DEEP_RUNNER_KEY`
+    for the live progress timeline) to be set as Vercel Project Environment Variables —
+    see Step 1 below. When the credential is present, `/api/deep` uses the REST dispatch
+    on any host.
+  - The **local `gcloud` controller** (`CR_ALLOW_LOCAL_DEEP=1`, localhost-gated, spawns a
+    real child process) is now only a **developer fallback**, reachable only when
+    `CR_RUN_SA_JSON` is NOT configured. It is not how production detonates.
+  - If NEITHER dispatch backend is configured, `/api/deep` returns an honest
+    `reason: "unavailable"` and the report renders the "Sandbox run incomplete" badge
+    (tested, `tests/report-view-honesty.test.ts`) rather than a fabricated result. This
+    is now a genuine misconfiguration state, not the normal Vercel behavior.
 - **The `scan` edge function itself never dispatches** — deciding escalation and
   triggering a real detonation are deliberately decoupled (the escalation decision is
   persisted regardless of whether a detonation ever runs). Only the website's SPA
-  automatically follows up with `/api/deep` after an escalation. **The CLI and MCP
-  server never call `/api/deep` at all** — by design, not an oversight — because
-  neither can reach this developer-machine-only controller from wherever they actually
-  run. Both surfaces are honest about it on every escalated result instead: the CLI's
-  text/`--json` output and the MCP tool's response both carry `escalationDecided` /
-  `sandboxActuallyRan`, and the CLI prints an explicit "flagged as ambiguous enough to
+  automatically follows up with `/api/deep` after an escalation, and on production that
+  `/api/deep` call now runs a real detonation via the REST dispatch above. **The CLI and
+  MCP server never call `/api/deep` at all** — by design, not an oversight — because
+  they are honest about the escalation/detonation distinction in a text interface rather
+  than streaming a live sandbox run. Both surfaces carry `escalationDecided` /
+  `sandboxActuallyRan` on every escalated result: the CLI's text/`--json` output and the
+  MCP tool's response, and the CLI prints an explicit "flagged as ambiguous enough to
   escalate, but escalation being decided is not the same as a sandbox run happening" note
-  (`cli/src/lib/format.ts`) rather than ever implying a detonation happened. A caller
-  that wants the real detonation to run must do so from the machine actually operating
-  the local controller (the same one this section documents) — a raw API call
-  bypassing all three of these real surfaces is the only way to end up with an
-  escalation decision and no path to an honest explanation of it.
+  (`cli/src/lib/format.ts`) rather than ever implying a detonation happened. (A future
+  CLI/MCP enhancement could trigger the same REST dispatch and poll the report; today
+  they point the user to the web report, which does run it.)
 
 ---
 
 ## Step 1 — Deploy to Vercel
 
-Import the repo in Vercel and set exactly these **Project Environment Variables**
-(client-safe; these are the only env vars the deployed app needs):
+Import the repo in Vercel and set these **Project Environment Variables**. The three
+`NEXT_PUBLIC_*` are client-safe; the two `CR_*` are **server-side secrets** (Node
+runtime only, never `NEXT_PUBLIC_`, never sent to the browser) that power the real
+production detonation dispatch:
 
-| Name | Value |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B` |
-| `NEXT_PUBLIC_SITE_URL` | the real production domain, `https://clauderabbit.in` |
+| Name | Value | Scope |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://mjvlczaytkhvsolnhhkz.supabase.co` | client |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B` | client |
+| `NEXT_PUBLIC_SITE_URL` | the real production domain, `https://clauderabbit.in` | client |
+| `CR_RUN_SA_JSON` | the `cr-dispatch@…` service-account JSON (one line) | **server secret** |
+| `CR_DEEP_RUNNER_KEY` | the deep-queue runner key (GCP Secret Manager `cr-deep-runner-key`) | **server secret** |
 
-Do **not** add `CR_*`, `CLOUDSDK_PYTHON`, or any secret to Vercel — those are for the
-local deep-scan controller only and must never reach a deploy. Then deploy. Once you
-know the final URL, make sure `NEXT_PUBLIC_SITE_URL` matches it and redeploy.
+`CR_RUN_SA_JSON` is the dedicated, least-privilege dispatcher SA whose ONLY permissions
+are `run.jobs.run` on the single `cr-detonation` job plus `actAs` on the job's runtime
+SA — its entire blast radius if leaked is "can run this one sandbox job." It is what lets
+the deployed website trigger real detonations (`lib/cloud-run-dispatch.ts`).
+`CR_DEEP_RUNNER_KEY` is optional but recommended — without it detonations still run and
+attach real forensics, but the live per-step progress timeline (Cloning… → Installing… →
+Running…) degrades to just start/finish.
+
+Do **not** add `CR_ALLOW_LOCAL_DEEP`, `CR_BASH`, `CLOUDSDK_PYTHON`, or the local-gcloud
+`CR_*` vars to Vercel — those are for the developer-fallback local controller only.
+Then deploy. Once you know the final URL, make sure `NEXT_PUBLIC_SITE_URL` matches it and
+redeploy.
 
 ---
 
@@ -99,10 +119,20 @@ by itself.
 
 ---
 
-## Step 4 — Keep the deep-scan controller running locally (unchanged)
+## Step 4 — Production detonates on its own; the local controller is now just a dev fallback
 
-Deep scans (the ~5% that escalate) run on your machine, not on Vercel. On the
-controller machine, `.env.local` must have (this is gitignored, never committed):
+**Production does not need your machine.** With `CR_RUN_SA_JSON` set in Vercel (Step 1),
+the deployed website itself triggers every `cr-detonation` Cloud Run execution via the
+Cloud Run Admin REST API. A real visitor's escalated scan detonates for real with nothing
+of yours switched on. The one shared piece of always-on infra is the NVA gateway VM
+(`cr-forge-gateway`) every detonation's egress routes through — a small persistent VM
+(not per-scan), already up; nothing to provision per session. See
+`docs/INFRASTRUCTURE.md` §8b.
+
+The **local gcloud controller** below is now only for **local development** (running
+`next dev` and detonating from your own machine without deploying). It is a fallback:
+`/api/deep` only uses it when `CR_RUN_SA_JSON` is NOT set. To use it, `.env.local`
+(gitignored, never committed) needs:
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=…            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=…
@@ -112,19 +142,15 @@ CR_RUN_REGION=us-central1
 CLOUDSDK_PYTHON=…\google-cloud-sdk\platform\bundledpython\python.exe
 # Windows only, if `/api/deep` 501s with "needs gcloud on the sandbox
 # controller": the Node process that runs `next dev`/`next start` may inherit a
-# thinner PATH than an interactive shell (this bit a Claude Preview-launched dev
-# server on one real machine — bash and gcloud were both on the interactive
-# shell's PATH but not the preview tool's spawned process). Pin both explicitly:
+# thinner PATH than an interactive shell. Pin both explicitly:
 CR_BASH=C:\Program Files\Git\usr\bin\bash.exe
 CR_SANDBOX_PATH_PREPEND=/c/Users/<you>/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin
 ```
 
-- No host to bring up or keep warm anymore — `/api/deep` triggers a `cr-detonation`
-  Cloud Run Job execution per scan directly via the Cloud Run API (`gcloud run jobs
-  execute`). The one thing that DOES need to stay running is the shared NVA gateway VM
-  (`cr-forge-gateway`) every detonation's egress routes through — it's a small,
-  persistent VM (not per-scan), already up; there's nothing to provision per session.
-  See `docs/INFRASTRUCTURE.md` §8b for the full architecture.
+Alternatively — and this is the recommended way to test the REAL production path
+locally — set `CR_RUN_SA_JSON` (the dispatcher SA JSON) in `.env.local` instead. Then
+`next dev` exercises the exact same Cloud Run REST dispatch production uses, no local
+gcloud needed. That is how the production path is verified before every deploy.
 
 ---
 

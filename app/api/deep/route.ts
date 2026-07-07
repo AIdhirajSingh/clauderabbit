@@ -52,6 +52,11 @@ import { enqueueRow, fetchPosition, fetchStage, setStatus } from "@/lib/deep-que
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { fetchLatestReport } from "@/lib/report-fetch";
 import { deriveGitUsrBin } from "@/lib/git-bash-path";
+import {
+  cloudRunDispatchConfigured,
+  getOperation,
+  runCloudRunJob,
+} from "@/lib/cloud-run-dispatch";
 
 // Real, live-diagnosed bug (a scan reporting "forensic record was not
 // confirmed" despite the write genuinely landing — verified directly against
@@ -73,6 +78,13 @@ const CONFIRM_SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_K
 // Privileged local capability: a real Node child process + filesystem. Never edge.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// A real detonation (clone + install + agentic pass + run) takes a few minutes.
+// The Vercel-native REST path streams progress and waits for forensics to attach
+// within this window; the platform default is 300s on all plans, which comfortably
+// covers observed detonations (~2.5–3.5 min). The container attaches its own
+// forensics independently, so even if this function is cut off at the ceiling the
+// report still updates and the client re-render picks it up.
+export const maxDuration = 300;
 
 // ── server-only config ───────────────────────────────────────────────────────
 // Note: CR_DEEP_RUNNER_KEY is no longer read here — the Cloud Run execution's
@@ -352,20 +364,238 @@ function buildSlug(owner: string, repo: string): string {
   return `${base}-${stamp}${rand}`.slice(0, 40).replace(/-+$/g, "");
 }
 
+// ── Vercel-native REST dispatch ────────────────────────────────────────────────
+// How long the streaming response waits for forensics to attach before ending
+// honestly. Kept under maxDuration (300s) so the function finishes cleanly rather
+// than being cut off mid-write; observed detonations land in ~2.5–3.5 min.
+const REST_MAX_WAIT_MS = 285_000;
+const REST_POLL_MS = 3_000;
+
+type DeepPrecondition = "attached" | "needs" | "missing";
+
+/**
+ * Decide whether this owner/repo/sha may be detonated. Reads the latest report row
+ * (anonymous, public — same row the SSR page reads) and mirrors
+ * confirmForensicsAttached's field checks:
+ *   - "attached": already has a confirmed sandbox run for THIS sha → no re-detonation.
+ *   - "needs":    a real escalated fast-path row exists for THIS sha, no forensics yet.
+ *   - "missing":  no matching row → refuse (don't burn a detonation on an un-scanned repo).
+ * This is the abuse bound for the now-public REST path: a detonation can only be
+ * triggered for something the rate-limited fast path already scanned and escalated.
+ */
+async function checkDeepPrecondition(
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<DeepPrecondition> {
+  if (!CONFIRM_SUPABASE_URL || !CONFIRM_SUPABASE_ANON_KEY) return "missing";
+  const supabase = createSupabaseClient(CONFIRM_SUPABASE_URL, CONFIRM_SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const report = await fetchLatestReport(supabase, owner, repo).catch(() => null);
+  if (!report || report.commit_sha !== sha) return "missing";
+  if (report.deep && report.forensics) return "attached";
+  return "needs";
+}
+
+/** One-shot check: has the container's forensics POST landed for THIS sha yet? */
+async function forensicsAttachedOnce(owner: string, repo: string, sha: string): Promise<boolean> {
+  if (!CONFIRM_SUPABASE_URL || !CONFIRM_SUPABASE_ANON_KEY) return false;
+  const supabase = createSupabaseClient(CONFIRM_SUPABASE_URL, CONFIRM_SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const report = await fetchLatestReport(supabase, owner, repo).catch(() => null);
+  return !!(report && report.deep && report.commit_sha === sha && report.forensics);
+}
+
+/**
+ * The real production detonation path: trigger a Cloud Run Job execution via the
+ * Admin REST API (no local gcloud), then stream the same honest progress timeline
+ * the local path emits — granular stages read from deep-queue (the container reports
+ * them live) — and resolve when the container's own forensics POST lands on the
+ * report row. Bounded by REST_MAX_WAIT_MS; if it overruns, the container keeps
+ * running and attaches on its own, and the client re-render picks up the result.
+ */
+function handleRestDeep(owner: string, repo: string, sha: string): Response {
+  const slug = buildSlug(owner, repo);
+  const enc = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let closed = false;
+      const emit = (obj: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(enc.encode(JSON.stringify(obj) + "\n"));
+        } catch {
+          /* consumer gone */
+        }
+      };
+      const finish = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      };
+
+      // 1. Precondition — only detonate a repo the fast path already escalated.
+      const pre = await checkDeepPrecondition(owner, repo, sha);
+      if (pre === "attached") {
+        emit({
+          t: "stage",
+          ch: "Detonate",
+          status: "done",
+          kind: "ok",
+          lines: ["This commit already has a confirmed sandbox run."],
+        });
+        emit({ t: "result", persisted: true });
+        finish();
+        return;
+      }
+      if (pre === "missing") {
+        emit({
+          t: "error",
+          error:
+            "This commit hasn't been scanned yet, so there's no report to attach a sandbox run to. Run a fresh scan first.",
+        });
+        finish();
+        return;
+      }
+
+      // 2. Observability row + mark active (best-effort; never blocks).
+      void enqueueRow({ owner, repo, sha, token: slug });
+      void setStatus(slug, "active");
+      emit({
+        t: "stage",
+        ch: "Escalate",
+        status: "active",
+        lines: ["Gate tripped — dispatching a Cloud Run detonation execution"],
+      });
+
+      // 3. Trigger the real Cloud Run execution over HTTPS (env overrides pin THIS
+      //    scan; the job template is untouched, so concurrent scans never race).
+      let operationName: string;
+      try {
+        const run = await runCloudRunJob({
+          CR_OWNER: owner,
+          CR_REPO: repo,
+          CR_COMMIT_SHA: sha,
+          CR_SCAN_ID: slug,
+        });
+        operationName = run.operationName;
+      } catch (e) {
+        console.error("cloud-run dispatch failed:", e instanceof Error ? e.message : e);
+        void setStatus(slug, "failed");
+        emit({
+          t: "error",
+          error:
+            "The sandbox couldn't be started right now. This is a server-side issue, not a problem with the repository — please try again in a few minutes.",
+        });
+        finish();
+        return;
+      }
+
+      // 4. Poll: granular stages (deep-queue) + forensics landing (report row) +
+      //    a terminal operation error, until forensics attach or the deadline.
+      const deadline = Date.now() + REST_MAX_WAIT_MS;
+      let lastStage: string | null = null;
+      while (!closed) {
+        if (Date.now() > deadline) {
+          void setStatus(slug, "timed_out");
+          emit({
+            t: "error",
+            error:
+              "The sandbox run is taking longer than usual. It's still finishing in the background — your report will update automatically once it completes.",
+          });
+          finish();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, REST_POLL_MS));
+        if (closed) return;
+
+        // Forensics landed = the real success signal (the container's own POST).
+        if (await forensicsAttachedOnce(owner, repo, sha)) {
+          emit({
+            t: "stage",
+            ch: "Detonate",
+            status: "done",
+            kind: "ok",
+            lines: ["Cloud Run execution completed — forensics attached to the report."],
+          });
+          void setStatus(slug, "done");
+          emit({ t: "result", persisted: true });
+          finish();
+          return;
+        }
+
+        // Granular progress from the container (container_start → … → persisting).
+        const s = await fetchStage(slug).catch(() => null);
+        if (s && s.stage && s.stage !== lastStage) {
+          lastStage = s.stage;
+          emit({
+            t: "stage",
+            ch: "Detonate",
+            status: "active",
+            lines: [
+              s.detail
+                ? `${STAGE_LABELS[s.stage] ?? s.stage} — ${s.detail}`
+                : STAGE_LABELS[s.stage] ?? s.stage,
+            ],
+          });
+        }
+
+        // Terminal execution failure (surfaced honestly rather than as a timeout).
+        const op = await getOperation(operationName).catch(() => null);
+        if (op && op.done && op.error) {
+          // The execution finished with an error. Give the container's own
+          // forensics POST a brief grace check (a "did not build" run still
+          // attaches a real, honest forensic record) before declaring failure.
+          if (await forensicsAttachedOnce(owner, repo, sha)) {
+            emit({
+              t: "stage",
+              ch: "Detonate",
+              status: "done",
+              kind: "ok",
+              lines: ["Cloud Run execution completed — forensics attached to the report."],
+            });
+            void setStatus(slug, "done");
+            emit({ t: "result", persisted: true });
+            finish();
+            return;
+          }
+          void setStatus(slug, "failed");
+          emit({
+            t: "error",
+            error:
+              "The sandbox ran but did not attach a forensic record. This scan is not a confirmed sandbox run.",
+          });
+          finish();
+          return;
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
 export function GET(): Response {
   return json({ error: "Method not allowed" }, 405);
 }
 
 export async function POST(req: Request): Promise<Response> {
-  // 1. fail-closed local gate (flag + localhost host/origin). `reason:
-  // "unavailable"` lets the client distinguish "no sandbox controller is
-  // wired up for this deployment" (expected on Vercel — see docs/DEPLOY.md)
-  // from a genuine Cloud Run execution failure, and show a message written
-  // for a real end user rather than this string's own operator-facing detail.
-  const gateErr = localGateError(req);
-  if (gateErr) return json({ error: gateErr, reason: "unavailable" }, 403);
-
-  // 2. parse + strictly validate the body (the injection boundary).
+  // 1. parse + strictly validate the body (the injection boundary). Done FIRST
+  // because BOTH dispatch backends below need a clean owner/repo/sha.
   let body: unknown;
   try {
     body = await req.json();
@@ -391,12 +621,39 @@ export async function POST(req: Request): Promise<Response> {
     return json({ error: "invalid commit sha" }, 400);
   }
 
-  // 3. gcloud must be present (this is the sandbox controller).
-  if (!(await hasGcloud())) {
-    return json({ error: "deep path needs gcloud on the sandbox controller" }, 501);
+  // 2. Choose a dispatch backend.
+  //
+  //    PRODUCTION (and local dev when the credential is present): the
+  //    Vercel-native Cloud Run REST dispatch. It triggers the real detonation by
+  //    calling the Cloud Run Admin API directly over HTTPS with a dedicated
+  //    least-privilege service account — NO local gcloud, NO operator machine.
+  //    THIS is what makes a real visitor's scan on clauderabbit.in actually
+  //    detonate. It is not an RCE surface (it only runs one fixed, pre-deployed
+  //    job with strictly-validated env overrides), so unlike the local path it is
+  //    safe to expose publicly; abuse is bounded by the report-row precondition
+  //    inside handleRestDeep (a detonation can only be triggered for a repo the
+  //    rate-limited fast path has already scanned and escalated) plus the shared
+  //    gateway's own hard concurrency ceiling.
+  if (cloudRunDispatchConfigured()) {
+    return handleRestDeep(owner, repo, sha);
   }
 
-  // 4. A per-request token: FIFO key (in-process), Cloud Run scan id, queue row id.
+  //    DEV FALLBACK: the local gcloud controller. This spawns a real child
+  //    process, so it stays fail-closed and localhost-gated (an RCE surface). It
+  //    is only reachable when the REST credential is NOT configured — i.e. a
+  //    developer machine running `next dev` without CR_RUN_SA_JSON set.
+  const gateErr = localGateError(req);
+  if (gateErr) return json({ error: gateErr, reason: "unavailable" }, 403);
+
+  // gcloud must be present (this is the sandbox controller).
+  if (!(await hasGcloud())) {
+    return json(
+      { error: "deep path needs gcloud on the sandbox controller", reason: "unavailable" },
+      501,
+    );
+  }
+
+  // A per-request token: FIFO key (in-process), Cloud Run scan id, queue row id.
   const slug = buildSlug(owner, repo);
 
   // Slot ownership for THIS request. `acquiredSlot` records whether we hold an
