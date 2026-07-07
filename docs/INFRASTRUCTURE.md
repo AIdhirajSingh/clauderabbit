@@ -154,9 +154,23 @@ captured) rather than just blocked.
   gateway. Image: `us-central1-docker.pkg.dev/redacted-gcp-project/cr-detonation/
   harness:v5`. Service account `cr-detonation-run@redacted-gcp-project.
   iam.gserviceaccount.com` (`roles/secretmanager.secretAccessor` + `roles/aiplatform.user`)
-  — uses ambient Application Default Credentials, no JSON key. Triggered by
-  `gcloud run jobs execute cr-detonation --update-env-vars=CR_OWNER=...,CR_REPO=...,
-  CR_COMMIT_SHA=...,CR_SCAN_ID=...` from `/api/deep`.
+  — uses ambient Application Default Credentials, no JSON key.
+- **How executions are triggered — TWO backends, same job (`app/api/deep/route.ts`):**
+  - **Production (the real one): a Vercel-native REST dispatch.** The deployed website
+    calls the Cloud Run Admin v2 REST API directly over HTTPS
+    (`POST …/v2/…/jobs/cr-detonation:run` with per-execution `containerOverrides.env` for
+    `CR_OWNER`/`CR_REPO`/`CR_COMMIT_SHA`/`CR_SCAN_ID`), authenticated by a **dedicated
+    least-privilege dispatcher SA** `cr-dispatch@…` (only `run.jobs.run` on the
+    `cr-detonation` job resource + `actAs` on `cr-detonation-run`). Its JSON key lives
+    ONLY in the Vercel server-side env (`CR_RUN_SA_JSON`) — never the client, never the
+    repo, never Supabase. Code: `lib/cloud-run-dispatch.ts` (token minted from the SA
+    JSON via the JWT-bearer flow, mirroring `_shared/vertex.ts`). This is what makes a
+    live visitor's escalated scan on `clauderabbit.in` detonate for real, with no
+    operator machine involved. Proven live: execution `cr-detonation-54nw6` was created
+    by `cr-dispatch@…` and completed with a real forensic record attached.
+  - **Local dev fallback: `gcloud run jobs execute cr-detonation --update-env-vars=…`**
+    spawned by `/api/deep` (localhost-gated, `CR_ALLOW_LOCAL_DEEP=1`), used only when
+    `CR_RUN_SA_JSON` is not configured.
 - **The gateway (`cr-forge-gateway`, zone `us-central1-a`):** a small, persistent, SHARED
   `e2-small` VM (2 shared vCPUs, ~2GB RAM) — deliberately not per-scan, since Cloud Run
   containers have confirmed NO `CAP_NET_ADMIN` (no netns/iptables possible inside the
