@@ -76,13 +76,14 @@ USAGE
   clauderabbit <command> [options]
 
 COMMANDS
-  scan <target> [--json] [--ref <ref>]
+  scan <target> [--json] [--ref <ref>] [--no-color]
       Print a ClaudeRabbit verdict for <target> — owner/repo, a GitHub URL,
       owner/repo@ref, or an npm package name (resolved to its GitHub repo via
       the npm registry). Cache-aware: if the repo's current commit already
       has a report it comes back immediately; otherwise a real fast-path scan
       runs. You never need to choose which case applies.
-      --json  Emit the documented machine-readable object (see README).
+      --json      Emit the documented machine-readable object (see README).
+      --no-color  Disable ANSI color. NO_COLOR is also respected.
 
   mcp install
       Wire the ClaudeRabbit MCP server into Claude Desktop's
