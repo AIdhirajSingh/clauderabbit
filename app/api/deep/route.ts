@@ -515,8 +515,16 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
 
       // 4. Poll: granular stages (deep-queue) + forensics landing (report row) +
       //    a terminal operation error, until forensics attach or the deadline.
-      const deadline = Date.now() + REST_MAX_WAIT_MS;
+      const startedAt = Date.now();
+      const deadline = startedAt + REST_MAX_WAIT_MS;
       let lastStage: string | null = null;
+      // Cloud Run Job executions have a real cold-start (image pull + VM allocation)
+      // before the container's entrypoint runs and reports its FIRST stage — up to a
+      // few minutes. Without a heartbeat the timeline sits on "Escalate" that whole
+      // time and reads as stuck. Emit an honest "provisioning the sandbox" line with a
+      // live elapsed counter until the container reports its first real stage.
+      let lastHeartbeat = 0;
+      const HEARTBEAT_MS = 4_000;
       while (!closed) {
         if (Date.now() > deadline) {
           // NOT an error — the detonation is still running and the container will
@@ -569,6 +577,21 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
             status: "active",
             lines: s.detail ? [s.detail] : [],
           });
+        } else if (lastStage === null) {
+          // No container stage yet — the sandbox is still cold-starting. Keep the
+          // timeline visibly alive with an honest elapsed counter rather than a
+          // silent gap on "Escalate".
+          const now = Date.now();
+          if (now - lastHeartbeat >= HEARTBEAT_MS) {
+            lastHeartbeat = now;
+            const secs = Math.round((now - startedAt) / 1000);
+            emit({
+              t: "stage",
+              ch: "Provisioning the sandbox container",
+              status: "active",
+              lines: [`Allocating an isolated Cloud Run sandbox and pulling the harness image… (${secs}s)`],
+            });
+          }
         }
 
         // Terminal execution failure (surfaced honestly rather than as a timeout).
