@@ -201,11 +201,28 @@ export async function extractRuntime(forensics: Record<string, unknown>): Promis
       .filter((h) => h.length > 0),
   );
 
+  // Which captured hosts are even ELIGIBLE for the liveness rescue: ONLY those the
+  // sandbox classified as a BUILD-phase fetch to an unrecognized host (a dependency-
+  // fetch context where the static distribution-host list is simply incomplete). A
+  // RUN-phase attempt — the untrusted code executing and reaching out — is real attack
+  // behavior and is NEVER downgraded here, even if the host answers an HTTPS probe (a
+  // live C2 trivially runs a web server; "responds to HTTPS" does not make a run-phase
+  // exfil target legitimate). Downgrading run-phase egress on liveness alone was a real
+  // moat bypass. When the field is absent (an older forensic record produced before the
+  // sandbox emitted it), the eligible set is EMPTY and nothing is downgraded — the
+  // strict, fail-safe direction (over-flag a benign build-phase mirror rather than ever
+  // clear a live C2).
+  const buildPhaseUnrecognized = new Set(
+    asArr(verdict.build_phase_unrecognized_egress)
+      .map((h) => (typeof h === "string" ? h.trim() : ""))
+      .filter((h) => h.length > 0),
+  );
+
   // Mirrors the fast path's credential-negates-downgrade guard: any credential file
   // read at all keeps every host at full attack weight, regardless of what it verifies as.
-  if (credReads === 0) {
+  if (credReads === 0 && buildPhaseUnrecognized.size > 0) {
     const candidates = Array.from(new Set([...capturedIntent, ...destHosts])).filter(
-      (h) => !exfilHosts.has(h),
+      (h) => !exfilHosts.has(h) && buildPhaseUnrecognized.has(h),
     );
     if (candidates.length > 0) {
       const verified = await verifyUnrecognizedHosts(candidates);
