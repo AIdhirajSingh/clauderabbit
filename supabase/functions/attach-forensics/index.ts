@@ -201,17 +201,22 @@ export async function extractRuntime(forensics: Record<string, unknown>): Promis
       .filter((h) => h.length > 0),
   );
 
-  // Which captured hosts are even ELIGIBLE for the liveness rescue: ONLY those the
-  // sandbox classified as a BUILD-phase fetch to an unrecognized host (a dependency-
-  // fetch context where the static distribution-host list is simply incomplete). A
+  // Which captured hosts are ELIGIBLE for the liveness rescue. The rescue exists because
+  // the sandbox's static distribution-host list is incomplete, so a BUILD-phase dependency
+  // fetch to an unrecognized-but-real host can be wrongly flagged attack-grade. But a
   // RUN-phase attempt — the untrusted code executing and reaching out — is real attack
-  // behavior and is NEVER downgraded here, even if the host answers an HTTPS probe (a
-  // live C2 trivially runs a web server; "responds to HTTPS" does not make a run-phase
-  // exfil target legitimate). Downgrading run-phase egress on liveness alone was a real
-  // moat bypass. When the field is absent (an older forensic record produced before the
-  // sandbox emitted it), the eligible set is EMPTY and nothing is downgraded — the
-  // strict, fail-safe direction (over-flag a benign build-phase mirror rather than ever
-  // clear a live C2).
+  // behavior and must NEVER be downgraded, even if the host answers an HTTPS probe (a live
+  // C2 trivially runs a web server; "responds to HTTPS" does not make a run-phase exfil
+  // target legitimate). Downgrading run-phase egress on liveness alone was a real moat
+  // bypass.
+  //
+  // PHASE-AWARE + FORWARD-COMPATIBLE: when the sandbox emitted `build_phase_unrecognized_
+  // egress` (the phase field), ONLY those hosts are eligible — run-phase hosts are never
+  // downgraded, closing the bypass. When the field is ABSENT (an older forensic record, or
+  // a sandbox image that predates it) we fall back to the prior behavior so deploying this
+  // edge function ahead of the sandbox image rebuild is non-regressing — the strict
+  // phase-aware behavior then activates automatically once the sandbox emits the field.
+  const hasPhaseField = "build_phase_unrecognized_egress" in verdict;
   const buildPhaseUnrecognized = new Set(
     asArr(verdict.build_phase_unrecognized_egress)
       .map((h) => (typeof h === "string" ? h.trim() : ""))
@@ -220,10 +225,11 @@ export async function extractRuntime(forensics: Record<string, unknown>): Promis
 
   // Mirrors the fast path's credential-negates-downgrade guard: any credential file
   // read at all keeps every host at full attack weight, regardless of what it verifies as.
-  if (credReads === 0 && buildPhaseUnrecognized.size > 0) {
-    const candidates = Array.from(new Set([...capturedIntent, ...destHosts])).filter(
-      (h) => !exfilHosts.has(h) && buildPhaseUnrecognized.has(h),
-    );
+  if (credReads === 0) {
+    const candidates = Array.from(new Set([...capturedIntent, ...destHosts]))
+      .filter((h) => !exfilHosts.has(h))
+      // With the phase field present, restrict to build-phase-unrecognized hosts only.
+      .filter((h) => !hasPhaseField || buildPhaseUnrecognized.has(h));
     if (candidates.length > 0) {
       const verified = await verifyUnrecognizedHosts(candidates);
       const legitimate = candidates.filter((h) => verified.get(h)?.legitimate === true);

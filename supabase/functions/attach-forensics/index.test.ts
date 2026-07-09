@@ -213,10 +213,9 @@ Deno.test("extractRuntime: a RUN-phase C2 that ANSWERS HTTPS is NEVER downgraded
   assertEquals(rt.capturedHost, "live-c2.attacker.example");
 });
 
-Deno.test("extractRuntime: fail-safe — absent build_phase_unrecognized_egress downgrades nothing", async () => {
-  // An older forensic record with no phase field: the eligible set is empty, so even a
-  // host that answers HTTPS is not downgraded — over-flag a benign mirror rather than
-  // ever clear a live C2. (forensics() defaults the field to [], the strict direction.)
+Deno.test("extractRuntime: a PRESENT-but-empty phase field downgrades nothing (strict)", async () => {
+  // The sandbox emitted the phase field but no host was build-phase-unrecognized, so even a
+  // host that answers HTTPS is not eligible — a run-phase host stays a caught attack.
   const rt = await withMockedFetch(
     (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
     () =>
@@ -224,10 +223,25 @@ Deno.test("extractRuntime: fail-safe — absent build_phase_unrecognized_egress 
         forensics({
           attackEgressIntercepted: true,
           capturedNetworkIntent: ["storage.googleapis.com"],
+          buildPhaseUnrecognized: [], // present + empty → strict, nothing eligible
         }),
       ),
   );
-  assertEquals(rt.caughtAttack, true, "with no phase field, nothing is downgraded (fail-safe)");
+  assertEquals(rt.caughtAttack, true, "present-but-empty phase field → nothing downgraded");
+});
+
+Deno.test("extractRuntime: a LEGACY record with NO phase field keeps the prior liveness downgrade (forward-compat, non-regressing)", async () => {
+  // Deploying this edge function ahead of the sandbox image rebuild must NOT over-flag: an
+  // older record that never carried the phase field falls back to the prior behavior (any
+  // captured host may be liveness-downgraded). The strict phase-aware behavior activates
+  // automatically once the sandbox emits the field.
+  const rec = forensics({ attackEgressIntercepted: true, capturedNetworkIntent: ["storage.googleapis.com"] });
+  delete (rec.verdict as Record<string, unknown>).build_phase_unrecognized_egress;
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () => extractRuntime(rec),
+  );
+  assertEquals(rt.caughtAttack, false, "legacy record (no phase field) → prior liveness downgrade preserved");
 });
 
 Deno.test("extractRuntime: a mix of one real host and one unreachable host only downgrades the real one", async () => {
