@@ -17,7 +17,7 @@ Either way it is **cache-aware by construction**: if a report already exists for
 
 ### Important: what a scan result does and does NOT prove
 
-ClaudeRabbit is a two-speed system. The fast path (what `scan` calls, whether it's a fresh run or a cache hit) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use VM.
+ClaudeRabbit is a two-speed system. The fast path (what `scan` calls, whether it's a fresh run or a cache hit) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use Cloud Run container.
 
 **A fresh `scan` only runs the fast path.** It can determine that a repo *should* be escalated (reflected as `escalationDecided: true` in the structured output) without the dynamic sandbox having actually executed yet — that detonation is a separate, privileged process gated to ClaudeRabbit's own sandbox controller and is not something this public API call can force to complete synchronously.
 

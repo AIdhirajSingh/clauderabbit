@@ -39,15 +39,17 @@ The behavior that defines modern open-source malware is invisible to anything th
 source and guesses at intent — static scanners, package-reputation tools, the existing free
 repo-checkers are all structurally blind to it. So **ClaudeRabbit doesn't guess. It runs the code.**
 
-Paste any public GitHub repo (or an npm package) at **[clauderabbit.in](https://clauderabbit.in)** —
+Paste any public GitHub repo (or an npm package — scanned as its real published tarball, the exact
+bytes `npm install` fetches, not the repo it merely links to, so a malicious install hook injected
+only into the published artifact is caught) at **[clauderabbit.in](https://clauderabbit.in)** —
 no account needed. Most scans get a clear answer in about ten seconds. If anything still feels
 uncertain, it escalates into a **real, disposable sandbox** where the repo actually installs and
 runs, live and hermetically isolated. If it tries to phone home or steal a credential, ClaudeRabbit
 doesn't just block it — it **forges a fake-success response**, so the malware thinks it got away with
 it, and that is the exact moment it's caught. You get back one honest **0–100 safety score**: what
 the project is, what it did when we ran it, and — always — **what we could not verify**. Never a
-blind "Safe" with nothing behind it. Every report is public and permanent at `/owner/repo`,
-shareable, and embeddable as a trust badge.
+blind "Safe" with nothing behind it. Every report is public and permanent at `/owner/repo` (or
+`/npm/<package>` for a registry package), shareable, and embeddable as a trust badge.
 
 <div align="center">
   <a href="https://clauderabbit.in"><img src="docs/assets/screenshot-home.png" alt="ClaudeRabbit — paste a GitHub repo, get an honest 0–100 safety score" width="820"></a>
@@ -96,11 +98,13 @@ paste URL → API/edge fn → cache check (by commit SHA)
              the flagged regions → score + confidence
                 └─ confident clean → ship verdict
                 └─ suspicious / low-confidence → ESCALATE
-                      → DEEP PATH (~5%): an AGENTIC analyzer on a throwaway GCP VM —
-                        Gemini agents (brain OUTSIDE the blast radius) explore the whole
-                        repo for what stage-1 missed, then DETONATE chosen files as a
-                        non-root user under a monitored sinkhole, recording CODE-VERIFIED
-                        facts (hermetic, egress-locked, no real packet leaves, reset every scan)
+                      → DEEP PATH (~5%): an AGENTIC analyzer in a single-use Cloud Run
+                        Job container — Gemini agents (brain OUTSIDE the blast radius)
+                        explore the whole repo for what stage-1 missed, then DETONATE
+                        chosen files under a monitored sinkhole with the harness's own
+                        secrets scrubbed from the untrusted process's env, recording
+                        CODE-VERIFIED facts (hermetic, egress-locked, no real packet
+                        leaves, reset every scan)
    → blend → 0–100 score → report generated from design.md → persist + public /owner/repo
 ```
 
@@ -166,7 +170,7 @@ supabase secrets set NAME="value"
 ## Repo layout
 
 ```
-app/                     Next.js routes (SPA home, /[owner]/[repo] SSR report, /badge, /auth/callback, /api/deep)
+app/                     Next.js routes (SPA home, /[owner]/[repo] + /npm/<pkg> SSR reports, /badge, /mcp, /auth/callback, /api/deep)
 components/spa/          the faithful design port (7 screens + shared chrome + state machine)
 lib/                     score logic, types, demo seed, supabase clients, scan client, report view
 supabase/migrations/     schema + RLS + scan-limit function

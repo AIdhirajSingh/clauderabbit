@@ -18,7 +18,8 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
 ## 2. Framework & runtime
 
 - **Web layer: Next.js (App Router).** Server-rendered report pages are the SEO surface. The same app serves the homepage, the public `/owner/repo` reports, and the API routes that orchestrate scans. This is the framework for the entire web layer — do not substitute another.
-- **Edge runtime: Supabase Edge Functions run on Deno (TypeScript).** All server-side work — scanning, score blending, model/search calls, DB writes — happens here. This is why the Gemini SDK used is the **JavaScript/TypeScript** `@google/genai`, not the Python `google-genai` (see §6).
+- **Edge runtime: Supabase Edge Functions run on Deno (TypeScript).** All server-side work — scanning, score blending, model/search calls, DB writes — happens here. The Deno edge functions call Gemini via Vertex with a **hand-rolled REST client** (`supabase/functions/_shared/vertex.ts`): they mint a Google OAuth token from the service-account JSON (SA JWT-bearer flow, RS256, Deno Web Crypto) and POST directly to the Vertex `:generateContent` endpoint with `fetch` — **no Gen AI SDK** in the app. (The Python `google-genai` SDK *is* used, but only in the in-sandbox agent's Vertex fallback — see §6/§8b — never in the edge functions.)
+- **Scan inputs — GitHub repos AND npm packages.** A target may be a GitHub `owner/repo` or an npm package (`npm:pkg`, a bare/scoped name, or an `npmjs.com/package/...` URL — `parseNpmTarget` in `_shared/npm.ts`). npm targets are resolved against the **public npm registry** — `registry.npmjs.org` for the version manifest + published tarball, `api.npmjs.org` for last-month download counts — and the ACTUAL published tarball is integrity-verified (`dist.integrity`/`dist.shasum`) and scanned, not just the repo its `package.json` links to; a divergence (e.g. an install hook present in the tarball but not the linked source) is surfaced as a compromised-publish signal. Public npm reports live at `/npm/<pkg>` (`app/npm/[...pkg]/page.tsx`); the wiring is in `supabase/functions/scan/index.ts` + `_shared/npm.ts`.
 - **Local preview:** the app runs on **localhost:2311**. Derive run commands from the real `package.json` / Supabase config at the moment of use; do not pre-write a command table.
 
 ---
@@ -30,7 +31,7 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
 - **Region:** South Asia (Mumbai), `ap-south-1`
 - **URL:** `https://mjvlczaytkhvsolnhhkz.supabase.co`
 - **Provides:** Postgres database, Auth (Google + email), and Edge Functions.
-- **Key system: the NEW Supabase key system** — publishable `sb_publishable_…` (client) + secret `sb_secret_…` (server). The legacy JWT `anon` / `service_role` keys are deprecated and are **not** used.
+- **Key system:** the **client** uses only the new publishable `sb_publishable_…` key. **Server-side the edge functions accept EITHER key system:** `resolveServiceKey()` (in `scan`, `oauth-token`, `attach-forensics`, `deep-queue`) reads the auto-provided legacy `SUPABASE_SERVICE_ROLE_KEY` first and falls back to the new `SUPABASE_SECRET_KEYS` (`sb_secret_…`) — so the legacy service-role key is still honored when the runtime provides it, not removed. Either way the secret key stays server-side and never reaches the client.
 - **Client env holds ONLY:**
   - `NEXT_PUBLIC_SUPABASE_URL`
   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` = `sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B`
@@ -63,20 +64,20 @@ These are facts to use, not re-derive. Do not guess account IDs, project IDs, re
 
 The escalation logic and two-speed funnel are real and permanent; only the model identities are placeholders, sitting behind a clean swap seam so the real models drop in later without touching orchestration.
 
-- **Fast path:** `gemini-3.1-flash-lite` — GA, cost-efficient, high-volume. (Note: the old `gemini-3.1-flash-lite-preview` string is discontinued July 9, 2026 — use the bare GA string `gemini-3.1-flash-lite`.)
-- **Deep / escalated path:** `gemini-3.5-flash` — GA (released 19 May 2026), most capable Flash model, optimized for agentic + coding tasks. Default thinking effort is `medium`; for hard sandbox-adjudication cases, `high` can be set per call.
+- **Fast path:** `gemini-3.1-flash-lite` — GA, cost-efficient, high-volume. (Note: the old `gemini-3.1-flash-lite-preview` string is discontinued July 9, 2026 — use the bare GA string `gemini-3.1-flash-lite`.) The actual id is not hardcoded — it is held in the **`GEMINI_FAST_MODEL`** secret and read by `vertex.ts` `modelForTier("fast")` (see §7).
+- **Deep / escalated path:** `gemini-3.5-flash` — GA (released 19 May 2026), most capable Flash model, optimized for agentic + coding tasks. Default thinking effort is `medium`; for hard sandbox-adjudication cases, `high` can be set per call. The id is held in the **`GEMINI_DEEP_MODEL`** secret and read by `vertex.ts` `modelForTier("deep")` (see §7).
 - **Two instances, real escalation gate preserved.** Gemini is the placeholder proving the end-to-end pipe. Real models (DeepSeek fast-path, Brave reputation, Kimi K2.7 + OpenCode in the sandbox) swap in later behind the same seam — swapping the model proves the wrapper; the sandbox engine is the separate, real product.
 
 ---
 
-## 6. Gemini-via-Vertex — the backend, SDK, and auth
+## 6. Gemini-via-Vertex — the backend, client, and auth
 
 **Backend decision: Gemini is called through the Vertex AI backend (Agent Platform), NOT the AI Studio / Gemini Developer API.** Reason: the $300 credit pays for Vertex Gemini calls but explicitly does not pay for AI Studio Gemini calls (§4). Same models, same model strings, different backend + auth.
 
-- **SDK in the app:** `@google/genai` (the unified JS/TS Gen AI SDK), used inside the Deno edge functions. The Python `google-genai` and the legacy `google-generativeai` / deprecated `vertexai.generative_models` modules are **not** used. (The unified SDK supports both AI Studio and Vertex backends via one flag, so the seam is a config switch.)
-- **Vertex backend selection:** initialize the client for Vertex — `vertexai: true`, with project and location — rather than an AI Studio API key.
-- **Endpoint:** `aiplatform.googleapis.com` (unchanged through the Vertex → Agent Platform rename).
-- **Region / location:** `us-central1` (broadest Gemini model availability; stored as the `GCP_LOCATION` secret so it can change without code edits).
+- **Client in the app: NO Gen AI SDK.** The Deno edge function (`_shared/vertex.ts`) hand-rolls the call: it mints an OAuth access token from the service-account JSON via the SA JWT-bearer flow (RS256, signed with Deno Web Crypto) and POSTs to the Vertex `:generateContent` REST endpoint with `fetch`. This avoids a filesystem / `google-auth-library` dependency inside Deno. The Python **`google-genai`** SDK is used only by the in-sandbox agent fallback (`sandbox/agent/vertex_client.py`, installed in the harness image — §8b), NOT the app; the legacy `google-generativeai` / deprecated `vertexai.generative_models` modules are not used anywhere.
+- **Vertex backend selection:** there is no SDK flag — the Vertex backend is selected by construction. The request targets the Vertex host with `projects/<GCP_PROJECT_ID>/locations/<location>/publishers/google/models/<model>:generateContent` in the path, authenticated by the SA OAuth token (cloud-platform scope), never an AI Studio API key.
+- **Endpoint:** `aiplatform.googleapis.com` for the `global` location (the host that fronts the GA 3.x models); a regional location instead uses the `{location}-aiplatform.googleapis.com` host (`buildEndpoint()` in `vertex.ts`). Both are Vertex, unchanged through the Vertex → Agent Platform rename.
+- **Region / location — two decoupled secrets.** `VERTEX_LOCATION` selects where Gemini is *served* (set to **`global`**, the endpoint that fronts the GA 3.x models in §5); it falls back to `GCP_LOCATION` when unset (`vertex.ts` `vertexLocation()`). `GCP_LOCATION` (**`us-central1`**) is the sandbox/compute zone and the Vertex fallback location. Both are stored as secrets so they change without code edits.
 
 ### Auth — two mechanisms, two contexts
 - **Production (the app):** a dedicated **service account** authenticates Vertex.
@@ -94,15 +95,21 @@ The escalation logic and two-speed funnel are real and permanent; only the model
 ### Secrets currently set in Supabase (names only — values are encrypted, never shown)
 | Secret name | Purpose |
 |---|---|
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Full service-account JSON key for Vertex auth. The edge function parses this and feeds it to `@google/genai` as the Vertex credential. |
-| `GCP_PROJECT_ID` | `redacted-gcp-project` — the GCP project for the Vertex client. |
-| `GCP_LOCATION` | `us-central1` — the Vertex region. |
-| `GEMINI_API_KEY` | AI Studio Gemini key from the earlier placeholder phase. Retained but superseded by the Vertex path; not the production model-auth path. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Full service-account JSON key for Vertex auth. The edge function parses it and mints an OAuth token from it (JWT-bearer, RS256) to call the Vertex REST endpoint. (The sandbox harness reuses the SAME key, staged as a `GOOGLE_APPLICATION_CREDENTIALS` file for the Python `google-genai` fallback — §8b.) |
+| `GCP_PROJECT_ID` | `redacted-gcp-project` — the GCP project in the Vertex request path. |
+| `GCP_LOCATION` | `us-central1` — the sandbox/compute zone AND the Vertex fallback location when `VERTEX_LOCATION` is unset. |
+| `VERTEX_LOCATION` | `global` — where Gemini is served (the GA 3.x global endpoint). Falls back to `GCP_LOCATION` if unset. |
+| `GEMINI_FAST_MODEL` | Fast-tier model id (§5), read by `vertex.ts` `modelForTier("fast")`. |
+| `GEMINI_DEEP_MODEL` | Deep-tier model id (§5), read by `vertex.ts` `modelForTier("deep")`. |
+| `GITHUB_TOKEN` | *(optional)* raises the GitHub API rate limit for repo metadata / file fetches (`_shared/github.ts`). Absent → unauthenticated GitHub reads still work at the lower limit. |
+| `CR_DEEP_RUNNER_KEY` | App-defined runner token authorizing the `attach-forensics` + `deep-queue` edge functions (read by both). The sandbox harness holds the same value to POST its forensic record + stage updates. |
 
-Plus Supabase's own auto-provided `SUPABASE_SECRET_KEYS` (do not duplicate).
+The retired placeholder-phase `GEMINI_API_KEY` is **no longer read by any edge function** (no `Deno.env.get("GEMINI_API_KEY")` remains) — the Vertex model path is auth'd by the service account, not an AI Studio key.
+
+Plus Supabase's own auto-provided `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, and `SUPABASE_SECRET_KEYS` (do not duplicate any of these).
 
 ### How the edge function uses them
-The edge function reads these via the Deno env (e.g. `Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON")`), parses the JSON key, and initializes `@google/genai` against the Vertex backend with `GCP_PROJECT_ID` + `GCP_LOCATION`. The client never sees any of this.
+The edge function reads these via `Deno.env.get(...)`, mints the Vertex OAuth token from `GOOGLE_SERVICE_ACCOUNT_JSON`, and calls the Vertex REST `:generateContent` endpoint built from `GCP_PROJECT_ID` + `VERTEX_LOCATION` (falling back to `GCP_LOCATION`). No Gen AI SDK is involved. The client never sees any of this.
 
 ### Secret rules (binding)
 - **Never commit** `.env`, `.env.local`, `.env*`, or `*-key.json`. Confirm `.gitignore` covers them before any commit that could touch them.
@@ -203,11 +210,35 @@ captured) rather than just blocked.
   Requires `aiplatform.googleapis.com` in the gateway's dnsmasq forward list (real DNS
   answer) — without it the verified-IP check has nothing real to check against and silently
   never passes.
-- **Secrets:** `CR_DEEP_RUNNER_KEY` (the harness's own entrypoint POSTs its forensic record
-  to `attach-forensics` directly using its own copy) lives in **GCP Secret Manager**
-  (`cr-deep-runner-key`), referenced via `--set-secrets` on the Job — never a plaintext env
-  var. Disposable like every other credential here: rotate (new version, don't reuse) if
-  ever suspected exposed.
+- **Secrets + control-plane auth on the Job/gateway:**
+  - `CR_DEEP_RUNNER_KEY` (the harness's own entrypoint POSTs its forensic record to
+    `attach-forensics` directly using its own copy) lives in **GCP Secret Manager**
+    (`cr-deep-runner-key`), referenced via `--set-secrets` on the Job — never a plaintext
+    env var.
+  - `CR_FORGE_CONTROL_KEY` — a shared control key that AUTHENTICATES the gateway's mutating
+    `/register` and `/forensics` endpoints, so the untrusted detonated repo (same subnet IP
+    as the harness — the firewall alone can't tell them apart) cannot re-open its own egress
+    passthrough or one-shot-consume/blank its own forensic evidence. Set on BOTH sides:
+    baked into the gateway's `cr-forge-api` systemd unit (`provision-forge-gateway.sh`) and
+    delivered to the Job, whose `entrypoint.sh` sends it as the `x-forge-key` header.
+    Enforcement is **rollout-safe** — `forensics_api.py` warns-and-allows until the key is
+    present on both sides (`key_authorized()`), so an un-migrated gateway never breaks. The
+    hole is only truly closed once the key is set on gateway AND harness.
+  - Both are disposable like every credential here: rotate (new version, don't reuse) if ever
+    suspected exposed.
+- **Privilege model of the untrusted build/run (be precise):** by default the detonated
+  repo's own install/run executes **as root inside the Cloud Run container** — the container
+  boundary is the isolation, NOT an in-container uid drop. `detonate.py` scrubs every
+  secret-shaped env var (`CR_`/`GOOGLE_`/`GCP_`/`SUPABASE_`/`AWS_`/`GH_`/`GITHUB_`/`VERTEX_`
+  prefixes + any `KEY`/`TOKEN`/`SECRET`/`PASSWORD`/`CREDENTIAL`/`PRIVATE` name) from that
+  child's environment (`_untrusted_env`), so the harness's real credentials — the Vertex SA,
+  `CR_DEEP_RUNNER_KEY`, `CR_FORGE_CONTROL_KEY`, `CR_SCAN_ID` — are never in the untrusted
+  blast radius. An OPTIONAL unprivileged-user drop exists via **`CR_UNTRUSTED_USER`**
+  (`detonate.py` `_untrusted_user()` → `subprocess.run(user=…)`), **OFF by default** so the
+  live path stays byte-identical until provisioning sets it to a real image-created user that
+  owns `/repo` — defense-in-depth for the `/proc/1/environ` + SA-key-file residual, not the
+  primary containment. Do NOT describe the untrusted repo as non-root unless
+  `CR_UNTRUSTED_USER` is actually set.
 
 ### Concurrency ceiling — proven live, not estimated (Unit 16)
 
@@ -243,7 +274,7 @@ busy" error, never a silent drop.
 
 - GCP project set, billing live ($300 credit, expires 24 Sep 2026), `aiplatform` + `compute` + `run` APIs enabled.
 - Vertex auth fully provisioned: service account `clauderabbit-vertex` with `roles/aiplatform.user`; key generated, verified, stored in Supabase secrets; local copy deleted.
-- Supabase secrets present: `GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `GEMINI_API_KEY`.
+- Supabase edge-function secrets present (per §7): `GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `VERTEX_LOCATION`, `GEMINI_FAST_MODEL`, `GEMINI_DEEP_MODEL`, `GITHUB_TOKEN` (optional), `CR_DEEP_RUNNER_KEY` — plus Supabase's auto-provided `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_ANON_KEY` / `SUPABASE_SECRET_KEYS`. The retired placeholder-phase `GEMINI_API_KEY` is no longer read by any edge function.
 - Local dev ADC set (developer machine only).
 - `design.md` is inside the Claude Design zip at the repo root; the build unzips it, places it at root, and commits it.
 - **Detonation substrate migrated from the single-host microVM architecture to Cloud Run
@@ -256,6 +287,12 @@ busy" error, never a silent drop.
   `--set-secrets` on the Cloud Run Job — rotated once this session after a local
   shell-pipe corruption incident (never restored from the corrupted value, generated
   fresh).
+- Forge control-plane auth is live: `CR_FORGE_CONTROL_KEY` gates the gateway's `/register`
+  + `/forensics`, set in provisioning on BOTH the gateway (`cr-forge-api` unit) and the
+  Cloud Run Job. `detonate.py` scrubs all harness secrets from the untrusted build/run
+  environment, and an optional `CR_UNTRUSTED_USER` can drop that build/run to an
+  unprivileged user — OFF by default, so the untrusted repo currently runs as root inside
+  the container (see §8b).
 - Concurrency ceiling for `/api/deep` measured and set to `MAX_CONCURRENT = 3` (§8b),
   replacing a placeholder `2` inherited from the pre-Cloud-Run architecture that was never
   re-measured after the migration.

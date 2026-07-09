@@ -208,7 +208,7 @@ ClaudeRabbit is a two-speed system. The fast path (what `scan` calls) runs on
 essentially every request: static analysis, reputation lookup, and a fast model reading only
 the flagged regions. A small share of ambiguous repos get **escalated** to a full
 dynamic-sandbox detonation — the repo is actually built and run inside a hermetic,
-network-locked-down, single-use VM. That detonation is a separate, privileged process and is
+network-locked-down, single-use Cloud Run container. That detonation is a separate, privileged process and is
 **not** something this public API call forces to complete synchronously.
 
 So a scan result reflects the fast-path read plus reputation. When `sandboxActuallyRan` is
