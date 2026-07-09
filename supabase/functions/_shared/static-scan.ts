@@ -190,13 +190,23 @@ const MAX_MATCHES_PER_PATTERN = 3;
  * Scan `content` for `patterns`, recording a flagged region for each match.
  *
  * Returns whether any pattern matched — the caller uses this to set the binary
- * code SIGNAL — EXCEPT when `docFile` is true. In a documentation/prose file a
- * match is a MENTION of a credential path / secret format / network literal /
- * code-exec primitive, not executable behavior, so it is still surfaced as a
- * region (for the read model and the report), but this returns `false` so it
- * never sets the binary signal that drives the deterministic penalty. The region
- * reason is prefixed to make that distinction explicit in the report. This is the
- * same "region, no binary signal" shape already used for DYNAMIC_CODE_PATTERNS.
+ * code SIGNAL — EXCEPT when `docFile` OR `fixtureContext` is true.
+ *
+ * - `docFile`: in a documentation/prose file a match is a MENTION of a credential
+ *   path / secret format / network literal / code-exec primitive, not executable
+ *   behavior.
+ * - `fixtureContext`: in a test/fixture/example file, a matched credential-PATH
+ *   reference is (near-always) a SELF-CONTAINED SIMULATION for a test, not a real
+ *   runtime credential access — the exact shape a security tool's own attack-sample
+ *   fixtures take (this product's own `exfil-fixture.py` is the canonical case).
+ *   Applied ONLY to the credential-path signal, and ONLY when the same file shows
+ *   no harder malware tell (obfuscation / embedded live secret) — see `staticScan`.
+ *
+ * In BOTH cases the match is still surfaced as a region (for the read model and the
+ * report) but this returns `false`, so it never sets the binary signal that drives
+ * the deterministic penalty. The region reason is rewritten to make the distinction
+ * explicit. This is the same "region, no binary signal" shape already used for
+ * DYNAMIC_CODE_PATTERNS and documentation files.
  */
 function scanText(
   file: string,
@@ -204,6 +214,7 @@ function scanText(
   patterns: Array<{ re: RegExp; label: string }>,
   regions: FlaggedRegion[],
   docFile = false,
+  fixtureContext = false,
 ): boolean {
   let hit = false;
   for (const { re, label } of patterns) {
@@ -217,6 +228,8 @@ function scanText(
         file,
         reason: docFile
           ? `mentioned in documentation/prose — ${label} (not an executable access)`
+          : fixtureContext
+          ? `${label} inside a test/fixture/example file — a self-contained simulation, not a confirmed runtime access on its own (test-fixture context)`
           : label,
         snippet: snippetAround(content, m.index),
       });
@@ -224,9 +237,10 @@ function scanText(
       if (m.index === re.lastIndex) re.lastIndex++;
     }
   }
-  // A match inside a documentation/prose file is a MENTION, not a behavior: keep
-  // the region for context but never let it set the binary code signal.
-  return docFile ? false : hit;
+  // A match inside a documentation/prose file, or a credential-path reference inside
+  // a test-fixture file, is a MENTION/simulation, not a runtime behavior: keep the
+  // region for context but never let it set the binary code signal.
+  return (docFile || fixtureContext) ? false : hit;
 }
 
 function analyzePackageJson(
@@ -377,6 +391,51 @@ function isDocumentationFile(path: string): boolean {
   return false;
 }
 
+/**
+ * Directories whose contents are, by strong ecosystem convention, test / fixture /
+ * example / sample code rather than the shipped application. Anchored to a path
+ * SEGMENT (never a loose substring) so `src/attestation/x.js` is not mistaken for a
+ * `test/` file.
+ */
+const TEST_FIXTURE_DIR_RE =
+  /(^|\/)(tests?|__tests__|__mocks__|specs?|fixtures?|testdata|test-data|examples?|samples?|e2e|mocks?)\//i;
+
+/**
+ * True when a file is, by strong naming/location convention, TEST / FIXTURE /
+ * EXAMPLE / SAMPLE code rather than the project's shipped, runnable application.
+ *
+ * WHY THIS EXISTS: a security tool, a malware-sample corpus, or any project with
+ * honest attack-simulation fixtures legitimately contains code that READS a
+ * credential path (e.g. a fixture that pretends to exfiltrate `~/.aws/credentials`
+ * to prove the sandbox catches it — this product's own `exfil-fixture.py` is exactly
+ * this). A byte-level credential-path regex cannot tell that disclosed simulation
+ * apart from a real runtime credential theft, so without this a project's OWN test
+ * fixtures score it "Malicious" (a product-breaking false positive — verified on
+ * this repo: 10/100 driven by a fixture's `.aws/credentials` read).
+ *
+ * SCOPE (deliberately narrow — the anti-fake half of the rail): this ONLY downgrades
+ * the CREDENTIAL-PATH signal, and ONLY when the same file shows no harder tell
+ * (obfuscation / an embedded live secret keep FULL weight even in a `tests/` file —
+ * see `staticScan`). Obfuscated payloads, committed private keys, npm lifecycle
+ * install hooks, and hardcoded-IP egress are NEVER softened by a `tests/` path, so a
+ * real attack cannot hide behind a "fixture" filename. The finding is still surfaced
+ * as a region for the read model and the report — the model still cross-references it
+ * against the repo's declared intent — it simply does not, on its own, trip the
+ * deterministic −40 credential-access penalty.
+ */
+function isTestFixtureFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  if (TEST_FIXTURE_DIR_RE.test(lower)) return true;
+  const name = basename(lower);
+  // `foo.test.ts`, `foo.spec.js` — the near-universal unit-test filename form.
+  if (/\.(test|spec)\.[a-z0-9]+$/.test(name)) return true;
+  // `_test`/`-test`/`.test` (+ spec/fixture/fixtures/mock/sample) as a bounded word,
+  // e.g. `handler_test.go`, `payment-fixture.js`, `exfil-fixture.py`, `mock-user.ts`.
+  if (/(^|[._-])(test|spec|fixture|fixtures|mock|sample)([._-]|$)/.test(name)) return true;
+  if (name === "conftest.py") return true; // pytest convention
+  return false;
+}
+
 /** Run the static scan over the fetched files. Pure, no I/O. */
 export function staticScan(files: FetchedFile[]): StaticScanResult {
   const regions: FlaggedRegion[] = [];
@@ -423,20 +482,46 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     // this, a README merely describing `.npmrc` registry config trips a -40
     // credential-access penalty — a product-breaking false "Dangerous".
     const isDocFile = isDocumentationFile(f.path);
+    // A test/fixture/example file (but NOT a doc file — those are handled above).
+    // Used only to downgrade the credential-PATH signal below; every harder signal
+    // (obfuscation, embedded secret, install hooks, hardcoded-IP egress) keeps full
+    // weight regardless, so a real attack cannot hide behind a "fixture" filename.
+    const isFixture = !isDocFile && isTestFixtureFile(f.path);
 
-    if (scanText(f.path, f.content, OBFUSCATION_PATTERNS, regions, isDocFile)) {
+    const obfInFile = scanText(f.path, f.content, OBFUSCATION_PATTERNS, regions, isDocFile);
+    if (obfInFile) {
       signals.obfuscation = true;
     }
     // Region-only: surface dynamic-code use for the read model to judge in
     // context, but set NO binary signal (no auto-escalation, no score penalty on
     // its own). Legitimate metaprogramming must not read as malware.
     scanText(f.path, f.content, DYNAMIC_CODE_PATTERNS, regions, isDocFile);
-    const credInThisFile = scanText(f.path, f.content, CRED_PATH_PATTERNS, regions, isDocFile);
+    // Embedded secrets are scanned BEFORE credential access so the fixture
+    // downgrade below can see whether this file ALSO commits a real live key — a
+    // committed private key in a `tests/` file is still a real leaked key and must
+    // keep the credential-path signal at full weight (the fixture claim is not
+    // credible when the file embeds a live secret or hides an obfuscated payload).
+    const secretInThisFile = scanText(f.path, f.content, SECRET_PATTERNS, regions, isDocFile);
+    if (secretInThisFile) {
+      signals.embeddedSecret = true;
+    }
+    // Credential-path access. In a genuine test/fixture file with no harder tell in
+    // the same file, a credential-PATH reference is a self-contained simulation, not
+    // a runtime access — surfaced as a region (test-fixture context) but not scored.
+    // This is the narrow, anti-fake fix for the security-tooling/test-fixture
+    // false-positive: it downgrades ONLY the fakeable credential-path signal, ONLY
+    // when the file shows no obfuscation and embeds no live secret.
+    const credFixtureDowngrade = isFixture && !obfInFile && !secretInThisFile;
+    const credInThisFile = scanText(
+      f.path,
+      f.content,
+      CRED_PATH_PATTERNS,
+      regions,
+      isDocFile,
+      credFixtureDowngrade,
+    );
     if (credInThisFile) {
       signals.credAccess = true;
-    }
-    if (scanText(f.path, f.content, SECRET_PATTERNS, regions, isDocFile)) {
-      signals.embeddedSecret = true;
     }
     if (scanText(f.path, f.content, NETWORK_PATTERNS, regions, isDocFile)) {
       // Hardcoded IP literals are never a "recognized software-distribution
