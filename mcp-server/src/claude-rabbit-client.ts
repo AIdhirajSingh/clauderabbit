@@ -9,11 +9,28 @@ import type { ClaudeRabbitConfig } from "./env.js";
 import { normalizeReport } from "./normalize.js";
 import type { Report } from "./types.js";
 
-export interface ScanArgs {
+/** A GitHub repo scan target — `{ owner, repo, ref? }`, exactly as before. */
+export interface GithubScanArgs {
+  ecosystem?: "github";
   owner: string;
   repo: string;
   ref?: string;
 }
+
+/**
+ * An npm package scan target. The edge function scans the REAL published
+ * registry artifact (the tarball `npm install` fetches, integrity-verified),
+ * NOT the GitHub repo its package.json links to — see supabase/functions
+ * /_shared/npm.ts. The returned report's owner is `"npm"` and its name is the
+ * package name.
+ */
+export interface NpmScanArgs {
+  ecosystem: "npm";
+  package: string;
+  version?: string;
+}
+
+export type ScanArgs = GithubScanArgs | NpmScanArgs;
 
 export type ScanResult =
   | { ok: true; report: Report; stageCount: number }
@@ -107,6 +124,22 @@ export async function scanRepo(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.scanTimeoutMs);
 
+  // The GitHub body is byte-identical to before (`{ owner, repo, ref? }`, no
+  // `ecosystem` field); an npm target sends `{ ecosystem:"npm", package, version? }`.
+  // The edge function treats a missing/non-"npm" ecosystem as GitHub.
+  const requestBody =
+    args.ecosystem === "npm"
+      ? {
+          ecosystem: "npm" as const,
+          package: args.package,
+          ...(args.version ? { version: args.version } : {}),
+        }
+      : {
+          owner: args.owner,
+          repo: args.repo,
+          ...(args.ref ? { ref: args.ref } : {}),
+        };
+
   try {
     let res: Response;
     try {
@@ -118,11 +151,7 @@ export async function scanRepo(
           Authorization: `Bearer ${token}`,
           "X-ClaudeRabbit-Client": "mcp",
         },
-        body: JSON.stringify({
-          owner: args.owner,
-          repo: args.repo,
-          ...(args.ref ? { ref: args.ref } : {}),
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
     } catch (err) {
@@ -140,8 +169,13 @@ export async function scanRepo(
       } catch {
         // non-JSON error body — keep the status-derived fallback
       }
-      if (res.status === 404) message = "Repository not found. Check the owner and repo name.";
-      if (res.status === 429) message = "GitHub rate limit hit upstream. Please try again shortly.";
+      // These fallbacks are GitHub-specific. For an npm target the edge function
+      // returns 404 with a precise registry message (e.g. `npm package "…" was
+      // not found on the public registry`) — keep it rather than mislabeling it
+      // as a repo/GitHub error.
+      const isNpm = args.ecosystem === "npm";
+      if (res.status === 404 && !isNpm) message = "Repository not found. Check the owner and repo name.";
+      if (res.status === 429 && !isNpm) message = "GitHub rate limit hit upstream. Please try again shortly.";
       return { ok: false, error: message };
     }
 

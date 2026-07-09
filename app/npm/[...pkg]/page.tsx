@@ -1,18 +1,21 @@
 /**
- * Public, server-rendered safety report — the SEO surface (PRD Task #13).
+ * Public, server-rendered safety report for an npm package — the SEO surface for
+ * the npm ecosystem, mirroring `app/[owner]/[repo]/page.tsx`.
  *
- * `/[owner]/[repo]` renders the most recent report for that repo straight from
- * the live `reports` table via the anon Supabase server client (RLS exposes
- * report reads publicly). It reuses the SAME presentational `ReportBody` the SPA
- * uses, so the layout conforms to design.md and stays identical across surfaces.
+ * npm reports persist with `owner_login = "npm"` and `repo_name = <package>`
+ * (including a scoped `@scope/name`). An UNSCOPED package (`/npm/left-pad`, two
+ * segments) already resolves through the generic `[owner]/[repo]` route, but a
+ * SCOPED package (`/npm/@scope/name`, three path segments) does not match that
+ * two-segment route. This dedicated catch-all makes BOTH forms resolve here and
+ * makes `/npm/*` unambiguous: the static `npm` segment takes routing precedence
+ * over the dynamic `[owner]` segment, so every `/npm/...` request renders through
+ * this file with the same presentational `ReportBody` the SPA and the GitHub
+ * report page use.
  *
- * Caching: `revalidate = 600` makes the page statically cacheable for 10 minutes
- * (design.md: shared chrome is cached, per-repo content is produced fresh) —
- * Next's static + ISR gives exactly that without bespoke caching.
- *
- * Rails (CLAUDE.md): the verdict is run through `enforceVerdict` so a bare
- * "Safe" can never render; reputation and code/behavior panels stay separate
- * (that separation is structural in `ReportBody`).
+ * Caching, rails, and rendering are identical to the GitHub report page:
+ * `revalidate = 600` (static + ISR), the verdict is run through `enforceVerdict`
+ * inside `buildReportView` so a bare "Safe" can never render, and reputation vs.
+ * code/behavior panels stay structurally separate inside `ReportBody`.
  */
 
 import { cache } from "react";
@@ -31,20 +34,32 @@ export const revalidate = 600;
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
+/** npm reports persist under this synthetic owner. */
+const NPM_OWNER = "npm";
+
 interface RouteParams {
-  params: Promise<{ owner: string; repo: string }>;
+  params: Promise<{ pkg: string[] }>;
 }
 
 /**
- * Latest report for (owner, repo), wrapped in React's `cache` so
+ * Join the catch-all segments back into the package name:
+ *   ["left-pad"]        -> "left-pad"
+ *   ["@babel","core"]  -> "@babel/core"
+ * A scoped package arrives as two segments because its "/" is a path separator.
+ */
+function packageName(segments: string[] | undefined): string {
+  return (segments ?? []).join("/");
+}
+
+/**
+ * Latest report for the npm package, wrapped in React's `cache` so
  * `generateMetadata` and the page component share a single DB round-trip per
- * request. `cache` wraps a (owner, repo)-only function with the client created
- * INSIDE it; the fetch + reshape is the shared `fetchLatestReport`, byte-identical
- * to the SPA's path (no SSR-vs-client drift). Returns null on miss/error.
+ * request. The fetch + reshape is the SAME `fetchLatestReport` the GitHub route
+ * uses (no SSR-vs-client drift) — only the owner is pinned to "npm". Returns null
+ * on miss/error.
  */
 const getLatestReport = cache(async function getLatestReport(
-  owner: string,
-  repo: string,
+  pkg: string,
 ): Promise<Report | null> {
   let supabase;
   try {
@@ -52,23 +67,22 @@ const getLatestReport = cache(async function getLatestReport(
   } catch {
     return null;
   }
-  return fetchLatestReport(supabase, owner, repo);
+  return fetchLatestReport(supabase, NPM_OWNER, pkg);
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {
-  const { owner, repo } = await params;
-  const slug = `${owner}/${repo}`;
-  const report = await getLatestReport(owner, repo);
+  const { pkg } = await params;
+  const name = packageName(pkg);
+  const report = await getLatestReport(name);
   // Derive the view so the meta uses the SAME reconciled summary + enforced
-  // verdict the page renders — a sandbox-run report never advertises "not executed
-  // in a sandbox" in search results (honesty rail), matching the on-page prose.
+  // verdict the page renders — search results stay honest and match the page.
   const view = report ? buildReportView(report) : null;
 
-  const title = `${slug} — ClaudeRabbit safety report`;
+  const title = `${name} (npm) — ClaudeRabbit safety report`;
   const description = view
     ? `${view.verdict} · ${view.score}/100. ${view.summary}`.slice(0, 300)
-    : `Safety report for ${slug}. ClaudeRabbit reads the code and runs unknown repos in an isolated sandbox to return an honest 0–100 safety score.`;
-  const url = `${SITE_URL}/${slug}`;
+    : `Safety report for the npm package ${name}. ClaudeRabbit reads the code and runs unknown packages in an isolated sandbox to return an honest 0–100 safety score.`;
+  const url = `${SITE_URL}/npm/${name}`;
 
   return {
     title,
@@ -90,37 +104,25 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
 }
 
 /**
- * schema.org structured data for the report — a `Review` of the repository, with
- * the 0–100 score as the rating and the one-word verdict as its alternate name.
- * This is what lets the accumulating report database surface as rich results in
- * search (the SEO asset). The rating is the SAME enforced score the page shows, so
- * the structured data can never advertise a verdict the on-page report doesn't.
+ * schema.org structured data for the report — a `Review` of the npm package. The
+ * `itemReviewed` references the npm registry page (NOT a github.com repo): the
+ * published package artifact is what was scanned, so pointing at a fabricated
+ * GitHub URL would be an untrue claim. The rating is the SAME enforced score the
+ * page shows, so the structured data can never advertise a verdict the on-page
+ * report doesn't.
  */
 function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
-  const slug = `${view.owner}/${view.name}`;
-  // npm reports persist with owner="npm" and (for unscoped packages) render via
-  // this route too. Reference the npm package, NOT a fabricated github.com repo —
-  // a github `codeRepository` for an npm target would be an untrue claim (the
-  // package artifact, not a GitHub repo, is what was scanned).
-  const itemReviewed =
-    view.owner === "npm"
-      ? {
-          "@type": "SoftwareSourceCode",
-          name: view.name,
-          url: `https://www.npmjs.com/package/${view.name}`,
-        }
-      : {
-          "@type": "SoftwareSourceCode",
-          name: slug,
-          codeRepository: `https://github.com/${slug}`,
-          url: `${SITE_URL}/${slug}`,
-        };
+  const pkg = view.name;
   const ld = {
     "@context": "https://schema.org",
     "@type": "Review",
-    name: `${slug} — ClaudeRabbit safety report`,
+    name: `${pkg} (npm) — ClaudeRabbit safety report`,
     reviewBody: view.summary,
-    itemReviewed,
+    itemReviewed: {
+      "@type": "SoftwareSourceCode",
+      name: pkg,
+      url: `https://www.npmjs.com/package/${pkg}`,
+    },
     reviewRating: {
       "@type": "Rating",
       ratingValue: view.score,
@@ -131,8 +133,8 @@ function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
     author: { "@type": "Organization", name: "ClaudeRabbit", url: SITE_URL },
   };
   // `view.summary` (→ `ld.reviewBody`) is LLM-generated and can echo
-  // attacker-influenced text (repo name/README, or a sandbox-captured hostname).
-  // `JSON.stringify` does NOT escape `<`/`>`, so a summary containing
+  // attacker-influenced text (package name/README, or a sandbox-captured
+  // hostname). `JSON.stringify` does NOT escape `<`/`>`, so a summary containing
   // `</script>…` would break out of this inline script and execute — stored XSS
   // on a public, SEO-indexed page. `safeJsonLd` escapes those bytes so the
   // breakout can't survive HTML tokenization, while the JSON-LD stays valid for
@@ -145,12 +147,13 @@ function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
   );
 }
 
-export default async function ReportPage({ params }: RouteParams) {
-  const { owner, repo } = await params;
-  const report = await getLatestReport(owner, repo);
+export default async function NpmReportPage({ params }: RouteParams) {
+  const { pkg } = await params;
+  const name = packageName(pkg);
+  const report = await getLatestReport(name);
 
   if (!report) {
-    return <NotScanned owner={owner} repo={repo} />;
+    return <NotScanned pkg={name} />;
   }
 
   const view = buildReportView(report);
@@ -174,7 +177,7 @@ export default async function ReportPage({ params }: RouteParams) {
         logsCta={<ServerLogs report={report} />}
         footer={
           <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t4)" }}>
-            Auto-published at {SITE_URL.replace(/^https?:\/\//, "")}/{view.owner}/{view.name} · re-checked when the repo changes
+            Auto-published at {SITE_URL.replace(/^https?:\/\//, "")}/npm/{view.name} · re-checked when the package changes
           </div>
         }
       />
@@ -293,12 +296,12 @@ function ServerFooter() {
 }
 
 /**
- * Clean "not yet scanned" state — never a dead end. Links home with the repo
- * prefilled (`?repo=owner/repo`) so the scan box can pick it up.
+ * Clean "not yet scanned" state — never a dead end. Links home with the npm
+ * package prefilled (`?repo=npm:<pkg>`, the explicit npm-target form) so the scan
+ * box lands ready to scan it.
  */
-function NotScanned({ owner, repo }: { owner: string; repo: string }) {
-  const slug = `${owner}/${repo}`;
-  const scanHref = `/?repo=${encodeURIComponent(slug)}`;
+function NotScanned({ pkg }: { pkg: string }) {
+  const scanHref = `/?repo=${encodeURIComponent(`npm:${pkg}`)}`;
   return (
     <main
       style={{
@@ -333,10 +336,10 @@ function NotScanned({ owner, repo }: { owner: string; repo: string }) {
           <RabbitMark size={28} />
         </div>
         <h1 className="serif" style={{ fontSize: 32, color: "var(--t1)", margin: "0 0 14px", letterSpacing: "-0.01em" }}>
-          {slug}
+          {pkg}
         </h1>
         <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.6, margin: "0 0 30px", textWrap: "pretty" }}>
-          This repository has not been scanned yet. Run a free safety scan to
+          This npm package has not been scanned yet. Run a free safety scan to
           generate its public report — ClaudeRabbit reads the code and, when
           warranted, runs it in an isolated sandbox.
         </p>
@@ -357,7 +360,7 @@ function NotScanned({ owner, repo }: { owner: string; repo: string }) {
             boxShadow: "inset 0 1px 0 var(--inkhi)",
           }}
         >
-          Scan {slug}
+          Scan {pkg}
         </Link>
       </div>
       <ServerFooter />

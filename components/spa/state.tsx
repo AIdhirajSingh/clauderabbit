@@ -37,8 +37,8 @@ import {
   type RepoView,
   type RiskyItemView,
 } from "@/lib/report-view";
-import { parseRepoInput } from "@/lib/parse-repo";
-import { runScan, runDeepScan, type ScanStage } from "@/lib/scan";
+import { parseScanTarget, type ScanTarget } from "@/lib/parse-repo";
+import { runScan, runDeepScan, type ScanArgs, type ScanStage } from "@/lib/scan";
 import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
@@ -678,8 +678,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Monotonic token for the in-flight live scan; a stale resolution (retry /
   // navigated away) is ignored when its token no longer matches.
   const liveScanToken = useRef(0);
-  // The pending live-scan target (owner/repo + ref) for retry.
-  const liveScanTarget = useRef<{ owner: string; repo: string; ref?: string } | null>(null);
+  // The pending live-scan target (GitHub owner/repo+ref, or an npm package) for retry.
+  const liveScanTarget = useRef<ScanTarget | null>(null);
   // The source of truth for streamed stages during an in-flight scan. `patch` is
   // a plain dispatch (NOT a functional updater), so rapid onStage events must
   // accumulate here and copy into reducer state, never read stale reducer state.
@@ -1060,7 +1060,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * through to a real scan rather than silently picking a random demo.
    */
   const resolveDemoId = useCallback((): string | null => {
-    const v = (stateRef.current.input || "").toLowerCase().trim();
+    const raw = (stateRef.current.input || "").trim();
+    // An UNAMBIGUOUS npm target (npm: prefix, an npmjs.com package URL, or a scoped
+    // @scope/name) must always scan the real published artifact — never a seeded demo
+    // that happens to share the name. The demo matcher below is a loose substring match,
+    // so "npm:express" or "npmjs.com/package/express" would otherwise hit the express
+    // demo. A bare famous name with no npm signal (just "express") stays a demo, as before.
+    if (/^npm:/i.test(raw) || /(^|\/)npmjs\.com\/package\//i.test(raw) || /^@[a-z0-9]/i.test(raw)) {
+      return null;
+    }
+    const v = raw.toLowerCase();
     for (const id in REPOS) {
       const r = REPOS[id];
       if (!r) continue;
@@ -1120,9 +1129,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * last chapter stays "active" (spinner) until the response lands.
    */
   const startLiveProcessing = useCallback(
-    (owner: string, repo: string, ref: string | undefined, from: Screen) => {
+    (target: ScanTarget, from: Screen) => {
+      // The report id keyspace: a GitHub scan keys on "owner/repo"; an npm scan
+      // keys on "npm/<package>" (the report comes back owner="npm", name=package).
+      const owner = target.kind === "npm" ? "npm" : target.owner;
+      const repo = target.kind === "npm" ? target.package : target.repo;
       const id = `${owner}/${repo}`;
-      liveScanTarget.current = { owner, repo, ...(ref ? { ref } : {}) };
+      liveScanTarget.current = target;
       const token = ++liveScanToken.current;
 
       // Reset the real-stage accumulator for this scan (BUG-5/6). The timeline
@@ -1177,14 +1190,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // attribute the scan server-side.
       const deviceId = getDeviceId();
       const accessToken = sessionRef.current?.access_token;
-      runScan({
-        owner,
-        repo,
-        ...(ref ? { ref } : {}),
-        ...(deviceId ? { deviceId } : {}),
-        ...(accessToken ? { accessToken } : {}),
-        onStage,
-      })
+      // Route to an npm or a GitHub scan by target kind — only the request shape
+      // changes; streaming, onStage, headers, and error mapping are identical.
+      const scanArgs: ScanArgs =
+        target.kind === "npm"
+          ? {
+              ecosystem: "npm",
+              package: target.package,
+              ...(target.version ? { version: target.version } : {}),
+              ...(deviceId ? { deviceId } : {}),
+              ...(accessToken ? { accessToken } : {}),
+              onStage,
+            }
+          : {
+              owner: target.owner,
+              repo: target.repo,
+              ...(target.ref ? { ref: target.ref } : {}),
+              ...(deviceId ? { deviceId } : {}),
+              ...(accessToken ? { accessToken } : {}),
+              onStage,
+            };
+      runScan(scanArgs)
         .then(async (result) => {
           // Ignore a resolution that has been superseded (newer scan / retry).
           if (token !== liveScanToken.current) return;
@@ -1366,17 +1392,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const from: Screen = stateRef.current.screen === "dashboard" ? "dashboard" : "home";
 
-    // Branch: a seeded DEMO repo (instant showcase) vs a REAL repo (live scan).
+    // Branch: a seeded DEMO repo (instant showcase) vs a REAL target (live scan).
+    // A real target is a GitHub repo OR an npm package (parseScanTarget detects
+    // which); demo resolution runs first and is unchanged.
     const demoId = resolveDemoId();
-    const parsed = demoId ? null : parseRepoInput(stateRef.current.input);
+    const target = demoId ? null : parseScanTarget(stateRef.current.input);
 
-    if (!demoId && !parsed) {
-      toast("Enter a GitHub repo as owner/repo or a github.com URL.", "var(--amber)");
+    if (!demoId && !target) {
+      toast("Enter a GitHub repo (owner/repo) or an npm package.", "var(--amber)");
       return;
     }
 
-    // The id used for history: the demo id, or "owner/repo" for real.
-    const id = demoId ?? `${parsed!.owner}/${parsed!.repo}`;
+    // The id used for history: the demo id, "owner/repo" for a GitHub target, or
+    // "npm/<package>" for an npm target (matching the report's owner="npm", name).
+    const id =
+      demoId ??
+      (target!.kind === "npm" ? `npm/${target!.package}` : `${target!.owner}/${target!.repo}`);
 
     // Scans are FREE and UNLIMITED — NEVER gated by sign-in or an ad (BUG-11).
     // Sign-in is offered only to keep history + contribute to the public vetted-
@@ -1400,10 +1431,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // ── REAL path: a real backend scan, run immediately (no gate). The parser
-    // yields owner/repo only; the edge function resolves the default branch. ──
-    const { owner, repo } = parsed!;
-    // A repo we already scanned this session: serve the live-cached report.
+    // ── REAL path: a real backend scan, run immediately (no gate). The target is
+    // a GitHub repo or an npm package; the edge function resolves the default
+    // branch (GitHub) or the published version/dist-tag (npm). ──
+    // A target we already scanned this session: serve the live-cached report.
     // EXCEPT when that cached copy is an escalated-but-incomplete sandbox run
     // (deep === true, no forensics yet) — that state can arrive here from the
     // account-history hydration (loadUserHistory reads the DB's latest row
@@ -1426,7 +1457,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast("Cached report, served instantly. No compute.", bandColor(cachedReport.score));
       return;
     }
-    startLiveProcessing(owner, repo, undefined, from);
+    startLiveProcessing(target!, from);
   }, [patch, resolveDemoId, startLiveProcessing, startProcessing, toast]);
 
   const failProcessing = useCallback(
@@ -1446,7 +1477,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const target = liveScanTarget.current;
     // Retry a real scan if the failed scan was a live one; else the demo flow.
     if (cur.procLive && target) {
-      startLiveProcessing(target.owner, target.repo, target.ref, cur.sourceScreen);
+      startLiveProcessing(target, cur.sourceScreen);
     } else {
       startProcessing(cur.procRepoId ?? "", cur.sourceScreen);
     }

@@ -55,10 +55,8 @@ export interface ScanStage {
   lines?: string[];
 }
 
-interface ScanArgs {
-  owner: string;
-  repo: string;
-  ref?: string;
+/** Fields shared by every scan request, regardless of ecosystem. */
+interface ScanArgsBase {
   deviceId?: string;
   /**
    * The current user's Supabase session access token, when signed in. Sent as
@@ -81,6 +79,27 @@ interface ScanArgs {
    */
   clientKind?: "mcp";
 }
+
+/** A GitHub owner/repo scan target — the default ecosystem, shape unchanged. */
+export interface GithubScanArgs extends ScanArgsBase {
+  owner: string;
+  repo: string;
+  ref?: string;
+}
+
+/**
+ * An npm PACKAGE scan target. The edge function resolves and scans the published
+ * registry ARTIFACT (not the linked repo); `owner`/`repo` are omitted. Sent as
+ * `{ ecosystem: "npm", package, version? }` per the shared scan contract.
+ */
+export interface NpmScanArgs extends ScanArgsBase {
+  ecosystem: "npm";
+  package: string;
+  version?: string;
+}
+
+/** A scan request is either a GitHub repo or an npm package. */
+export type ScanArgs = GithubScanArgs | NpmScanArgs;
 
 /** Hard ceiling for a single scan request — longer than the slowest deep read. */
 const SCAN_TIMEOUT_MS = 90_000;
@@ -451,6 +470,23 @@ export async function runScan(args: ScanArgs): Promise<ScanResult> {
   // every scan is bounded by a hard ceiling timeout via an AbortController.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
+  // Build the target-specific body. An npm scan sends { ecosystem, package,
+  // version? }; a GitHub scan sends { owner, repo, ref? } exactly as before. The
+  // deviceId (anti-abuse fingerprint) rides along in both, as it always has.
+  const requestBody: Record<string, unknown> =
+    "ecosystem" in args
+      ? {
+          ecosystem: "npm",
+          package: args.package,
+          ...(args.version ? { version: args.version } : {}),
+          ...(args.deviceId ? { deviceId: args.deviceId } : {}),
+        }
+      : {
+          owner: args.owner,
+          repo: args.repo,
+          ...(args.ref ? { ref: args.ref } : {}),
+          ...(args.deviceId ? { deviceId: args.deviceId } : {}),
+        };
   try {
     let res: Response;
     try {
@@ -466,12 +502,7 @@ export async function runScan(args: ScanArgs): Promise<ScanResult> {
           Authorization: `Bearer ${args.accessToken ?? key}`,
           ...(args.clientKind ? { "X-ClaudeRabbit-Client": args.clientKind } : {}),
         },
-        body: JSON.stringify({
-          owner: args.owner,
-          repo: args.repo,
-          ...(args.ref ? { ref: args.ref } : {}),
-          ...(args.deviceId ? { deviceId: args.deviceId } : {}),
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
     } catch {

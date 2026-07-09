@@ -286,9 +286,11 @@ export function toText(
 
   // ── Score / verdict / source, in a clean bordered box colored by the
   // product's fixed score-color logic (green/blue/yellow/red everywhere).
+  // For an npm scan the report's own owner is the literal "npm" and its name is
+  // the package, so `report.owner/report.name` already reads as `npm/<package>`
+  // — honest and matching the report URL. No redundant "(npm: …)" suffix.
   const boxLines = [
-    c.bold(`${report.owner}/${report.name}`) +
-      (opts.resolvedVia === "npm" && opts.npmPackage ? c.dim(` (npm: ${opts.npmPackage})`) : ""),
+    c.bold(`${report.owner}/${report.name}`),
     "",
     `${c.dim("Score")}    ${p.bold(`${report.score}/100`)}  ${c.dim(`(${scoreBandLabel(report.score)})`)}`,
     `${c.dim("Verdict")}  ${c.bold(report.verdict)}`,
