@@ -74,6 +74,11 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
     title,
     description,
     alternates: { canonical: url },
+    // SEO: a repo that has NOT been scanned yet renders a thin "not scanned" page — do
+    // NOT let search engines index that (a soft-404 / thin-content signal). Only a REAL
+    // report is indexable; the not-scanned page stays `follow` so its links are still
+    // crawled. Once the repo is scanned this page carries a real report and is indexed.
+    ...(report ? {} : { robots: { index: false, follow: true } }),
     openGraph: {
       title,
       description,
