@@ -38,6 +38,14 @@ export const maxDuration = 30;
 /** Vercel sets this on every deployment (any environment); absent in local dev. */
 const IS_VERCEL = !!process.env.VERCEL;
 
+// Anti-abuse: each request launches a headless Chromium — an expensive, memory-heavy
+// operation. Without a bound, a flood of /api/export/pdf requests exhausts the function's
+// memory/CPU (a real resource-exhaustion DoS). Cap concurrent renders PER INSTANCE (Fluid
+// Compute reuses instances, so this bounds each instance's simultaneous browsers); a request
+// over the cap is rejected fast with 429 + Retry-After instead of piling on another browser.
+const MAX_CONCURRENT_PDF = 2;
+let pdfInFlight = 0;
+
 async function launchBrowser(): Promise<Browser> {
   if (IS_VERCEL) {
     return puppeteer.launch({
@@ -92,12 +100,22 @@ export async function GET(req: Request): Promise<Response> {
     return json({ error: "invalid owner or repo" }, 400);
   }
 
+  // Reject over the per-instance concurrency cap BEFORE spending anything on a browser.
+  if (pdfInFlight >= MAX_CONCURRENT_PDF) {
+    return new Response(
+      JSON.stringify({ error: "PDF export is busy — please retry in a moment." }),
+      { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "5" } },
+    );
+  }
+
   const targetUrl = `${SITE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
+  pdfInFlight++;
   let browser: Browser;
   try {
     browser = await launchBrowser();
   } catch (e) {
+    pdfInFlight--;
     const msg = e instanceof Error ? e.message : String(e);
     return json({ error: `could not launch headless browser: ${msg}` }, 500);
   }
@@ -185,5 +203,6 @@ export async function GET(req: Request): Promise<Response> {
     return json({ error: `PDF render failed: ${msg}` }, 500);
   } finally {
     await browser.close().catch(() => {});
+    pdfInFlight--;
   }
 }
