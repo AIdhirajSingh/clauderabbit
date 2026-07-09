@@ -399,27 +399,79 @@ def adaptive_node_build(budget_s: int) -> tuple[dict, list[dict], str]:
     return (last or {"ran": False, "reason": "no attempt fit the build budget"}), log, pm
 
 
+# Env-var name prefixes/substrings that must NEVER reach the untrusted build/run.
+_SENSITIVE_ENV_PREFIXES = ("CR_", "GOOGLE_", "GCP_", "SUPABASE_", "AWS_", "GH_", "GITHUB_", "VERTEX_")
+_SENSITIVE_ENV_SUBSTR = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PRIVATE")
+
+
+def _untrusted_env() -> dict[str, str]:
+    """Environment for the UNTRUSTED build/run subprocess (security review, critical #1).
+
+    The harness inherits real secrets — the Vertex service-account credential
+    (GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_SERVICE_ACCOUNT_JSON), the attach-forensics
+    runner key (CR_DEEP_RUNNER_KEY), the forge control key (CR_FORGE_CONTROL_KEY), and this
+    scan's id (CR_SCAN_ID). Passing the container's raw env to the repo's own install/run
+    commands hands ALL of that to attacker-controlled code (a real credential inside the
+    blast radius, violating CLAUDE.md rail 2; and the scan id / control key that would let
+    it blank its own forensics or re-open egress). This strips every secret-shaped variable
+    while keeping what a normal build legitimately needs — PATH, HOME, locale, the forged-TLS
+    CA bundle (SSL_CERT_FILE / REQUESTS_CA_BUNDLE / NODE_EXTRA_CA_CERTS), package-manager
+    caches. Denylist (keep-by-default) so an ordinary build is never starved of a benign var."""
+    out: dict[str, str] = {}
+    for k, v in os.environ.items():
+        ku = k.upper()
+        if ku.startswith(_SENSITIVE_ENV_PREFIXES):
+            continue
+        if any(s in ku for s in _SENSITIVE_ENV_SUBSTR):
+            continue
+        out[k] = v
+    return out
+
+
+def _untrusted_user() -> str | None:
+    """Optional unprivileged user to drop the untrusted build/run to (defense in depth
+    for the /proc/1/environ + SA-key-file residual: an unprivileged process cannot read
+    root's environ or the 0600 root credential file). OFF by default so the live
+    detonation path is byte-identical until provisioning sets CR_UNTRUSTED_USER to a real
+    user the image created (and chowns /repo to) — enabling it must be validated by a live
+    detonation, never shipped blind. Returns None (current behavior) when unset."""
+    u = os.environ.get("CR_UNTRUSTED_USER", "").strip()
+    return u or None
+
+
 def _run(cmd: list[str], timeout: int, trace_id: str = "", observe_syscalls: bool = True) -> dict:
     """Run a command, optionally under strace. strace -f ptrace-stops on EVERY syscall
     (huge overhead on a process-heavy npm/pip install), so the BUILD runs UNTRACED for
     speed — the gateway captures ALL network (install-time exfil included). strace is
-    reserved for the short RUN phase, where it catches credential-file reads cheaply."""
+    reserved for the short RUN phase, where it catches credential-file reads cheaply.
+
+    The command is the UNTRUSTED repo's own install/run, so it runs with a SCRUBBED
+    environment (no harness secrets — see _untrusted_env) and, when configured, as an
+    unprivileged user (_untrusted_user)."""
     if not cmd:
         return {"ran": False, "reason": "no command"}
     trace = f"/tmp/cr-strace-{trace_id}.log" if trace_id else "/tmp/cr-strace.log"
     full = (["strace", "-f", "-e", "trace=openat,execve", "-o", trace, *cmd]
             if observe_syscalls else cmd)
+    env = _untrusted_env()
+    user = _untrusted_user()
+    # subprocess.run accepts user= on Python 3.9+; pass it only when configured so the
+    # default code path (no user=) is unchanged. Kept in a kwargs dict so both the traced
+    # and the FileNotFound-fallback calls stay identical.
+    extra = {"env": env}
+    if user is not None:
+        extra["user"] = user
     t0 = time.time()
     p = None
     try:
-        p = subprocess.run(full, cwd=REPO_DIR, timeout=timeout, capture_output=True)
+        p = subprocess.run(full, cwd=REPO_DIR, timeout=timeout, capture_output=True, **extra)
         rc, timed_out = p.returncode, False
     except subprocess.TimeoutExpired as e:
         rc, timed_out = None, True
         p = e  # TimeoutExpired carries any partial output captured before the timeout
     except FileNotFoundError:
         try:
-            p = subprocess.run(cmd, cwd=REPO_DIR, timeout=timeout, capture_output=True)
+            p = subprocess.run(cmd, cwd=REPO_DIR, timeout=timeout, capture_output=True, **extra)
             rc, timed_out = p.returncode, False
         except subprocess.TimeoutExpired as e:
             rc, timed_out = None, True

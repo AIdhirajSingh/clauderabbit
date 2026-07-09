@@ -97,6 +97,19 @@ else
 fi
 log "gateway base: ${GATEWAY_BASE} (register/ca-cert/forensics API, port ${GATEWAY_PORT}, not intercepted)"
 
+# Control-plane auth for the gateway's /register + /forensics (security review,
+# criticals #2/#3). The firewall proves only "from the Cloud Run subnet", which
+# CANNOT tell this trusted harness apart from the untrusted repo running in the
+# same container. This shared key does. It is held ONLY by the harness (this
+# process) and is SCRUBBED from the untrusted build/run environment by detonate.py,
+# so the detonated code can neither re-open its own egress passthrough via /register
+# nor blank its own evidence via /forensics. Sent only when configured; the gateway
+# enforces it when its own CR_FORGE_CONTROL_KEY is set (rollout-safe until then).
+FORGE_KEY_HEADER=()
+if [ -n "${CR_FORGE_CONTROL_KEY:-}" ]; then
+  FORGE_KEY_HEADER=(-H "x-forge-key: ${CR_FORGE_CONTROL_KEY}")
+fi
+
 WORK="/tmp/cr-scan"
 REPO_DIR="/repo"
 mkdir -p "$WORK"
@@ -136,7 +149,7 @@ report_stage "container_start" "entrypoint running, validating env"
 log "registering scan_id=${CR_SCAN_ID} with the gateway (must happen before any other egress)"
 REGISTER_BODY="{\"scan_id\":\"${CR_SCAN_ID}\"}"
 if ! curl -fsS -m 15 -X POST "${GATEWAY_BASE}/register" \
-      -H "Content-Type: application/json" --data-binary "$REGISTER_BODY" >/tmp/cr-register.log 2>&1; then
+      -H "Content-Type: application/json" "${FORGE_KEY_HEADER[@]}" --data-binary "$REGISTER_BODY" >/tmp/cr-register.log 2>&1; then
   # Registration failing means the gateway cannot attribute ANY subsequent
   # traffic from this container to this scan — forensics will come back empty
   # even if the run itself is fine. This is a hard stop: an ungated detonation
@@ -312,7 +325,7 @@ wait "$AGENTIC_PID" 2>/dev/null || log "agentic pass wait returned non-zero (alr
 # ── 6) read the gateway's one-shot forensics capture, reconstruct jsonl, assemble ──
 log "reading back gateway forensics capture (one-shot; scan_id=${CR_SCAN_ID})"
 CAPTURE_JSONL="$WORK/capture.jsonl"
-if RAW="$(curl -fsS -m 30 "${GATEWAY_BASE}/forensics?scan_id=${CR_SCAN_ID}" 2>/tmp/cr-forensics-fetch.log)"; then
+if RAW="$(curl -fsS -m 30 "${FORGE_KEY_HEADER[@]}" "${GATEWAY_BASE}/forensics?scan_id=${CR_SCAN_ID}" 2>/tmp/cr-forensics-fetch.log)"; then
   # The gateway returns {"scan_id":..., "records":[ {...}, {...} ]} — one JSON
   # object per captured network event. assemble-forensics.py expects a
   # NEWLINE-DELIMITED JSON file (one object per line), matching the OLD

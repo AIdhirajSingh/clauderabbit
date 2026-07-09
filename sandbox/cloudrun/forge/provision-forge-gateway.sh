@@ -19,7 +19,19 @@
 #
 # Run as root on cr-forge-gateway (us-central1-a, internal IP 10.200.0.10, tag
 # cr-trap, --can-ip-forward — see the gcloud commands in docs/INFRASTRUCTURE.md §8c).
+#
+# CONTROL-PLANE AUTH (security review, criticals #2/#3): the /register and /forensics
+# endpoints must be authenticated so the UNTRUSTED detonated repo (same subnet IP as the
+# harness) cannot re-open its own egress passthrough or blank its own forensic evidence.
+# Set CR_FORGE_CONTROL_KEY in THIS script's environment to the SAME secret the cr-detonation
+# Cloud Run Job receives (a Secret-Manager-backed env var — see docs/INFRASTRUCTURE.md).
+# It is baked into the forensics API's systemd unit below. Until it is set on BOTH sides,
+# forensics_api.py warns and allows (rollout-safe) — the hole is only truly closed once the
+# key is present on the gateway AND the harness.
 set -euo pipefail
+
+# The shared forge control key (empty until provisioning sets it; see the note above).
+: "${CR_FORGE_CONTROL_KEY:=}"
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 CAP_DIR=/var/log/cr-forge
@@ -141,6 +153,7 @@ Wants=network-online.target
 [Service]
 Environment=CR_FORGE_CAPTURE=${CAP_DIR}/capture.jsonl
 Environment=CR_FORENSICS_PORT=${API_PORT}
+Environment=CR_FORGE_CONTROL_KEY=${CR_FORGE_CONTROL_KEY:-}
 ExecStart=${PY} /opt/cr/forge/forensics_api.py
 Restart=always
 RestartSec=2
