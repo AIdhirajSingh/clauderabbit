@@ -108,6 +108,26 @@ const NETWORK_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}\b/g, label: "hardcoded IP:port" },
 ];
 
+/**
+ * True for a loopback / RFC1918-private / link-local / this-host IPv4 address. A packet
+ * to one of these NEVER leaves the host's own network, so a hardcoded reference to one is
+ * internal infrastructure (a localhost health check, an internal gateway, GCP metadata),
+ * NOT outbound internet egress and NOT an exfil target. A hardcoded PUBLIC IP stays a real
+ * signal. This removes a false "network egress" (and, in an install script, a false -40
+ * install-time-exfil) that fired on ordinary devops/infra code.
+ */
+function isInternalIp(ip: string): boolean {
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 0 || a === 127 || a === 10) return true; // this-host, loopback, private
+  if (a === 192 && b === 168) return true; // private
+  if (a === 172 && b >= 16 && b <= 31) return true; // private
+  if (a === 169 && b === 254) return true; // link-local (incl. cloud metadata IP)
+  return false;
+}
+
 // Shell fetch-and-run, host-CAPTURING (separate from NETWORK_PATTERNS above so
 // the matched host can be checked against SOFTWARE_DISTRIBUTION_HOSTS below).
 const SHELL_FETCH_RE = /\b(curl|wget)\b[\s\S]{0,80}\bhttps?:\/\/([A-Za-z0-9.-]+)/g;
@@ -470,9 +490,20 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
       if (analyzeSetupPy(f.path, f.content, regions)) signals.installHook = true;
     }
 
-    // Shell/install scripts are inherently install-context.
-    const isInstallScript = /\.(sh|ps1)$/i.test(name) ||
-      /(^|\/)(install|setup|postinstall|bootstrap)\./i.test(f.path);
+    // Install CONTEXT means the script AUTO-RUNS on install — the "runs on npm install
+    // before you ever import it" vector that makes install-time network so dangerous. A
+    // script named as a lifecycle hook (install/preinstall/postinstall) or a conventional
+    // setup/bootstrap/prepare script qualifies. A general standalone shell script — a
+    // provisioning script, a deploy script, a test harness a human runs deliberately
+    // (orchestrate.sh, provision-forge-gateway.sh, forge-up.sh, deploy.sh) — does NOT
+    // auto-run on install, so its network activity is general capability, not the far
+    // heavier install-time-network signal. (package.json lifecycle hooks that shell out
+    // are detected separately in analyzePackageJson.) Treating EVERY .sh as install-time
+    // is what made this product's own infra scripts (a localhost health check, a DNS
+    // reachability probe) score it "Malicious".
+    const isInstallScript =
+      /^(pre|post)?install(\.|$)/i.test(name) ||
+      /^(setup|bootstrap|prepare)(\.|$)/i.test(name);
 
     // Documentation/prose files (README, LICENSE, *.md, docs/…) contain text
     // ABOUT code, not executable code. A credential-path / secret / network /
@@ -523,12 +554,40 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
     if (credInThisFile) {
       signals.credAccess = true;
     }
-    if (scanText(f.path, f.content, NETWORK_PATTERNS, regions, isDocFile)) {
-      // Hardcoded IP literals are never a "recognized software-distribution
-      // host" shape — always full weight in an install/provisioning script,
-      // never eligible for live-host-verification downgrade.
-      signals.network = true;
-      if (isInstallScript) installTimeNetworkHard = true;
+    // Hardcoded IP literals. A PUBLIC IP is a real network signal (and, in a real
+    // install hook, install-time-exfil grade — never eligible for the host-verification
+    // downgrade, since an IP is not a "recognized distribution host" shape). A
+    // PRIVATE/loopback/link-local IP is internal infrastructure (a localhost health
+    // check, an RFC1918 gateway) — surfaced as a region for context but NOT a network
+    // signal, because a packet to it never leaves the host.
+    if (!isDocFile) {
+      let sawPublicIp = false;
+      for (const { re, label } of NETWORK_PATTERNS) {
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        let count = 0;
+        while ((m = re.exec(f.content)) !== null && count < MAX_MATCHES_PER_PATTERN) {
+          count++;
+          const ip = m[0].match(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/)?.[0] ?? "";
+          const internal = ip ? isInternalIp(ip) : false;
+          regions.push({
+            file: f.path,
+            reason: internal
+              ? `${label} to an internal/loopback address (${ip}) — internal infrastructure, not internet egress`
+              : label,
+            snippet: snippetAround(f.content, m.index),
+          });
+          if (!internal) sawPublicIp = true;
+          if (m.index === re.lastIndex) re.lastIndex++;
+        }
+      }
+      if (sawPublicIp) {
+        signals.network = true;
+        if (isInstallScript) installTimeNetworkHard = true;
+      }
+    } else {
+      // In a doc file, an IP literal is a prose mention — region only, no signal.
+      scanText(f.path, f.content, NETWORK_PATTERNS, regions, true);
     }
 
     // Shell fetch-and-run (curl|wget ... https://host/...), HOST-AWARE: a
@@ -549,20 +608,27 @@ export function staticScan(files: FetchedFile[]): StaticScanResult {
       (fetchMatch = SHELL_FETCH_RE.exec(f.content)) !== null &&
       fetchCount < MAX_MATCHES_PER_PATTERN
     ) {
-      sawAnyFetch = true;
       fetchCount++;
       const host = fetchMatch[2];
-      const recognized = isRecognizedDistributionHost(host);
-      if (!recognized) unrecognizedHostsThisFile.add(host);
+      // A fetch to a loopback/private/link-local address is internal infrastructure (a
+      // localhost health check, an internal gateway), not internet egress — region-only,
+      // no network signal, exactly like the hardcoded-internal-IP case above.
+      const internal = isInternalIp(host);
+      const recognized = !internal && isRecognizedDistributionHost(host);
+      if (!internal && !recognized) unrecognizedHostsThisFile.add(host);
       regions.push({
         file: f.path,
         reason: isDocFile
           ? "mentioned in documentation/prose — shell network fetch (not an executable access)"
+          : internal
+          ? `shell fetch to an internal/loopback address (${host}) — internal infrastructure, not internet egress`
           : recognized
           ? `provisioning fetch to a recognized software-distribution host (${host}) — supply-chain caution, not a confirmed attack on its own`
           : `shell network fetch to an unrecognized host (${host}) — pending live verification`,
         snippet: snippetAround(f.content, fetchMatch.index),
       });
+      // Only an EXTERNAL fetch counts as network egress.
+      if (!internal) sawAnyFetch = true;
       if (fetchMatch.index === SHELL_FETCH_RE.lastIndex) SHELL_FETCH_RE.lastIndex++;
     }
     if (sawAnyFetch && !isDocFile) {
