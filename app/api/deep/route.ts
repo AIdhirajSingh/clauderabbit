@@ -533,9 +533,13 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
 
         // Forensics landed = the real success signal (the container's own POST).
         if (await forensicsAttachedOnce(owner, repo, sha)) {
+          // Complete the last in-flight step, then the final "forensics attached".
+          if (lastStage) {
+            emit({ t: "stage", ch: STAGE_LABELS[lastStage] ?? lastStage, status: "done", kind: "ok" });
+          }
           emit({
             t: "stage",
-            ch: "Detonate",
+            ch: "Sandbox run complete",
             status: "done",
             kind: "ok",
             lines: ["Cloud Run execution completed — forensics attached to the report."],
@@ -547,20 +551,23 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
         }
 
         // Granular progress from the container (container_start → … → persisting).
-        // Bounded: deep-queue-client's fetch has no timeout of its own, so a slow
-        // edge function must never stall this loop.
+        // Each stage is surfaced as its OWN distinct timeline chapter — the previous
+        // step marked done, the new step shown active with a live spinner — so the
+        // detonation reads as a real step-by-step timeline (Cloning → Installing →
+        // Agents exploring → Running → Assembling → Persisting), NOT one static
+        // "Detonate" line that sits unmoving for the whole ~2.5–3.5 min run (the
+        // scan-progress regression). Bounded read so a slow edge function never stalls.
         const s = await withTimeout(fetchStage(slug), REST_READ_TIMEOUT_MS, null).catch(() => null);
         if (s && s.stage && s.stage !== lastStage) {
+          if (lastStage) {
+            emit({ t: "stage", ch: STAGE_LABELS[lastStage] ?? lastStage, status: "done", kind: "ok" });
+          }
           lastStage = s.stage;
           emit({
             t: "stage",
-            ch: "Detonate",
+            ch: STAGE_LABELS[s.stage] ?? s.stage,
             status: "active",
-            lines: [
-              s.detail
-                ? `${STAGE_LABELS[s.stage] ?? s.stage} — ${s.detail}`
-                : STAGE_LABELS[s.stage] ?? s.stage,
-            ],
+            lines: s.detail ? [s.detail] : [],
           });
         }
 
