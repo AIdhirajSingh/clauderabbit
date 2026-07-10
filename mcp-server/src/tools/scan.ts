@@ -13,7 +13,11 @@
  */
 
 import { z } from "zod";
-import { scanRepo as callScanRepo } from "../claude-rabbit-client.js";
+import {
+  awaitForensics,
+  runDeepScan,
+  scanRepo as callScanRepo,
+} from "../claude-rabbit-client.js";
 import type { ScanArgs } from "../claude-rabbit-client.js";
 import { readToken, signInRequiredResult } from "../auth.js";
 import type { ClaudeRabbitConfig } from "../env.js";
@@ -62,7 +66,7 @@ export const scanToolMeta = {
   title: "Scan a GitHub repo or npm package with ClaudeRabbit",
   description:
     "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact — the exact tarball `npm install` fetches, integrity-verified — not the GitHub repo its package.json links to, so it catches a compromised-publish that exists only in the tarball. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately (no rescan); otherwise a real fast-path scan (fetch + static scanners + reputation + a fast model read) runs and its result comes back. Callers don't need to know or choose which case applies. " +
-    "IMPORTANT: this tool call only guarantees the static fast path ran. ClaudeRabbit's dynamic sandbox detonation is a separate, privileged process — this tool call may report that escalation to it was decided (`escalationDecided`) without the sandbox having actually executed yet (`sandboxActuallyRan`). Always check `sandboxActuallyRan` / the forensics section before treating a result as runtime-verified. This tool NEVER returns a bare \"Safe\" verdict — every result states what was and was not observed. Requires a signed-in ClaudeRabbit account (see the tool's error response for a sign-in link if unauthenticated).",
+    "When the fast path decides the repo warrants ClaudeRabbit's dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the wait budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result); always read `sandboxActuallyRan` / the forensics section before calling a result runtime-verified. This tool NEVER returns a bare \"Safe\" verdict — every result states what was and was not observed. Requires a signed-in ClaudeRabbit account (see the tool's error response for a sign-in link if unauthenticated).",
   // Triggers a real scan when nothing is cached yet, but never mutates or
   // deletes anything the caller owns — it's read/observe only from the
   // caller's side.
@@ -205,6 +209,37 @@ export async function runScanTool(config: ClaudeRabbitConfig, rawInput: unknown)
   if (!result.ok) {
     return textError(`ClaudeRabbit scan failed for ${resolved.label}: ${result.error}`);
   }
+  let report = result.report;
+
+  // ESCALATION → REAL SANDBOX. When the fast path decided a live detonation is
+  // warranted (`report.deep`) but the sandbox hasn't run (no `forensics`), trigger
+  // the SAME production dispatch the website uses (`/api/deep`) and wait for the
+  // sandbox-verified report — so the tool returns the real runtime score, not the
+  // scarier static-only interim. GitHub targets only: the detonation clones
+  // `owner/repo@sha` (npm-artifact detonation is a separate harness capability).
+  if (
+    resolved.ecosystem === "github" &&
+    report.deep &&
+    !report.forensics &&
+    typeof report.commit_sha === "string" &&
+    report.commit_sha
+  ) {
+    const deep = await runDeepScan(config, {
+      owner: resolved.owner,
+      repo: resolved.repo,
+      sha: report.commit_sha,
+    });
+    if (deep.ok) {
+      // persisted → forensics already attached (one confirming re-read); pending →
+      // poll the report row until they land.
+      const verified = await awaitForensics(config, resolved.args, token, {
+        tries: deep.persisted ? 3 : 36,
+      });
+      if (verified) report = verified;
+    }
+    // unavailable / error → keep the escalation-decided report; `sandboxActuallyRan`
+    // stays false (honest) and the detonation, if dispatched, completes server-side.
+  }
 
   // Build the report link from the target's canonical identity. For npm, use the
   // RETURNED report's identity (owner="npm", name=package) so the link points at
@@ -212,10 +247,10 @@ export async function runScanTool(config: ClaudeRabbitConfig, rawInput: unknown)
   // the exact /owner/repo link as before.
   const reportUrl =
     resolved.ecosystem === "npm"
-      ? `${config.siteUrl}/${result.report.owner}/${result.report.name}`
+      ? `${config.siteUrl}/${report.owner}/${report.name}`
       : `${config.siteUrl}/${resolved.owner}/${resolved.repo}`;
 
-  const { text, structured } = formatReport(result.report, reportUrl, { fresh: !result.report.cached });
+  const { text, structured } = formatReport(report, reportUrl, { fresh: !result.report.cached });
 
   return {
     content: [

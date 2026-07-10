@@ -6,7 +6,13 @@
  * `--json` structured object (consumed by scripts and agents).
  */
 
-import { scanRepo, type ScanArgs, type StageStatus } from "../lib/client.js";
+import {
+  awaitForensics,
+  runDeepScan,
+  scanRepo,
+  type ScanArgs,
+  type StageStatus,
+} from "../lib/client.js";
 import { ensureLoggedIn } from "../lib/auth.js";
 import { loadConfig } from "../lib/env.js";
 import {
@@ -114,6 +120,46 @@ export async function runScanCommand(
   if (!result.ok) {
     return fail(result.error);
   }
+  let report = result.report;
+
+  // 3b. ESCALATION → REAL SANDBOX. When the fast path decided the repo warrants a
+  // live detonation (`report.deep`) but the sandbox hasn't run yet (no
+  // `forensics`), trigger the SAME production dispatch the website uses
+  // (`/api/deep`) and wait for the sandbox-verified report — so the CLI returns
+  // the real runtime score, never the scarier static-only interim. GitHub targets
+  // only: the detonation clones `owner/repo@sha` (npm-artifact detonation is a
+  // separate harness capability, tracked separately).
+  if (
+    resolved.via !== "npm" &&
+    report.deep &&
+    !report.forensics &&
+    typeof report.commit_sha === "string" &&
+    report.commit_sha
+  ) {
+    if (!opts.json && !opts.quiet) {
+      process.stderr.write(
+        palette.dim(`  · Escalated — running the live sandbox (this takes a few minutes)…\n`),
+      );
+    }
+    const deep = await runDeepScan(
+      config,
+      { owner: resolved.owner, repo: resolved.repo, sha: report.commit_sha },
+      onStage,
+    );
+    if (deep.ok) {
+      // persisted → forensics already attached (one confirming re-read); pending →
+      // poll the report row until they land.
+      const verified = await awaitForensics(config, scanArgs, token, {
+        tries: deep.persisted ? 3 : 36,
+      });
+      if (verified) report = verified;
+    } else if (deep.unavailable) {
+      if (!opts.json && !opts.quiet) process.stderr.write(palette.dim(`  · ${deep.error}\n`));
+    } else if (!opts.json) {
+      // A genuine dispatch failure — surface it, but still print the static read.
+      process.stderr.write(`${palette.red("Sandbox:")} ${deep.error}\n`);
+    }
+  }
 
   // 4. Print output. For npm, thread the package name through so the renderers
   // can label the result honestly as an npm package (the report itself already
@@ -124,11 +170,11 @@ export async function runScanCommand(
     ...(resolved.via === "npm" ? { npmPackage: resolved.package } : {}),
   };
   if (opts.json) {
-    const json = toJson(result.report, config.siteUrl, outputOpts);
+    const json = toJson(report, config.siteUrl, outputOpts);
     process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   } else {
     process.stdout.write(
-      toText(result.report, config.siteUrl, outputOpts, palette, opts.color),
+      toText(report, config.siteUrl, outputOpts, palette, opts.color),
     );
   }
 

@@ -24,13 +24,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
-import { runScan } from "@/lib/scan";
+import { runScan, runDeepScan } from "@/lib/scan";
 import { buildReportView } from "@/lib/report-view";
 import { formatReportText, structuredReport } from "./format";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Long enough to actually run + await a live sandbox detonation (the deep path
+// self-resolves at ~270s inside /api/deep), not just the fast path.
+export const maxDuration = 300;
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
@@ -69,7 +71,7 @@ function buildServer(accessToken: string, req: Request): McpServer {
     {
       title: "Scan a GitHub repo with ClaudeRabbit",
       description:
-        "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo. Cache-aware: if a report already exists for the repo's current commit it comes back immediately (no rescan); otherwise a real fast-path scan runs and its result comes back. Callers don't need to know or choose which case applies. This tool call only guarantees the static fast path ran; the dynamic sandbox is a separate, privileged process — check `sandboxActuallyRan`, never `escalationDecided` alone, before treating a result as runtime-verified. Never returns a bare \"Safe\" verdict.",
+        "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo. Cache-aware: if a report already exists for the repo's current commit it comes back immediately; otherwise a real fast-path scan runs. When the fast path decides the repo warrants the dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the request budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result). Never returns a bare \"Safe\" verdict.",
       inputSchema: {
         owner: z.string().min(1).describe('GitHub repository owner or org, e.g. "sindresorhus".'),
         repo: z.string().min(1).describe('GitHub repository name, e.g. "is".'),
@@ -93,7 +95,27 @@ function buildServer(accessToken: string, req: Request): McpServer {
           content: [{ type: "text" as const, text: `ClaudeRabbit scan failed for ${owner}/${repo}: ${result.error}` }],
         };
       }
-      const view = buildReportView(result.report);
+
+      // ESCALATION → REAL SANDBOX. When the fast path decided a live detonation is
+      // warranted (`report.deep`) but the sandbox hasn't run (no `forensics`),
+      // trigger the SAME production dispatch the website uses (`runDeepScan` →
+      // POST `/api/deep`, Cloud Run REST via the cr-dispatch SA) and re-read the
+      // sandbox-verified report — so the MCP result carries the real runtime score,
+      // not the scarier static-only interim. Bounded by this route's maxDuration
+      // (the deep wait self-resolves at ~270s inside /api/deep); if the run is
+      // still going at the deadline, the report stays honestly escalation-decided
+      // (`sandboxActuallyRan:false`) and the detonation finishes server-side (a
+      // follow-up scan returns the verified result from cache).
+      let report = result.report;
+      if (report.deep && !report.forensics && report.commit_sha) {
+        const deep = await runDeepScan({ owner, repo, sha: report.commit_sha, baseUrl: siteOrigin(req) });
+        if (deep.ok) {
+          const again = await runScan({ owner, repo, ref: args.ref, accessToken, clientKind: "mcp" });
+          if (again.ok) report = again.report;
+        }
+      }
+
+      const view = buildReportView(report);
       const reportUrl = `${siteOrigin(req)}/${owner}/${repo}`;
       const fresh = !result.report.cached;
       const text = formatReportText(view, reportUrl, fresh);

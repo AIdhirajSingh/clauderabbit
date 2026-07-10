@@ -659,6 +659,13 @@ export interface DeepScanArgs {
   /** The fast-path resolved commit SHA — pins the detonation + the forensics attach. */
   sha: string;
   onStage?: (stage: ScanStage) => void;
+  /**
+   * Absolute origin to POST `/api/deep` to. Omit in the browser (a relative
+   * `/api/deep` is correct there). REQUIRED when calling server-side — e.g. the
+   * remote `/mcp` route reusing this exact dispatch — since a relative fetch has
+   * no origin to resolve against off the browser.
+   */
+  baseUrl?: string;
 }
 
 /**
@@ -689,7 +696,7 @@ export async function runDeepScan(args: DeepScanArgs): Promise<DeepScanResult> {
   try {
     let res: Response;
     try {
-      res = await fetch("/api/deep", {
+      res = await fetch(`${args.baseUrl ?? ""}/api/deep`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ owner: args.owner, repo: args.repo, sha: args.sha }),
