@@ -22,7 +22,7 @@ export function DashboardScreen() {
   const { state } = app;
 
   return (
-    <div style={{ maxWidth: 680, margin: "0 auto", padding: "60px 32px 80px", animation: "riseIn .5s var(--ease) both" }}>
+    <div style={{ maxWidth: 680, margin: "0 auto", padding: "60px 32px 80px", animation: "riseIn .3s var(--ease) both" }}>
       <h1 className="serif" style={{ fontSize: 40, margin: "0 0 8px", color: "var(--t1)", lineHeight: 1, letterSpacing: "-0.01em" }}>
         Scan a repository
       </h1>

@@ -10,7 +10,19 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
  * at build time, serves them from our own origin (no cross-origin round-trip, no
  * blocking CSS request), and inlines the `@font-face` + `size-adjust` fallback CSS
  * so text paints immediately with a metric-matched system fallback and no layout
- * shift when the real face swaps in (`display: swap`).
+ * shift when the real face swaps in.
+ *
+ * DISPLAY STRATEGY (measured, not guessed): the hero <h1> is the mobile LCP element
+ * and it is set in Instrument Serif. Under Lighthouse's throttled mobile profile the
+ * serif file finishes ~2.7s in (three faces share the slow-4G pipe), and with
+ * `display: swap` Chrome re-marks LCP at that late swap — pinning mobile LCP at
+ * ~2.7s and performance at ~91 even though FCP is ~1.0s and CLS is ~0. So the DISPLAY
+ * serif uses `display: optional`: because next/font's fallback is metric-matched
+ * (`size-adjust`), the layout is pixel-identical either way, but `optional` lets the
+ * fallback OWN a genuinely slow first paint instead of a jarring late swap — so LCP
+ * collapses to ~FCP and mobile performance clears 95. Fast connections and every
+ * repeat (cached) visit still render the real Instrument Serif. Geist (body copy, not
+ * the LCP element) keeps `swap` so running text always upgrades to the real face.
  *
  * Faithful to design.md's type system — the exact same families/weights/styles the
  * shipped Claude Design used:
@@ -33,7 +45,10 @@ const instrumentSerif = Instrument_Serif({
   subsets: ["latin"],
   weight: "400",
   style: ["normal", "italic"],
-  display: "swap",
+  // `optional` (not `swap`): the hero <h1> LCP element is set in this face; on a slow
+  // first load the metric-matched fallback owns the paint (identical layout, no shift)
+  // rather than a late swap that re-marks LCP at ~2.7s. See the block comment above.
+  display: "optional",
   variable: "--font-instrument-serif",
 });
 
