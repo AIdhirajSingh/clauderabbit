@@ -294,6 +294,7 @@ const STAGE_LABELS: Record<string, string> = {
   container_start: "Sandbox container starting",
   cloning: "Cloning the repository at the pinned commit",
   installing: "Installing dependencies",
+  building: "Building the repository",
   agents_exploring: "Three agents reading the code in parallel",
   running: "Executing the repository's start command",
   assembling_forensics: "Assembling the forensic record",

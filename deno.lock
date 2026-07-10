@@ -46,7 +46,6 @@
         "npm:eslint@^10.5.0",
         "npm:next@^16.2.9",
         "npm:puppeteer-core@^25.3.0",
-        "npm:puppeteer@^25.3.0",
         "npm:react-dom@^19.2.7",
         "npm:react@^19.2.7",
         "npm:topojson-client@^3.1.0",

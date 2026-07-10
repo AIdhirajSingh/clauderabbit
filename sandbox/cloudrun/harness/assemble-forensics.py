@@ -397,10 +397,11 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             "captured malice is not proof of safety.")
     elif not ran_ok:
         honesty_notes.append(
-            "The project built successfully, but its run command did not complete "
-            "cleanly (it crashed, exited with an error, or was still running when the "
-            "detonation window ended) — time- or condition-gated branches may not have "
-            "executed. Absence of captured malice is not proof of safety.")
+            "The project built successfully, but its run command crashed — it exited "
+            "with an error shortly after starting, before the observation window closed "
+            "— so time- or condition-gated branches may not have executed. (A long-lived "
+            "server that stays up for the whole window is treated as a clean run, not this "
+            "case.) Absence of captured malice is not proof of safety.")
     if agentic.get("crashed"):
         honesty_notes.append(
             "The three-agent code analysis did not complete for this run; agent findings "

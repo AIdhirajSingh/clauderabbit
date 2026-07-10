@@ -264,6 +264,27 @@ def _node_run_cmd() -> list[str]:
     return ["npm", "start"]
 
 
+def _node_build_cmd(pm: str) -> list[str]:
+    """The repo's OWN `build` script, run with the package manager that installed it — or []
+    when the repo declares none. A compiled app (Next.js/Vite/CRA/Angular/etc.) must run its
+    build BEFORE its start script will boot: `next start` with no prior `next build` exits
+    immediately with 'no production build found', which the harness then recorded as "never
+    reached a runnable state" even though install + start were both fine. Running the real
+    build first is what makes "we run it" true for a compiled app, not only for a bare
+    `node index.js`. This runs in the BUILD phase (before the run_start marker) so any fetch
+    it makes — telemetry, font/CDN pulls a framework build does — is classified as build-time
+    supply-chain, not a run-phase attack (see emit_phase_marker / assemble-forensics.py)."""
+    scripts = _read_pkg().get("scripts") or {}
+    build = scripts.get("build") if isinstance(scripts, dict) else None
+    if not (isinstance(build, str) and build.strip()):
+        return []
+    if pm == "pnpm":
+        return ["pnpm", "run", "build"]
+    if pm == "yarn":
+        return ["yarn", "build"]
+    return ["npm", "run", "build"]
+
+
 def detect_project() -> tuple[str, list[str]]:
     """Return (project_type, run_cmd). The BUILD for node is handled by adaptive_node_build();
     python/unknown use a single install (below)."""
@@ -614,6 +635,36 @@ def main() -> int:
     print(f"CR_BUILD rc={build.get('rc')} timed_out={build.get('timed_out')} secs={build.get('secs')} "
           f"pm={package_manager} attempts={len(build_strategies)} "
           f"stderr_tail={build.get('stderr_tail','')[:900]!r}", file=sys.stderr, flush=True)
+
+    # The strategy that actually installed the deps (transparency: the report/forensics can say
+    # "built with npm --legacy-peer-deps", never silently loosen what "built" means) — and the
+    # verbatim command, cited as the forensic record's `install_command`.
+    winning = next((s for s in build_strategies if s.get("rc") == 0), None)
+    install_command = (winning or {}).get("cmd", "") or (
+        " ".join(_pip_install()) if ptype == "python" else "")
+
+    # BUILD SCRIPT — a compiled app (Next.js/Vite/CRA/Angular/…) must run its OWN `build`
+    # BEFORE its start script will boot: install alone left `next start` to exit immediately
+    # with "no production build found", which the record then scored as "never reached a
+    # runnable state" even though install + start were both fine. Running the real build is
+    # what makes "we run it" true for a compiled app. It runs in the BUILD phase (before the
+    # run_start marker) so any fetch it makes — a framework build's telemetry/font/CDN pulls —
+    # is classified as build-time supply-chain, not a run-phase attack.
+    build_script: dict = {"ran": False, "reason": "no build script / not a node build"}
+    if ptype == "node" and build.get("rc") == 0:
+        bcmd = _node_build_cmd(package_manager or detect_node_pm())
+        if bcmd:
+            report_stage("building", f"running `{' '.join(bcmd)}`")
+            build_script = _run(bcmd, BUILD_TIMEOUT, "build", observe_syscalls=False)
+            print(f"CR_BUILDSCRIPT {' '.join(bcmd)} -> rc={build_script.get('rc')} "
+                  f"secs={build_script.get('secs')} timed_out={build_script.get('timed_out')} "
+                  f"stderr_tail={build_script.get('stderr_tail','')[:600]!r}", file=sys.stderr, flush=True)
+
+    # "Built" = deps installed AND (no build script, or the build script itself succeeded).
+    install_ok = build.get("rc") == 0
+    auto_build_succeeded = install_ok and (
+        build_script.get("rc") == 0 if build_script.get("ran") else True)
+
     # The install is DONE and the run is about to start — beacon this exact boundary so
     # the host can tell a benign build-time dependency fetch apart from a genuine
     # run-phase network attempt (see emit_phase_marker + assemble-forensics.py).
@@ -621,17 +672,31 @@ def main() -> int:
     report_stage("running", f"executing the repo's start command (pm={package_manager or 'n/a'})")
     run = _run(run_cmd, RUN_TIMEOUT, "run", observe_syscalls=True) if run_cmd else {"ran": False, "reason": "no run cmd"}
     obs = observe([build.get("trace", ""), run.get("trace", "")])
-    # The strategy that actually built it (transparency: the report/forensics can say
-    # "built with npm --legacy-peer-deps", never silently loosen what "built" means).
-    winning = next((s for s in build_strategies if s.get("rc") == 0), None)
+
+    # RAN WITHOUT CRASH — a long-lived server (a web app, an API, a daemon) is the COMMON case
+    # and it is a CLEAN run: it boots and keeps serving, so it is still alive (timed_out) when
+    # the fixed observation window closes. A CRASH is the opposite: it exits BEFORE the window
+    # with a non-zero code. So a run is clean when it either exited 0 OR survived the whole
+    # window without an error exit; only an early non-zero exit is a crash. The old
+    # `not timed_out and rc==0` mislabelled every healthy server as a failed run — capping its
+    # score — which is exactly why this project's own Next.js repo scored "not runnable" despite
+    # building and serving fine. (A caught ATTACK is judged separately and still hard-caps the
+    # score regardless of this, so "survived the window" can never launder malicious egress.)
+    run_ran = bool(run.get("ran"))
+    run_crashed = run_ran and not run.get("timed_out") and run.get("rc") not in (0, None)
+    ran_without_crash = run_ran and not run_crashed
+
     record = {
         "schema": "claude-rabbit/in-guest-observation/1",
         "project_type": ptype,
         "package_manager": package_manager,
-        "auto_build_succeeded": build.get("rc") == 0,
+        "install_command": install_command,
+        "run_command": " ".join(run_cmd) if run_cmd else "",
+        "auto_build_succeeded": auto_build_succeeded,
         "build_strategy": (winning or {}).get("why", ""),
         "build_attempts": build_strategies,
-        "ran_without_crash": run.get("ran") and not run.get("timed_out") and run.get("rc") == 0,
+        "build_script": build_script,
+        "ran_without_crash": ran_without_crash,
         "build": build,
         "run": run,
         "observed": obs,
