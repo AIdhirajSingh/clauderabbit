@@ -231,8 +231,11 @@ export async function runScanTool(config: ClaudeRabbitConfig, rawInput: unknown)
     });
     if (deep.ok) {
       // persisted → forensics already attached (one confirming re-read); pending →
-      // poll the report row until they land.
-      const verified = await awaitForensics(config, resolved.args, token, {
+      // poll the report row until they land. Pinned to report.commit_sha (the
+      // EXACT commit that was dispatched) so a fast-moving repo's default branch
+      // advancing mid-poll can never substitute a fresh, non-escalated scan of a
+      // newer commit as if it were this run's result — see awaitForensics.
+      const verified = await awaitForensics(config, resolved.args, token, report.commit_sha, {
         tries: deep.persisted ? 3 : 36,
       });
       if (verified) report = verified;

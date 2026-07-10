@@ -353,24 +353,57 @@ export async function runDeepScan(
 }
 
 /**
- * Re-fetch the report (via the cache-aware fast-path endpoint) until the sandbox
- * forensics attach, or a bound elapses. Used after {@link runDeepScan} to return
- * the final sandbox-verified report rather than the interim static one. Returns
- * the latest report even if forensics never attach in time (honest: the caller
- * still shows a real report, and `sandboxActuallyRan` reflects the truth).
+ * Does this polled report genuinely correspond to the commit that was actually
+ * escalated and detonated? PURE — no network — so it's unit-testable on its own.
+ *
+ * This is the exact rail that closes a real bug: `awaitForensics` used to re-call
+ * `scanRepo` with the caller's ORIGINAL (often ref-less, i.e. "default branch")
+ * args. On a fast-moving repo, the default branch can advance between the
+ * escalation-triggering scan and a polling re-fetch a few minutes later — so the
+ * "poll" silently returned a FRESH scan of a NEWER commit that was never
+ * escalated, and the CLI printed that unrelated report as if it were the result
+ * of the sandbox run it had just shown live progress for (report said "STATIC
+ * READ ONLY" while the terminal had just shown "Sandbox run complete" for a
+ * different commit). A report only counts as "the awaited result" when its
+ * `commit_sha` matches the commit that was actually dispatched to the sandbox.
+ */
+export function isAwaitedForensicsReport(report: Report, expectedSha: string): boolean {
+  return report.commit_sha === expectedSha;
+}
+
+/**
+ * Re-fetch the report until the sandbox forensics attach for THIS EXACT
+ * escalated commit, or a bound elapses. Used after {@link runDeepScan} to return
+ * the final sandbox-verified report rather than the interim static one.
+ *
+ * `expectedSha` pins every poll to the commit that was actually dispatched:
+ * for a GitHub target the poll passes `ref: expectedSha` (GitHub's contents/
+ * commits API accepts a full commit SHA as a ref, and the edge function's own
+ * cache is keyed on (owner, repo, commit_sha) too), so a moving default branch
+ * can never substitute a different, non-escalated commit's report. Each
+ * response is ALSO gated on {@link isAwaitedForensicsReport} before being
+ * accepted, as a second, independent check.
+ *
+ * Returns the latest MATCHING report even if forensics never attach in time
+ * (honest: the caller still shows a real report for the right commit, and
+ * `sandboxActuallyRan` reflects the truth) — or null if no matching response was
+ * ever seen, so the caller keeps the original escalation-decided report instead
+ * of silently swapping in something unrelated.
  */
 export async function awaitForensics(
   config: ClaudeRabbitConfig,
   args: ScanArgs,
   token: string,
+  expectedSha: string,
   opts?: { tries?: number; delayMs?: number },
 ): Promise<Report | null> {
   const tries = Math.max(1, opts?.tries ?? 30);
   const delayMs = opts?.delayMs ?? 5_000;
+  const pinnedArgs: ScanArgs = args.ecosystem === "npm" ? args : { ...args, ref: expectedSha };
   let last: Report | null = null;
   for (let i = 0; i < tries; i++) {
-    const r = await scanRepo(config, args, token);
-    if (r.ok) {
+    const r = await scanRepo(config, pinnedArgs, token);
+    if (r.ok && isAwaitedForensicsReport(r.report, expectedSha)) {
       last = r.report;
       if (r.report.forensics) return r.report;
     }

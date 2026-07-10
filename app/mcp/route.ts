@@ -108,10 +108,19 @@ function buildServer(accessToken: string, req: Request): McpServer {
       // follow-up scan returns the verified result from cache).
       let report = result.report;
       if (report.deep && !report.forensics && report.commit_sha) {
-        const deep = await runDeepScan({ owner, repo, sha: report.commit_sha, baseUrl: siteOrigin(req) });
+        const sha = report.commit_sha;
+        const deep = await runDeepScan({ owner, repo, sha, baseUrl: siteOrigin(req) });
         if (deep.ok) {
-          const again = await runScan({ owner, repo, ref: args.ref, accessToken, clientKind: "mcp" });
-          if (again.ok) report = again.report;
+          // Pin the re-read to the EXACT escalated commit (`ref: sha`, not the
+          // caller's original — often ref-less — `args.ref`), and require the
+          // returned report's commit_sha to match before accepting it. Without
+          // this, a fast-moving repo's default branch advancing between the
+          // escalation and this re-read would return a FRESH, non-escalated scan
+          // of a NEWER commit — the tool would then report "static read only" for
+          // a commit that was never even the one just detonated, contradicting
+          // the sandbox run it had just triggered (a real bug, caught live).
+          const again = await runScan({ owner, repo, ref: sha, accessToken, clientKind: "mcp" });
+          if (again.ok && again.report.commit_sha === sha) report = again.report;
         }
       }
 
