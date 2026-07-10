@@ -23,14 +23,23 @@ const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
 /** Default public site origin for building report-page and sign-in links. */
 const DEFAULT_SITE_URL = "https://clauderabbit.in";
 
-/** Default ceiling on how long `scan` will wait for a fresh scan to finish. */
+/** Default ceiling on how long `scan` will wait for a fresh fast-path scan to finish. */
 const DEFAULT_SCAN_TIMEOUT_MS = 120_000;
+
+/**
+ * Default ceiling on how long the CLI will hold the live sandbox detonation
+ * connection open (the `/api/deep` dispatch). A real detonation lands in ~2.5–4
+ * min; this is generous so the run reports its final sandbox-verified result
+ * rather than giving up early. Overridable via CLAUDE_RABBIT_DEEP_TIMEOUT_MS.
+ */
+const DEFAULT_DEEP_TIMEOUT_MS = 330_000;
 
 export interface ClaudeRabbitConfig {
   supabaseUrl: string;
   supabasePublishableKey: string;
   siteUrl: string;
   scanTimeoutMs: number;
+  deepTimeoutMs: number;
 }
 
 function trimTrailingSlash(url: string): string {
@@ -54,6 +63,12 @@ export function loadConfig(): ClaudeRabbitConfig {
     Number.isFinite(parsedTimeout) && parsedTimeout > 0
       ? parsedTimeout
       : DEFAULT_SCAN_TIMEOUT_MS;
+  const deepTimeoutRaw = process.env.CLAUDE_RABBIT_DEEP_TIMEOUT_MS?.trim();
+  const parsedDeepTimeout = deepTimeoutRaw ? Number.parseInt(deepTimeoutRaw, 10) : NaN;
+  const deepTimeoutMs =
+    Number.isFinite(parsedDeepTimeout) && parsedDeepTimeout > 0
+      ? parsedDeepTimeout
+      : DEFAULT_DEEP_TIMEOUT_MS;
 
   if (!supabaseUrl) {
     throw new Error("CLAUDE_RABBIT_SUPABASE_URL resolved to an empty value.");
@@ -64,5 +79,5 @@ export function loadConfig(): ClaudeRabbitConfig {
     );
   }
 
-  return { supabaseUrl, supabasePublishableKey, siteUrl, scanTimeoutMs };
+  return { supabaseUrl, supabasePublishableKey, siteUrl, scanTimeoutMs, deepTimeoutMs };
 }
