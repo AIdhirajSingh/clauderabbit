@@ -1415,6 +1415,24 @@ Deno.serve(async (req: Request): Promise<Response> => {
           wasNewOwner: escalation.wasNewOwner,
         };
       }
+      // OPERATOR OVERRIDE: force a live sandbox detonation for specific targets even when
+      // the static read cleared them — set via the CR_FORCE_DEEP_TARGETS secret (a comma-
+      // separated list of "owner/repo", case-insensitive). This is the honest way to get a
+      // genuine sandbox-verified report for a repo that reads clean statically (e.g. this
+      // product's own repo for its public/marketing report): it forces the RUN, it does NOT
+      // touch the static signals or the score — whatever the sandbox observes is the real
+      // number. Off by default (no env → no effect), so it is inert on any normal scan.
+      if (!escalation.escalate) {
+        const forceTargets = (Deno.env.get("CR_FORCE_DEEP_TARGETS") ?? "")
+          .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (forceTargets.includes(`${ownerLogin}/${repoName}`.toLowerCase())) {
+          escalation = {
+            escalate: true,
+            reason: "operator-forced live sandbox verification for this target",
+            wasNewOwner: escalation.wasNewOwner,
+          };
+        }
+      }
       const escalate = escalation.escalate;
       const escalationReason = escalation.reason;
       const scanPath = escalate ? "deep" : "fast";
