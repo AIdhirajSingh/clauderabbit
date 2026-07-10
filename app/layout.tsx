@@ -1,16 +1,19 @@
 import type { Metadata } from "next";
-import { Instrument_Serif, Geist } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
 /**
- * Self-hosted fonts via `next/font/google`. This replaces the old render-blocking
- * external `fonts.googleapis.com` stylesheet: `next/font` downloads the font files
- * at build time, serves them from our own origin (no cross-origin round-trip, no
- * blocking CSS request), and inlines the `@font-face` + `size-adjust` fallback CSS
- * so text paints immediately with a metric-matched system fallback and no layout
- * shift when the real face swaps in.
+ * Self-hosted fonts via `next/font/local` — the font files are COMMITTED to the repo
+ * (./fonts/*.woff2, the exact latin-subset faces) and bundled at build time. This is a
+ * deliberate switch from `next/font/google`: that loader downloads the faces from
+ * fonts.googleapis.com AT BUILD TIME, which fails in any network-isolated build — including
+ * our OWN hermetic detonation sandbox, where the self-scan of this repo scored "did not
+ * build to a runnable state" purely because `next build` could not reach Google Fonts. A
+ * local face has no build-time network dependency, so the build is fully reproducible
+ * offline. Runtime is unchanged (served from our origin, same `@font-face` + `size-adjust`
+ * metric-matched fallback so text paints immediately with no layout shift).
  *
  * DISPLAY STRATEGY (measured, not guessed): the hero <h1> is the mobile LCP element
  * and it is set in Instrument Serif. Under Lighthouse's throttled mobile profile the
@@ -34,22 +37,26 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
  * so the design's `font-family:'Geist'` / `.serif{font-family:'Instrument Serif'}`
  * intent resolves without changing any component.
  */
-const geist = Geist({
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+const geist = localFont({
+  src: [{ path: "./fonts/geist-latin.woff2", weight: "300 700", style: "normal" }],
   display: "swap",
   variable: "--font-geist",
+  // Metric-matched sans fallback so text paints instantly with no layout shift.
+  adjustFontFallback: "Arial",
 });
 
-const instrumentSerif = Instrument_Serif({
-  subsets: ["latin"],
-  weight: "400",
-  style: ["normal", "italic"],
+const instrumentSerif = localFont({
+  src: [
+    { path: "./fonts/instrument-serif-latin.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/instrument-serif-italic-latin.woff2", weight: "400", style: "italic" },
+  ],
   // `optional` (not `swap`): the hero <h1> LCP element is set in this face; on a slow
   // first load the metric-matched fallback owns the paint (identical layout, no shift)
   // rather than a late swap that re-marks LCP at ~2.7s. See the block comment above.
   display: "optional",
   variable: "--font-instrument-serif",
+  // Metric-matched serif fallback (mirrors what next/font/google generated before).
+  adjustFontFallback: "Times New Roman",
 });
 
 export const metadata: Metadata = {
