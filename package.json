@@ -19,7 +19,6 @@
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.108.2",
     "next": "^16.2.9",
-    "puppeteer": "^25.3.0",
     "puppeteer-core": "^25.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

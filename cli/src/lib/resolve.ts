@@ -1,30 +1,34 @@
 /**
- * Resolve a user-supplied scan target into an { owner, repo, ref? } that the
- * ClaudeRabbit API understands. The API scans GitHub repos, so an npm package
- * name is resolved to its backing GitHub repo via the public npm registry.
+ * Resolve a user-supplied scan target into something the ClaudeRabbit API
+ * understands — EITHER a GitHub repo (`owner/repo` + optional ref) OR an npm
+ * package target (`{ package, version? }`).
+ *
+ * The API now scans the REAL published npm ARTIFACT (its tarball bytes, install
+ * hooks and all), so an npm name is passed THROUGH as an npm target rather than
+ * being redirected to its linked GitHub repo. Resolving a name to its
+ * `repository` repo — what this CLI used to do — was blind to exactly the
+ * compromised-publish supply-chain attack an install-time check most needs to
+ * catch: a malicious version published only to the registry, pointing
+ * `repository` at an innocent, high-reputation repo. The registry→GitHub
+ * redirect is therefore gone; the edge function does the real npm work.
  *
  * Accepted target shapes:
- *   - owner/repo                      → { owner, repo }
- *   - owner/repo@ref  or  owner/repo#ref  → { owner, repo, ref }
- *   - https://github.com/owner/repo[/...] (also git@ and .git)
- *   - an npm package name (lodash, @scope/pkg) → resolved via the npm registry
- *     `repository` field to its GitHub owner/repo
+ *   - owner/repo                          → GitHub { owner, repo }
+ *   - owner/repo@ref  or  owner/repo#ref  → GitHub { owner, repo, ref }
+ *   - https://github.com/owner/repo[/...] (also git@ and .git) → GitHub
+ *   - a bare npm name (`lodash`), a scoped `@scope/name`, an explicit
+ *     `npm:pkg[@version]`, or an `https://npmjs.com/package/<name>[/v/<version>]`
+ *     URL → npm { package, version? }
  *
- * The resolver is deliberately conservative: if a bare token looks like it
- * could be either an npm package or something else, it is treated as an npm
- * package ONLY when it does not contain a slash (a slash means owner/repo,
- * except for a leading `@scope/name`, which is npm's own scoped form).
+ * This parser only needs to DETECT npm and extract `{ package, version }`; the
+ * edge function re-validates the npm name authoritatively. It is deliberately
+ * conservative: a plain `owner/repo` (exactly one slash, NOT `@`-scoped) is
+ * always a GitHub target, never npm.
  */
 
-export interface ResolvedTarget {
-  owner: string;
-  repo: string;
-  ref?: string;
-  /** How the target was resolved — surfaced so output can be honest about it. */
-  via: "github" | "npm";
-  /** The npm package name, when resolution went through the registry. */
-  npmPackage?: string;
-}
+export type ResolvedTarget =
+  | { via: "github"; owner: string; repo: string; ref?: string }
+  | { via: "npm"; package: string; version?: string };
 
 const GITHUB_URL_RE =
   /^(?:https?:\/\/)?(?:www\.)?github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?(?:[/#?].*)?$/i;
@@ -57,118 +61,97 @@ function looksLikeOwnerRepo(token: string): boolean {
   return parts.length === 2 && parts[0].length > 0 && parts[1].length > 0;
 }
 
-interface NpmRepository {
-  type?: string;
-  url?: string;
+// npm name grammar — mirrors the edge's `_shared/npm.ts` (isValidNpmName). The
+// client only DETECTS npm and extracts the target; the edge validates for real.
+const NPM_SCOPED_RE = /^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
+const NPM_UNSCOPED_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+
+function isValidNpmName(name: string): boolean {
+  if (name.length === 0 || name.length > 214) return false;
+  return NPM_SCOPED_RE.test(name) || NPM_UNSCOPED_RE.test(name);
 }
-interface NpmRegistryDoc {
-  repository?: NpmRepository | string;
-  name?: string;
-}
 
-/** Pull an owner/repo out of an npm `repository` field's URL. */
-function githubFromRepositoryUrl(url: string): { owner: string; repo: string } | null {
-  // Normalize the many shapes npm allows:
-  //   git+https://github.com/owner/repo.git, git://github.com/owner/repo.git,
-  //   git@github.com:owner/repo.git, https://github.com/owner/repo, github:owner/repo
-  const cleaned = url.replace(/^git\+/, "").trim();
-
-  const shorthand = /^github:([^/]+)\/(.+?)(?:\.git)?$/i.exec(cleaned);
-  if (shorthand) return { owner: shorthand[1], repo: shorthand[2] };
-
-  const ssh = SSH_URL_RE.exec(cleaned);
-  if (ssh) return { owner: ssh[1], repo: ssh[2] };
-
-  const m = GITHUB_URL_RE.exec(cleaned);
-  if (m) return { owner: m[1], repo: m[2] };
-
-  return null;
+/** A parsed npm target — package name (+ optional version/dist-tag). */
+interface NpmTarget {
+  package: string;
+  version?: string;
 }
 
 /**
- * Resolve an npm package name to its GitHub owner/repo via the public npm
- * registry. Throws a clear Error if the package is missing or has no usable
- * GitHub repository field.
+ * Parse a raw string into an npm target, or null when it is not one. Mirrors
+ * the edge's `parseNpmTarget` grammar (so the two never disagree about what is
+ * an npm target). Recognizes: `npm:pkg`, `npm:pkg@1.2.3`, an npmjs.com package
+ * URL, a scoped `@scope/name[@version]`, and a bare unscoped `name[@version]`.
+ * Returns null for anything else — notably a plain `owner/repo`, which contains
+ * a `/` yet is not a scoped name, so the GitHub parser handles it.
  */
-async function resolveNpmPackage(pkg: string): Promise<{ owner: string; repo: string }> {
-  const url = `https://registry.npmjs.org/${encodeURIComponent(pkg).replace("%40", "@")}/latest`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  let res: Response;
-  try {
-    res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
-  } catch (err) {
-    clearTimeout(timeout);
-    if (controller.signal.aborted) {
-      throw new Error(`Timed out looking up npm package "${pkg}".`);
-    }
-    throw new Error(`Network error looking up npm package "${pkg}": ${(err as Error).message}`);
-  }
-  clearTimeout(timeout);
+function parseNpmTarget(input: string): NpmTarget | null {
+  let s = input.trim();
+  if (!s) return null;
 
-  if (res.status === 404) {
-    throw new Error(`npm package "${pkg}" was not found on the public registry.`);
-  }
-  if (!res.ok) {
-    throw new Error(`npm registry returned HTTP ${res.status} for "${pkg}".`);
+  // npmjs.com/package/<name>[/v/<version>]
+  const urlMatch = s.match(
+    /^(?:https?:\/\/)?(?:www\.)?npmjs\.com\/package\/(@[^/]+\/[^/@?#]+|[^/@?#]+)(?:\/v\/([^/?#]+))?/i,
+  );
+  if (urlMatch) {
+    const name = decodeURIComponent(urlMatch[1]);
+    const version = urlMatch[2] ? decodeURIComponent(urlMatch[2]) : undefined;
+    return isValidNpmName(name) ? { package: name, ...(version ? { version } : {}) } : null;
   }
 
-  let doc: NpmRegistryDoc;
-  try {
-    doc = (await res.json()) as NpmRegistryDoc;
-  } catch {
-    throw new Error(`npm registry returned an unreadable response for "${pkg}".`);
-  }
+  // Explicit `npm:` prefix removes all ambiguity with owner/repo.
+  const explicit = s.match(/^npm:(.+)$/i);
+  if (explicit) s = explicit[1].trim();
 
-  const repository = doc.repository;
-  const repoUrl = typeof repository === "string" ? repository : repository?.url;
-  if (!repoUrl) {
-    throw new Error(
-      `npm package "${pkg}" has no "repository" field, so its source repo can't be resolved automatically. ` +
-        `Pass the GitHub owner/repo directly (e.g. clauderabbit scan owner/repo).`,
-    );
+  // Split a trailing `@version`, taking care not to eat a leading scope `@`.
+  let name = s;
+  let version: string | undefined;
+  const at = s.lastIndexOf("@");
+  if (at > 0) {
+    name = s.slice(0, at);
+    version = s.slice(at + 1) || undefined;
   }
-
-  const gh = githubFromRepositoryUrl(repoUrl);
-  if (!gh) {
-    throw new Error(
-      `npm package "${pkg}" points at a non-GitHub repository (${repoUrl}). ` +
-        `ClaudeRabbit currently scans GitHub repos; pass a GitHub owner/repo directly.`,
-    );
-  }
-  return gh;
+  name = name.trim();
+  if (!isValidNpmName(name)) return null;
+  return { package: name, ...(version ? { version } : {}) };
 }
 
 /**
- * Resolve a raw target string into an owner/repo (+ optional ref). Async
- * because npm-name resolution hits the registry over the network.
+ * Resolve a raw target string into a GitHub repo or an npm package target.
+ * Synchronous — no network is touched here anymore: the npm registry work that
+ * used to happen in this module is now done authoritatively (and against the
+ * real published artifact) inside the edge function.
  */
-export async function resolveTarget(raw: string): Promise<ResolvedTarget> {
+export function resolveTarget(raw: string): ResolvedTarget {
   const input = raw.trim();
   if (!input) throw new Error("No scan target provided.");
 
-  // 1. Explicit GitHub URL (https, ssh, or github.com shorthand).
+  // 1. Explicit GitHub URL (ssh, https, or github.com shorthand).
   const ssh = SSH_URL_RE.exec(input);
-  if (ssh) return { owner: ssh[1], repo: stripGit(ssh[2]), via: "github" };
+  if (ssh) return { via: "github", owner: ssh[1], repo: stripGit(ssh[2]) };
 
   if (/github\.com/i.test(input)) {
     const m = GITHUB_URL_RE.exec(input);
-    if (m) return { owner: m[1], repo: stripGit(m[2]), via: "github" };
+    if (m) return { via: "github", owner: m[1], repo: stripGit(m[2]) };
     throw new Error(`Could not parse a GitHub owner/repo out of "${input}".`);
   }
 
-  // 2. owner/repo (with optional @ref or #ref).
+  // 2. Explicit / unambiguous npm forms (npmjs.com URL, `npm:` prefix, a scoped
+  //    `@scope/name`, or a bare unscoped name). parseNpmTarget returns null for
+  //    a plain `owner/repo`, so this never steals a GitHub target — but it DOES
+  //    correctly claim `npm:@scope/pkg`, which the owner/repo heuristic below
+  //    would otherwise misread as a repo.
+  const npm = parseNpmTarget(input);
+  if (npm) return { via: "npm", package: npm.package, ...(npm.version ? { version: npm.version } : {}) };
+
+  // 3. owner/repo (with optional @ref or #ref).
   const { base, ref } = splitRef(input);
   if (looksLikeOwnerRepo(base)) {
     const [owner, repo] = base.split("/");
-    return { owner, repo: stripGit(repo), ...(ref ? { ref } : {}), via: "github" };
+    return { via: "github", owner, repo: stripGit(repo), ...(ref ? { ref } : {}) };
   }
 
-  // 3. Otherwise treat it as an npm package name (bare or @scoped) and resolve
-  //    it through the registry to its GitHub source repo.
-  const pkg = base;
-  const gh = await resolveNpmPackage(pkg);
-  return { owner: gh.owner, repo: stripGit(gh.repo), npmPackage: pkg, via: "npm" };
+  throw new Error(`Could not recognize "${input}" as a GitHub repo or npm package.`);
 }
 
 function stripGit(repo: string): string {

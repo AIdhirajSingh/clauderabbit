@@ -53,6 +53,7 @@ export const STAGES = [
   "container_start",
   "cloning",
   "installing",
+  "building",
   "agents_exploring",
   "running",
   "assembling_forensics",

@@ -10,11 +10,30 @@ import type { ClaudeRabbitConfig } from "./env.js";
 import { normalizeReport } from "./normalize.js";
 import type { Report } from "./types.js";
 
-export interface ScanArgs {
+/**
+ * A GitHub scan target — unchanged wire shape: `{ owner, repo, ref? }`.
+ * `ecosystem` is optional here (defaults to GitHub) so existing callers that
+ * build a bare `{ owner, repo }` keep type-checking exactly as before.
+ */
+export interface GithubScanArgs {
+  ecosystem?: "github";
   owner: string;
   repo: string;
   ref?: string;
 }
+
+/**
+ * An npm scan target — the API scans the REAL published artifact for this
+ * package (its tarball + install hooks), NOT a linked GitHub repo. `owner`/
+ * `repo`/`ref` are omitted; the edge function re-validates the package name.
+ */
+export interface NpmScanArgs {
+  ecosystem: "npm";
+  package: string;
+  version?: string;
+}
+
+export type ScanArgs = GithubScanArgs | NpmScanArgs;
 
 export type ScanResult =
   | { ok: true; report: Report; stageCount: number; fresh: boolean }
@@ -140,11 +159,22 @@ export async function scanRepo(
           Authorization: `Bearer ${token}`,
           "X-ClaudeRabbit-Client": "cli",
         },
-        body: JSON.stringify({
-          owner: args.owner,
-          repo: args.repo,
-          ...(args.ref ? { ref: args.ref } : {}),
-        }),
+        // npm → { ecosystem, package, version? } (owner/repo omitted); GitHub
+        // → { owner, repo, ref? }, byte-identical to before. The edge function
+        // re-validates either shape authoritatively.
+        body: JSON.stringify(
+          args.ecosystem === "npm"
+            ? {
+                ecosystem: "npm",
+                package: args.package,
+                ...(args.version ? { version: args.version } : {}),
+              }
+            : {
+                owner: args.owner,
+                repo: args.repo,
+                ...(args.ref ? { ref: args.ref } : {}),
+              },
+        ),
         signal: controller.signal,
       });
     } catch (err) {
@@ -165,8 +195,15 @@ export async function scanRepo(
       } catch {
         // non-JSON error body — keep the status-derived fallback
       }
-      if (res.status === 404) message = "Repository not found. Check the owner and repo name.";
-      if (res.status === 429) message = "GitHub rate limit hit upstream. Please try again shortly.";
+      // GitHub-specific fallbacks only — for npm the edge returns a precise
+      // message (e.g. `npm package "x@1.2.3" was not found…`), already captured
+      // into `message` from body.error above; don't clobber it with GitHub copy.
+      if (res.status === 404 && args.ecosystem !== "npm") {
+        message = "Repository not found. Check the owner and repo name.";
+      }
+      if (res.status === 429 && args.ecosystem !== "npm") {
+        message = "GitHub rate limit hit upstream. Please try again shortly.";
+      }
       return { ok: false, error: message };
     }
 

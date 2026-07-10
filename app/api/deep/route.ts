@@ -294,6 +294,7 @@ const STAGE_LABELS: Record<string, string> = {
   container_start: "Sandbox container starting",
   cloning: "Cloning the repository at the pinned commit",
   installing: "Installing dependencies",
+  building: "Building the repository",
   agents_exploring: "Three agents reading the code in parallel",
   running: "Executing the repository's start command",
   assembling_forensics: "Assembling the forensic record",
@@ -515,8 +516,16 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
 
       // 4. Poll: granular stages (deep-queue) + forensics landing (report row) +
       //    a terminal operation error, until forensics attach or the deadline.
-      const deadline = Date.now() + REST_MAX_WAIT_MS;
+      const startedAt = Date.now();
+      const deadline = startedAt + REST_MAX_WAIT_MS;
       let lastStage: string | null = null;
+      // Cloud Run Job executions have a real cold-start (image pull + VM allocation)
+      // before the container's entrypoint runs and reports its FIRST stage — up to a
+      // few minutes. Without a heartbeat the timeline sits on "Escalate" that whole
+      // time and reads as stuck. Emit an honest "provisioning the sandbox" line with a
+      // live elapsed counter until the container reports its first real stage.
+      let lastHeartbeat = 0;
+      const HEARTBEAT_MS = 4_000;
       while (!closed) {
         if (Date.now() > deadline) {
           // NOT an error — the detonation is still running and the container will
@@ -533,9 +542,13 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
 
         // Forensics landed = the real success signal (the container's own POST).
         if (await forensicsAttachedOnce(owner, repo, sha)) {
+          // Complete the last in-flight step, then the final "forensics attached".
+          if (lastStage) {
+            emit({ t: "stage", ch: STAGE_LABELS[lastStage] ?? lastStage, status: "done", kind: "ok" });
+          }
           emit({
             t: "stage",
-            ch: "Detonate",
+            ch: "Sandbox run complete",
             status: "done",
             kind: "ok",
             lines: ["Cloud Run execution completed — forensics attached to the report."],
@@ -547,21 +560,39 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
         }
 
         // Granular progress from the container (container_start → … → persisting).
-        // Bounded: deep-queue-client's fetch has no timeout of its own, so a slow
-        // edge function must never stall this loop.
+        // Each stage is surfaced as its OWN distinct timeline chapter — the previous
+        // step marked done, the new step shown active with a live spinner — so the
+        // detonation reads as a real step-by-step timeline (Cloning → Installing →
+        // Agents exploring → Running → Assembling → Persisting), NOT one static
+        // "Detonate" line that sits unmoving for the whole ~2.5–3.5 min run (the
+        // scan-progress regression). Bounded read so a slow edge function never stalls.
         const s = await withTimeout(fetchStage(slug), REST_READ_TIMEOUT_MS, null).catch(() => null);
         if (s && s.stage && s.stage !== lastStage) {
+          if (lastStage) {
+            emit({ t: "stage", ch: STAGE_LABELS[lastStage] ?? lastStage, status: "done", kind: "ok" });
+          }
           lastStage = s.stage;
           emit({
             t: "stage",
-            ch: "Detonate",
+            ch: STAGE_LABELS[s.stage] ?? s.stage,
             status: "active",
-            lines: [
-              s.detail
-                ? `${STAGE_LABELS[s.stage] ?? s.stage} — ${s.detail}`
-                : STAGE_LABELS[s.stage] ?? s.stage,
-            ],
+            lines: s.detail ? [s.detail] : [],
           });
+        } else if (lastStage === null) {
+          // No container stage yet — the sandbox is still cold-starting. Keep the
+          // timeline visibly alive with an honest elapsed counter rather than a
+          // silent gap on "Escalate".
+          const now = Date.now();
+          if (now - lastHeartbeat >= HEARTBEAT_MS) {
+            lastHeartbeat = now;
+            const secs = Math.round((now - startedAt) / 1000);
+            emit({
+              t: "stage",
+              ch: "Provisioning the sandbox container",
+              status: "active",
+              lines: [`Allocating an isolated Cloud Run sandbox and pulling the harness image… (${secs}s)`],
+            });
+          }
         }
 
         // Terminal execution failure (surfaced honestly rather than as a timeout).

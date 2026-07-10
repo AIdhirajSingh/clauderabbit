@@ -206,6 +206,17 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
     attempts: list[dict] = []
     dest_hosts: dict[str, list[str]] = {}
     supply_chain_hosts: dict[str, list[str]] = {}
+    # BUILD-phase fetches to an UNRECOGNIZED host (not a known distribution host, not a
+    # registry) with no credential involvement. These stay ATTACK-GRADE here (they go
+    # into dest_hosts below), because the static SOFTWARE_DISTRIBUTION_HOSTS list cannot
+    # know every legitimate mirror/CDN — BUT they are the ONLY hosts the edge function
+    # (attach-forensics extractRuntime) may later live-verify and downgrade, because
+    # they were captured at BUILD phase (a dependency-fetch context), never RUN phase.
+    # A RUN-phase C2/exfil host is NEVER in this set and so is never eligible for the
+    # liveness downgrade — that conflation was a real moat bypass (a live C2 that merely
+    # answers HTTPS would have been cleared). Recorded separately, additively; every
+    # existing field is unchanged.
+    build_phase_unrecognized_hosts: dict[str, list[str]] = {}
     cred_exfil = False
     decoded_payloads: list[dict] = []
     # Real bug fix: the same underlying network event can be captured by more
@@ -242,6 +253,11 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
         # code is executing, not installing), a BUILD-phase fetch to an unrecognized
         # host, or an attempt with unknown phase all keep FULL weight, unchanged.
         is_supply_chain_only = (not is_exfil) and is_build_phase and _is_software_distribution_host(host)
+        # A build-phase fetch to an unrecognized host (not a known distribution host):
+        # attack-grade by default, but the ONE case the edge function may live-verify.
+        is_build_phase_unrecognized = (
+            (not is_exfil) and is_build_phase and not _is_software_distribution_host(host)
+        )
         dedup_key = (host, r.get("method"), r.get("path"), r.get("port", 443), body, t)
         if dedup_key in seen_attempts:
             continue
@@ -263,6 +279,8 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             supply_chain_hosts.setdefault(host, [])
         else:
             dest_hosts.setdefault(host, [])
+            if is_build_phase_unrecognized:
+                build_phase_unrecognized_hosts.setdefault(host, [])
         if body.strip():
             decoded_payloads.append({
                 "host": host,
@@ -284,6 +302,10 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
 
     captured_intent = sorted(dest_hosts.keys())              # ATTACK-GRADE hosts only
     supply_chain_intent = sorted(supply_chain_hosts.keys())   # caution-only, NOT an attack signal
+    # The build-phase-unrecognized subset OF captured_intent — the only hosts the edge
+    # function may live-verify + downgrade (never a run-phase host). A strict subset of
+    # captured_intent, so it changes NO existing consumer that reads captured_intent.
+    build_phase_unrecognized = sorted(build_phase_unrecognized_hosts.keys())
     # ALL captured hosts (attack-grade + supply-chain), for the containment narrative
     # below — that section is a NEUTRAL fact about what the forge intercepted, not a
     # verdict about intent, so it must list every capture regardless of classification.
@@ -375,10 +397,11 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             "captured malice is not proof of safety.")
     elif not ran_ok:
         honesty_notes.append(
-            "The project built successfully, but its run command did not complete "
-            "cleanly (it crashed, exited with an error, or was still running when the "
-            "detonation window ended) — time- or condition-gated branches may not have "
-            "executed. Absence of captured malice is not proof of safety.")
+            "The project built successfully, but its run command crashed — it exited "
+            "with an error shortly after starting, before the observation window closed "
+            "— so time- or condition-gated branches may not have executed. (A long-lived "
+            "server that stays up for the whole window is treated as a clean run, not this "
+            "case.) Absence of captured malice is not proof of safety.")
     if agentic.get("crashed"):
         honesty_notes.append(
             "The three-agent code analysis did not complete for this run; agent findings "
@@ -438,6 +461,11 @@ def assemble(capture_path: str, owner: str, repo: str, sha: str, agentic_path: s
             # but deliberately EXCLUDED from captured_network_intent/attack_egress_intercepted
             # so a benign dependency fetch never reads as a confirmed attack.
             "supply_chain_egress": supply_chain_intent,
+            # The subset of captured_network_intent captured at BUILD phase against an
+            # unrecognized host — the ONLY hosts attach-forensics may live-verify and
+            # downgrade to supply-chain. A run-phase C2/exfil host is never listed here,
+            # so it can never be cleared by merely answering an HTTPS probe.
+            "build_phase_unrecognized_egress": build_phase_unrecognized,
             "not_verified": [],
         },
         "honesty": {"possibly_dormant_unverified": dormant_unverified, "notes": honesty_notes},

@@ -3,6 +3,8 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.14",
+    "jsr:@std/streams@^1.0.17": "1.1.1",
+    "jsr:@std/tar@0.1": "0.1.10",
     "jsr:@supabase/supabase-js@2": "2.108.2"
   },
   "jsr": {
@@ -14,6 +16,15 @@
     },
     "@std/internal@1.0.14": {
       "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    },
+    "@std/streams@1.1.1": {
+      "integrity": "92556d350e537e9dce527a6d08f6f15be3ff65e656079dea69d15252187c7613"
+    },
+    "@std/tar@0.1.10": {
+      "integrity": "6bf907f3a4bc8bfef42973ba132d946756a6161ef6b914a9e1c06debe664db17",
+      "dependencies": [
+        "jsr:@std/streams"
+      ]
     },
     "@supabase/supabase-js@2.108.2": {
       "integrity": "db603b534b1939a216ef004fe9fdd0c72bb4ba097fb04be23ea76cb8c70272aa"
@@ -35,7 +46,6 @@
         "npm:eslint@^10.5.0",
         "npm:next@^16.2.9",
         "npm:puppeteer-core@^25.3.0",
-        "npm:puppeteer@^25.3.0",
         "npm:react-dom@^19.2.7",
         "npm:react@^19.2.7",
         "npm:topojson-client@^3.1.0",

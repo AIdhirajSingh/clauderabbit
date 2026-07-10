@@ -48,6 +48,15 @@ import {
 } from "../_shared/scoring.ts";
 import { generate } from "../_shared/vertex.ts";
 import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
+import {
+  isValidNpmName,
+  type NpmDivergence,
+  type NpmMetadata,
+  NpmIntegrityError,
+  NpmNotFoundError,
+  type NpmTarget,
+  resolveNpmPackage,
+} from "../_shared/npm.ts";
 
 // --- Types mirroring lib/types.ts Report shape (what the UI expects) --------
 
@@ -57,6 +66,37 @@ interface ScanRequest {
   ref?: string;
   deviceId?: string;
   userId?: string;
+  /**
+   * npm-ecosystem target. When `ecosystem === "npm"`, the scan resolves and scans
+   * the published REGISTRY ARTIFACT for `package` (+ optional `version`/dist-tag) —
+   * the actual tarball `npm install` fetches, integrity-verified — NOT the GitHub
+   * repo its package.json happens to link to (which can silently diverge from the
+   * published bytes). See _shared/npm.ts. `owner`/`repo` are ignored for npm.
+   */
+  ecosystem?: string;
+  package?: string;
+  version?: string;
+}
+
+type Ecosystem = "github" | "npm";
+
+/**
+ * Normalized scan subject. The GitHub and npm resolution paths both produce this,
+ * so the shared pipeline (cache → static scan → read model → score → persist) runs
+ * identically regardless of ecosystem. For npm, `metadata` is synthesized from the
+ * registry manifest and `cacheKey` is the artifact integrity digest (the GitHub
+ * path's commit SHA has no analogue for a published tarball).
+ */
+interface ScanSubject {
+  ecosystem: Ecosystem;
+  ownerLogin: string;
+  repoName: string;
+  cacheKey: string;
+  ref: string;
+  files: FetchedFile[];
+  metadata: RepoMetadata;
+  npm?: NpmMetadata;
+  divergence?: NpmDivergence;
 }
 
 type Severity = "high" | "med" | "low";
@@ -461,6 +501,21 @@ function buildSystemPrompt(): string {
     "   silence, not a neutral one, and must be named as such. A repo with no",
     "   README, or one that says nothing about setup, gives you no cross-",
     "   reference either way — do not penalize or credit its absence.",
+    "6. TEST-FIXTURE / SECURITY-TOOLING context: a flagged region reason ending",
+    "   '(test-fixture context)' is a credential-path reference found inside a",
+    "   clearly test/fixture/example file — the shape a security tool's own honest",
+    "   attack-SIMULATION fixtures take (a fixture that pretends to read",
+    "   ~/.aws/credentials to prove a sandbox catches it). Treat it as a self-",
+    "   contained simulation, NOT a runtime credential theft, WHEN the repo's",
+    "   declared purpose (README/metadata) is consistent with being a security",
+    "   tool, scanner, malware-sample corpus, or test suite. This narrows ONE",
+    "   false-positive class and does NOT soften real attack detection: the SAME",
+    "   file still keeps full weight for obfuscation, an embedded live secret, an",
+    "   install hook, or hardcoded-IP egress (those are never downgraded), and a",
+    "   'fixture' whose behavior CONTRADICTS a repo that is not a security/test",
+    "   project — a credential read plus real undisclosed egress in an app that",
+    "   claims to be a to-do list — is undisclosed behavior wearing a test label,",
+    "   a WORSE signal, not a neutral one. Name it as such and escalate.",
     "",
     "Set `escalate` to true if you cannot confidently clear the repo from the",
     "static read alone — obfuscation, credential access, install-time network,",
@@ -751,6 +806,161 @@ interface OwnerRow {
   reputation_json?: unknown;
 }
 
+// --- npm subject resolution --------------------------------------------------
+
+/** Publish-age label + days for an npm package, matching github.ts's owner form. */
+function npmAgeLabel(firstPublishedAt: string | null): { label: string; days: number } {
+  if (!firstPublishedAt) return { label: "unknown", days: -1 };
+  const t = Date.parse(firstPublishedAt);
+  if (!Number.isFinite(t)) return { label: "unknown", days: -1 };
+  const days = Math.floor((Date.now() - t) / 86_400_000);
+  if (days < 0) return { label: "unknown", days: -1 };
+  if (days < 31) return { label: `${days} day${days === 1 ? "" : "s"}`, days };
+  const years = Math.floor(days / 365);
+  const months = Math.floor((days % 365) / 30);
+  if (years === 0) return { label: `${months} mo`, days };
+  return { label: `${years} yr${months > 0 ? ` ${months} mo` : ""}`, days };
+}
+
+/**
+ * Reputation signal for an npm PACKAGE — publisher/package standing, kept
+ * structurally SEPARATE from the artifact's code/behavior exactly like the GitHub
+ * owner signal. Publish age drives the new-package penalty (npm's dominant malware
+ * vector is brand-new throwaway packages); "established" additionally requires real
+ * adoption (last-month downloads), so a year-old package nobody installs is not
+ * vouched-for. npm has no stars, so `stars` stays 0 — adoption is carried honestly
+ * by the downloads figure surfaced in the report, never conflated with GitHub stars.
+ */
+function npmReputationSignal(npm: NpmMetadata): OwnerSignal {
+  const age = npmAgeLabel(npm.firstPublishedAt);
+  const downloads = npm.lastMonthDownloads ?? 0;
+  const established = age.days >= 365 && downloads >= 10_000 && npm.maintainerCount >= 1;
+  return {
+    login: npm.name,
+    type: "npm package",
+    name: npm.name,
+    createdAt: npm.firstPublishedAt,
+    ageLabel: age.label,
+    ageDays: age.days,
+    publicRepos: npm.maintainerCount,
+    established,
+    location: null,
+  };
+}
+
+/** Synthesize a RepoMetadata for an npm artifact so the shared prompt + persist
+ * path run unchanged. Fields with no npm analogue are zero; adoption lives in the
+ * reputation signal's download count, not in `stars`. */
+function npmRepoMetadata(npm: NpmMetadata): RepoMetadata {
+  return {
+    ownerLogin: "npm",
+    repoName: npm.name,
+    fullName: `npm:${npm.name}@${npm.version}`,
+    defaultBranch: npm.version,
+    description: npm.description,
+    language: "JavaScript/TypeScript",
+    stars: 0,
+    forks: 0,
+    openIssues: 0,
+    sizeKb: 0,
+    createdAt: npm.firstPublishedAt,
+    pushedAt: npm.publishedAt,
+    license: npm.license,
+    hasLockfile: false,
+    isPrivate: false,
+    visibility: "public",
+  };
+}
+
+/** Resolve an npm target into the normalized scan subject. */
+async function resolveNpmSubject(target: NpmTarget): Promise<ScanSubject> {
+  const r = await resolveNpmPackage(target);
+  return {
+    ecosystem: "npm",
+    ownerLogin: "npm",
+    repoName: r.metadata.name,
+    cacheKey: r.artifactKey,
+    ref: r.metadata.version,
+    files: r.files,
+    metadata: npmRepoMetadata(r.metadata),
+    npm: r.metadata,
+    divergence: r.divergence,
+  };
+}
+
+/**
+ * npm-artifact facts (integrity, divergence from the linked source repo) as flagged
+ * regions the read model reads and the report cites. An install hook present in the
+ * PUBLISHED artifact but NOT in the linked repo — or a tarball that failed its own
+ * integrity check — is the compromised-publish shape and forces escalation (see the
+ * caller). The install hooks THEMSELVES are already caught by the static scan over
+ * the tarball's package.json; these regions add the source-divergence trust signal.
+ */
+function npmArtifactRegions(npm: NpmMetadata, div: NpmDivergence): FlaggedRegion[] {
+  const regions: FlaggedRegion[] = [];
+  const id = `${npm.name}@${npm.version}`;
+  if (!npm.integrityVerified) {
+    regions.push({
+      file: "npm artifact",
+      reason:
+        "the published tarball could not be integrity-verified against the registry's own digest",
+      snippet: id,
+    });
+  }
+  for (const note of div.notes) {
+    regions.push({ file: "npm artifact", reason: note, snippet: id });
+  }
+  return regions;
+}
+
+/** True when npm divergence/integrity facts on their own warrant a live detonation
+ * (a source-divergent install hook, or an unverifiable artifact). */
+function npmForcesEscalation(npm: NpmMetadata | null, div: NpmDivergence | null): boolean {
+  if (!npm) return false;
+  if (!npm.integrityVerified) return true;
+  return !!div && div.addedInstallHooks.length > 0;
+}
+
+/** Extra prompt context for an npm scan: the model is told it is reading the REAL
+ * published artifact (not a repo), the integrity/divergence facts, and how to weigh
+ * a source-divergent install hook (the compromised-publish tell). */
+function npmPromptContext(npm: NpmMetadata, div: NpmDivergence | null): string {
+  const lines = [
+    "",
+    "=== npm PUBLISHED-ARTIFACT CONTEXT (code-side facts) ===",
+    "You are reading the ACTUAL published npm tarball that `npm install` fetches —",
+    "the real installed bytes, NOT a linked GitHub repo (the two can diverge; a",
+    "compromised publish can ship a malicious install hook or trojaned module that",
+    "exists only in the tarball).",
+    `package: ${npm.name}@${npm.version}`,
+    `tarball integrity: ${npm.integrityVerified ? `verified (${npm.integrityAlgo})` : "NOT verified — no/failed registry digest"}`,
+    `declares an install hook (preinstall/install/postinstall): ${npm.hasInstallHook}`,
+    `first published: ${npm.firstPublishedAt ?? "unknown"} · last-month downloads: ${npm.lastMonthDownloads ?? "unknown"} · maintainers: ${npm.maintainerCount}`,
+    `linked source repo: ${npm.linkedRepo ? `github.com/${npm.linkedRepo.owner}/${npm.linkedRepo.repo}` : "none declared"}`,
+  ];
+  if (div && div.compared) {
+    if (div.addedInstallHooks.length > 0) {
+      lines.push(
+        `SOURCE DIVERGENCE: install hook(s) [${div.addedInstallHooks.join(", ")}] exist in the`,
+        "PUBLISHED artifact but NOT in the linked source repo. This is the shape of a",
+        "compromised-publish supply-chain attack — weight it as a strong code signal,",
+        "not a neutral one, unless the code plainly shows an innocent, disclosed reason.",
+      );
+    } else {
+      lines.push(
+        "Source cross-check: the artifact's install hooks match its linked source repo",
+        "(no install-time behavior was injected only into the tarball).",
+      );
+    }
+  } else if (npm.hasInstallHook) {
+    lines.push(
+      "Source cross-check: could not corroborate the artifact's install hook(s) against",
+      "a linked source repo — judge the hook on the code itself, framed as unverified.",
+    );
+  }
+  return lines.join("\n");
+}
+
 // --- Main handler ------------------------------------------------------------
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -766,19 +976,41 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
+  // Ecosystem: an npm target scans the published registry ARTIFACT; anything else
+  // is a GitHub repo. The two share every downstream stage — they differ only in
+  // how the subject (files + metadata + reputation) is resolved.
+  const isNpm = (body.ecosystem ?? "").trim().toLowerCase() === "npm";
+
+  let npmTarget: NpmTarget | null = null;
   const ownerInput = (body.owner ?? "").trim();
   const repoInput = (body.repo ?? "").trim();
-  if (!ownerInput || !repoInput) {
-    return jsonResponse({ error: "owner and repo are required" }, 400);
-  }
-  if (!isValidOwnerRepo(ownerInput) || !isValidOwnerRepo(repoInput)) {
-    return jsonResponse({ error: "owner/repo contain invalid characters" }, 400);
-  }
+  let refInput: string | undefined;
 
-  // Validate the optional ref (branch/tag/sha) — bounded charset + length.
-  const refInput = (body.ref ?? "").trim() || undefined;
-  if (refInput && !/^[A-Za-z0-9._\-/]{1,200}$/.test(refInput)) {
-    return jsonResponse({ error: "ref contains invalid characters" }, 400);
+  if (isNpm) {
+    const pkg = (body.package ?? "").trim();
+    if (!pkg) {
+      return jsonResponse({ error: "package is required for an npm scan" }, 400);
+    }
+    if (!isValidNpmName(pkg)) {
+      return jsonResponse({ error: "package is not a valid npm package name" }, 400);
+    }
+    const version = (body.version ?? "").trim() || undefined;
+    if (version && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,64}$/.test(version)) {
+      return jsonResponse({ error: "version/tag contains invalid characters" }, 400);
+    }
+    npmTarget = { name: pkg, ...(version ? { version } : {}) };
+  } else {
+    if (!ownerInput || !repoInput) {
+      return jsonResponse({ error: "owner and repo are required" }, 400);
+    }
+    if (!isValidOwnerRepo(ownerInput) || !isValidOwnerRepo(repoInput)) {
+      return jsonResponse({ error: "owner/repo contain invalid characters" }, 400);
+    }
+    // Validate the optional ref (branch/tag/sha) — bounded charset + length.
+    refInput = (body.ref ?? "").trim() || undefined;
+    if (refInput && !/^[A-Za-z0-9._\-/]{1,200}$/.test(refInput)) {
+      return jsonResponse({ error: "ref contains invalid characters" }, 400);
+    }
   }
 
   // Device id is an opaque client fingerprint. Bound the raw value (untrusted
@@ -851,36 +1083,57 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(init.body, 429, init.headers);
   }
 
-  // 1. Resolve repo → canonical owner/repo + SHA + metadata + files.
+  // 1. Resolve the scan SUBJECT — a GitHub repo, OR the published npm artifact.
   //
-  // SAFETY RAIL (public-only): resolveRepo refuses any non-public repo by
-  // throwing PrivateRepoError immediately after reading repo metadata — BEFORE
-  // it fetches any file contents. We catch it here and return a clear 403 with
-  // NO cache touch, NO model call, and NO DB write. A private repo never reaches
-  // analysis or the public /owner/repo report.
-  let resolved;
+  // SAFETY RAIL (public-only): resolveRepo refuses any non-public repo by throwing
+  // PrivateRepoError immediately after reading repo metadata — BEFORE it fetches any
+  // file contents. We catch it here and return a clear 403 with NO cache touch, NO
+  // model call, and NO DB write. A private repo never reaches analysis or the public
+  // report. The npm path only ever touches the PUBLIC registry, so it has no
+  // private-artifact analogue; it refuses a tampered/unverifiable tarball (422) so
+  // we never scan bytes we cannot prove are the ones the registry vouches for.
+  let subject: ScanSubject;
   try {
-    resolved = await resolveRepo(ownerInput, repoInput, refInput);
-  } catch (e) {
-    if (e instanceof PrivateRepoError) {
-      return jsonResponse({ error: e.message }, 403);
+    if (npmTarget) {
+      subject = await resolveNpmSubject(npmTarget);
+    } else {
+      const resolved = await resolveRepo(ownerInput, repoInput, refInput);
+      subject = {
+        ecosystem: "github",
+        ownerLogin: resolved.metadata.ownerLogin,
+        repoName: resolved.metadata.repoName,
+        cacheKey: resolved.commitSha,
+        ref: resolved.ref,
+        files: resolved.files,
+        metadata: resolved.metadata,
+      };
     }
-    if (e instanceof RepoNotFoundError) {
+  } catch (e) {
+    if (e instanceof PrivateRepoError) return jsonResponse({ error: e.message }, 403);
+    if (e instanceof RepoNotFoundError || e instanceof NpmNotFoundError) {
       return jsonResponse({ error: e.message }, 404);
     }
-    if (e instanceof GitHubRateLimitError) {
-      return jsonResponse({ error: e.message }, 429);
-    }
-    console.error("resolveRepo failed:", e instanceof Error ? e.message : e);
-    return jsonResponse({ error: "Could not resolve repository" }, 502);
+    if (e instanceof GitHubRateLimitError) return jsonResponse({ error: e.message }, 429);
+    if (e instanceof NpmIntegrityError) return jsonResponse({ error: e.message }, 422);
+    console.error("subject resolution failed:", e instanceof Error ? e.message : e);
+    return jsonResponse(
+      { error: npmTarget ? "Could not resolve npm package" : "Could not resolve repository" },
+      502,
+    );
   }
 
-  const { metadata, commitSha, ref, files } = resolved;
-  const ownerLogin = metadata.ownerLogin;
-  const repoName = metadata.repoName;
+  const ecosystem = subject.ecosystem;
+  const npmMeta = subject.npm ?? null;
+  const divergence = subject.divergence ?? null;
+  const metadata = subject.metadata;
+  const commitSha = subject.cacheKey;
+  const ref = subject.ref;
+  const files = subject.files;
+  const ownerLogin = subject.ownerLogin;
+  const repoName = subject.repoName;
 
-  // Defense in depth: even if resolveRepo's guard were bypassed, never proceed
-  // to analyze or persist a repo whose metadata is not public.
+  // Defense in depth: even if resolveRepo's guard were bypassed, never analyze or
+  // persist a non-public GitHub repo. (npm subjects are always public-registry.)
   if (metadata.isPrivate || metadata.visibility !== "public") {
     return jsonResponse(
       { error: "ClaudeRabbit only scans public repositories." },
@@ -957,18 +1210,38 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // Stage: resolve (already done before the stream opened).
       await emit({
         t: "stage",
-        ch: "Resolve",
+        ch: ecosystem === "npm" ? "Resolve npm artifact" : "Resolve",
         status: "done",
         kind: "ok",
-        lines: [
-          `Resolved ${ownerLogin}/${repoName}@${commitSha.slice(0, 7)}`,
-          `${files.length} file(s) in the tree at the resolved SHA`,
-        ],
+        lines: ecosystem === "npm" && npmMeta
+          ? [
+            `Resolved npm ${npmMeta.name}@${npmMeta.version} — the published registry artifact` +
+            (npmMeta.integrityVerified
+              ? ` (integrity-verified, ${npmMeta.integrityAlgo})`
+              : " (NO registry integrity digest — unverified)"),
+            `${files.length} file(s) unpacked from the tarball` +
+            (npmMeta.linkedRepo
+              ? ` · linked source: github.com/${npmMeta.linkedRepo.owner}/${npmMeta.linkedRepo.repo}`
+              : " · no linked source repo declared"),
+          ]
+          : [
+            `Resolved ${ownerLogin}/${repoName}@${commitSha.slice(0, 7)}`,
+            `${files.length} file(s) in the tree at the resolved SHA`,
+          ],
       });
 
-      // 3. Static scan → flagged regions (code signals only).
+      // 3. Static scan → flagged regions (code signals only). For an npm artifact,
+      // this runs over the REAL published tarball's files, so an install hook or
+      // trojaned module that exists only in the artifact (not its linked repo) is
+      // scanned directly. The artifact/divergence facts are folded in as regions.
       await emit({ t: "stage", ch: "Static scan", status: "active" });
       let scan = staticScan(files);
+      if (npmMeta && divergence) {
+        const extra = npmArtifactRegions(npmMeta, divergence);
+        if (extra.length > 0) {
+          scan = { ...scan, flaggedRegions: [...scan.flaggedRegions, ...extra] };
+        }
+      }
       const flaggedCount = scan.flaggedRegions.length;
       await emit({
         t: "stage",
@@ -1047,35 +1320,48 @@ Deno.serve(async (req: Request): Promise<Response> => {
         });
       }
 
-      // 4. Owner reputation signal (kept SEPARATE from code/behavior).
+      // 4. Reputation signal (kept SEPARATE from code/behavior). For npm this is
+      // the PACKAGE/publisher standing (publish age, maintainers, monthly
+      // downloads); for GitHub it is the OWNER account standing. Same structural
+      // separation, different source.
       await emit({ t: "stage", ch: "Reputation", status: "active" });
       let owner: OwnerSignal;
-      try {
-        owner = await ownerSignal(ownerLogin);
-      } catch (e) {
-        console.error("ownerSignal failed:", e instanceof Error ? e.message : e);
-        // Degrade gracefully — reputation unknown, but do not fail the whole scan.
-        owner = {
-          login: ownerLogin,
-          type: "User",
-          name: null,
-          createdAt: null,
-          ageLabel: "unknown",
-          ageDays: -1,
-          publicRepos: 0,
-          established: false,
-          location: null,
-        };
+      if (npmMeta) {
+        owner = npmReputationSignal(npmMeta);
+      } else {
+        try {
+          owner = await ownerSignal(ownerLogin);
+        } catch (e) {
+          console.error("ownerSignal failed:", e instanceof Error ? e.message : e);
+          // Degrade gracefully — reputation unknown, but do not fail the whole scan.
+          owner = {
+            login: ownerLogin,
+            type: "User",
+            name: null,
+            createdAt: null,
+            ageLabel: "unknown",
+            ageDays: -1,
+            publicRepos: 0,
+            established: false,
+            location: null,
+          };
+        }
       }
       await emit({
         t: "stage",
         ch: "Reputation",
         status: "done",
         kind: "ok",
-        lines: [
-          `Owner ${ownerLogin} · ${owner.ageLabel}${owner.established ? " · established" : " · new account"}`,
-          `${formatNumber(metadata.stars)} stars (kept separate from code signals)`,
-        ],
+        lines: npmMeta
+          ? [
+            `Package ${npmMeta.name} · first published ${owner.ageLabel} ago · ${npmMeta.maintainerCount} maintainer(s)` +
+            (owner.established ? " · established" : " · new/low-adoption"),
+            `${npmMeta.lastMonthDownloads != null ? formatNumber(npmMeta.lastMonthDownloads) : "unknown"} downloads/month (kept separate from code signals)`,
+          ]
+          : [
+            `Owner ${ownerLogin} · ${owner.ageLabel}${owner.established ? " · established" : " · new account"}`,
+            `${formatNumber(metadata.stars)} stars (kept separate from code signals)`,
+          ],
       });
 
       // 5. Read model (fast tier) reads ONLY flagged regions + metadata.
@@ -1088,7 +1374,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           responseSchema: RESPONSE_SCHEMA,
           maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
           system: buildSystemPrompt(),
-          prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length, extractDeclaredIntent(files)),
+          prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length, extractDeclaredIntent(files)) +
+            (npmMeta ? npmPromptContext(npmMeta, divergence) : ""),
         });
         model = result.json as ModelOutput;
       } catch (e) {
@@ -1114,8 +1401,38 @@ Deno.serve(async (req: Request): Promise<Response> => {
       });
 
       // 7. Escalation gate (decision only). Produces a concise written reason
-      // (escalating OR cleared-on-static-read) for the report.
-      const escalation = decideEscalation(model, scan, owner, confidence);
+      // (escalating OR cleared-on-static-read) for the report. For npm, a
+      // source-divergent install hook or an unverifiable artifact forces a live
+      // detonation even if the static read alone would have cleared it — the
+      // artifact not matching its claimed source is itself worth running for real.
+      let escalation = decideEscalation(model, scan, owner, confidence);
+      if (!escalation.escalate && npmForcesEscalation(npmMeta, divergence)) {
+        escalation = {
+          escalate: true,
+          reason: npmMeta && !npmMeta.integrityVerified
+            ? "published npm artifact could not be integrity-verified"
+            : "published npm artifact declares install hook(s) absent from its linked source (source divergence)",
+          wasNewOwner: escalation.wasNewOwner,
+        };
+      }
+      // OPERATOR OVERRIDE: force a live sandbox detonation for specific targets even when
+      // the static read cleared them — set via the CR_FORCE_DEEP_TARGETS secret (a comma-
+      // separated list of "owner/repo", case-insensitive). This is the honest way to get a
+      // genuine sandbox-verified report for a repo that reads clean statically (e.g. this
+      // product's own repo for its public/marketing report): it forces the RUN, it does NOT
+      // touch the static signals or the score — whatever the sandbox observes is the real
+      // number. Off by default (no env → no effect), so it is inert on any normal scan.
+      if (!escalation.escalate) {
+        const forceTargets = (Deno.env.get("CR_FORCE_DEEP_TARGETS") ?? "")
+          .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (forceTargets.includes(`${ownerLogin}/${repoName}`.toLowerCase())) {
+          escalation = {
+            escalate: true,
+            reason: "operator-forced live sandbox verification for this target",
+            wasNewOwner: escalation.wasNewOwner,
+          };
+        }
+      }
       const escalate = escalation.escalate;
       const escalationReason = escalation.reason;
       const scanPath = escalate ? "deep" : "fast";
@@ -1203,8 +1520,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
         note: "",
       };
       const repView = {
-        stars: formatNumber(metadata.stars),
-        forks: formatNumber(metadata.forks),
+        // npm has no stars/forks — show "—" rather than a misleading "0". The
+        // package's real adoption (monthly downloads) is stated in the Reputation
+        // log chapter, not conflated into a stars count.
+        stars: npmMeta ? "—" : formatNumber(metadata.stars),
+        forks: npmMeta ? "—" : formatNumber(metadata.forks),
         sentiment: model.reputation?.sentiment ?? "",
         sentScore: typeof model.reputation?.sentScore === "number"
           ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
@@ -1215,9 +1535,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
         location: owner.location ?? null,
       };
 
-      // 8. Persist — owner reputation, report, scan event.
+      // 8. Persist — owner reputation, report, scan event. The `owners` table is
+      // GitHub-owner-keyed (github_login, public_repos, stars_total), so it is
+      // written ONLY for a GitHub scan. An npm package has no GitHub owner row;
+      // its report persists with owner_id=null and carries the package reputation
+      // in the fresh render (ownerView) + the Reputation log chapter.
       let ownerId: number | null = null;
-      try {
+      if (!npmMeta) {
+        try {
         const { data: ownerUp } = await db
           .from("owners")
           .upsert(
@@ -1247,14 +1572,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
           .select("id")
           .maybeSingle();
         ownerId = (ownerUp as { id: number } | null)?.id ?? null;
-      } catch (e) {
-        console.error("owner upsert failed:", e instanceof Error ? e.message : e);
+        } catch (e) {
+          console.error("owner upsert failed:", e instanceof Error ? e.message : e);
+        }
       }
 
       const stats = model.stats ?? {
         loc: "—",
         packages: model.packages?.length ?? 0,
-        stars: formatNumber(metadata.stars),
+        stars: npmMeta ? "—" : formatNumber(metadata.stars),
         created: monthYear(metadata.createdAt),
       };
 

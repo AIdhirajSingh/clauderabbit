@@ -12,8 +12,15 @@ you on purpose. Everything else is done.
 ## What is already wired (nothing to do here)
 
 - Supabase project `mjvlczaytkhvsolnhhkz`: schema, RLS, the `scan` + `attach-forensics` +
-  `deep-queue` edge functions, and all secrets (`GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_*`,
-  `GEMINI_*`, `GITHUB_TOKEN`, `CR_DEEP_RUNNER_KEY`, …) are set server-side.
+  `deep-queue` + `oauth-token` (CLI/MCP login) edge functions, and all secrets
+  (`GOOGLE_SERVICE_ACCOUNT_JSON`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `VERTEX_LOCATION`,
+  `GEMINI_FAST_MODEL`, `GEMINI_DEEP_MODEL`, `GITHUB_TOKEN`, `CR_DEEP_RUNNER_KEY`, …) are
+  set server-side. The Gemini model path is a hand-rolled Vertex REST client auth'd by the
+  service account (no Gen AI SDK, no AI Studio key) — see `docs/INFRASTRUCTURE.md` §6.
+- Scanning accepts **GitHub repos and npm packages**: an npm target is resolved to its real
+  published registry tarball, integrity-verified, and scanned (not just its linked repo),
+  with public reports at `/npm/<pkg>` (`docs/INFRASTRUCTURE.md` §2). Nothing to configure —
+  the npm registry is public and needs no credential.
 - Google sign-in works today (the Google OAuth client + the Supabase callback
   `https://mjvlczaytkhvsolnhhkz.supabase.co/auth/v1/callback` are configured).
 - The dynamic sandbox runs as Cloud Run Job executions (`cr-detonation`, region
@@ -158,6 +165,6 @@ gcloud needed. That is how the production path is verified before every deploy.
 
 - Open the Vercel URL, sign in with Google → your name, email, and Google avatar show,
   and a fresh account has an empty history.
-- Open any `/{owner}/{repo}` report and the Danger Board — they render for
-  logged-out visitors too (public surfaces).
+- Open any `/{owner}/{repo}` report, an npm report at `/npm/<pkg>`, and the Danger
+  Board — they all render for logged-out visitors too (public surfaces).
 - The browser console is clean (no hydration/errors).

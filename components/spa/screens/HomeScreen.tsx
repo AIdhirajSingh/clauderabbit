@@ -22,7 +22,7 @@ export function HomeScreen() {
   const isMobile = useIsMobile();
 
   return (
-    <div style={{ position: "relative", animation: "fadeIn .6s ease both" }}>
+    <div style={{ position: "relative", animation: "fadeIn .3s ease both" }}>
       {/* ambient glow placeholder (kept for structural parity) */}
       <div style={{ position: "absolute", inset: 0, height: 0, zIndex: 0, pointerEvents: "none" }} />
 

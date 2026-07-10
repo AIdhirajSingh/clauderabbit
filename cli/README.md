@@ -66,7 +66,17 @@ fast-path scan runs. You never need to know or choose which case applies.
 | `owner/repo` | `expressjs/express` | that GitHub repo |
 | `owner/repo@ref` or `owner/repo#ref` | `expressjs/express@5.0.0` | that repo at a ref |
 | a GitHub URL | `https://github.com/expressjs/express` | that repo |
-| an **npm package name** | `left-pad`, `@scope/pkg` | its GitHub repo, via the npm registry `repository` field |
+| an **npm package name** | `left-pad`, `@scope/pkg` | the real **published npm artifact** (its tarball + install hooks), scanned directly |
+| an npm name **at a version** | `left-pad@1.3.0`, `npm:express@5`, `https://npmjs.com/package/left-pad/v/1.3.0` | that exact published version's artifact |
+
+npm targets are passed straight through to the API, which scans the **actual published
+artifact** — its tarball bytes, `postinstall`/`preinstall` hooks and all — rather than the
+GitHub repo its `package.json` links to. That is deliberate: a compromised maintainer can
+publish a malicious version directly to the registry while pointing `repository` at an
+innocent, high-reputation repo, so scanning the linked repo would be blind to exactly the
+supply-chain attack an install-time check most needs to catch. For an npm scan the report's
+owner is `npm` and its name is the package (e.g. `npm/left-pad`). `--ref` selects the
+version/dist-tag for an npm target.
 
 `--json` emits the machine-readable object documented in [JSON output](#json-output-schema).
 
@@ -80,7 +90,8 @@ non-TTY stdout (e.g. piped output) — never raw escape codes in that case.
 
 ```bash
 clauderabbit scan expressjs/express
-clauderabbit scan left-pad --json          # resolved via npm → stevemao/left-pad
+clauderabbit scan left-pad --json          # scans the published npm artifact (report owner "npm")
+clauderabbit scan npm:left-pad@1.3.0       # a specific published version
 clauderabbit scan https://github.com/owner/repo --ref main
 ```
 
@@ -197,7 +208,7 @@ ClaudeRabbit is a two-speed system. The fast path (what `scan` calls) runs on
 essentially every request: static analysis, reputation lookup, and a fast model reading only
 the flagged regions. A small share of ambiguous repos get **escalated** to a full
 dynamic-sandbox detonation — the repo is actually built and run inside a hermetic,
-network-locked-down, single-use VM. That detonation is a separate, privileged process and is
+network-locked-down, single-use Cloud Run container. That detonation is a separate, privileged process and is
 **not** something this public API call forces to complete synchronously.
 
 So a scan result reflects the fast-path read plus reputation. When `sandboxActuallyRan` is
@@ -231,8 +242,11 @@ npm run dev         # watch mode
 - `src/lib/client.ts` — the only module that makes ClaudeRabbit HTTP calls. Mirrors the main
   app's `lib/scan.ts` (`runScan`, NDJSON stream + cache-hit JSON), reimplemented standalone
   (mirrors the production-verified `mcp-server/` client).
-- `src/lib/resolve.ts` — turns a user target (owner/repo, URL, or npm name) into an
-  `{ owner, repo, ref? }`; npm names are resolved via the public npm registry `repository` field.
+- `src/lib/resolve.ts` — turns a user target into either a GitHub repo (`owner/repo, URL,
+  owner/repo@ref`) or an npm package target (`{ package, version? }`). Purely local detection:
+  an npm name is passed through to the API, which scans the real published artifact — the
+  registry→GitHub-repo redirect this module used to do is gone (it was blind to a malicious
+  version published only to the registry).
 - `src/lib/normalize.ts` — coerces an arbitrary API payload into a strict `Report` and
   enforces the "never a bare Safe verdict" rail (mirrors the app's `normalizeReport` /
   `enforceVerdict`).

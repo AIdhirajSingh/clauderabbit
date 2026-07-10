@@ -61,12 +61,41 @@ bounded instead of process-lifetime-bounded.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# CONTROL-PLANE AUTH (security review, criticals #2/#3): /register and /forensics
+# mutate a scan's egress-passthrough window and its captured forensic evidence. The
+# firewall only proves a request came from the Cloud Run subnet — it CANNOT tell the
+# trusted harness apart from the UNTRUSTED detonated repo, which runs in the same
+# container on the same subnet IP. Without auth, the detonated code could re-open its
+# own github.com passthrough (an unlogged exfil channel) or one-shot-consume its OWN
+# /forensics to blank the evidence before the harness collects it (forging a clean
+# verdict). We now require a shared control key on BOTH mutating endpoints; the harness
+# holds it (Secret-Manager-backed env, entrypoint.sh) and detonate.py scrubs it — and
+# every other secret — from the untrusted build/run environment, so the detonated code
+# never sees it. /ca-cert (a public certificate) and /healthz stay open.
+#
+# Rollout-safe: enforced ONLY when CR_FORGE_CONTROL_KEY is configured. Until provisioning
+# sets it on the gateway AND the harness, the endpoints behave as before (a loud one-time
+# warning is logged) — so this can never break an un-migrated live gateway. Provisioning
+# MUST set it to actually close the hole (see provision-forge-gateway.sh).
+CONTROL_KEY = os.environ.get("CR_FORGE_CONTROL_KEY", "").strip()
+_warned_no_key = False
+
+
+def key_authorized(presented: str, control_key: str) -> bool:
+    """Pure control-key check (unit-tested). An empty control_key means "not configured"
+    -> allow (rollout-safe). Otherwise require a non-empty, constant-time-equal header."""
+    if not control_key:
+        return True
+    return bool(presented) and hmac.compare_digest(presented.strip(), control_key)
+
 
 CAPTURE_PATH = os.environ.get("CR_FORGE_CAPTURE", "/var/log/cr-forge/capture.jsonl")
 CA_CERT_PATH = os.environ.get("CR_FORGE_CA_CERT", "/root/.mitmproxy/mitmproxy-ca-cert.pem")
@@ -207,10 +236,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self) -> bool:
+        """True when the caller presented the shared control key (or none is
+        configured yet — rollout-safe, warned once). Constant-time compare so the
+        key length/prefix cannot be enumerated by timing."""
+        global _warned_no_key
+        if not CONTROL_KEY and not _warned_no_key:
+            _warned_no_key = True
+            print(
+                "CR_FORENSICS_API WARNING: CR_FORGE_CONTROL_KEY is not set — "
+                "/register and /forensics are UNAUTHENTICATED. Set it in provisioning "
+                "to close the control-plane hole.",
+                flush=True,
+            )
+        return key_authorized(self.headers.get("x-forge-key") or "", CONTROL_KEY)
+
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's naming convention
         parsed = urlparse(self.path)
         if parsed.path != "/register":
             self._json(404, {"error": "not found"})
+            return
+        if not self._authorized():
+            self._json(401, {"error": "unauthorized"})
             return
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length else b"{}"
@@ -248,6 +295,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(pem)
             return
         if parsed.path == "/forensics":
+            # AUTH REQUIRED: this read is ONE-SHOT (it consumes the registration), so an
+            # unauthenticated caller could race the harness to blank its own evidence.
+            if not self._authorized():
+                self._json(401, {"error": "unauthorized"})
+                return
             qs = parse_qs(parsed.query)
             scan_id = (qs.get("scan_id") or [""])[0].strip()
             if not scan_id:

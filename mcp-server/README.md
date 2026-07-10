@@ -1,6 +1,6 @@
 # ClaudeRabbit MCP server
 
-An [MCP](https://modelcontextprotocol.io) server for [ClaudeRabbit](https://github.com/AIdhirajSingh/clauderabbit) — a free, no-login, open web tool that scans a public GitHub repo and returns an honest 0-100 safety score. This server lets any MCP-compatible AI coding tool (Claude Code, Claude Desktop, Codex, etc.) check a repo or dependency's safety score **before installing or running it**, without leaving the tool.
+An [MCP](https://modelcontextprotocol.io) server for [ClaudeRabbit](https://github.com/AIdhirajSingh/clauderabbit) — a free, no-login, open web tool that scans a public GitHub repo or npm package and returns an honest 0-100 safety score. This server lets any MCP-compatible AI coding tool (Claude Code, Claude Desktop, Codex, etc.) check a repo or dependency's safety score **before installing or running it**, without leaving the tool.
 
 It is a thin, self-contained client of the real, deployed ClaudeRabbit API — the same public Supabase edge function and database read the [ClaudeRabbit web app](https://github.com/AIdhirajSingh/clauderabbit) itself calls. It does not reimplement any scanning, scoring, or sandboxing logic; it only calls the existing API and formats the response.
 
@@ -8,13 +8,16 @@ It is a thin, self-contained client of the real, deployed ClaudeRabbit API — t
 
 Per ClaudeRabbit's core rule, **this server never returns a bare "Safe" verdict.** Every result states the score, the verdict, and explicitly what was and was not verified.
 
-One tool:
+One tool, two target kinds:
 
-- **`scan(owner, repo, ref?)`** — cache-aware by construction. If a report already exists for the repo's current commit, it comes back immediately (no rescan); otherwise a real ClaudeRabbit fast-path scan runs (clone + static scanners + reputation lookup + a fast model read) and its result comes back. Callers never need to know or choose which case applies. Returns the score, verdict, code/behavior findings, and reputation signals.
+- **`scan(owner, repo, ref?)`** — a public **GitHub repo**.
+- **`scan(package, version?)`** — an **npm package**. This scans the REAL published registry artifact — the exact tarball `npm install` fetches, integrity-verified — not the GitHub repo its `package.json` happens to link to, so it catches a compromised-publish that exists only in the tarball. `package` accepts a bare name (`left-pad`), a scoped name (`@scope/name`), an explicit `npm:left-pad@1.3.0`, or an `npmjs.com` package URL; a trailing `@version` in `package` (or the separate `version` arg) pins a version/dist-tag. A plain `owner/repo` is a GitHub target, not npm — use `owner`/`repo` for that.
+
+Either way it is **cache-aware by construction**: if a report already exists for the target's current commit/artifact, it comes back immediately (no rescan); otherwise a real ClaudeRabbit fast-path scan runs (fetch + static scanners + reputation lookup + a fast model read) and its result comes back. Callers never need to know or choose which case applies. Returns the score, verdict, code/behavior findings, and reputation signals. An npm report's identity is `npm/<package>` (its `reportUrl` is `…/npm/<package>`).
 
 ### Important: what a scan result does and does NOT prove
 
-ClaudeRabbit is a two-speed system. The fast path (what `scan` calls, whether it's a fresh run or a cache hit) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use VM.
+ClaudeRabbit is a two-speed system. The fast path (what `scan` calls, whether it's a fresh run or a cache hit) runs on essentially every request: static analysis, reputation lookup, and a fast model reading only the flagged regions. A small share of ambiguous repos get **escalated** to a full dynamic-sandbox detonation — the repo is actually built and run inside a hermetic, network-locked-down, single-use Cloud Run container.
 
 **A fresh `scan` only runs the fast path.** It can determine that a repo *should* be escalated (reflected as `escalationDecided: true` in the structured output) without the dynamic sandbox having actually executed yet — that detonation is a separate, privileged process gated to ClaudeRabbit's own sandbox controller and is not something this public API call can force to complete synchronously.
 
@@ -155,7 +158,7 @@ The first call scans a tiny, extremely common, long-lived package at its default
 - `src/claude-rabbit-client.ts` — the only module that makes HTTP calls. Mirrors the main app's `lib/scan.ts` (`runScan`, handling both the plain-JSON cache-hit response and the NDJSON streamed-scan response) exactly, reimplemented standalone since this package does not depend on the Next.js app's `lib/`.
 - `src/normalize.ts` — coerces an arbitrary API payload into a strict `Report` shape and enforces the "never a bare Safe verdict" rail, mirroring the main app's `normalizeReport`/`enforceVerdict`.
 - `src/format.ts` — shapes a `Report` into the tool output: score, verdict, the honest sandbox-ran-vs-static-read distinction, and separated code/behavior vs. reputation sections.
-- `src/tools/scan.ts` — the one MCP tool definition and handler. Cache-aware by construction: it just reflects whatever `claude-rabbit-client.ts`'s `scanRepo` returns, which is itself already a cache-hit-or-fresh-scan call against the real edge function.
+- `src/tools/scan.ts` — the one MCP tool definition and handler. Detects whether the input is a GitHub repo (`owner`/`repo`) or an npm package (`package`, via a small local DETECT-only parser — the edge function re-validates authoritatively), then reflects whatever `claude-rabbit-client.ts`'s `scanRepo` returns, which is itself already a cache-hit-or-fresh-scan call against the real edge function.
 - `src/auth.ts` — reads the shared `~/.clauderabbit/credentials.json` session (written by the
   [CLI](../cli)'s `login`) and builds the sign-in-required tool result when it's missing.
 - `src/index.ts` — stdio server entrypoint.

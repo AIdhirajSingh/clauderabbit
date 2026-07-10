@@ -128,6 +128,11 @@ Once Cloud Run's free tier is exhausted (a real future point, not reached yet), 
 - **Per-scan cost is genuinely tiny** — fractions of a cent, even before any caching
   benefit (a cache hit on an already-scanned, unchanged repo costs $0 in compute — see
   `docs/claude-rabbit-north-star.md`'s "never do the same work twice" section).
+- **npm-package scans (the published-artifact path) carry the same fast-path economics
+  above.** The one extra cost versus a GitHub scan is a bounded registry tarball download
+  (hard-capped at 32 MB in `_shared/npm.ts`) — bandwidth, not compute or model tokens — fed
+  into the identical static-scan + fast-model + scoring pipeline. So an npm scan sits in the
+  ~$0.0018 fast-path column, not a new cost line.
 - **The real structural cost is the fixed ~$12/month gateway**, not per-scan compute —
   this holds even at zero traffic.
 - **There is no revenue offsetting any of this.** At the volumes exercised this session,

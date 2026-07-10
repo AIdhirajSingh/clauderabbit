@@ -70,7 +70,7 @@ The report is generated on the frontend from the shipped Claude Design `design.m
 - **Sections:** owner history · reputation (owner + repo) · repo stats (lines of code, packages, stars, creation date) · per-package scoring · risky items · final verdict.
 - **Full end-to-end logs** viewable, plus a logs summary.
 - **Export:** PDF, standalone self-contained HTML, and a shareable web link.
-- (Auto-publishes to a public `/owner/repo` page — not a screen the designer builds.)
+- (Auto-publishes to a public `/owner/repo` page — or `/npm/<package>` when the scanned target is an npm package rather than a GitHub repo — not a screen the designer builds.)
 
 ### 4. Leaderboard (full-screen)
 - Standalone view, reachable from the nav or the home full-screen control.

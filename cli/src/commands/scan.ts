@@ -6,7 +6,7 @@
  * `--json` structured object (consumed by scripts and agents).
  */
 
-import { scanRepo, type StageStatus } from "../lib/client.js";
+import { scanRepo, type ScanArgs, type StageStatus } from "../lib/client.js";
 import { ensureLoggedIn } from "../lib/auth.js";
 import { loadConfig } from "../lib/env.js";
 import {
@@ -62,25 +62,41 @@ export async function runScanCommand(
     return fail(`Sign-in failed: ${(err as Error).message}`);
   }
 
-  // 1. Resolve the target (may hit the npm registry).
+  // 1. Resolve the target into a GitHub repo or an npm package target. This is
+  // now purely local (no registry lookup) — the edge function does the real npm
+  // work against the published artifact.
   let resolved;
   try {
-    resolved = await resolveTarget(rawTarget);
+    resolved = resolveTarget(rawTarget);
   } catch (err) {
     return fail((err as Error).message);
   }
 
-  const ref = opts.ref ?? resolved.ref;
-
-  if (!opts.json && !opts.quiet) {
-    const label =
-      resolved.via === "npm"
-        ? `npm:${resolved.npmPackage} → ${resolved.owner}/${resolved.repo}`
-        : `${resolved.owner}/${resolved.repo}`;
-    process.stderr.write(palette.dim(`Scanning ${label}${ref ? `@${ref}` : ""}…\n`));
+  // 2. Build the API scan args + an honest human label per ecosystem. For npm
+  // we pass the package target THROUGH so the API scans the real published
+  // artifact — never a linked GitHub repo. `--ref` doubles as the version/dist-
+  // tag selector for npm (its only sensible meaning there) and, as for GitHub,
+  // an explicit flag wins over one parsed from the target string.
+  let scanArgs: ScanArgs;
+  let label: string;
+  let displayRef: string | undefined;
+  if (resolved.via === "npm") {
+    const version = opts.ref ?? resolved.version;
+    scanArgs = { ecosystem: "npm", package: resolved.package, ...(version ? { version } : {}) };
+    label = `npm package ${resolved.package}`;
+    displayRef = version;
+  } else {
+    const ref = opts.ref ?? resolved.ref;
+    scanArgs = { owner: resolved.owner, repo: resolved.repo, ...(ref ? { ref } : {}) };
+    label = `${resolved.owner}/${resolved.repo}`;
+    displayRef = ref;
   }
 
-  // 2. Call the real API. Stage events go to stderr in interactive text mode.
+  if (!opts.json && !opts.quiet) {
+    process.stderr.write(palette.dim(`Scanning ${label}${displayRef ? `@${displayRef}` : ""}…\n`));
+  }
+
+  // 3. Call the real API. Stage events go to stderr in interactive text mode.
   // Each phase emits a real "active" (starting) then "done" (finished) event
   // — render them distinctly rather than printing the same bare label twice.
   const onStage =
@@ -93,38 +109,26 @@ export async function runScanCommand(
           )
       : undefined;
 
-  const result = await scanRepo(
-    config,
-    { owner: resolved.owner, repo: resolved.repo, ...(ref ? { ref } : {}) },
-    token,
-    onStage,
-  );
+  const result = await scanRepo(config, scanArgs, token, onStage);
 
   if (!result.ok) {
     return fail(result.error);
   }
 
-  // 3. Print output.
+  // 4. Print output. For npm, thread the package name through so the renderers
+  // can label the result honestly as an npm package (the report itself already
+  // comes back with owner "npm" and the package as its name).
+  const outputOpts = {
+    fresh: result.fresh,
+    resolvedVia: resolved.via,
+    ...(resolved.via === "npm" ? { npmPackage: resolved.package } : {}),
+  };
   if (opts.json) {
-    const json = toJson(result.report, config.siteUrl, {
-      fresh: result.fresh,
-      resolvedVia: resolved.via,
-      ...(resolved.npmPackage ? { npmPackage: resolved.npmPackage } : {}),
-    });
+    const json = toJson(result.report, config.siteUrl, outputOpts);
     process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   } else {
     process.stdout.write(
-      toText(
-        result.report,
-        config.siteUrl,
-        {
-          fresh: result.fresh,
-          resolvedVia: resolved.via,
-          ...(resolved.npmPackage ? { npmPackage: resolved.npmPackage } : {}),
-        },
-        palette,
-        opts.color,
-      ),
+      toText(result.report, config.siteUrl, outputOpts, palette, opts.color),
     );
   }
 

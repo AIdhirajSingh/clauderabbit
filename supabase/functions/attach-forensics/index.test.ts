@@ -49,6 +49,7 @@ function forensics(overrides: {
   intendedDestinations?: string[];
   attackEgressIntercepted?: boolean;
   supplyChainEgress?: string[];
+  buildPhaseUnrecognized?: string[];
   dynamicScore?: number;
   exfilHosts?: string[];
 }): Record<string, unknown> {
@@ -75,6 +76,7 @@ function forensics(overrides: {
       captured_network_intent: overrides.capturedNetworkIntent ?? [],
       attack_egress_intercepted: overrides.attackEgressIntercepted ?? false,
       supply_chain_egress: overrides.supplyChainEgress ?? [],
+      build_phase_unrecognized_egress: overrides.buildPhaseUnrecognized ?? [],
     },
   };
 }
@@ -147,6 +149,9 @@ Deno.test("extractRuntime: an unrecognized host that verifies live-legitimate is
         forensics({
           attackEgressIntercepted: true,
           capturedNetworkIntent: ["storage.googleapis.com"],
+          // A BUILD-phase fetch to a real distribution host not on the static list —
+          // the only case eligible for the live-verification downgrade.
+          buildPhaseUnrecognized: ["storage.googleapis.com"],
         }),
       ),
   );
@@ -179,12 +184,64 @@ Deno.test("extractRuntime: a credential-exfil-tagged host is never eligible for 
         forensics({
           attackEgressIntercepted: true,
           capturedNetworkIntent: ["storage.googleapis.com"],
+          buildPhaseUnrecognized: ["storage.googleapis.com"], // eligible, but exfil-tagged below wins
           exfilHosts: ["storage.googleapis.com"],
         }),
       ),
   );
   assertEquals(rt.caughtAttack, true, "a host tied to a credential-exfil payload stays attack-grade regardless of what it verifies as");
   assertEquals(rt.capturedHost, "storage.googleapis.com");
+});
+
+Deno.test("extractRuntime: a RUN-phase C2 that ANSWERS HTTPS is NEVER downgraded (moat-bypass fix)", async () => {
+  // The critical fix: a live C2 trivially runs a web server, so "responds to HTTPS"
+  // must not clear a RUN-phase exfil target. This host is in captured_network_intent
+  // but NOT in build_phase_unrecognized_egress (i.e. it was a run-phase attempt), so
+  // even though the mocked fetch returns 200 it must stay a caught attack.
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () =>
+      extractRuntime(
+        forensics({
+          attackEgressIntercepted: true,
+          capturedNetworkIntent: ["live-c2.attacker.example"],
+          buildPhaseUnrecognized: [], // run-phase → not eligible for the liveness rescue
+        }),
+      ),
+  );
+  assertEquals(rt.caughtAttack, true, "a run-phase C2 that answers HTTPS must stay a caught attack");
+  assertEquals(rt.capturedHost, "live-c2.attacker.example");
+});
+
+Deno.test("extractRuntime: a PRESENT-but-empty phase field downgrades nothing (strict)", async () => {
+  // The sandbox emitted the phase field but no host was build-phase-unrecognized, so even a
+  // host that answers HTTPS is not eligible — a run-phase host stays a caught attack.
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () =>
+      extractRuntime(
+        forensics({
+          attackEgressIntercepted: true,
+          capturedNetworkIntent: ["storage.googleapis.com"],
+          buildPhaseUnrecognized: [], // present + empty → strict, nothing eligible
+        }),
+      ),
+  );
+  assertEquals(rt.caughtAttack, true, "present-but-empty phase field → nothing downgraded");
+});
+
+Deno.test("extractRuntime: a LEGACY record with NO phase field keeps the prior liveness downgrade (forward-compat, non-regressing)", async () => {
+  // Deploying this edge function ahead of the sandbox image rebuild must NOT over-flag: an
+  // older record that never carried the phase field falls back to the prior behavior (any
+  // captured host may be liveness-downgraded). The strict phase-aware behavior activates
+  // automatically once the sandbox emits the field.
+  const rec = forensics({ attackEgressIntercepted: true, capturedNetworkIntent: ["storage.googleapis.com"] });
+  delete (rec.verdict as Record<string, unknown>).build_phase_unrecognized_egress;
+  const rt = await withMockedFetch(
+    (() => Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch,
+    () => extractRuntime(rec),
+  );
+  assertEquals(rt.caughtAttack, false, "legacy record (no phase field) → prior liveness downgrade preserved");
 });
 
 Deno.test("extractRuntime: a mix of one real host and one unreachable host only downgrades the real one", async () => {
@@ -199,6 +256,8 @@ Deno.test("extractRuntime: a mix of one real host and one unreachable host only 
         forensics({
           attackEgressIntercepted: true,
           capturedNetworkIntent: ["storage.googleapis.com", "evil-c2.example"],
+          // Only the build-phase host is eligible; evil-c2 (run-phase) never is.
+          buildPhaseUnrecognized: ["storage.googleapis.com"],
         }),
       ),
   );

