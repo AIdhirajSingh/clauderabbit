@@ -23,12 +23,27 @@
  * published artifact, not shipped with that gap.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runScanCommand } from "./commands/scan.js";
 import { runMcpInstallCommand } from "./commands/mcp-install.js";
 import { clearToken, login, saveToken } from "./lib/auth.js";
 import { loadConfig } from "./lib/env.js";
 
-const VERSION = "0.1.2";
+/**
+ * Read the real version from package.json at runtime rather than duplicating it
+ * as a hardcoded string here — a hardcoded copy silently went stale (shipped
+ * "0.1.2" for two releases after package.json moved to 0.1.4), so `clauderabbit
+ * version` lied about what was actually installed. `../package.json` is
+ * relative to this file's location in `dist/` (one level up from `dist/index.js`
+ * is the package root), which is npm always includes regardless of the
+ * package's `files` field.
+ */
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const VERSION: string = JSON.parse(
+  readFileSync(join(__dirname, "../package.json"), "utf8"),
+).version;
 
 interface ParsedFlags {
   flags: Record<string, string | boolean>;
