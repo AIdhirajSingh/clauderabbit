@@ -82,13 +82,15 @@ clauderabbit scan expressjs/express                  # run a real scan
 **From an AI coding agent** — the [MCP server](mcp-server/) exposes one cache-aware `scan` tool over
 stdio so an agent can check a dependency before it ever clones it (also served remotely over
 Streamable HTTP at `clauderabbit.in/mcp` for claude.ai custom connectors). Wire it into Claude
-Desktop with `cd cli && npm install && npm run build && node dist/index.js mcp install`.
+Desktop with `clauderabbit mcp install` (installed as part of the CLI above).
 
 Both the CLI and the MCP server call the same public scan API the website uses and require a
 signed-in ClaudeRabbit account (a real product/access decision, not because the data is sensitive —
 report pages stay public either way); the first call opens your browser to sign in once, then stays
 silent until you log out. See [cli/README.md](cli/README.md) and
-[mcp-server/README.md](mcp-server/README.md) for the full command/tool reference.
+[mcp-server/README.md](mcp-server/README.md) for the full command/tool reference — or
+**[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** for a full beginner's walkthrough (install →
+log in → scan → wire up the MCP server → connect claude.ai Custom Connectors → update).
 
 ## How it works — a two-speed funnel
 
