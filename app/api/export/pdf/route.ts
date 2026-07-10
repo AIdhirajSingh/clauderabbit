@@ -10,14 +10,18 @@
  * entire report as ONE continuous pageless PDF (no default page-break slicing)
  * with backgrounds preserved.
  *
- * Library choice: `puppeteer-core` + `@sparticuz/chromium` in production,
- * plain `puppeteer`'s bundled Chromium locally. This app is deployed to Vercel
- * (serverless functions, read-only filesystem outside `/tmp`, no system Chrome
- * libs) — plain `puppeteer`'s full Chromium download does not run there
- * (verified live: "Could not find Chrome" on the deployed function). Locally,
- * `puppeteer` is still the simplest thing that works (its bundled Chromium
- * needs no extra setup), so we borrow its executable path there instead of
- * requiring a second local Chromium install.
+ * Library choice: `puppeteer-core` + `@sparticuz/chromium` in production, and
+ * the machine's OWN already-installed Chrome/Chromium locally (via puppeteer-core,
+ * see resolveLocalChromePath). This app is deployed to Vercel (serverless
+ * functions, read-only filesystem outside `/tmp`, no system Chrome libs) — a
+ * bundled full-Chromium download does not run there (verified live: "Could not
+ * find Chrome" on the deployed function), which is why production ships the
+ * Lambda-tuned @sparticuz/chromium binary. Locally we deliberately do NOT depend
+ * on plain `puppeteer` just to download a SECOND Chromium: that install-time
+ * download (from storage.googleapis.com) is wasted bytes on any machine that
+ * already has a browser AND is exactly the kind of install-time network fetch our
+ * own sandbox blocks — bundling it made this very repo fail to install cleanly
+ * under containment. Point at the system browser instead (or PUPPETEER_EXECUTABLE_PATH).
  *
  * Navigating to the real page (rather than rendering the React tree out-of-band)
  * guarantees the PDF is byte-for-byte what a visitor sees — same CSS variables,
@@ -27,6 +31,7 @@
  * server serves; no credentials are read or forwarded.
  */
 
+import { existsSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
 import type { Browser } from "puppeteer-core";
@@ -37,6 +42,50 @@ export const maxDuration = 30;
 
 /** Vercel sets this on every deployment (any environment); absent in local dev. */
 const IS_VERCEL = !!process.env.VERCEL;
+
+/**
+ * Local-dev only: the path to a real, already-installed Chrome/Chromium on this machine.
+ * Production never calls this (it uses @sparticuz/chromium). An explicit env override wins;
+ * otherwise probe the standard install locations for the host OS. We intentionally avoid a
+ * bundled `puppeteer` Chromium download here — see the file header for why (waste + it is the
+ * exact install-time network fetch our own sandbox containment blocks).
+ */
+function resolveLocalChromePath(): string {
+  const fromEnv =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    process.env.CHROME_PATH ||
+    process.env.CHROME_BIN;
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+
+  const pf = process.env["ProgramFiles"] || "C:\\Program Files";
+  const pfx86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const localApp = process.env.LOCALAPPDATA;
+  const candidates = [
+    // Windows
+    `${pf}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${pfx86}\\Google\\Chrome\\Application\\chrome.exe`,
+    localApp ? `${localApp}\\Google\\Chrome\\Application\\chrome.exe` : "",
+    `${pf}\\Microsoft\\Edge\\Application\\msedge.exe`,
+    // macOS
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    // Linux
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  throw new Error(
+    "no local Chrome/Chromium found for PDF export — install Chrome or set " +
+      "PUPPETEER_EXECUTABLE_PATH to a Chromium binary (production is unaffected; it uses @sparticuz/chromium).",
+  );
+}
 
 // Anti-abuse: each request launches a headless Chromium — an expensive, memory-heavy
 // operation. Without a bound, a flood of /api/export/pdf requests exhausts the function's
@@ -54,12 +103,10 @@ async function launchBrowser(): Promise<Browser> {
       headless: true,
     });
   }
-  // Local dev: reuse the full `puppeteer` package's bundled Chromium binary
-  // (already a project dependency) via puppeteer-core's launcher, so no
-  // separate local Chromium install is required.
-  const { default: fullPuppeteer } = await import("puppeteer");
+  // Local dev: drive the machine's already-installed Chrome/Chromium via
+  // puppeteer-core (no bundled `puppeteer` Chromium download — see the file header).
   return puppeteer.launch({
-    executablePath: await fullPuppeteer.executablePath(),
+    executablePath: resolveLocalChromePath(),
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
