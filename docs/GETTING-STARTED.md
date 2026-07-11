@@ -28,7 +28,7 @@ it from any folder.
 clauderabbit version
 ```
 
-You should see a version number printed, like `0.1.5`. If instead you see "command not found",
+You should see a version number printed, like `0.1.7` (or newer). If instead you see "command not found",
 your terminal's `PATH` doesn't include npm's global bin folder — closing and reopening your
 terminal usually fixes this.
 

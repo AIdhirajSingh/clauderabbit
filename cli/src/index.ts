@@ -12,7 +12,10 @@
  *   version | --version | -v
  *
  * A "target" is: owner/repo, a GitHub URL, owner/repo@ref, or an npm package
- * name (resolved to its GitHub repo via the npm registry).
+ * name — scanned as its REAL published registry artifact (the exact tarball
+ * `npm install` fetches, integrity-verified), NOT the GitHub repo its
+ * package.json links to, so it catches a compromised publish that exists only
+ * in the tarball. For npm, `--ref` selects the version/dist-tag.
  *
  * An earlier opt-in shell-hook feature (`install-hooks`/`uninstall-hooks`,
  * `npm-install`/`pnpm-install`/`git-clone`) was built and then removed: it
@@ -93,10 +96,13 @@ USAGE
 COMMANDS
   scan <target> [--json] [--ref <ref>]
       Print a ClaudeRabbit verdict for <target> — owner/repo, a GitHub URL,
-      owner/repo@ref, or an npm package name (resolved to its GitHub repo via
-      the npm registry). Cache-aware: if the repo's current commit already
-      has a report it comes back immediately; otherwise a real fast-path scan
-      runs. You never need to choose which case applies.
+      owner/repo@ref, or an npm package name. An npm package is scanned as its
+      REAL published registry artifact (the exact tarball \`npm install\` fetches),
+      NOT the GitHub repo its package.json links to — so it catches a compromised
+      publish that exists only in the tarball. For npm, --ref selects the
+      version/dist-tag. Cache-aware: if the target's current commit/artifact
+      already has a report it comes back immediately; otherwise a real fast-path
+      scan runs. You never need to choose which case applies.
       --json  Emit the documented machine-readable object (see README).
 
   mcp install
