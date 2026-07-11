@@ -18,7 +18,11 @@ export type QueueOp =
   | { op: "position"; token: string }
   | { op: "status"; token: string; status: QueueStatus }
   | { op: "set_stage"; token: string; stage: string; detail: string }
-  | { op: "get_stage"; token: string };
+  | { op: "get_stage"; token: string }
+  // Atomic per-(owner,repo,sha) detonation dispatch lock (dedups /api/deep across
+  // Vercel instances — see supabase/migrations/20260711000001_deep_dispatch_lock.sql).
+  | { op: "claim"; token: string; owner: string; repo: string; sha: string }
+  | { op: "release"; token: string; owner: string; repo: string; sha: string };
 
 /** A clean, VM-name-safe token: the route's buildSlug charset. */
 export function isToken(v: unknown): v is string {
@@ -107,6 +111,15 @@ export function parseQueueOp(body: unknown): { ok: true; value: QueueOp } | { ok
   if (op === "get_stage") {
     if (!isToken(b.token)) return { ok: false, error: "invalid token" };
     return { ok: true, value: { op: "get_stage", token: b.token } };
+  }
+  // claim / release share enqueue's exact (token, owner, repo, sha) shape — the
+  // (owner, repo, sha) is the lock identity, the token is the claim holder.
+  if (op === "claim" || op === "release") {
+    if (!isToken(b.token)) return { ok: false, error: "invalid token" };
+    if (!isSegment(b.owner)) return { ok: false, error: "invalid owner" };
+    if (!isSegment(b.repo)) return { ok: false, error: "invalid repo" };
+    if (!isSha(b.sha)) return { ok: false, error: "invalid sha" };
+    return { ok: true, value: { op, token: b.token, owner: b.owner, repo: b.repo, sha: b.sha } };
   }
   return { ok: false, error: "unknown op" };
 }

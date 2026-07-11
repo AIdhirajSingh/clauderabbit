@@ -88,6 +88,45 @@ export async function setStatus(token: string, status: QueueStatus): Promise<voi
   await post({ op: "status", token, status });
 }
 
+/**
+ * Atomically claim the detonation of one commit (dedups /api/deep dispatch across
+ * Vercel instances — see supabase/migrations/20260711000001_deep_dispatch_lock.sql).
+ * Returns true ONLY when this caller won the claim and should dispatch Cloud Run.
+ *
+ * Fails CLOSED — unlike the observability calls above, this returns `false` (do
+ * NOT dispatch) on ANY failure (misconfig, DB/network error, a non-true result).
+ * That is deliberate and load-bearing: this call is the sole thing preventing the
+ * duplicate-detonation flood, so a hiccup must never silently re-open it. The
+ * caller then just polls the report row for the in-flight run's forensics instead
+ * of starting a second execution; if nothing is actually running, that honestly
+ * degrades to a static-only result the user can retry — never a false success.
+ */
+export async function tryClaimDispatch(args: {
+  token: string;
+  owner: string;
+  repo: string;
+  sha: string;
+}): Promise<boolean> {
+  const data = await post({ op: "claim", token: args.token, owner: args.owner, repo: args.repo, sha: args.sha });
+  return data?.claimed === true;
+}
+
+/**
+ * Release a detonation claim when the run truly concludes (forensics attached, or
+ * a hard dispatch failure that should allow an immediate retry). Best-effort;
+ * never throws. Deliberately NOT called on the streaming-deadline "pending" path —
+ * there the detonation is still running, so the claim must persist (TTL-bounded)
+ * to keep deduping re-requests during the run's tail.
+ */
+export async function releaseDispatch(args: {
+  token: string;
+  owner: string;
+  repo: string;
+  sha: string;
+}): Promise<void> {
+  await post({ op: "release", token: args.token, owner: args.owner, repo: args.repo, sha: args.sha });
+}
+
 /** The real, granular progress marker read back from the DB (or null fields
  * when the execution hasn't reported one yet). */
 export interface QueueStage {

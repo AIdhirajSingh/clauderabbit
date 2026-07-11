@@ -48,7 +48,14 @@ import {
   queueLine,
   type QueueStanding,
 } from "@/lib/deep-queue";
-import { enqueueRow, fetchPosition, fetchStage, setStatus } from "@/lib/deep-queue-client";
+import {
+  enqueueRow,
+  fetchPosition,
+  fetchStage,
+  releaseDispatch,
+  setStatus,
+  tryClaimDispatch,
+} from "@/lib/deep-queue-client";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { fetchLatestReport, fetchLatestReportRest } from "@/lib/report-fetch";
 import { deriveGitUsrBin } from "@/lib/git-bash-path";
@@ -480,38 +487,70 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
         return;
       }
 
-      // 2. Observability row + mark active (best-effort; never blocks).
+      // 2. Observability row (best-effort; never blocks).
       void enqueueRow({ owner, repo, sha, token: slug });
-      void setStatus(slug, "active");
-      emit({
-        t: "stage",
-        ch: "Escalate",
-        status: "active",
-        lines: ["Gate tripped — dispatching a Cloud Run detonation execution"],
-      });
 
-      // 3. Trigger the real Cloud Run execution over HTTPS (env overrides pin THIS
-      //    scan; the job template is untouched, so concurrent scans never race).
-      let operationName: string;
-      try {
-        const run = await runCloudRunJob({
-          CR_OWNER: owner,
-          CR_REPO: repo,
-          CR_COMMIT_SHA: sha,
-          CR_SCAN_ID: slug,
-        });
-        operationName = run.operationName;
-      } catch (e) {
-        console.error("cloud-run dispatch failed:", e instanceof Error ? e.message : e);
-        void setStatus(slug, "failed");
+      // 2b. ATOMIC per-commit dispatch claim — the dedup that stops repeated
+      //     /api/deep calls for the SAME escalated commit from each spawning
+      //     another Cloud Run execution during the ~3-min window before forensics
+      //     land. The precondition above stays "needs" that whole window, so it
+      //     cannot dedup; only this shared-DB claim can, and it must be atomic
+      //     across Vercel's many instances (an in-process guard can't see them).
+      //     A dispatch that does NOT win the claim attaches to the in-flight run
+      //     by polling the report row below — it never starts a second execution.
+      //     Released on terminal success/failure (not on the pending deadline, so
+      //     the still-running detonation keeps deduping re-requests via the TTL).
+      const claimedDispatch = await tryClaimDispatch({ token: slug, owner, repo, sha });
+      const releaseClaim = async () => {
+        if (claimedDispatch) await releaseDispatch({ token: slug, owner, repo, sha }).catch(() => {});
+      };
+
+      // 3. Trigger the real Cloud Run execution over HTTPS — ONLY if we won the
+      //    claim (env overrides pin THIS scan; the job template is untouched, so
+      //    concurrent scans never race). `operationName` stays null when we didn't
+      //    dispatch (attaching to another instance's in-flight run).
+      let operationName: string | null = null;
+      if (claimedDispatch) {
+        void setStatus(slug, "active");
         emit({
-          t: "error",
-          fatal: true,
-          error:
-            "The sandbox couldn't be started right now. This is a server-side issue, not a problem with the repository — please try again in a few minutes.",
+          t: "stage",
+          ch: "Escalate",
+          status: "active",
+          lines: ["Gate tripped — dispatching a Cloud Run detonation execution"],
         });
-        finish();
-        return;
+        try {
+          const run = await runCloudRunJob({
+            CR_OWNER: owner,
+            CR_REPO: repo,
+            CR_COMMIT_SHA: sha,
+            CR_SCAN_ID: slug,
+          });
+          operationName = run.operationName;
+        } catch (e) {
+          console.error("cloud-run dispatch failed:", e instanceof Error ? e.message : e);
+          void setStatus(slug, "failed");
+          await releaseClaim(); // let the next request re-claim + retry immediately
+          emit({
+            t: "error",
+            fatal: true,
+            error:
+              "The sandbox couldn't be started right now. This is a server-side issue, not a problem with the repository — please try again in a few minutes.",
+          });
+          finish();
+          return;
+        }
+      } else {
+        // Another dispatch (a concurrent request, possibly on a different Vercel
+        // instance) already owns this commit's detonation. Do NOT start a second
+        // execution — attach to the in-flight run by polling for the forensics it
+        // will write. (If the claim was merely unavailable, the poll finds nothing
+        // and honestly ends "pending" → static-only, which the user can retry.)
+        emit({
+          t: "stage",
+          ch: "Escalate",
+          status: "active",
+          lines: ["A sandbox run for this commit is already in progress — attaching to it."],
+        });
       }
 
       // 4. Poll: granular stages (deep-queue) + forensics landing (report row) +
@@ -554,6 +593,7 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
             lines: ["Cloud Run execution completed — forensics attached to the report."],
           });
           void setStatus(slug, "done");
+          await releaseClaim(); // run concluded — free the commit for a future re-scan
           emit({ t: "result", persisted: true });
           finish();
           return;
@@ -597,9 +637,12 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
 
         // Terminal execution failure (surfaced honestly rather than as a timeout).
         // Bounded so a slow Cloud Run operations read can never stall the loop.
-        const op = await withTimeout(getOperation(operationName), REST_READ_TIMEOUT_MS, null).catch(
-          () => null,
-        );
+        // Only meaningful when WE dispatched (operationName set); a request that
+        // attached to another instance's run has no operation to poll — it relies
+        // on the forensics-landed check above and the deadline.
+        const op = operationName
+          ? await withTimeout(getOperation(operationName), REST_READ_TIMEOUT_MS, null).catch(() => null)
+          : null;
         if (op && op.done && op.error) {
           // The execution finished with an error. Give the container's own
           // forensics POST a brief grace check (a "did not build" run still
@@ -613,11 +656,13 @@ function handleRestDeep(owner: string, repo: string, sha: string): Response {
               lines: ["Cloud Run execution completed — forensics attached to the report."],
             });
             void setStatus(slug, "done");
+            await releaseClaim(); // run concluded — free the commit for a future re-scan
             emit({ t: "result", persisted: true });
             finish();
             return;
           }
           void setStatus(slug, "failed");
+          await releaseClaim(); // hard failure — let the next request re-claim + retry
           emit({
             t: "error",
             error:
