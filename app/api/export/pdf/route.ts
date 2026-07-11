@@ -38,7 +38,11 @@ import type { Browser } from "puppeteer-core";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+// Headroom for a heavy report's full render (cold browser launch + networkidle0
+// nav + font load + settle + a tall single-page PDF). MUST stay strictly above
+// RENDER_BUDGET_MS below so our own deadline always fires first — see the leak
+// note on RENDER_BUDGET_MS for why that ordering is load-bearing.
+export const maxDuration = 60;
 
 /** Vercel sets this on every deployment (any environment); absent in local dev. */
 const IS_VERCEL = !!process.env.VERCEL;
@@ -94,6 +98,38 @@ function resolveLocalChromePath(): string {
 // over the cap is rejected fast with 429 + Retry-After instead of piling on another browser.
 const MAX_CONCURRENT_PDF = 2;
 let pdfInFlight = 0;
+
+// A hard ceiling on ALL work between the `pdfInFlight++` and the `finally` that
+// decrements it. It MUST be comfortably below maxDuration so this function always
+// returns (or throws) in our OWN code — running the finally that closes the
+// browser and decrements the counter — BEFORE the platform hard-kills the
+// invocation for exceeding maxDuration. A platform kill bypasses `finally`
+// entirely, so without this bound a single pathologically slow render (a hung
+// goto, a wedged page.pdf) leaks a permanent +1 on pdfInFlight; after
+// MAX_CONCURRENT_PDF such leaks a warm Fluid-Compute instance rejects EVERY
+// subsequent PDF request with 429 forever. The bound converts that silent,
+// permanent wedge into a clean per-request 504.
+const RENDER_BUDGET_MS = 45_000;
+
+/** Rejection type for a render that blew the internal budget (→ 504, not a leak). */
+class RenderDeadlineError extends Error {}
+
+/**
+ * Race a promise against RENDER_BUDGET_MS. If the deadline wins, the original
+ * promise is orphaned (still running in puppeteer) — the caller's `finally`
+ * closes the browser, which aborts that work; we swallow the orphan's eventual
+ * rejection so it never surfaces as an unhandled rejection.
+ */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new RenderDeadlineError(`PDF render exceeded ${ms}ms`)), ms);
+  });
+  p.catch(() => {}); // orphan guard (see doc comment)
+  return Promise.race([p, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 async function launchBrowser(): Promise<Browser> {
   if (IS_VERCEL) {
@@ -158,98 +194,134 @@ export async function GET(req: Request): Promise<Response> {
   const targetUrl = `${SITE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
   pdfInFlight++;
+  // `browser` is published by renderReportPdf via the onBrowser callback the
+  // instant it launches, so this single finally ALWAYS closes it and decrements
+  // the counter — whether renderReportPdf returns a Response, throws, or loses the
+  // race to the RENDER_BUDGET_MS deadline. Bounding the work under that budget
+  // (comfortably below maxDuration) is what guarantees we reach this finally in
+  // our own code before a platform hard-kill could bypass it and leak the counter.
+  let browser: Browser | undefined;
+  try {
+    return await withDeadline(
+      renderReportPdf(targetUrl, theme, owner, repo, (b) => {
+        browser = b;
+      }),
+      RENDER_BUDGET_MS,
+    );
+  } catch (e) {
+    if (e instanceof RenderDeadlineError) {
+      return json(
+        { error: "PDF export timed out — the report page took too long to render. Please retry." },
+        504,
+      );
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return json({ error: `PDF render failed: ${msg}` }, 500);
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    pdfInFlight--;
+  }
+}
+
+/**
+ * Launch a headless browser, render the live report page to a single continuous
+ * PDF, and return it as a Response. Extracted from GET so the whole launch+render
+ * can be bounded by a single withDeadline() and its browser handle published to
+ * the caller (via `onBrowser`) for guaranteed cleanup. Returns a Response for
+ * expected outcomes (the PDF, or a 404/502 when the report page itself errors);
+ * THROWS for unexpected render failures, which the caller maps to a 500.
+ */
+async function renderReportPdf(
+  targetUrl: string,
+  theme: "dark" | "light",
+  owner: string,
+  repo: string,
+  onBrowser: (b: Browser) => void,
+): Promise<Response> {
   let browser: Browser;
   try {
     browser = await launchBrowser();
   } catch (e) {
-    pdfInFlight--;
     const msg = e instanceof Error ? e.message : String(e);
     return json({ error: `could not launch headless browser: ${msg}` }, 500);
   }
+  onBrowser(browser); // publish immediately so the caller's finally always closes it
 
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: PDF_WIDTH_PX, height: 1080 });
+  const page = await browser.newPage();
+  await page.setViewport({ width: PDF_WIDTH_PX, height: 1080 });
 
-    // CRITICAL: page.pdf() renders using the "print" CSS media type by default,
-    // not "screen". app/globals.css has its OWN @media print block (kept for the
-    // harmless Ctrl+P fallback) that forces white paper / light-theme neutrals
-    // regardless of data-theme — exactly so a manual browser print looks good on
-    // paper. Left alone, that block would silently override our forced dark/light
-    // theme here too (both would render identically as forced-white "print"
-    // output). Force the "screen" media type so this render uses the REAL live
-    // page styles (the actual dark/light theme), not the print stylesheet.
-    await page.emulateMediaType("screen");
+  // CRITICAL: page.pdf() renders using the "print" CSS media type by default,
+  // not "screen". app/globals.css has its OWN @media print block (kept for the
+  // harmless Ctrl+P fallback) that forces white paper / light-theme neutrals
+  // regardless of data-theme — exactly so a manual browser print looks good on
+  // paper. Left alone, that block would silently override our forced dark/light
+  // theme here too (both would render identically as forced-white "print"
+  // output). Force the "screen" media type so this render uses the REAL live
+  // page styles (the actual dark/light theme), not the print stylesheet.
+  await page.emulateMediaType("screen");
 
-    // Force the theme BEFORE navigation finishes painting: seed localStorage via
-    // an init script (runs before any page script, including the app's no-flash
-    // theme-init script in <head>), matching the exact persistence key
-    // (`cr-theme`) and `<html data-theme>` attribute the app already uses
-    // (see app/layout.tsx's themeInitScript and components/spa/state.tsx's
-    // theme toggle). This means the app's OWN theme-init logic picks up the
-    // forced theme, rather than us fighting it after the fact.
-    await page.evaluateOnNewDocument((forcedTheme: string) => {
-      try {
-        localStorage.setItem("cr-theme", forcedTheme);
-      } catch {
-        /* localStorage unavailable; the attribute set below still forces it */
-      }
-    }, theme);
-
-    const response = await page.goto(targetUrl, { waitUntil: "networkidle0", timeout: 30_000 });
-    if (!response || !response.ok()) {
-      const status = response?.status() ?? 502;
-      return json(
-        { error: `report page returned ${status} for ${owner}/${repo}` },
-        status === 404 ? 404 : 502,
-      );
+  // Force the theme BEFORE navigation finishes painting: seed localStorage via
+  // an init script (runs before any page script, including the app's no-flash
+  // theme-init script in <head>), matching the exact persistence key
+  // (`cr-theme`) and `<html data-theme>` attribute the app already uses
+  // (see app/layout.tsx's themeInitScript and components/spa/state.tsx's
+  // theme toggle). This means the app's OWN theme-init logic picks up the
+  // forced theme, rather than us fighting it after the fact.
+  await page.evaluateOnNewDocument((forcedTheme: string) => {
+    try {
+      localStorage.setItem("cr-theme", forcedTheme);
+    } catch {
+      /* localStorage unavailable; the attribute set below still forces it */
     }
+  }, theme);
 
-    // Belt-and-suspenders: explicitly set the attribute too, in case the page's
-    // own init script raced evaluateOnNewDocument (it shouldn't — the seeded
-    // localStorage value is read by that very script — but this makes the forced
-    // theme authoritative regardless of script order).
-    await page.evaluate((forcedTheme: string) => {
-      document.documentElement.setAttribute("data-theme", forcedTheme);
-    }, theme);
-
-    // Wait for the fonts (self-hosted Instrument Serif + Geist, next/font) to be
-    // fully loaded so the PDF never captures a fallback-font flash mid-swap.
-    await page.evaluate(() => document.fonts.ready);
-
-    // A short settle for the report's entrance animations (riseIn/scoreGlow/etc.,
-    // all under 1.2s per app/globals.css) to reach their resting state, so the
-    // capture isn't mid-transition (partially-drawn score ring, fading-in cards).
-    await new Promise((resolve) => setTimeout(resolve, 700));
-
-    // Measure the full content height so the PDF is ONE continuous page — no
-    // default US-Letter/A4 slicing mid-content.
-    const contentHeightPx = await page.evaluate(() => document.documentElement.scrollHeight);
-    const heightIn = Math.max(contentHeightPx / CSS_PX_PER_INCH, 1);
-    const widthIn = PDF_WIDTH_PX / CSS_PX_PER_INCH;
-
-    const pdfBuffer = await page.pdf({
-      width: `${widthIn}in`,
-      height: `${heightIn}in`,
-      printBackground: true,
-      pageRanges: "1",
-      margin: { top: "0in", bottom: "0in", left: "0in", right: "0in" },
-    });
-
-    const filename = `${owner}-${repo}-clauderabbit-report.pdf`;
-    return new Response(new Uint8Array(pdfBuffer), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return json({ error: `PDF render failed: ${msg}` }, 500);
-  } finally {
-    await browser.close().catch(() => {});
-    pdfInFlight--;
+  const response = await page.goto(targetUrl, { waitUntil: "networkidle0", timeout: 30_000 });
+  if (!response || !response.ok()) {
+    const status = response?.status() ?? 502;
+    return json(
+      { error: `report page returned ${status} for ${owner}/${repo}` },
+      status === 404 ? 404 : 502,
+    );
   }
+
+  // Belt-and-suspenders: explicitly set the attribute too, in case the page's
+  // own init script raced evaluateOnNewDocument (it shouldn't — the seeded
+  // localStorage value is read by that very script — but this makes the forced
+  // theme authoritative regardless of script order).
+  await page.evaluate((forcedTheme: string) => {
+    document.documentElement.setAttribute("data-theme", forcedTheme);
+  }, theme);
+
+  // Wait for the fonts (self-hosted Instrument Serif + Geist, next/font) to be
+  // fully loaded so the PDF never captures a fallback-font flash mid-swap.
+  await page.evaluate(() => document.fonts.ready);
+
+  // A short settle for the report's entrance animations (riseIn/scoreGlow/etc.,
+  // all under 1.2s per app/globals.css) to reach their resting state, so the
+  // capture isn't mid-transition (partially-drawn score ring, fading-in cards).
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  // Measure the full content height so the PDF is ONE continuous page — no
+  // default US-Letter/A4 slicing mid-content.
+  const contentHeightPx = await page.evaluate(() => document.documentElement.scrollHeight);
+  const heightIn = Math.max(contentHeightPx / CSS_PX_PER_INCH, 1);
+  const widthIn = PDF_WIDTH_PX / CSS_PX_PER_INCH;
+
+  const pdfBuffer = await page.pdf({
+    width: `${widthIn}in`,
+    height: `${heightIn}in`,
+    printBackground: true,
+    pageRanges: "1",
+    margin: { top: "0in", bottom: "0in", left: "0in", right: "0in" },
+  });
+
+  const filename = `${owner}-${repo}-clauderabbit-report.pdf`;
+  return new Response(new Uint8Array(pdfBuffer), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    },
+  });
 }
