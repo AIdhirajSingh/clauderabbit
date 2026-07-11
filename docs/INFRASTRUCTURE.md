@@ -124,6 +124,20 @@ supabase secrets set NAME="value"
 supabase secrets list      # shows names + digests only, never values
 ```
 
+### Deploying an edge function — ALWAYS `--no-verify-jwt` (binding gotcha)
+Every ClaudeRabbit edge function runs with **`verify_jwt = false`** (confirmed live: `scan`, `deep-queue`, `attach-forensics`, `oauth-token` are all `false`). They each do their OWN auth internally — `scan` validates `cr_cli_…` tokens (which are NOT Supabase JWTs, so the gateway would 401 them as `UNAUTHORIZED_INVALID_JWT_FORMAT`) and anonymous web scans; `deep-queue`/`attach-forensics` gate on `CR_DEEP_RUNNER_KEY` (callers, including the sandbox container, may send it as a non-JWT bearer). The gateway JWT check must therefore stay **off**.
+
+`supabase functions deploy <name>` defaults `verify_jwt` back to **true** and silently flips it on a plain redeploy (this repo has no per-function `config.toml` pinning it). So EVERY deploy MUST pass the flag:
+```
+supabase functions deploy <name> --no-verify-jwt --project-ref mjvlczaytkhvsolnhhkz
+```
+Omitting it breaks CLI/MCP `cr_cli_` auth and the runner-key callers in production (the web app keeps working because it sends the anon key, a valid JWT). Verify after any deploy:
+```
+# Management API — expect "verify_jwt": false for every function
+curl -s https://api.supabase.com/v1/projects/mjvlczaytkhvsolnhhkz/functions/<name> \
+  -H "Authorization: Bearer $SUPABASE_PAT" | grep -o '"verify_jwt":[a-z]*'
+```
+
 ---
 
 ## 8. Tooling around the build (context, not app infra)
@@ -268,6 +282,18 @@ wrapper over the SECURITY DEFINER RPCs, called best-effort so a DB hiccup never 
 queue). The streaming response emits `"Queued — position N of M, ~X min"` while waiting; a
 waiter that can't get a slot within the deadline gets an honest, specific "sandbox was too
 busy" error, never a silent drop.
+
+**Cross-instance dispatch dedup** — because the production REST deep path runs on Vercel
+(many function instances, no shared in-process state), the in-process cap/queue above cannot
+stop repeated `/api/deep` calls for the SAME escalated commit from each spawning a Cloud Run
+execution during the ~3-min pre-forensics window. The **`deep_dispatch_lock`** table
+(migration `20260711000001`, PK `(owner,repo,sha)`) + the `deep-queue` function's `claim`/
+`release` ops (SECURITY DEFINER `deep_dispatch_try_claim`/`deep_dispatch_release`, service-role
+only) provide an atomic per-commit claim: `handleRestDeep` claims before dispatching, a
+non-winner attaches to the in-flight run instead of dispatching again, and the claim is
+TTL-stealable (420s) so a crashed controller can't wedge a commit. The claim fails CLOSED (a
+DB hiccup skips dispatch rather than re-opening the flood; the client honestly degrades to
+static-only, retryable).
 
 ---
 
