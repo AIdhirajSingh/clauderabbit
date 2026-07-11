@@ -5,14 +5,17 @@
  * Exposes one cache-aware tool that calls the REAL, deployed, public
  * ClaudeRabbit API (the same Supabase edge function + PostgREST route the
  * Next.js frontend uses) so any MCP-compatible AI coding tool can check a
- * public GitHub repo's safety score before installing or running it:
+ * public GitHub repo OR an npm package's safety score before installing or
+ * running it:
  *
- *   - scan(owner, repo, ref?) — returns the existing report immediately if
- *     one already exists for the current commit, otherwise runs a real
- *     fast-path scan and returns its result.
+ *   - scan(owner, repo, ref?)   — a public GitHub repo.
+ *   - scan(package, version?)   — an npm package, scanned as its REAL published
+ *     registry artifact (not the linked GitHub repo).
  *
- * No scanning or scoring logic lives here — this process is a pure client of
- * ClaudeRabbit's public API surface. See README.md for setup.
+ * Either way it returns the existing report immediately if one already exists
+ * for the current commit/artifact, otherwise runs a real fast-path scan and
+ * returns its result. No scanning or scoring logic lives here — this process is
+ * a pure client of ClaudeRabbit's public API surface. See README.md for setup.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -25,7 +28,7 @@ async function main(): Promise<void> {
 
   const server = new McpServer({
     name: "clauderabbit-mcp",
-    version: "0.1.0",
+    version: "0.1.1",
   });
 
   server.registerTool(
