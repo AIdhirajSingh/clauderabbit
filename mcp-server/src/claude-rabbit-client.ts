@@ -198,9 +198,6 @@ export async function scanRepo(
   }
 }
 
-/** A live-sandbox stage update (start/finish of a detonation phase). */
-export type DeepStageListener = (chapter: string, status: "active" | "done") => void;
-
 /** Outcome of triggering the live sandbox detonation. */
 export type DeepResult =
   | { ok: true; persisted: boolean; pending: boolean }
@@ -221,7 +218,6 @@ export type DeepResult =
 export async function runDeepScan(
   config: ClaudeRabbitConfig,
   args: { owner: string; repo: string; sha: string },
-  onStage?: DeepStageListener,
 ): Promise<DeepResult> {
   const url = `${config.siteUrl}/api/deep`;
   const controller = new AbortController();
@@ -276,12 +272,10 @@ export async function runDeepScan(
       }
       if (!ev || typeof ev !== "object") return;
       const e = ev as Record<string, unknown>;
-      if (e.t === "stage") {
-        if (onStage) {
-          const label = typeof e.ch === "string" ? e.ch : typeof e.label === "string" ? e.label : "sandbox";
-          onStage(label, e.status === "active" ? "active" : "done");
-        }
-      } else if (e.t === "result") {
+      // {t:"stage"} progress events are intentionally ignored here: the stdio MCP
+      // tool returns a single final result, not a live progress stream (the CLI,
+      // which does render live stages, keeps its own onStage-aware copy of this).
+      if (e.t === "result") {
         sawResult = true;
         persisted = e.persisted === true;
       } else if (e.t === "pending") {
