@@ -22,12 +22,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import { runScan, runDeepScan } from "@/lib/scan";
 import { buildReportView } from "@/lib/report-view";
 import { formatReportText, structuredReport } from "./format";
-import { resolveMcpScanTarget } from "./scan-target";
+import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,33 +72,7 @@ function buildServer(accessToken: string, req: Request): McpServer {
       title: "Scan a GitHub repo or npm package with ClaudeRabbit",
       description:
         "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact — the exact tarball `npm install` fetches, integrity-verified — not the GitHub repo its package.json links to, so it catches a compromised publish that exists only in the tarball. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately; otherwise a real fast-path scan runs. When the fast path decides a GitHub repo warrants the dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the request budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result). Never returns a bare \"Safe\" verdict.",
-      inputSchema: {
-        owner: z
-          .string()
-          .min(1)
-          .optional()
-          .describe('GitHub repository owner or org, e.g. "sindresorhus". Provide together with `repo` to scan a GitHub repository. Omit when scanning an npm package via `package`.'),
-        repo: z
-          .string()
-          .min(1)
-          .optional()
-          .describe('GitHub repository name, e.g. "is". Required together with `owner` for a GitHub scan.'),
-        ref: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("Optional git ref (branch, tag, or commit SHA) to scan instead of the default branch. GitHub scans only."),
-        package: z
-          .string()
-          .min(1)
-          .optional()
-          .describe('npm package to scan the REAL published registry artifact for (the tarball `npm install` actually fetches, not the repo its package.json links to). Provide this INSTEAD of owner/repo. Accepts a bare name ("left-pad"), a scoped name ("@scope/name"), an explicit "npm:left-pad@1.3.0", or an npmjs.com package URL.'),
-        version: z
-          .string()
-          .min(1)
-          .optional()
-          .describe('Optional npm version or dist-tag (e.g. "1.3.0" or "latest") for the `package` scan; defaults to the latest published version. Ignored for GitHub scans. If `package` already carries a trailing @version, that wins.'),
-      },
+      inputSchema: scanInputShape,
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },
     async (args) => {

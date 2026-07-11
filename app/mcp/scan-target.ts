@@ -17,15 +17,48 @@
  * valid npm name — so requiring `kind === "npm"` accepts exactly the real npm
  * targets and rejects the rest.
  */
+import { z } from "zod";
 import { parseScanTarget } from "../../lib/parse-repo";
 
-export interface McpScanInput {
-  owner?: string;
-  repo?: string;
-  ref?: string;
-  package?: string;
-  version?: string;
-}
+/**
+ * The remote `scan` tool's input shape — co-located with the resolver it feeds so
+ * the two can't drift, and EXPORTED so a test can assert directly at the schema
+ * layer that `package`/`version` are declared. That is the real regression rail:
+ * the MCP SDK validates + strips incoming args against this shape before the
+ * handler runs, so if `package` were dropped here, a `{package:"x"}` call would be
+ * silently stripped to `{}` and npm scanning would break again — and a test that
+ * only exercised the resolver would NOT catch it. scan-target.test.ts asserts on
+ * this shape for exactly that reason.
+ */
+export const scanInputShape = {
+  owner: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('GitHub repository owner or org, e.g. "sindresorhus". Provide together with `repo` to scan a GitHub repository. Omit when scanning an npm package via `package`.'),
+  repo: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('GitHub repository name, e.g. "is". Required together with `owner` for a GitHub scan.'),
+  ref: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional git ref (branch, tag, or commit SHA) to scan instead of the default branch. GitHub scans only."),
+  package: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('npm package to scan the REAL published registry artifact for (the tarball `npm install` actually fetches, not the repo its package.json links to). Provide this INSTEAD of owner/repo. Accepts a bare name ("left-pad"), a scoped name ("@scope/name"), an explicit "npm:left-pad@1.3.0", or an npmjs.com package URL. A plain "owner/repo" is a GitHub target, not npm — use the owner and repo arguments for that.'),
+  version: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Optional npm version or dist-tag (e.g. "1.3.0" or "latest") for the `package` scan; defaults to the latest published version. Ignored for GitHub scans. If `package` already carries a trailing @version, that wins.'),
+};
+
+export type McpScanInput = z.infer<z.ZodObject<typeof scanInputShape>>;
 
 export type ResolvedScanTarget =
   | { kind: "github"; owner: string; repo: string; ref?: string; reportPath: string; label: string }
