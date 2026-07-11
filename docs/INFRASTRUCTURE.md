@@ -283,6 +283,18 @@ queue). The streaming response emits `"Queued — position N of M, ~X min"` whil
 waiter that can't get a slot within the deadline gets an honest, specific "sandbox was too
 busy" error, never a silent drop.
 
+**Cross-instance dispatch dedup** — because the production REST deep path runs on Vercel
+(many function instances, no shared in-process state), the in-process cap/queue above cannot
+stop repeated `/api/deep` calls for the SAME escalated commit from each spawning a Cloud Run
+execution during the ~3-min pre-forensics window. The **`deep_dispatch_lock`** table
+(migration `20260711000001`, PK `(owner,repo,sha)`) + the `deep-queue` function's `claim`/
+`release` ops (SECURITY DEFINER `deep_dispatch_try_claim`/`deep_dispatch_release`, service-role
+only) provide an atomic per-commit claim: `handleRestDeep` claims before dispatching, a
+non-winner attaches to the in-flight run instead of dispatching again, and the claim is
+TTL-stealable (420s) so a crashed controller can't wedge a commit. The claim fails CLOSED (a
+DB hiccup skips dispatch rather than re-opening the flood; the client honestly degrades to
+static-only, retryable).
+
 ---
 
 ## 9. State at last update
