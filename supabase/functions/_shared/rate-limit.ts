@@ -35,26 +35,35 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const RATE_LIMIT_WINDOW_SECONDS = 60;
 export const RATE_LIMIT_MAX_REQUESTS = 20;
 
-// --- Global anonymous circuit breaker ----------------------------------------
+// --- Global unauthenticated circuit breaker ----------------------------------
 //
 // The per-source (IP + device) limits above are the first line of defense, but
 // per-source keying can be defeated by a caller with a genuine pool of many
 // distinct real IPs (a botnet / large proxy pool) — each individual source stays
 // under its own cap while the aggregate flood still drains the shared GitHub
-// token and the model budget. deviceId is client-supplied and trivially omitted,
-// so it is not a backstop for that case either.
+// token and the model budget.
 //
-// So a COARSE system-wide circuit breaker caps total ANONYMOUS (no-deviceId)
-// scan traffic to the endpoint, keyed on a single fixed global bucket that does
-// NOT depend on trusting any client-controlled identity. It bounds a distributed
-// flood even when per-source keying is fully defeated. It is intentionally set an
-// order of magnitude above real aggregate anonymous demand for a free tool at
-// this stage — it is a flood ceiling, not a usage quota — and it applies ONLY to
-// anonymous (no deviceId, no user) requests, so a legitimate logged-in / device-
-// identified population is never collectively throttled by other users' floods.
+// So a COARSE system-wide circuit breaker caps total UNAUTHENTICATED scan
+// traffic to the endpoint, keyed on a single fixed global bucket. It bounds a
+// distributed flood even when per-source keying is fully defeated. It is
+// intentionally set an order of magnitude above real aggregate logged-out demand
+// for a free tool at this stage — a flood ceiling, not a usage quota.
+//
+// CRITICAL — the gate is `userId === null` (no server-verified session), and
+// NOTHING about the client-supplied deviceId. An earlier version gated it on
+// "anonymous" meaning "no user AND no deviceId", which was a real bypass: deviceId
+// is unauthenticated body input the caller fully controls, so a flooder that sent
+// a random deviceId per request made itself "non-anonymous" and skipped the
+// breaker entirely — while its per-IP (rotated) and per-device (rotated) buckets
+// also never accumulated. The whole value of this breaker is that it trusts NO
+// client-controlled identity, so its applicability cannot depend on one. Only a
+// real signed-in session (userId, verified server-side via the bearer token) is
+// exempt; every logged-out request counts, deviceId present or not. (Because the
+// product is free + no-login, this ceiling covers the bulk of traffic — so it is
+// the knob to raise as real logged-out demand grows, tuned here in one place.)
 export const GLOBAL_ANON_WINDOW_SECONDS = 60;
 export const GLOBAL_ANON_MAX_REQUESTS = 300;
-/** The single fixed bucket key for the global anonymous circuit breaker. */
+/** The single fixed bucket key for the global unauthenticated circuit breaker. */
 export const GLOBAL_ANON_BUCKET_KEY = "global:anon";
 
 /** Outcome of a rate-limit check. */
@@ -181,20 +190,23 @@ interface BucketCheck {
  *     for the empirical reason the previous rightmost-hop derivation was broken).
  *   * Device bucket catches a flood that spoofs/rotates IPs (e.g. behind a large
  *     NAT/proxy pool) but reuses one client fingerprint.
- *   * GLOBAL ANONYMOUS bucket is the honest backstop for the one case the two
- *     per-source buckets cannot bound: a flood spread across a genuine pool of
- *     MANY distinct real IPs while sending NO deviceId. Each source stays under
- *     its own IP cap, but the aggregate is still capped system-wide. It is keyed
- *     on a single fixed bucket that trusts NO client-controlled identity, and it
- *     is applied ONLY to anonymous requests (`isAnonymous`) so a legitimate
- *     logged-in / device-identified population is never collectively throttled by
- *     other users' anonymous floods.
+ *   * GLOBAL UNAUTHENTICATED bucket is the honest backstop for the one case the
+ *     two per-source buckets cannot bound: a flood spread across a genuine pool
+ *     of MANY distinct real IPs. Each source stays under its own IP cap, but the
+ *     aggregate is still capped system-wide. It is keyed on a single fixed bucket
+ *     that trusts NO client-controlled identity, and it applies to every request
+ *     with no server-verified session (`unauthenticated`, i.e. `userId === null`)
+ *     — INDEPENDENT of the deviceId, which the caller controls and could rotate
+ *     to dodge the breaker if its presence were treated as an exemption. Only a
+ *     real signed-in user is exempt; a legitimate logged-in population is never
+ *     collectively throttled by other users' floods.
  *
  * When NO per-source identity (neither IP nor device id) is available AND the
- * request is not anonymous-eligible for the global bucket, we fail OPEN (allow) —
+ * request is not unauthenticated-eligible for the global bucket (i.e. it IS a
+ * signed-in user, just with no derivable IP/device), we fail OPEN (allow) —
  * blocking every such request would break the free-first-scan rail. But note the
- * global anonymous breaker now covers the previously wide-open case (no IP + no
- * device id on an anonymous request), so the endpoint is never left with zero
+ * global unauthenticated breaker now covers the previously wide-open case (no IP +
+ * no device id on a logged-out request), so the endpoint is never left with zero
  * flood protection the way it effectively was before this fix.
  *
  * A DB error also fails OPEN per bucket: the limiter must never take the whole
@@ -202,7 +214,7 @@ interface BucketCheck {
  */
 export async function checkBurstLimit(
   db: SupabaseClient,
-  opts: { ip: string | null; deviceIdHash: string | null; isAnonymous?: boolean },
+  opts: { ip: string | null; deviceIdHash: string | null; unauthenticated?: boolean },
 ): Promise<RateLimitResult> {
   const buckets: BucketCheck[] = [];
   if (opts.ip) {
@@ -221,11 +233,13 @@ export async function checkBurstLimit(
       windowSeconds: RATE_LIMIT_WINDOW_SECONDS,
     });
   }
-  // The global anonymous circuit breaker applies to anonymous traffic: no user
-  // session and no device id. This is exactly the flood shape the per-source
-  // buckets are weakest against (rotate IPs, send no deviceId), so it is the
-  // system-wide ceiling on it.
-  if (opts.isAnonymous) {
+  // The global circuit breaker applies to every UNAUTHENTICATED request (no
+  // server-verified user session), independent of the client-controlled deviceId.
+  // This is exactly the flood shape the per-source buckets are weakest against
+  // (rotate IPs, rotate or send a random deviceId), so it is the system-wide
+  // ceiling on it — and keying its applicability on `userId === null` alone is
+  // what stops a flooder from opting out by simply sending a made-up deviceId.
+  if (opts.unauthenticated) {
     buckets.push({
       kind: "global-anon",
       key: GLOBAL_ANON_BUCKET_KEY,

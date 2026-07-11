@@ -28,7 +28,7 @@ it from any folder.
 clauderabbit version
 ```
 
-You should see a version number printed, like `0.1.5`. If instead you see "command not found",
+You should see a version number printed, like `0.1.7` (or newer). If instead you see "command not found",
 your terminal's `PATH` doesn't include npm's global bin folder — closing and reopening your
 terminal usually fixes this.
 
@@ -154,12 +154,16 @@ done step 3 first; this works on its own.
 connected/enabled (no red error state). If you don't see it listed as active, repeat step 3–5 —
 a failed OAuth handshake is the most common cause and simply retrying resolves it.
 
-**Run a scan from inside a Claude chat**: once connected, just ask, in plain language, for example:
+**Run a scan from inside a Claude chat**: once connected, just ask, in plain language. It scans
+both GitHub repos and npm packages — for example:
 
 > Use ClaudeRabbit to scan the repo `expressjs/express` before I recommend it.
 
+> Use ClaudeRabbit to scan the npm package `left-pad` before I add it.
+
 Claude will call the `scan` tool itself and show you the score, verdict, and what was actually
-verified — same honest, never-bare-"Safe" report as the CLI.
+verified — same honest, never-bare-"Safe" report as the CLI. (For npm, it scans the real
+published package, not the GitHub repo its package.json links to.)
 
 ---
 

@@ -22,11 +22,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import { runScan, runDeepScan } from "@/lib/scan";
 import { buildReportView } from "@/lib/report-view";
 import { formatReportText, structuredReport } from "./format";
+import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,63 +69,59 @@ function buildServer(accessToken: string, req: Request): McpServer {
   server.registerTool(
     "scan",
     {
-      title: "Scan a GitHub repo with ClaudeRabbit",
+      title: "Scan a GitHub repo or npm package with ClaudeRabbit",
       description:
-        "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo. Cache-aware: if a report already exists for the repo's current commit it comes back immediately; otherwise a real fast-path scan runs. When the fast path decides the repo warrants the dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the request budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result). Never returns a bare \"Safe\" verdict.",
-      inputSchema: {
-        owner: z.string().min(1).describe('GitHub repository owner or org, e.g. "sindresorhus".'),
-        repo: z.string().min(1).describe('GitHub repository name, e.g. "is".'),
-        ref: z.string().min(1).optional().describe("Optional git ref (branch, tag, or commit SHA)."),
-      },
+        "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact — the exact tarball `npm install` fetches, integrity-verified — not the GitHub repo its package.json links to, so it catches a compromised publish that exists only in the tarball. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately; otherwise a real fast-path scan runs. When the fast path decides a GitHub repo warrants the dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the request budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result). Never returns a bare \"Safe\" verdict.",
+      inputSchema: scanInputShape,
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },
     async (args) => {
-      const owner = args.owner.trim();
-      const repo = args.repo.trim();
-      const result = await runScan({
-        owner,
-        repo,
-        ref: args.ref,
-        accessToken,
-        clientKind: "mcp",
-      });
+      const toolError = (text: string) => ({ isError: true as const, content: [{ type: "text" as const, text }] });
+
+      // Resolve GitHub vs npm from the structured args (pure, unit-tested — see
+      // scan-target.ts). An npm `package` takes precedence; otherwise owner+repo.
+      const resolved = resolveMcpScanTarget(args);
+      if (!resolved.ok) return toolError(resolved.error);
+      const target = resolved.target;
+
+      const scanArgs: Parameters<typeof runScan>[0] =
+        target.kind === "npm"
+          ? { ecosystem: "npm", package: target.package, ...(target.version ? { version: target.version } : {}), accessToken, clientKind: "mcp" }
+          : { owner: target.owner, repo: target.repo, ref: target.ref, accessToken, clientKind: "mcp" };
+      const reportUrl = `${siteOrigin(req)}/${target.reportPath}`;
+
+      const result = await runScan(scanArgs);
       if (!result.ok) {
-        return {
-          isError: true,
-          content: [{ type: "text" as const, text: `ClaudeRabbit scan failed for ${owner}/${repo}: ${result.error}` }],
-        };
+        return toolError(`ClaudeRabbit scan failed for ${target.label}: ${result.error}`);
       }
 
-      // ESCALATION → REAL SANDBOX. When the fast path decided a live detonation is
-      // warranted (`report.deep`) but the sandbox hasn't run (no `forensics`),
-      // trigger the SAME production dispatch the website uses (`runDeepScan` →
-      // POST `/api/deep`, Cloud Run REST via the cr-dispatch SA) and re-read the
-      // sandbox-verified report — so the MCP result carries the real runtime score,
-      // not the scarier static-only interim. Bounded by this route's maxDuration
-      // (the deep wait self-resolves at ~270s inside /api/deep); if the run is
-      // still going at the deadline, the report stays honestly escalation-decided
-      // (`sandboxActuallyRan:false`) and the detonation finishes server-side (a
-      // follow-up scan returns the verified result from cache).
+      // ESCALATION → REAL SANDBOX. GitHub targets only: the detonation clones
+      // owner/repo@sha (npm-artifact detonation is a separate harness capability,
+      // matching the stdio surface). When the fast path decided a live detonation
+      // is warranted (`report.deep`) but the sandbox hasn't run (no `forensics`),
+      // trigger the SAME production dispatch the website uses (`runDeepScan` → POST
+      // `/api/deep`, Cloud Run REST via the cr-dispatch SA) and re-read the
+      // sandbox-verified report — bounded by this route's maxDuration (the deep
+      // wait self-resolves at ~270s inside /api/deep). npm escalations return the
+      // escalation-decided report honestly (sandboxActuallyRan:false).
       let report = result.report;
-      if (report.deep && !report.forensics && report.commit_sha) {
+      if (target.kind === "github" && report.deep && !report.forensics && report.commit_sha) {
+        const { owner, repo } = target;
         const sha = report.commit_sha;
         const deep = await runDeepScan({ owner, repo, sha, baseUrl: siteOrigin(req) });
         if (deep.ok) {
-          // Pin the re-read to the EXACT escalated commit (`ref: sha`, not the
-          // caller's original — often ref-less — `args.ref`), and require the
-          // returned report's commit_sha to match before accepting it. Without
-          // this, a fast-moving repo's default branch advancing between the
-          // escalation and this re-read would return a FRESH, non-escalated scan
-          // of a NEWER commit — the tool would then report "static read only" for
-          // a commit that was never even the one just detonated, contradicting
-          // the sandbox run it had just triggered (a real bug, caught live).
+          // Pin the re-read to the EXACT escalated commit (`ref: sha`, not a
+          // ref-less default-branch re-resolve) and require the returned report's
+          // commit_sha to match before accepting it — so a fast-moving repo's
+          // default branch advancing mid-run can never substitute a fresh,
+          // non-escalated scan of a newer commit as this run's result (a real bug
+          // caught live and fixed across all three surfaces).
           const again = await runScan({ owner, repo, ref: sha, accessToken, clientKind: "mcp" });
           if (again.ok && again.report.commit_sha === sha) report = again.report;
         }
       }
 
       const view = buildReportView(report);
-      const reportUrl = `${siteOrigin(req)}/${owner}/${repo}`;
       const fresh = !result.report.cached;
       const text = formatReportText(view, reportUrl, fresh);
       const structured = structuredReport(view, reportUrl, fresh);

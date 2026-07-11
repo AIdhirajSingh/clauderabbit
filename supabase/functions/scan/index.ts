@@ -1063,17 +1063,23 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // derivation was broken for Supabase's edge topology) AND the hashed device id,
   // whichever trips first — so a flood is caught whether it rotates device ids
   // (IP bucket catches it) or hides behind a NAT/proxy pool with one device
-  // fingerprint (device bucket catches it). For ANONYMOUS traffic (no user
-  // session and no device id) a coarse system-wide circuit breaker also applies,
-  // so a flood spread across many real IPs with no deviceId is still bounded in
-  // aggregate. The limiter fails OPEN on any DB error, so it can never take the
-  // endpoint down or block the free first scan.
+  // fingerprint (device bucket catches it). For every UNAUTHENTICATED request
+  // (no server-verified user session) a coarse system-wide circuit breaker also
+  // applies, so a flood spread across many real IPs is still bounded in aggregate.
+  //
+  // `unauthenticated` is `userId === null` ONLY — deliberately NOT `&& deviceId
+  // === null`. deviceId is unauthenticated, caller-controlled body input; folding
+  // it into this gate was a real bypass (send a random deviceId per request →
+  // "non-anonymous" → global breaker skipped, while the per-IP/per-device buckets
+  // also never accumulate). Only a real signed-in session is exempt. The limiter
+  // fails OPEN on any DB error, so it can never take the endpoint down or block
+  // the free first scan.
   const clientIp = clientIpFromRequest(req);
-  const isAnonymous = userId === null && deviceId === null;
+  const unauthenticated = userId === null;
   const burst = await checkBurstLimit(db, {
     ip: clientIp,
     deviceIdHash: deviceId,
-    isAnonymous,
+    unauthenticated,
   });
   if (!burst.allowed) {
     console.error(

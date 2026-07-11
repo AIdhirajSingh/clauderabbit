@@ -14,9 +14,11 @@
  *   - checkBurstLimit TRIPS after exactly RATE_LIMIT_MAX_REQUESTS in a window and
  *     returns a Retry-After, then ALLOWS again once the window rolls over;
  *   - the IP bucket and the device bucket each independently catch a flood;
- *   - a coarse GLOBAL ANONYMOUS circuit breaker caps aggregate anonymous (no user,
- *     no deviceId) traffic system-wide, bounding a flood spread across many real
- *     IPs that no per-source bucket can catch;
+ *   - a coarse GLOBAL UNAUTHENTICATED circuit breaker caps aggregate logged-out
+ *     traffic (userId === null, REGARDLESS of the client-controlled deviceId)
+ *     system-wide, bounding a flood spread across many real IPs that no per-source
+ *     bucket can catch — and a flooder cannot opt out of it by sending a random
+ *     deviceId, since only a real signed-in session is exempt;
  *   - it FAILS OPEN when no bucket is derivable and when the DB errors, so it can
  *     never take the scan endpoint down or block the free first scan.
  *
@@ -248,65 +250,94 @@ Deno.test("checkBurstLimit: rotating the device id does NOT dodge the IP limit",
 
 // --- global anonymous circuit breaker ----------------------------------------
 
-Deno.test("checkBurstLimit: the GLOBAL ANONYMOUS breaker caps aggregate anonymous traffic across many IPs", async () => {
+Deno.test("checkBurstLimit: the GLOBAL UNAUTHENTICATED breaker caps aggregate logged-out traffic across many IPs", async () => {
   const clock: FakeClock = { now: 8_000_000 };
   const db = fakeDb(clock);
 
   // The flood the per-source buckets CANNOT catch: a distinct real IP each
   // request (well under the per-IP cap of 20 apiece) and NO device id. The old
-  // code left this completely un-throttled. The global-anon bucket now bounds it.
+  // code left this completely un-throttled. The global bucket now bounds it.
   for (let i = 0; i < GLOBAL_ANON_MAX_REQUESTS; i++) {
     const r = await checkBurstLimit(db, {
       ip: `203.0.${Math.floor(i / 254)}.${(i % 254) + 1}`,
       deviceIdHash: null,
-      isAnonymous: true,
+      unauthenticated: true,
     });
-    assertEquals(r.allowed, true, `anonymous request #${i + 1} (fresh IP) should be allowed`);
+    assertEquals(r.allowed, true, `logged-out request #${i + 1} (fresh IP) should be allowed`);
   }
-  // One more anonymous request (any IP) — the system-wide anonymous window is full.
+  // One more unauthenticated request (any IP) — the system-wide window is full.
   const tripped = await checkBurstLimit(db, {
     ip: "198.51.100.200",
     deviceIdHash: null,
-    isAnonymous: true,
+    unauthenticated: true,
   });
-  assertEquals(tripped.allowed, false, "aggregate anonymous flood must trip the global breaker");
+  assertEquals(tripped.allowed, false, "aggregate logged-out flood must trip the global breaker");
   assertEquals(tripped.trippedBy, "global-anon");
   assert(tripped.retryAfter >= 1, "the global breaker must report a positive Retry-After");
 });
 
-Deno.test("checkBurstLimit: the global anonymous breaker does NOT apply to identified (non-anonymous) traffic", async () => {
+Deno.test("checkBurstLimit: a random deviceId per request does NOT dodge the global breaker (the bypass this fix closes)", async () => {
+  const clock: FakeClock = { now: 8_500_000 };
+  const db = fakeDb(clock);
+
+  // THE REGRESSION RAIL. A flooder across many real IPs, each request carrying a
+  // DISTINCT made-up deviceId — the exact evasion that used to work: the old gate
+  // `userId === null && deviceId === null` saw a deviceId and declared the request
+  // "non-anonymous", so the global breaker was skipped, while the per-IP bucket
+  // (rotated IPs) and per-device bucket (rotated deviceIds) also never accumulated
+  // — a completely un-throttled distributed flood. The gate is now `userId ===
+  // null` alone, so every one of these logged-out requests counts and the breaker
+  // trips. If anyone re-adds a deviceId term to the gate, this test fails.
+  for (let i = 0; i < GLOBAL_ANON_MAX_REQUESTS; i++) {
+    const r = await checkBurstLimit(db, {
+      ip: `203.0.${Math.floor(i / 254)}.${(i % 254) + 1}`,
+      deviceIdHash: `attacker-dev-${i}`.padEnd(64, "0"),
+      unauthenticated: true, // userId === null — a real deviceId does NOT change this
+    });
+    assertEquals(r.allowed, true, `request #${i + 1} should be allowed up to the cap`);
+  }
+  const tripped = await checkBurstLimit(db, {
+    ip: "198.51.100.201",
+    deviceIdHash: "attacker-dev-final".padEnd(64, "0"),
+    unauthenticated: true,
+  });
+  assertEquals(tripped.allowed, false, "a rotating-deviceId flood must still trip the global breaker");
+  assertEquals(tripped.trippedBy, "global-anon");
+});
+
+Deno.test("checkBurstLimit: the global breaker does NOT apply to a real signed-in (authenticated) population", async () => {
   const clock: FakeClock = { now: 9_000_000 };
   const db = fakeDb(clock);
 
-  // Requests that carry a device id are NOT anonymous, so the global-anon bucket
-  // never counts them — a legitimate device-identified population is never
-  // collectively throttled by other users' anonymous floods. Each still gets its
-  // own per-device cap; here every request uses a DISTINCT device id and a
-  // distinct IP, so no per-source bucket trips either. Far more than the global
-  // anonymous cap of requests all succeed.
+  // The ONLY exemption is a server-verified user session (userId !== null →
+  // `unauthenticated: false`). A legitimate signed-in population is never
+  // collectively throttled by other users' floods. Each request here uses a
+  // DISTINCT IP so no per-source IP bucket trips either; far more than the global
+  // cap of authenticated requests all succeed. (deviceId is irrelevant to this —
+  // authentication, not a client fingerprint, is what grants the exemption.)
   for (let i = 0; i < GLOBAL_ANON_MAX_REQUESTS + 50; i++) {
     const r = await checkBurstLimit(db, {
       ip: `203.0.${Math.floor(i / 254)}.${(i % 254) + 1}`,
-      deviceIdHash: `dev-${i}`.padEnd(64, "0"),
-      isAnonymous: false,
+      deviceIdHash: null,
+      unauthenticated: false,
     });
-    assertEquals(r.allowed, true, `identified request #${i + 1} must not hit the anonymous breaker`);
+    assertEquals(r.allowed, true, `authenticated request #${i + 1} must not hit the global breaker`);
   }
 });
 
-Deno.test("checkBurstLimit: anonymous request with NO derivable IP is still bounded by the global breaker", async () => {
+Deno.test("checkBurstLimit: unauthenticated request with NO derivable IP is still bounded by the global breaker", async () => {
   const clock: FakeClock = { now: 10_000_000 };
   const db = fakeDb(clock);
 
-  // No IP and no device id, but flagged anonymous: previously this failed fully
-  // open. Now the global-anon bucket alone caps it, so even the worst case (no
-  // per-source signal at all) is no longer zero-protection.
+  // No IP and no device id, but logged out: previously this failed fully open.
+  // Now the global bucket alone caps it, so even the worst case (no per-source
+  // signal at all) is no longer zero-protection.
   for (let i = 0; i < GLOBAL_ANON_MAX_REQUESTS; i++) {
-    const r = await checkBurstLimit(db, { ip: null, deviceIdHash: null, isAnonymous: true });
+    const r = await checkBurstLimit(db, { ip: null, deviceIdHash: null, unauthenticated: true });
     assertEquals(r.allowed, true);
   }
-  const tripped = await checkBurstLimit(db, { ip: null, deviceIdHash: null, isAnonymous: true });
-  assertEquals(tripped.allowed, false, "anonymous no-IP flood must still be bounded system-wide");
+  const tripped = await checkBurstLimit(db, { ip: null, deviceIdHash: null, unauthenticated: true });
+  assertEquals(tripped.allowed, false, "logged-out no-IP flood must still be bounded system-wide");
   assertEquals(tripped.trippedBy, "global-anon");
 });
 

@@ -127,8 +127,9 @@ Any client that supports stdio MCP servers uses the same shape: a `command` of `
 For clients that connect over HTTP instead of spawning a local process (e.g. a claude.ai
 custom connector), the same `scan` tool is also served remotely at `https://clauderabbit.in/mcp`
 (Streamable HTTP, OAuth 2.1 with PKCE for sign-in — no separate setup needed, the connector's
-own "Connect" flow handles login). Add it in claude.ai under Settings → Connectors → Add
-custom connector, using that URL.
+own "Connect" flow handles login). It accepts the same targets as the stdio tool — a GitHub repo
+(`owner` + `repo`) or an npm package (`package`). Add it in claude.ai under Settings → Connectors
+→ Add custom connector, using that URL.
 
 ## Running standalone / testing
 

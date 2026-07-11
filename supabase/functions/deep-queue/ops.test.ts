@@ -105,6 +105,26 @@ Deno.test("parseQueueOp: a valid get_stage op needs only a clean token", () => {
   assertEquals(parseQueueOp({ op: "get_stage", token: "" }).ok, false);
 });
 
+Deno.test("parseQueueOp: claim/release ops carry the full (owner,repo,sha) lock identity + token", () => {
+  for (const op of ["claim", "release"] as const) {
+    const r = parseQueueOp({ op, token: "psf-requests-abc", owner: "psf", repo: "requests", sha: "abc123" });
+    assertEquals(r.ok, true, `${op} with clean fields must parse`);
+    if (r.ok && (r.value.op === "claim" || r.value.op === "release")) {
+      assertEquals(r.value.op, op);
+      assertEquals(r.value.owner, "psf");
+      assertEquals(r.value.repo, "requests");
+      assertEquals(r.value.sha, "abc123");
+      assertEquals(r.value.token, "psf-requests-abc");
+    }
+    // The lock identity is charset-guarded exactly like enqueue — a dirty owner,
+    // sha, or token is rejected before it can reach the dispatch-lock RPC.
+    assertEquals(parseQueueOp({ op, token: "t", owner: "a/b", repo: "r", sha: "s" }).ok, false);
+    assertEquals(parseQueueOp({ op, token: "bad tok", owner: "a", repo: "r", sha: "s" }).ok, false);
+    assertEquals(parseQueueOp({ op, token: "t", owner: "a", repo: "r", sha: "bad sha" }).ok, false);
+    assertEquals(parseQueueOp({ op, token: "t", owner: "a", repo: "r" }).ok, false); // sha missing
+  }
+});
+
 Deno.test("parseQueueOp: unknown op and non-object bodies are rejected", () => {
   assertEquals(parseQueueOp({ op: "delete", token: "abc-123" }).ok, false);
   assertEquals(parseQueueOp(null).ok, false);

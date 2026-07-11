@@ -182,6 +182,37 @@ export async function handler(req: Request): Promise<Response> {
     return jsonResponse({ ok: true, updated: data === true });
   }
 
+  if (q.op === "claim") {
+    // Atomic per-(owner,repo,sha) detonation dispatch claim. `claimed: true`
+    // means THIS caller won and should dispatch Cloud Run; `false` means another
+    // dispatch already holds a fresh claim and the caller must NOT dispatch again.
+    const { data, error } = await db.rpc("deep_dispatch_try_claim", {
+      p_owner: q.owner,
+      p_repo: q.repo,
+      p_sha: q.sha,
+      p_token: q.token,
+    });
+    if (error) {
+      console.error("deep_dispatch_try_claim failed:", error.message);
+      return jsonResponse({ error: "Claim failed" }, 500);
+    }
+    return jsonResponse({ ok: true, claimed: data === true });
+  }
+
+  if (q.op === "release") {
+    const { data, error } = await db.rpc("deep_dispatch_release", {
+      p_owner: q.owner,
+      p_repo: q.repo,
+      p_sha: q.sha,
+      p_token: q.token,
+    });
+    if (error) {
+      console.error("deep_dispatch_release failed:", error.message);
+      return jsonResponse({ error: "Release failed" }, 500);
+    }
+    return jsonResponse({ ok: true, released: data === true });
+  }
+
   // op === "get_stage" — /api/deep's polling read during the detonation wait.
   const { data, error } = await db.rpc("deep_queue_get_stage", { p_token: q.token });
   if (error) {

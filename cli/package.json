@@ -1,6 +1,6 @@
 {
   "name": "clauderabbit",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "license": "MIT",
   "description": "CLI for ClaudeRabbit — scan a public GitHub repo or npm package for a 0-100 safety score before installing or cloning it.",
   "type": "module",
