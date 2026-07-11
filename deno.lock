@@ -31,6 +31,10 @@
     }
   },
   "workspace": {
+    "dependencies": [
+      "jsr:@std/tar@0.1",
+      "jsr:@supabase/supabase-js@2"
+    ],
     "packageJson": {
       "dependencies": [
         "npm:@modelcontextprotocol/sdk@^1.29.0",

@@ -11,7 +11,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/resolve-ts.mjs --test \"tests/**/*.test.ts\" \"app/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\"",
-    "test:functions": "deno test --allow-net --allow-env supabase/functions/"
+    "test:functions": "deno test --allow-net --allow-env supabase/functions/",
+    "check:functions": "deno check supabase/functions/scan/index.ts supabase/functions/deep-queue/index.ts supabase/functions/attach-forensics/index.ts supabase/functions/oauth-token/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

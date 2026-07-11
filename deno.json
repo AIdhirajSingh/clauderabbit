@@ -1,0 +1,7 @@
+{
+  "//": "Deno config for the Supabase edge functions ONLY (the Next.js app uses tsconfig.json/npm and ignores this file). Its sole job is to make `deno test`/`deno check` run from the REPO ROOT resolve the shared import map — deno discovers its config from the CWD, and code in supabase/functions/_shared/ imports specifiers (`@std/tar/untar-stream`) that are otherwise only mapped in a single function's deno.json, so a from-root run couldn't resolve them and `npm run test:functions` silently failed type-checking. This is the UNION of every per-function deno.json's imports; the per-function configs still win for their own files (nearest-config discovery) and are what `supabase functions deploy` uses.",
+  "imports": {
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2",
+    "@std/tar/untar-stream": "jsr:@std/tar@0.1/untar-stream"
+  }
+}
