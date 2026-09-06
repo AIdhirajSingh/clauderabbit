@@ -604,17 +604,6 @@ export function HomeScreen() {
               <StarIcon size={17} />
               Star on GitHub
             </a>
-            <p style={{ fontSize: 12.5, color: "var(--t5)", margin: "18px 0 0" }}>
-              Built by{" "}
-              <a
-                href="https://mindndata.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: "var(--t5)", textDecoration: "underline" }}
-              >
-                MindNdata
-              </a>
-            </p>
           </div>
           <div style={{ position: "relative", height: 520 }}>
             <Orbit dur="22s" durB="28s" scale={1} />
