@@ -47,6 +47,7 @@ import {
   type ScoringInputs,
 } from "../_shared/scoring.ts";
 import { generate } from "../_shared/vertex.ts";
+import { DEEP_READ_LIMIT, runDeepRead } from "../_shared/deep-read.ts";
 import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
 import {
   isValidNpmName,
@@ -1441,8 +1442,54 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       const escalate = escalation.escalate;
       const escalationReason = escalation.reason;
-      const scanPath = escalate ? "deep" : "fast";
-      const deep = escalate;
+
+      // 6a. ESCALATED TIER — deep behavioural READ on Vertex.
+      //
+      // The escalated tier used to mean exactly one thing: dispatch a live
+      // detonation. While the sandbox substrate is not serving, that left an
+      // escalated repo marked deep/dynamic with no run behind it — a report
+      // claiming more verification than happened. So the escalated tier now runs
+      // a real second pass (deep model, full flagged context, behavioural
+      // reasoning) and is labelled for what it actually is:
+      //
+      //   scan_path "deep-static", is_dynamic FALSE.
+      //
+      // `is_dynamic` stays reserved for a real sandbox run. When a detonation does
+      // land, attach-forensics overwrites this chapter and sets the dynamic flag —
+      // that path is untouched.
+      let deepRead: Awaited<ReturnType<typeof runDeepRead>> | null = null;
+      let deepReadFailed = false;
+      if (escalate) {
+        try {
+          const installScripts = files
+            .filter((f) =>
+              /(^|\/)package\.json$/i.test(f.path) ||
+              /\.(sh|bash|ps1)$/i.test(f.path) ||
+              /(^|\/)(setup\.py|Makefile|install)/i.test(f.path)
+            )
+            .slice(0, 12)
+            .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 8000)}`)
+            .join("\n\n");
+          deepRead = await runDeepRead(
+            metadata.fullName,
+            commitSha,
+            scan,
+            installScripts,
+          );
+        } catch (e) {
+          // Never degrade to a clean-looking verdict on a model failure. The repo
+          // stays escalated, and the report says the deep read did not complete.
+          deepReadFailed = true;
+          console.error(
+            "deep read failed:",
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+
+      const scanPath = escalate ? "deep-static" : "fast";
+      // Reserved for a real sandbox run only. A read is never a run.
+      const deep = false;
 
       // 6b. Compute the AUTHORITATIVE score from weighted, named signals. The model
       // FED the signals (static flags, reputation facts, per-finding risky items,
@@ -1491,8 +1538,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // Build logs from the model, then append the computed-score citation and the
       // escalation decision. This is the STAGE-1 record: it states the static read
       // flagged the repo for a live detonation. It makes NO runtime claim and uses
-      // NO hedge ("not executed"/"unverified" are forbidden on an escalated repo) —
-      // when the inline moat detonates, attach-forensics REPLACES this chapter with
+      // The escalated tier is a deep READ, so the hedge is now REQUIRED, not
+      // forbidden: the Deep read chapter below always carries DEEP_READ_LIMIT.
+      // (The old rule banned the hedge because a detonation was guaranteed to
+      // follow and overwrite this chapter. That guarantee no longer holds, and a
+      // report must never imply a runtime proof it does not have.) When a
+      // detonation DOES land, attach-forensics still REPLACES this chapter with
       // the real "Sandbox run" timeline + the blended score.
       const logs = Array.isArray(model.logs) ? model.logs : [];
       logs.push(buildScoreChapter(score, scoreBreakdown));
@@ -1505,8 +1556,51 @@ Deno.serve(async (req: Request): Promise<Response> => {
             lines: [
               "Escalation gate tripped on the static read",
               `Reason: ${escalationReason}`,
-              "Flagged for a live sandbox detonation",
+              "Escalated to a deep behavioural read",
             ],
+          });
+        }
+
+        // The deep-read chapter. States predicted behaviour WITH its evidence,
+        // then states what reading could not settle. The limit line is appended
+        // unconditionally — including on failure — so this chapter can never be
+        // mistaken for a runtime proof.
+        if (deepReadFailed || !deepRead) {
+          logs.push({
+            ch: "Deep read",
+            kind: "warn",
+            lines: [
+              "The deep behavioural read did not complete on this pass.",
+              "This repo remains escalated; treat it as unverified, not as cleared.",
+              DEEP_READ_LIMIT,
+            ],
+          });
+        } else {
+          const lines: string[] = [];
+          if (deepRead.summary) lines.push(deepRead.summary);
+          for (const b of deepRead.behaviours.slice(0, 8)) {
+            lines.push(
+              `[${b.kind}/${b.severity}] ${b.behaviour} — evidence: ${b.evidence}`,
+            );
+          }
+          if (deepRead.behaviours.length === 0) {
+            lines.push(
+              "No specific harmful behaviour was predicted from the flagged regions.",
+            );
+          }
+          if (deepRead.unresolved.length > 0) {
+            lines.push("Not determinable without running the code:");
+            for (const u of deepRead.unresolved.slice(0, 6)) {
+              lines.push(`  • ${u}`);
+            }
+          }
+          lines.push(DEEP_READ_LIMIT);
+          logs.push({
+            ch: "Deep read",
+            kind: deepRead.behaviours.some((b) => b.severity === "high")
+              ? "bad"
+              : "warn",
+            lines,
           });
         }
       }

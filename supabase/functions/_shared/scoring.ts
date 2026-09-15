@@ -442,7 +442,7 @@ function codeDeltas(inputs: ScoringInputs): ScoreDelta[] {
       deltas.push({
         factor: "escalation_pending",
         delta: W_ESCALATION_PENDING,
-        detail: "Escalated to the dynamic sandbox; not yet cleared by a runtime observation.",
+        detail: "Escalated past the fast read; not cleared by a runtime observation.",
         group: "code",
       });
     }
