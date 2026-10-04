@@ -89,6 +89,8 @@ export interface GenerateOptions {
 export interface GenerateResult {
   /** Concatenated text from the model. */
   text: string;
+  /** Billable model requests this call made (2 when a schema repair ran). */
+  calls?: number;
   /** Parsed JSON when `json` was requested and parsing succeeded. */
   json?: unknown;
   /** Token usage metadata, if returned. */
@@ -436,7 +438,7 @@ async function generateDirectVertex(opts: GenerateOptions): Promise<GenerateResu
     .map((p) => p.text ?? "")
     .join("");
 
-  const result: GenerateResult = { text, usage: data.usageMetadata };
+  const result: GenerateResult = { text, usage: data.usageMetadata, calls: 1 };
 
   if (opts.json) {
     if (candidate.finishReason === "MAX_TOKENS") {
@@ -464,23 +466,77 @@ function schemaInstruction(schema: unknown): string {
   ].join("\n");
 }
 
+/**
+ * Repair the two ways an unconstrained model breaks JSON when it quotes code:
+ * a backslash that is not a legal JSON escape (Windows paths, regexes:
+ * "C:\Users", "\d+") and raw control characters (newline, tab) inside a string.
+ * Only string contents are touched. Runs only after a strict parse has failed.
+ */
+export function sanitizeJsonText(t: string): string {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (!inStr) {
+      if (c === '"') inStr = true;
+      out += c;
+      continue;
+    }
+    if (c === "\\") {
+      const n = t[i + 1];
+      // \b and \f are treated as literal backslashes: this only runs after a strict
+      // parse failed, and model prose means "scripts\find", not a form feed.
+      if (n !== undefined && '"\\/nrt'.includes(n)) {
+        out += c + n;
+        i++;
+      } else if (n === "u" && /^[0-9a-fA-F]{4}$/.test(t.slice(i + 2, i + 6))) {
+        out += t.slice(i, i + 6);
+        i += 5;
+      } else {
+        out += "\\\\"; // lone backslash -> escaped backslash
+      }
+      continue;
+    }
+    if (c === '"') {
+      inStr = false;
+      out += c;
+      continue;
+    }
+    const code = c.charCodeAt(0);
+    if (code < 0x20) {
+      out += c === "\n" ? "\\n" : c === "\r" ? "\\r" : c === "\t" ? "\\t" : `\\u${code.toString(16).padStart(4, "0")}`;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+function parseLenient(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return JSON.parse(sanitizeJsonText(body));
+  }
+}
+
 /** Pull the JSON object out of a reply that may carry fences or stray prose. */
 export function extractJsonObject(text: string): unknown {
   // A clean object first: a valid reply may itself contain ``` inside a string
   // (a summary quoting code), which the fence match below would cut apart.
   try {
-    return JSON.parse(text.trim());
+    return parseLenient(text.trim());
   } catch {
     // fall through to fence / brace extraction
   }
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = (fenced ? fenced[1] : text).trim();
   try {
-    return JSON.parse(body);
+    return parseLenient(body);
   } catch {
     const start = body.indexOf("{");
     const end = body.lastIndexOf("}");
-    if (start >= 0 && end > start) return JSON.parse(body.slice(start, end + 1));
+    if (start >= 0 && end > start) return parseLenient(body.slice(start, end + 1));
     throw new Error("no JSON object in model reply");
   }
 }
@@ -533,6 +589,13 @@ export function validateAgainstSchema(value: unknown, schema: unknown, path = "$
   return errs;
 }
 
+
+/** A model failure that still records how many billable requests it made. */
+export class ModelCallError extends Error {
+  constructor(message: string, readonly calls: number) {
+    super(message);
+  }
+}
 
 // --- Conversational Agents (Dialogflow CX) generator backend ----------------
 //
@@ -603,7 +666,7 @@ async function generateDialogflow(opts: GenerateOptions): Promise<GenerateResult
     (opts.responseSchema ? schemaInstruction(opts.responseSchema) : opts.json ? "\nReply with a single JSON object only." : "");
 
   let text = await callDialogflow(opts.tier, system, opts.prompt);
-  if (!wantsJson) return { text };
+  if (!wantsJson) return { text, calls: 1 };
 
   // One corrective call if the reply is not a schema-valid object. Generators are
   // single-turn, so the bad reply and the problems are appended to the prompt.
@@ -616,10 +679,15 @@ async function generateDialogflow(opts: GenerateOptions): Promise<GenerateResult
     } catch {
       problems = ["reply was not a parseable JSON object"];
     }
-    if (problems.length === 0) return { text, json: parsed };
+    if (problems.length === 0) return { text, json: parsed, calls: attempt + 1 };
+    if (attempt === 0) {
+      // Each repair is a second billable request: log it so the rate is visible.
+      console.warn("dialogflow repair (%s tier): %s", opts.tier, problems.slice(0, 5).join("; "));
+    }
     if (attempt >= 1) {
       console.error("dialogflow JSON invalid after retry: %s", problems.slice(0, 5).join("; "));
-      throw new Error("model did not return valid JSON");
+      console.debug("dialogflow unparseable reply head: %s ... tail: %s", text.slice(0, 300), text.slice(-200));
+      throw new ModelCallError("model did not return valid JSON", attempt + 1);
     }
     const repair = `${opts.prompt}\n\nYOUR PREVIOUS REPLY:\n${text.slice(0, 20_000)}\n\n` +
       `It did not validate: ${problems.slice(0, 20).join("; ")}. ` +

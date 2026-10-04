@@ -117,6 +117,26 @@ Operator probe (for before/after checks without touching the report cache): a `s
 request with header `x-cr-probe-key` equal to the `CR_PROBE_KEY` secret skips the cache and
 every owners/reports/scans write (the burst rate-limiter still counts it), and `x-cr-model-backend: dialogflow|vertex` pins the backend for that run.
 
+Requests per scan on the generator route (each is billed the same): a clean scan makes 1
+(the read), an escalated scan 2 (read + deep read). `CR_COMBINE=on` merges the two into one
+request for scans whose escalation is certain before the model runs, but it is OFF: measured
+2026-10-04 it either moved AmrDab/clawdcursor's score (33 -> 36 in 3/5 runs on
+gemini-2.5-flash) or thinned the deep read (2 behaviours vs 7-10 on gemini-3.1-flash-lite).
+Generator replies are not schema-constrained, so `vertex.ts` repairs the two ways they break
+JSON (unescaped backslashes from quoted Windows paths/regexes, raw control characters) before
+spending a repair request; that removed the repair retries clawdcursor was triggering.
+
+Billing kill switch (no human step): a Cloud Billing budget `clauderabbit-credit-guard` on
+the ClaudeRabbit project (after-credit spend) publishes to Pub/Sub topic `cr-billing-alerts`;
+push subscription `cr-billing-guard-push` (OIDC-authenticated as the Vertex service account)
+delivers to the `billing-guard` edge function. When `costAmount` exceeds `CR_GUARD_THRESHOLD`
+(default 1) it writes `vertex` to storage object `cr-config/model-backend-override`, which
+`scan` reads before every model call (30 s cache) and which overrides `CR_MODEL_BACKEND`. The
+budget also emails billing admins at 100%. The guard only ever switches TO vertex; switching
+back is a deliberate operator call: POST billing-guard with header `x-cr-probe-key` and body
+`{"op":"reset"}` (`{"op":"status"}` reads it). Guard config secrets: `CR_GUARD_AUDIENCE`,
+`CR_GUARD_PUSH_SA`, `CR_GUARD_BUDGET_NAME`.
+
 Removed 2026-10-04 to stop recurring charges (all recreatable):
 - Cloud DNS private zone `cr-internal-zone` (`cr.internal.`, network `cr-sandbox-vpc`) with
   one record `cr-harness.cr.internal. A 60 10.200.0.10`. The harness falls back to the raw

@@ -46,8 +46,15 @@ import {
   type ScoreDelta,
   type ScoringInputs,
 } from "../_shared/scoring.ts";
-import { generate, parseBackend } from "../_shared/vertex.ts";
-import { DEEP_READ_LIMIT, runDeepRead } from "../_shared/deep-read.ts";
+import { generate, ModelCallError, type ModelBackend, modelBackend, parseBackend } from "../_shared/vertex.ts";
+import {
+  DEEP_READ_LIMIT,
+  DEEP_SCHEMA,
+  deepReadSystem,
+  deepReadUserPrompt,
+  parseDeepRead,
+  runDeepRead,
+} from "../_shared/deep-read.ts";
 import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
 import {
   isValidNpmName,
@@ -629,6 +636,73 @@ interface EscalationDecision {
    * alone never escalates). Exposing this avoids recomputing the threshold a
    * second time in scoring and risking the two definitions drifting apart. */
   wasNewOwner: boolean;
+}
+
+/**
+ * The deterministic escalation triggers that need no model output: the same first
+ * four checks `decideEscalation` makes, in the same order. When this is true the
+ * repo WILL escalate whatever the read says, so on the generator route the read
+ * and the deep read can share one request.
+ */
+function preModelEscalates(scan: StaticScanResult, owner: OwnerSignal): boolean {
+  const newOwner = owner.ageDays >= 0 && owner.ageDays < NEW_OWNER_AGE_DAYS;
+  const anySignal = scan.signals.installHook || scan.signals.network ||
+    scan.signals.embeddedSecret || scan.signals.typosquat;
+  return scan.signals.obfuscation || scan.signals.credAccess || scan.installTimeNetwork ||
+    (newOwner && anySignal);
+}
+
+/** Read + deep read in ONE generator request (escalated scans on the credit route). */
+const COMBINED_SCHEMA = {
+  type: "object",
+  properties: { read: RESPONSE_SCHEMA, deep: DEEP_SCHEMA },
+  required: ["read", "deep"],
+};
+
+function buildCombinedSystem(): string {
+  // The read's own instructions come FIRST and verbatim, so the "read" object is
+  // produced in the same context as a standalone read; the deep read is an addendum.
+  return [
+    buildSystemPrompt(),
+    "",
+    "=== ADDENDUM: a second, separate analysis in the same reply ===",
+    'Your reply is ONE JSON object with two keys. "read" holds exactly the report',
+    "specified above, produced exactly as if this addendum did not exist. \"deep\" holds",
+    "the deep behavioural read specified below, from the DEEP INPUT section only.",
+    "",
+    deepReadSystem(),
+  ].join("\n");
+}
+
+function buildCombinedPrompt(readPrompt: string, deepPrompt: string): string {
+  return `${readPrompt}\n\n=== DEEP INPUT (for "deep" only) ===\n${deepPrompt}`;
+}
+
+/** Which generator serves the combined request (CR_COMBINED_TIER, default fast). */
+function combinedTier(): "fast" | "deep" {
+  return Deno.env.get("CR_COMBINED_TIER")?.trim().toLowerCase() === "deep" ? "deep" : "fast";
+}
+
+/**
+ * Billing kill switch. The billing-guard function writes "vertex" to storage object
+ * cr-config/model-backend-override when ClaudeRabbit's after-credit spend passes its
+ * budget; every scan honours it. Read only when an env flag routes a tier to the
+ * generator; cached 30 s per isolate; any read failure means "no override", so a
+ * storage hiccup can never block a scan.
+ */
+let killSwitchCache: { at: number; value: ModelBackend | undefined } | null = null;
+async function killSwitchBackend(db: SupabaseClient): Promise<ModelBackend | undefined> {
+  if (modelBackend("fast") === "vertex" && modelBackend("deep") === "vertex") return undefined;
+  if (killSwitchCache && Date.now() - killSwitchCache.at < 30_000) return killSwitchCache.value;
+  let value: ModelBackend | undefined;
+  try {
+    const { data } = await db.storage.from("cr-config").download("model-backend-override");
+    value = data ? parseBackend(await data.text()) : undefined;
+  } catch {
+    value = undefined;
+  }
+  killSwitchCache = { at: Date.now(), value };
+  return value;
 }
 
 function decideEscalation(
@@ -1394,20 +1468,70 @@ Deno.serve(async (req: Request): Promise<Response> => {
       await emit({ t: "stage", ch: "Read", status: "active" });
       let model: ModelOutput;
       const probeTimings: Record<string, number> = {};
+      // Billable model requests this scan made (probe output + cost measurement).
+      let modelCalls = 0;
+      const backendOverride = probeBackend ?? await killSwitchBackend(db);
+      const installScripts = files
+        .filter((f) =>
+          /(^|\/)package\.json$/i.test(f.path) ||
+          /\.(sh|bash|ps1)$/i.test(f.path) ||
+          /(^|\/)(setup\.py|Makefile|install)/i.test(f.path)
+        )
+        .slice(0, 12)
+        .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 8000)}`)
+        .join("\n\n");
+      // Optional single-request mode (CR_COMBINE=on): on the generator route a scan
+      // whose escalation is already certain can make ONE request for the read and
+      // the deep read together. OFF by default: measured 2026-10-04 on
+      // AmrDab/clawdcursor it either moved the score (33 -> 36 in 3/5 runs on
+      // gemini-2.5-flash) or thinned the deep read (2 behaviours vs 7-10 on
+      // gemini-3.1-flash-lite). The direct-Vertex route never combines.
+      const preEscalate = preModelEscalates(scan, owner) ||
+        npmForcesEscalation(npmMeta, divergence) ||
+        (Deno.env.get("CR_FORCE_DEEP_TARGETS") ?? "").split(",").map((t) => t.trim().toLowerCase())
+          .filter(Boolean).includes(`${ownerLogin}/${repoName}`.toLowerCase());
+      const combine = preEscalate &&
+        Deno.env.get("CR_COMBINE")?.trim().toLowerCase() === "on" &&
+        (backendOverride ?? modelBackend("fast")) === "dialogflow" &&
+        (backendOverride ?? modelBackend("deep")) === "dialogflow";
+      let combinedDeep: unknown = undefined;
       try {
         const tFast = Date.now();
-        const result = await generate({
-          tier: "fast",
-          backend: probeBackend,
-          json: true,
-          responseSchema: RESPONSE_SCHEMA,
-          maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
-          system: buildSystemPrompt(),
-          prompt: buildUserPrompt(metadata, owner, scan, commitSha, files.length, extractDeclaredIntent(files)) +
-            (npmMeta ? npmPromptContext(npmMeta, divergence) : ""),
-        });
-        model = result.json as ModelOutput;
-        probeTimings.fastReadMs = Date.now() - tFast;
+        const readPrompt =
+          buildUserPrompt(metadata, owner, scan, commitSha, files.length, extractDeclaredIntent(files)) +
+          (npmMeta ? npmPromptContext(npmMeta, divergence) : "");
+        if (combine) {
+          const result = await generate({
+            tier: combinedTier(),
+            backend: "dialogflow",
+            json: true,
+            responseSchema: COMBINED_SCHEMA,
+            maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
+            system: buildCombinedSystem(),
+            prompt: buildCombinedPrompt(
+              readPrompt,
+              deepReadUserPrompt(metadata.fullName, commitSha, scan, installScripts),
+            ),
+          });
+          const j = result.json as { read: ModelOutput; deep: unknown };
+          model = j.read;
+          combinedDeep = j.deep;
+          modelCalls += result.calls ?? 1;
+          probeTimings.combinedMs = Date.now() - tFast;
+        } else {
+          const result = await generate({
+            tier: "fast",
+            backend: backendOverride,
+            json: true,
+            responseSchema: RESPONSE_SCHEMA,
+            maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
+            system: buildSystemPrompt(),
+            prompt: readPrompt,
+          });
+          model = result.json as ModelOutput;
+          modelCalls += result.calls ?? 1;
+          probeTimings.fastReadMs = Date.now() - tFast;
+        }
       } catch (e) {
         console.error("read model failed:", e instanceof Error ? e.message : e);
         await emit({ t: "error", error: "Analysis model call failed" });
@@ -1484,28 +1608,26 @@ Deno.serve(async (req: Request): Promise<Response> => {
       let deepReadFailed = false;
       if (escalate) {
         try {
-          const installScripts = files
-            .filter((f) =>
-              /(^|\/)package\.json$/i.test(f.path) ||
-              /\.(sh|bash|ps1)$/i.test(f.path) ||
-              /(^|\/)(setup\.py|Makefile|install)/i.test(f.path)
-            )
-            .slice(0, 12)
-            .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 8000)}`)
-            .join("\n\n");
-          const tDeep = Date.now();
-          deepRead = await runDeepRead(
-            metadata.fullName,
-            commitSha,
-            scan,
-            installScripts,
-            probeBackend,
-          );
-          probeTimings.deepReadMs = Date.now() - tDeep;
+          if (combinedDeep !== undefined) {
+            deepRead = parseDeepRead(combinedDeep);
+          } else {
+            const tDeep = Date.now();
+            const r = await runDeepRead(
+              metadata.fullName,
+              commitSha,
+              scan,
+              installScripts,
+              backendOverride,
+            );
+            modelCalls += r.calls ?? 1;
+            deepRead = r;
+            probeTimings.deepReadMs = Date.now() - tDeep;
+          }
         } catch (e) {
           // Never degrade to a clean-looking verdict on a model failure. The repo
           // stays escalated, and the report says the deep read did not complete.
           deepReadFailed = true;
+          if (e instanceof ModelCallError) modelCalls += e.calls;
           console.error(
             "deep read failed:",
             e instanceof Error ? e.message : e,
@@ -1787,7 +1909,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
           escalationReason,
           scoreBreakdown,
           ...(probe
-            ? { probe: { backend: probeBackend ?? "env", persisted: false, ...probeTimings, deepRead } }
+            ? {
+              probe: {
+                backend: backendOverride ?? "env",
+                persisted: false,
+                modelCalls,
+                combined: combine,
+                ...probeTimings,
+                deepRead,
+              },
+            }
             : {}),
         },
       });

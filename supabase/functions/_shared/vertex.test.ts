@@ -7,7 +7,7 @@
  *
  * Run: `deno test --allow-env supabase/functions/_shared/vertex.test.ts`
  */
-import { extractJsonObject, modelBackend, validateAgainstSchema } from "./vertex.ts";
+import { extractJsonObject, modelBackend, sanitizeJsonText, validateAgainstSchema } from "./vertex.ts";
 
 const S = {
   type: "object",
@@ -83,4 +83,30 @@ Deno.test("unknown or retired backend values fall through to the safe default", 
     eq(modelBackend("fast"), "vertex");
   }
   Deno.env.delete("CR_MODEL_BACKEND");
+});
+
+Deno.test("unescaped Windows paths and regex backslashes in strings are repaired", () => {
+  const raw = '{"evidence":"scripts\\find-element.ps1 reads C:\\Users\\x and matches \\d+"}'
+    .replace(/\\\\/g, "\\");
+  // raw now holds single backslashes, which is invalid JSON
+  let threw = false;
+  try {
+    JSON.parse(raw);
+  } catch {
+    threw = true;
+  }
+  eq(threw, true);
+  const v = extractJsonObject(raw) as { evidence: string };
+  eq(v.evidence, "scripts\\find-element.ps1 reads C:\\Users\\x and matches \\d+");
+});
+
+Deno.test("raw newlines and tabs inside strings are repaired; valid escapes kept", () => {
+  const v = extractJsonObject('{"a":"line1\nline2\tx","b":"q\\"ok\\n"}') as { a: string; b: string };
+  eq(v.a, "line1\nline2\tx");
+  eq(v.b, 'q"ok\n');
+});
+
+Deno.test("sanitizer leaves common valid escapes byte-identical", () => {
+  const ok = '{"k":"C:\\\\Users \\u00e9 \\"q\\"","n":[1,2]}';
+  eq(sanitizeJsonText(ok), ok);
 });

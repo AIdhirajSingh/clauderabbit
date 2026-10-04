@@ -44,7 +44,7 @@ export interface DeepReadResult {
   summary: string;
 }
 
-const DEEP_SCHEMA = {
+export const DEEP_SCHEMA = {
   type: "object",
   properties: {
     summary: { type: "string" },
@@ -67,7 +67,7 @@ const DEEP_SCHEMA = {
   required: ["summary", "confidence", "behaviours", "unresolved"],
 };
 
-function system(): string {
+export function deepReadSystem(): string {
   return [
     "You are the deep-read tier of a security scanner. A static pass already",
     "FLAGGED this repository. Your job is to reason, from the flagged code, about",
@@ -95,7 +95,7 @@ function system(): string {
   ].join("\n");
 }
 
-function userPrompt(
+export function deepReadUserPrompt(
   fullName: string,
   commitSha: string,
   scan: StaticScanResult,
@@ -143,7 +143,7 @@ export async function runDeepRead(
   scan: StaticScanResult,
   installScripts: string,
   backend?: ModelBackend,
-): Promise<DeepReadResult> {
+): Promise<DeepReadResult & { calls?: number }> {
   const result = await generate({
     tier: "deep",
     backend,
@@ -154,11 +154,15 @@ export async function runDeepRead(
     // reasoning (does this fetch-and-exec, or is it a legitimate installer?) is
     // exactly what the budget is for.
     thinking: 2048,
-    system: system(),
-    prompt: userPrompt(fullName, commitSha, scan, installScripts),
+    system: deepReadSystem(),
+    prompt: deepReadUserPrompt(fullName, commitSha, scan, installScripts),
   });
+  return { ...parseDeepRead(result.json), calls: result.calls };
+}
 
-  const j = (result.json ?? {}) as Record<string, unknown>;
+/** Normalise a deep-read JSON object (from its own call or a combined call). */
+export function parseDeepRead(json: unknown): DeepReadResult {
+  const j = (json ?? {}) as Record<string, unknown>;
   const behaviours = Array.isArray(j.behaviours)
     ? (j.behaviours as DeepBehaviour[]).filter(
       (b) => b && typeof b.behaviour === "string" && b.behaviour.length > 0,
