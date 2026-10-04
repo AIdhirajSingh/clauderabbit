@@ -669,7 +669,9 @@ export async function resolveNpmPackage(target: NpmTarget): Promise<NpmResolutio
     publishedAt,
     firstPublishedAt,
     license: licenseString(manifest.license),
-    maintainerCount: Array.isArray(manifest.maintainers) ? manifest.maintainers.length : 0,
+    // Real maintainer count: the abbreviated install manifest often omits
+    // `maintainers` (which made this a junk 0 that suppressed "established").
+    maintainerCount: (packMaintainers ?? maintainerNames(manifest.maintainers)).length,
     lastMonthDownloads: downloads,
     publisher: typeof manifest._npmUser?.name === "string" && manifest._npmUser.name ? manifest._npmUser.name : null,
     maintainers: packMaintainers ?? maintainerNames(manifest.maintainers),
