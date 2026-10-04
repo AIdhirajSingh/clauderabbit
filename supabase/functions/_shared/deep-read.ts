@@ -19,7 +19,7 @@
  * it never had. A deep read must never be labelled or scored as a sandbox run.
  */
 
-import { generate } from "./vertex.ts";
+import { generate, type ModelBackend } from "./vertex.ts";
 import type { FlaggedRegion, StaticScanResult } from "./static-scan.ts";
 
 /** One predicted behaviour, tied to the evidence that predicts it. */
@@ -142,9 +142,11 @@ export async function runDeepRead(
   commitSha: string,
   scan: StaticScanResult,
   installScripts: string,
+  backend?: ModelBackend,
 ): Promise<DeepReadResult> {
   const result = await generate({
     tier: "deep",
+    backend,
     json: true,
     responseSchema: DEEP_SCHEMA,
     maxOutputTokens: 4096,

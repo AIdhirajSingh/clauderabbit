@@ -46,7 +46,7 @@ import {
   type ScoreDelta,
   type ScoringInputs,
 } from "../_shared/scoring.ts";
-import { generate } from "../_shared/vertex.ts";
+import { generate, parseBackend } from "../_shared/vertex.ts";
 import { DEEP_READ_LIMIT, runDeepRead } from "../_shared/deep-read.ts";
 import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
 import {
@@ -962,6 +962,15 @@ function npmPromptContext(npm: NpmMetadata, div: NpmDivergence | null): string {
   return lines.join("\n");
 }
 
+/** Constant-time string compare for the operator probe key. */
+function timingSafeEqual(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  let diff = ea.length ^ eb.length;
+  for (let i = 0; i < Math.max(ea.length, eb.length); i++) diff |= (ea[i] ?? 0) ^ (eb[i] ?? 0);
+  return diff === 0;
+}
+
 // --- Main handler ------------------------------------------------------------
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -976,6 +985,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
   } catch {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
+
+  // Operator probe — a FRESH, NON-PERSISTING run for before/after model checks.
+  // Only when the caller presents the CR_PROBE_KEY secret (>=32 chars; unset =
+  // the mode does not exist): the cache hit is skipped, nothing is written to
+  // owners/reports/scans (the burst rate-limiter still counts the request), and `x-cr-model-backend: dialogflow|vertex` pins the
+  // model backend for this one run. A normal scan is byte-for-byte unaffected.
+  const probeKey = Deno.env.get("CR_PROBE_KEY") ?? "";
+  const probe = probeKey.length >= 32 &&
+    timingSafeEqual(req.headers.get("x-cr-probe-key") ?? "", probeKey);
+  const probeBackend = probe ? parseBackend(req.headers.get("x-cr-model-backend")) : undefined;
 
   // Ecosystem: an npm target scans the published registry ARTIFACT; anything else
   // is a GitHub repo. The two share every downstream stage — they differ only in
@@ -1158,7 +1177,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .eq("commit_sha", commitSha)
       .maybeSingle();
 
-    if (cached) {
+    if (cached && !probe) {
       const row = cached as ReportRow;
       let ownerRow: OwnerRow | null = null;
       if (row.owner_id != null) {
@@ -1374,9 +1393,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // 5. Read model (fast tier) reads ONLY flagged regions + metadata.
       await emit({ t: "stage", ch: "Read", status: "active" });
       let model: ModelOutput;
+      const probeTimings: Record<string, number> = {};
       try {
+        const tFast = Date.now();
         const result = await generate({
           tier: "fast",
+          backend: probeBackend,
           json: true,
           responseSchema: RESPONSE_SCHEMA,
           maxOutputTokens: READ_MAX_OUTPUT_TOKENS,
@@ -1385,6 +1407,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
             (npmMeta ? npmPromptContext(npmMeta, divergence) : ""),
         });
         model = result.json as ModelOutput;
+        probeTimings.fastReadMs = Date.now() - tFast;
       } catch (e) {
         console.error("read model failed:", e instanceof Error ? e.message : e);
         await emit({ t: "error", error: "Analysis model call failed" });
@@ -1470,12 +1493,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
             .slice(0, 12)
             .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 8000)}`)
             .join("\n\n");
+          const tDeep = Date.now();
           deepRead = await runDeepRead(
             metadata.fullName,
             commitSha,
             scan,
             installScripts,
+            probeBackend,
           );
+          probeTimings.deepReadMs = Date.now() - tDeep;
         } catch (e) {
           // Never degrade to a clean-looking verdict on a model failure. The repo
           // stays escalated, and the report says the deep read did not complete.
@@ -1641,7 +1667,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // its report persists with owner_id=null and carries the package reputation
       // in the fresh render (ownerView) + the Reputation log chapter.
       let ownerId: number | null = null;
-      if (!npmMeta) {
+      if (!npmMeta && !probe) {
         try {
         const { data: ownerUp } = await db
           .from("owners")
@@ -1685,7 +1711,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       };
 
       let reportId: number | null = null;
-      try {
+      if (!probe) try {
         const { data: reportUp, error: reportErr } = await db
           .from("reports")
           .upsert(
@@ -1719,7 +1745,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         return;
       }
 
-      try {
+      if (!probe) try {
         await db.from("scans").insert({
           user_id: userId,
           device_id: deviceId,
@@ -1760,6 +1786,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
           escalate,
           escalationReason,
           scoreBreakdown,
+          ...(probe
+            ? { probe: { backend: probeBackend ?? "env", persisted: false, ...probeTimings, deepRead } }
+            : {}),
         },
       });
     } catch (e) {

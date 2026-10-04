@@ -60,6 +60,9 @@
 /** Model tier → which secret holds the model id. */
 export type ModelTier = "fast" | "deep";
 
+/** Which backend serves a call — see `modelBackend()`. */
+export type ModelBackend = "dialogflow" | "vertex";
+
 export interface GenerateOptions {
   tier: ModelTier;
   /** Optional system instruction. */
@@ -79,6 +82,8 @@ export interface GenerateOptions {
    * pass a positive budget for harder adjudication.
    */
   thinking?: number;
+  /** Pin this call to a backend, overriding the env flags. */
+  backend?: ModelBackend;
 }
 
 export interface GenerateResult {
@@ -316,10 +321,46 @@ function buildEndpoint(model: string): string {
 }
 
 /**
- * Generate a completion from the selected model tier via Vertex.
- * Retries exactly once on a 401/403 (stale/rotated token) after re-minting.
+ * Which backend serves model calls.
+ *  - `vertex` (DEFAULT): Gemini via Vertex `generateContent` — billed as Vertex
+ *    AI, which no credit on this billing account covers.
+ *  - `dialogflow`: the same Gemini model run as a Conversational Agents
+ *    (Dialogflow CX) GENERATOR, billed as a Conversational Agents generative
+ *    request — the SKU family the account's generative trial credits pay for.
+ * The code default stays `vertex` so a missing secret can never break scans;
+ * `CR_MODEL_BACKEND=dialogflow` switches to the credit path and
+ * `CR_MODEL_BACKEND=vertex` (or unsetting it) is the one-step switch back.
+ */
+export function parseBackend(v: string | null | undefined): ModelBackend | undefined {
+  const t = v?.trim().toLowerCase();
+  return t === "vertex" || t === "dialogflow" ? t : undefined;
+}
+
+/**
+ * Backend for a tier: `CR_MODEL_BACKEND_FAST` / `CR_MODEL_BACKEND_DEEP` win for
+ * their tier (so one call can stay on direct Vertex while the rest move), then
+ * `CR_MODEL_BACKEND`, then the default `vertex`.
+ */
+export function modelBackend(tier?: ModelTier): ModelBackend {
+  const perTier = tier ? parseBackend(Deno.env.get(`CR_MODEL_BACKEND_${tier.toUpperCase()}`)) : undefined;
+  return perTier ?? parseBackend(Deno.env.get("CR_MODEL_BACKEND")) ?? "vertex";
+}
+
+/**
+ * Generate a completion from the selected model tier on the configured backend
+ * (or on `opts.backend` when a caller pins one — the operator probe does).
  */
 export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
+  return (opts.backend ?? modelBackend(opts.tier)) === "dialogflow"
+    ? await generateDialogflow(opts)
+    : await generateDirectVertex(opts);
+}
+
+/**
+ * Original path: Gemini via Vertex `generateContent`.
+ * Retries exactly once on a 401/403 (stale/rotated token) after re-minting.
+ */
+async function generateDirectVertex(opts: GenerateOptions): Promise<GenerateResult> {
   const model = modelForTier(opts.tier);
   const endpoint = buildEndpoint(model);
 
@@ -411,4 +452,178 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   }
 
   return result;
+}
+
+function schemaInstruction(schema: unknown): string {
+  return [
+    "",
+    "OUTPUT FORMAT (mandatory): reply with exactly ONE JSON object and nothing else —",
+    "no prose, no markdown, no code fences. It MUST validate against this JSON Schema",
+    "(every `required` key present, types exact, enum values verbatim, integers as integers):",
+    JSON.stringify(schema),
+  ].join("\n");
+}
+
+/** Pull the JSON object out of a reply that may carry fences or stray prose. */
+export function extractJsonObject(text: string): unknown {
+  // A clean object first: a valid reply may itself contain ``` inside a string
+  // (a summary quoting code), which the fence match below would cut apart.
+  try {
+    return JSON.parse(text.trim());
+  } catch {
+    // fall through to fence / brace extraction
+  }
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = (fenced ? fenced[1] : text).trim();
+  try {
+    return JSON.parse(body);
+  } catch {
+    const start = body.indexOf("{");
+    const end = body.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(body.slice(start, end + 1));
+    throw new Error("no JSON object in model reply");
+  }
+}
+
+/**
+ * Validate a value against the OpenAPI-3.0 subset the scan schemas use
+ * (type / properties / required / items / enum / nullable). Returns the list of
+ * violations (empty = valid). Mirrors what Vertex's responseSchema enforced.
+ */
+export function validateAgainstSchema(value: unknown, schema: unknown, path = "$"): string[] {
+  const s = schema as {
+    type?: string;
+    properties?: Record<string, unknown>;
+    required?: string[];
+    items?: unknown;
+    enum?: unknown[];
+    nullable?: boolean;
+  };
+  if (!s || typeof s !== "object") return [];
+  if (value === null) return s.nullable ? [] : [`${path}: null not allowed`];
+  const errs: string[] = [];
+  switch (s.type) {
+    case "object": {
+      if (typeof value !== "object" || Array.isArray(value)) return [`${path}: expected object`];
+      const obj = value as Record<string, unknown>;
+      for (const k of s.required ?? []) if (!(k in obj)) errs.push(`${path}.${k}: missing`);
+      for (const [k, sub] of Object.entries(s.properties ?? {})) {
+        if (k in obj) errs.push(...validateAgainstSchema(obj[k], sub, `${path}.${k}`));
+      }
+      break;
+    }
+    case "array":
+      if (!Array.isArray(value)) return [`${path}: expected array`];
+      value.forEach((v, i) => errs.push(...validateAgainstSchema(v, s.items, `${path}[${i}]`)));
+      break;
+    case "string":
+      if (typeof value !== "string") errs.push(`${path}: expected string`);
+      break;
+    case "integer":
+      if (typeof value !== "number" || !Number.isInteger(value)) errs.push(`${path}: expected integer`);
+      break;
+    case "number":
+      if (typeof value !== "number" || !Number.isFinite(value)) errs.push(`${path}: expected number`);
+      break;
+    case "boolean":
+      if (typeof value !== "boolean") errs.push(`${path}: expected boolean`);
+      break;
+  }
+  if (s.enum && !s.enum.includes(value)) errs.push(`${path}: must be one of ${JSON.stringify(s.enum)}`);
+  return errs;
+}
+
+
+// --- Conversational Agents (Dialogflow CX) generator backend ----------------
+//
+// One agent (CR_DF_AGENT_ID, location global) carries two generators whose text
+// prompt is exactly "$system $prompt": `cr-fast` (gemini-3.1-flash-lite — the same
+// model the direct fast read uses — temperature 0.2, 8192-token limit) fired by the
+// custom event `cr_fast`, and `cr-deep` (gemini-2.5-flash, temperature 0.2, 8192)
+// fired by `cr_deep`. The caller's system instruction and prompt travel as SESSION
+// PARAMETERS (detect-intent text input is capped at 256 chars; parameters are not)
+// and the reply comes back in the session parameter `cr_result` (response
+// messages are capped at 4,000 chars; parameters are not). Generators have no
+// responseSchema, so structured output is enforced exactly as before: the schema
+// is stated in the system text, the reply is parsed and validated against the
+// SAME schema the direct path enforces, with one corrective call before failing.
+
+const DF_EVENT: Record<ModelTier, string> = { fast: "cr_fast", deep: "cr_deep" };
+
+interface DetectIntentResponse {
+  queryResult?: {
+    parameters?: Record<string, unknown>;
+    responseMessages?: Array<{ text?: { text?: string[] } }>;
+  };
+}
+
+function dialogflowEndpoint(): string {
+  const project = Deno.env.get("GCP_PROJECT_ID");
+  const agent = Deno.env.get("CR_DF_AGENT_ID")?.trim();
+  if (!project) throw new Error("GCP_PROJECT_ID is not configured");
+  if (!agent) throw new Error("CR_DF_AGENT_ID is not configured");
+  return `https://dialogflow.googleapis.com/v3/projects/${project}/locations/global/agents/${agent}/sessions/${crypto.randomUUID()}:detectIntent`;
+}
+
+async function callDialogflow(tier: ModelTier, system: string, prompt: string): Promise<string> {
+  const body = {
+    queryInput: { event: { event: DF_EVENT[tier] }, languageCode: "en" },
+    queryParams: { parameters: { system, prompt } },
+  };
+  const callOnce = async (token: string): Promise<Response> =>
+    await fetch(dialogflowEndpoint(), {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  let res = await callOnce(await getAccessToken());
+  if (res.status === 401 || res.status === 403) {
+    await res.body?.cancel();
+    res = await callOnce(await getAccessToken(true)); // force re-mint on auth failure
+  }
+  if (!res.ok) {
+    // Same rule as the direct path: never put the raw error body in the Error.
+    try {
+      const errText = await res.text();
+      console.debug("dialogflow error body (status %d): %s", res.status, errText.slice(0, 300));
+    } catch {
+      // ignore
+    }
+    throw new Error(`Dialogflow detectIntent failed (status ${res.status})`);
+  }
+  const data = (await res.json()) as DetectIntentResponse;
+  const out = data.queryResult?.parameters?.cr_result;
+  if (typeof out === "string" && out.length > 0) return out;
+  throw new Error("generator returned no output (cr_result empty)");
+}
+
+async function generateDialogflow(opts: GenerateOptions): Promise<GenerateResult> {
+  const wantsJson = Boolean(opts.json || opts.responseSchema);
+  const system = (opts.system ?? "") +
+    (opts.responseSchema ? schemaInstruction(opts.responseSchema) : opts.json ? "\nReply with a single JSON object only." : "");
+
+  let text = await callDialogflow(opts.tier, system, opts.prompt);
+  if (!wantsJson) return { text };
+
+  // One corrective call if the reply is not a schema-valid object. Generators are
+  // single-turn, so the bad reply and the problems are appended to the prompt.
+  for (let attempt = 0; ; attempt++) {
+    let parsed: unknown;
+    let problems: string[];
+    try {
+      parsed = extractJsonObject(text);
+      problems = opts.responseSchema ? validateAgainstSchema(parsed, opts.responseSchema) : [];
+    } catch {
+      problems = ["reply was not a parseable JSON object"];
+    }
+    if (problems.length === 0) return { text, json: parsed };
+    if (attempt >= 1) {
+      console.error("dialogflow JSON invalid after retry: %s", problems.slice(0, 5).join("; "));
+      throw new Error("model did not return valid JSON");
+    }
+    const repair = `${opts.prompt}\n\nYOUR PREVIOUS REPLY:\n${text.slice(0, 20_000)}\n\n` +
+      `It did not validate: ${problems.slice(0, 20).join("; ")}. ` +
+      "Return the corrected JSON object only, same content, fixing just these problems.";
+    text = await callDialogflow(opts.tier, system, repair);
+  }
 }

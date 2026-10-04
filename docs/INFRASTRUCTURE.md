@@ -88,6 +88,45 @@ The escalation logic and two-speed funnel are real and permanent; only the model
 
 ---
 
+## 6b. Model backend switch — Conversational Agents generators (credit) or direct Vertex (2026-10-04)
+
+The $300 trial credit expired 2026-09-24. The remaining credit on the billing account is "Trial credit for GenAI App Builder"; it does not pay for direct
+Vertex `generateContent`. Agent Search Grounded Generation is deprecated by Google ("not
+accepting new requests") and returns 403 for this project, so it is not an option.
+
+`supabase/functions/_shared/vertex.ts` therefore has two backends behind one secret:
+
+| Secret | Effect |
+|---|---|
+| `CR_MODEL_BACKEND=dialogflow` | Both tiers run as Conversational Agents (Dialogflow CX) **generators** — billed as Conversational Agents generative requests. |
+| `CR_MODEL_BACKEND=vertex` or unset | Direct Vertex `generateContent` (the original path; code default). |
+| `CR_MODEL_BACKEND_FAST` / `CR_MODEL_BACKEND_DEEP` | Pin one tier, overriding the above. |
+
+Generator setup (console, the ClaudeRabbit GCP project, location `global`):
+agent `clauderabbit-model` (its id is the `CR_DF_AGENT_ID` secret),
+generators `cr-fast` (gemini-3.1-flash-lite, temp 0.2, 8192 tokens) and `cr-deep`
+(gemini-2.5-flash, temp 0.2, 8192 tokens), both with text prompt `$system $prompt`. Start
+Page custom-event handlers `cr_fast` / `cr_deep` bind `$session.params.system` /
+`$session.params.prompt` and write `$session.params.cr_result`. Detect-intent text input is
+capped at 256 chars and text responses at 4,000, so input and output travel as session
+parameters. Generators have no responseSchema: the schema is stated in the prompt and the
+reply is validated against the same schema the Vertex path enforces, with one repair call.
+`clauderabbit-vertex@` holds `roles/dialogflow.client` for this.
+
+Operator probe (for before/after checks without touching the report cache): a `scan`
+request with header `x-cr-probe-key` equal to the `CR_PROBE_KEY` secret skips the cache and
+every owners/reports/scans write (the burst rate-limiter still counts it), and `x-cr-model-backend: dialogflow|vertex` pins the backend for that run.
+
+Removed 2026-10-04 to stop recurring charges (all recreatable):
+- Cloud DNS private zone `cr-internal-zone` (`cr.internal.`, network `cr-sandbox-vpc`) with
+  one record `cr-harness.cr.internal. A 60 10.200.0.10`. The harness falls back to the raw
+  gateway IP (`entrypoint.sh`), and after its resolv.conf rewrite the gateway's dnsmasq
+  answers that name anyway.
+- Artifact Registry `cr-detonation/harness` versions v1–v8 and one untagged digest
+  (`cr-detonation` job runs `harness:v9`, kept).
+- Compute image `cr-sandbox-golden-20260625-190352` (retired microVM architecture).
+- `cr-forge-gateway` resized e2-small → e2-micro (Compute Engine free tier, us-central1).
+
 ## 7. Secrets — server-side method (absolute)
 
 **All model/search/cloud credentials live in Supabase Edge Function secrets, server-side. Never client-side. Never in the repo.** Every scan, score blend, and model/search call happens in edge functions where the secrets live. The client app only points at Supabase (URL + publishable key); Supabase holds the rest.
