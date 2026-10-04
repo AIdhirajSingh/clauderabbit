@@ -98,6 +98,47 @@ export function reportRowToReport(row: ReportRow): Report {
       ? statsJson.stars
       : formatNumber(owner?.stars_total ?? null);
 
+  // npm package rows have no GitHub owner row: build the card from the registry
+  // view saved in stats_json.npm (older rows: just the package name), never from
+  // "unknown"/0 placeholders.
+  if (row.owner_login === "npm") {
+    const npm = statsJson.npm && typeof statsJson.npm === "object"
+      ? statsJson.npm as Record<string, unknown>
+      : { package: row.repo_name, version: "" };
+    const pkg = typeof npm.package === "string" ? npm.package : row.repo_name;
+    return normalizeReport({
+      id: `${row.owner_login}/${row.repo_name}`,
+      owner: row.owner_login,
+      name: row.repo_name,
+      score: row.score,
+      verdict: row.verdict,
+      cached: row.cached,
+      deep: row.deep,
+      commit_sha: row.commit_sha,
+      summary: row.summary ?? "",
+      ownerHistory: {
+        handle: typeof npm.publisher === "string" ? npm.publisher : pkg,
+        name: pkg,
+        age: typeof npm.ageLabel === "string" ? npm.ageLabel : "",
+        established: false,
+        repos: Array.isArray(npm.maintainers) ? npm.maintainers.length : 0,
+        note: "",
+      },
+      reputation: { stars: "—", forks: "—", sentiment: "", sentScore: 0 },
+      npm,
+      stats: {
+        loc: typeof statsJson.loc === "string" ? statsJson.loc : "—",
+        packages: typeof statsJson.packages === "number" ? statsJson.packages : 0,
+        stars: "—",
+        created: typeof statsJson.created === "string" ? statsJson.created : "—",
+      },
+      packages: row.packages_json,
+      risky: row.risky_json,
+      logs: row.logs_json,
+      forensics_json: row.forensics_json,
+    });
+  }
+
   return normalizeReport({
     id: `${row.owner_login}/${row.repo_name}`,
     owner: row.owner_login,

@@ -56,3 +56,12 @@ Deno.test("every band: a consistent summary keeps all its sentences", () => {
     assert(/parses JSON files/.test(s) && /reads a config file/.test(s), `${v}: ${s}`);
   }
 });
+
+Deno.test("Malicious: 'allows for a higher trust score' is removed; 'do not trust' kept", () => {
+  const m = "This repository is a self-declared security test fixture. " +
+    "While the owner is not established and the code performs high-risk actions, the context of a security-tooling test fixture allows for a higher trust score than a standard application. " +
+    "Do not trust this code outside a sandbox.";
+  const s = reconcileSummary(m, "Malicious", 0, fixtureBreakdown);
+  assert(!/higher trust score/.test(s), s);
+  assert(/Do not trust this code/.test(s) && /test fixture/.test(s), s);
+});

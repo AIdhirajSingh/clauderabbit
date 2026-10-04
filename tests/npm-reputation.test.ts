@@ -43,3 +43,31 @@ test("markdown export: npm report uses registry rows, not the GitHub owner table
   assert.ok(md.includes("Publisher"), md);
   assert.ok(!md.includes("Public repos") && !md.includes("Account age") && !md.includes("Community sentiment"), md);
 });
+
+test("published page: an npm report row builds the npm card from stats_json.npm", async () => {
+  const { reportRowToReport } = await import("../lib/report-row");
+  const row = {
+    owner_login: "npm", repo_name: "left-pad", commit_sha: "sha512-x", score: 90, verdict: "Trusted",
+    cached: false, deep: false, summary: "s", confidence: 0.9, scan_path: "fast",
+    stats_json: { loc: "—", packages: 0, stars: "—", created: "—",
+      npm: { package: "left-pad", version: "1.3.0", publisher: "stevemao", maintainers: ["stevemao", "westlac"], ageLabel: "12 yr 6 mo", weeklyDownloads: 3230729, versionCount: 15 } },
+    packages_json: [], risky_json: [], logs_json: [], owner_id: null, owners: null,
+  };
+  const r = reportRowToReport(row as unknown as Parameters<typeof reportRowToReport>[0]);
+  assert.equal(r.npm?.publisher, "stevemao");
+  assert.equal(r.npm?.versionCount, 15);
+  assert.notEqual(r.ownerHistory.handle, "npm");
+  assert.ok(!JSON.stringify(npmSignalRows(r.npm!)).includes("unknown"));
+});
+
+test("published page: an old npm row without the registry view shows no junk rows", async () => {
+  const { reportRowToReport } = await import("../lib/report-row");
+  const row = {
+    owner_login: "npm", repo_name: "left-pad", commit_sha: "x", score: 94, verdict: "Trusted", cached: true,
+    deep: false, summary: "", confidence: 1, scan_path: "fast", stats_json: { loc: "—" },
+    packages_json: [], risky_json: [], logs_json: [], owner_id: null, owners: null,
+  };
+  const r = reportRowToReport(row as unknown as Parameters<typeof reportRowToReport>[0]);
+  assert.equal(r.npm?.package, "left-pad");
+  assert.deepEqual(npmSignalRows(r.npm!), []);
+});

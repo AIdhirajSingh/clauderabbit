@@ -14,6 +14,7 @@
  */
 
 import type {
+  NpmReputation,
   ForensicsContainment,
   ForensicsCredentialRead,
   ForensicsDecodedPayload,
@@ -444,7 +445,31 @@ export function normalizeReport(raw: unknown): Report {
     // Carry the resolved commit SHA so the inline deep run can pin its detonation
     // to (and attach forensics onto) this exact report row.
     ...(typeof r.commit_sha === "string" && r.commit_sha ? { commit_sha: r.commit_sha } : {}),
+    ...(normalizeNpm(r.npm) ? { npm: normalizeNpm(r.npm) } : {}),
   };
+}
+
+/**
+ * Keep an npm reputation block's REAL fields only (each type-checked); anything
+ * missing or malformed is dropped rather than defaulted to "unknown"/0.
+ */
+export function normalizeNpm(raw: unknown): NpmReputation | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.package !== "string" || !o.package) return undefined;
+  const v: NpmReputation = { package: o.package, version: typeof o.version === "string" ? o.version : "" };
+  if (typeof o.publisher === "string" && o.publisher) v.publisher = o.publisher;
+  if (Array.isArray(o.maintainers)) {
+    const m = o.maintainers.filter((x): x is string => typeof x === "string" && x.length > 0);
+    if (m.length) v.maintainers = m;
+  }
+  if (typeof o.firstPublished === "string") v.firstPublished = o.firstPublished;
+  if (typeof o.ageLabel === "string" && o.ageLabel) v.ageLabel = o.ageLabel;
+  for (const k of ["weeklyDownloads", "monthlyDownloads", "versionCount"] as const) {
+    if (typeof o[k] === "number" && Number.isFinite(o[k])) v[k] = o[k] as number;
+  }
+  if (typeof o.license === "string" && o.license) v.license = o.license;
+  return v;
 }
 
 function functionUrl(): string {
