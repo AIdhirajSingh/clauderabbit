@@ -1102,6 +1102,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const probe = probeKey.length >= 32 &&
     timingSafeEqual(req.headers.get("x-cr-probe-key") ?? "", probeKey);
   const probeBackend = probe ? parseBackend(req.headers.get("x-cr-model-backend")) : undefined;
+  // Operator regenerate: with the probe key AND x-cr-regenerate: 1, the fresh run is
+  // persisted (overwriting the saved report for that commit) instead of discarded.
+  const persist = !probe || req.headers.get("x-cr-regenerate") === "1";
 
   // Ecosystem: an npm target scans the published registry ARTIFACT; anything else
   // is a GitHub repo. The two share every downstream stage — they differ only in
@@ -1829,7 +1832,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // its report persists with owner_id=null and carries the package reputation
       // in the fresh render (ownerView) + the Reputation log chapter.
       let ownerId: number | null = null;
-      if (!npmMeta && !probe) {
+      if (!npmMeta && persist) {
         try {
         const { data: ownerUp } = await db
           .from("owners")
@@ -1873,7 +1876,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       };
 
       let reportId: number | null = null;
-      if (!probe) try {
+      if (persist) try {
         const { data: reportUp, error: reportErr } = await db
           .from("reports")
           .upsert(
@@ -1907,7 +1910,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         return;
       }
 
-      if (!probe) try {
+      if (persist) try {
         await db.from("scans").insert({
           user_id: userId,
           device_id: deviceId,
