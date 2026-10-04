@@ -15,6 +15,7 @@
  */
 
 import { bandColor, bandGlow, bandLabel, bandTint } from "./score";
+import { formatCount } from "./format";
 import type {
   Forensics,
   ForensicsGeolocation,
@@ -495,4 +496,24 @@ export function buildReportView(r: Report): RepoView {
     })),
     logs: r.logs.map((l) => ({ ...l, _color: logColor(l.kind) })),
   };
+}
+
+/**
+ * The reputation rows for an npm package report: only signals the registry
+ * actually returned, in a fixed order. Shared by the report card and the
+ * Markdown export so the two can never drift.
+ */
+export function npmSignalRows(npm: import("./types").NpmReputation): Array<[string, string]> {
+  const rows: Array<[string, string]> = [];
+  if (npm.publisher) rows.push(["Publisher", `@${npm.publisher}`]);
+  if (npm.maintainers?.length) {
+    const shown = npm.maintainers.slice(0, 3).join(", ");
+    const more = npm.maintainers.length > 3 ? ` +${npm.maintainers.length - 3}` : "";
+    rows.push([npm.maintainers.length === 1 ? "Maintainer" : `Maintainers (${npm.maintainers.length})`, shown + more]);
+  }
+  if (npm.ageLabel) rows.push(["First published", `${npm.ageLabel} ago`]);
+  if (typeof npm.weeklyDownloads === "number") rows.push(["Weekly downloads", formatCount(npm.weeklyDownloads)]);
+  if (typeof npm.versionCount === "number") rows.push(["Versions published", formatCount(npm.versionCount)]);
+  if (npm.license) rows.push(["License", npm.license]);
+  return rows;
 }

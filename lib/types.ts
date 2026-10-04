@@ -237,6 +237,23 @@ export interface Forensics {
 }
 
 /** A full safety report for a single repo. */
+/**
+ * Registry reputation for an npm package scan. Only real npm signals; a field
+ * whose source was unavailable is ABSENT (never "unknown"/"new"/0).
+ */
+export interface NpmReputation {
+  package: string;
+  version: string;
+  publisher?: string;
+  maintainers?: string[];
+  firstPublished?: string;
+  ageLabel?: string;
+  weeklyDownloads?: number;
+  monthlyDownloads?: number;
+  versionCount?: number;
+  license?: string;
+}
+
 export interface Report {
   id: string;
   owner: string;
@@ -252,6 +269,8 @@ export interface Report {
   summary: string;
   ownerHistory: OwnerHistory;
   reputation: Reputation;
+  /** Present for npm package scans; replaces the GitHub-owner reputation card. */
+  npm?: NpmReputation;
   stats: RepoStats;
   packages: PackageScore[];
   risky: RiskyItem[];

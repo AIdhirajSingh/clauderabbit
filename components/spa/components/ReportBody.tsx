@@ -23,7 +23,7 @@ import type {
   ForensicsView,
   RepoView,
 } from "@/lib/report-view";
-import { RING_CIRC } from "@/lib/report-view";
+import { RING_CIRC, npmSignalRows } from "@/lib/report-view";
 import { formatCount } from "@/lib/format";
 import { StarIcon } from "./glyphs";
 import { OwnerAvatar, RepoLink } from "./github";
@@ -185,10 +185,24 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
                 gradient="linear-gradient(135deg, oklch(0.62 0.16 25), oklch(0.55 0.15 320))"
               />
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 14.5, color: "var(--t1)", marginBottom: 2, fontWeight: 450 }}>{r.ownerHistory.name}</div>
-                <div style={{ fontSize: 12, color: "var(--t4)" }}>@{r.ownerHistory.handle}</div>
+                <div style={{ fontSize: 14.5, color: "var(--t1)", marginBottom: 2, fontWeight: 450 }}>
+                  {r.npm ? r.npm.package : r.ownerHistory.name}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--t4)" }}>
+                  {r.npm ? (r.npm.publisher ? `npm · published by @${r.npm.publisher}` : "npm package") : `@${r.ownerHistory.handle}`}
+                </div>
               </div>
             </div>
+            {r.npm ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {npmSignalRows(r.npm).map(([label, value]) => (
+                <Row key={label} label={label}>
+                  <span className="tnum" style={{ fontSize: 13, color: "var(--t1)", fontWeight: 500 }}>{value}</span>
+                </Row>
+              ))}
+            </div>
+            ) : (
+            <>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <Row label="Account age">
                 <span className="tnum" style={{ fontSize: 13, color: r._ageColor, fontWeight: 500 }}>
@@ -228,6 +242,8 @@ export function ReportBody({ r, clean, controls, logsCta, footer }: ReportBodyPr
               <p style={{ fontSize: 12.5, color: "var(--t3)", lineHeight: 1.55, margin: "13px 0 0" }}>{r.reputation.sentiment}</p>
               <p style={{ fontSize: 12.5, color: "var(--t4)", lineHeight: 1.55, margin: "8px 0 0" }}>{r.ownerHistory.note}</p>
             </div>
+            </>
+            )}
           </div>
 
           {/* Code & behavior signals */}

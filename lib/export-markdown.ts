@@ -17,7 +17,7 @@
  * `ReportBody`'s `r._forensics &&` gate — no empty section header over nothing.
  */
 
-import { buildReportView } from "./report-view";
+import { buildReportView, npmSignalRows } from "./report-view";
 import { formatCount } from "./format";
 import type { Report } from "./types";
 
@@ -94,6 +94,17 @@ export function reportToMarkdown(report: Report, siteUrl: string): string {
   // ── reputation signals (kept structurally separate from code/behavior) ──
   lines.push(heading(2, "Reputation signals"));
   lines.push("");
+  if (view.npm) {
+    lines.push(`Package: **${escapeMd(view.npm.package)}**${view.npm.version ? ` ${escapeMd(view.npm.version)}` : ""} (npm)`);
+    lines.push("");
+    const rows = npmSignalRows(view.npm);
+    if (rows.length) {
+      lines.push(tableRow(["Signal", "Value"]));
+      lines.push(tableRow(["---", "---"]));
+      for (const [k, v] of rows) lines.push(tableRow([k, escapeMd(v)]));
+      lines.push("");
+    }
+  } else {
   lines.push(`Owner: **${escapeMd(view.ownerHistory.name)}** (@${escapeMd(view.ownerHistory.handle)})`);
   lines.push("");
   lines.push(tableRow(["Signal", "Value"]));
@@ -105,6 +116,7 @@ export function reportToMarkdown(report: Report, siteUrl: string): string {
   lines.push("");
   lines.push(escapeMd(view.reputation.sentiment));
   lines.push("");
+  }
   if (view.ownerHistory.note) {
     lines.push(escapeMd(view.ownerHistory.note));
     lines.push("");

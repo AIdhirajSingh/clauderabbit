@@ -99,6 +99,14 @@ export interface NpmMetadata {
   maintainerCount: number;
   /** last-month download count from api.npmjs.org, or null when unavailable. */
   lastMonthDownloads: number | null;
+  /** npm account that published this version (`_npmUser`), or null. */
+  publisher: string | null;
+  /** Current maintainer account names (packument, else version manifest). */
+  maintainers: string[];
+  /** Number of published versions, or null when the packument was unavailable. */
+  versionCount: number | null;
+  /** last-week download count from api.npmjs.org, or null when unavailable. */
+  weeklyDownloads: number | null;
   tarballUrl: string;
   integrityVerified: boolean;
   integrityAlgo: string | null;
@@ -197,6 +205,8 @@ interface NpmVersionManifest {
   repository?: { type?: string; url?: string; directory?: string } | string;
   dist?: { tarball?: string; integrity?: string; shasum?: string };
   maintainers?: Array<{ name?: string }>;
+  /** The npm account that published THIS version. */
+  _npmUser?: { name?: string };
 }
 
 const INSTALL_HOOK_KEYS = ["preinstall", "install", "postinstall"];
@@ -471,12 +481,54 @@ async function computeDivergence(
   return buildDivergence(tarballScripts, tarballVersion, linked, repoPkg);
 }
 
+function maintainerNames(list: Array<{ name?: string }> | undefined): string[] {
+  return (Array.isArray(list) ? list : [])
+    .map((m) => (typeof m?.name === "string" ? m.name.trim() : ""))
+    .filter((n) => n.length > 0);
+}
+
+/**
+ * The npm reputation block a report shows for a package. Only REAL registry
+ * signals are included: a field whose source was unavailable is omitted, never
+ * filled with "unknown"/"new"/0. Pure — `now` is injectable for tests.
+ */
+export interface NpmReputationView {
+  package: string;
+  version: string;
+  publisher?: string;
+  maintainers?: string[];
+  firstPublished?: string;
+  ageLabel?: string;
+  weeklyDownloads?: number;
+  monthlyDownloads?: number;
+  versionCount?: number;
+  license?: string;
+}
+
+export function npmReputationView(m: NpmMetadata, now: Date = new Date()): NpmReputationView {
+  const v: NpmReputationView = { package: m.name, version: m.version };
+  if (m.publisher) v.publisher = m.publisher;
+  if (m.maintainers?.length) v.maintainers = m.maintainers.slice(0, 20);
+  if (m.firstPublishedAt && !Number.isNaN(Date.parse(m.firstPublishedAt))) {
+    v.firstPublished = m.firstPublishedAt;
+    const months = Math.max(0, Math.floor((now.getTime() - Date.parse(m.firstPublishedAt)) / (30.44 * 86_400_000)));
+    v.ageLabel = months >= 12
+      ? `${Math.floor(months / 12)} yr${months % 12 ? ` ${months % 12} mo` : ""}`
+      : `${months} mo`;
+  }
+  if (typeof m.weeklyDownloads === "number") v.weeklyDownloads = m.weeklyDownloads;
+  if (typeof m.lastMonthDownloads === "number") v.monthlyDownloads = m.lastMonthDownloads;
+  if (typeof m.versionCount === "number" && m.versionCount > 0) v.versionCount = m.versionCount;
+  if (m.license) v.license = m.license;
+  return v;
+}
+
 // ── main resolver ────────────────────────────────────────────────────────────
 
-/** Best-effort last-month download count (a reputation signal); null on any miss. */
-async function fetchDownloads(name: string): Promise<number | null> {
+/** Best-effort download count for a period (a reputation signal); null on any miss. */
+async function fetchDownloads(name: string, period = "last-month"): Promise<number | null> {
   try {
-    const res = await fetchWithTimeout(`${DOWNLOADS_API}/${encodeName(name)}`);
+    const res = await fetchWithTimeout(`${DOWNLOADS_API.replace(/last-month$/, period)}/${encodeName(name)}`);
     if (!res.ok) {
       await res.body?.cancel();
       return null;
@@ -568,9 +620,10 @@ export async function resolveNpmPackage(target: NpmTarget): Promise<NpmResolutio
   const repoDirectory =
     typeof manifest.repository === "object" ? manifest.repository?.directory : undefined;
 
-  const [files, downloads, divergence] = await Promise.all([
+  const [files, downloads, weeklyDownloads, divergence] = await Promise.all([
     unpackTarball(tgz),
     fetchDownloads(name),
+    fetchDownloads(name, "last-week"),
     computeDivergence(manifest.scripts, version || null, linkedRepo, repoDirectory),
   ]);
 
@@ -580,14 +633,22 @@ export async function resolveNpmPackage(target: NpmTarget): Promise<NpmResolutio
   // — age is a reputation nicety, never worth spiking edge memory over.
   let firstPublishedAt: string | null = null;
   let publishedAt: string | null = null;
+  let versionCount: number | null = null;
+  let packMaintainers: string[] | null = null;
   try {
     const pres = await fetchWithTimeout(`${REGISTRY_BASE}/${encodeName(name)}`, "application/json");
     if (pres.ok) {
       const bytes = await readCapped(pres, 16 * 1024 * 1024).catch(() => null);
       if (bytes) {
-        const pack = JSON.parse(new TextDecoder().decode(bytes)) as { time?: Record<string, string> };
+        const pack = JSON.parse(new TextDecoder().decode(bytes)) as {
+          time?: Record<string, string>;
+          versions?: Record<string, unknown>;
+          maintainers?: Array<{ name?: string }>;
+        };
         firstPublishedAt = pack.time?.created ?? null;
         publishedAt = (version && pack.time?.[version]) || null;
+        if (pack.versions && typeof pack.versions === "object") versionCount = Object.keys(pack.versions).length;
+        if (Array.isArray(pack.maintainers)) packMaintainers = maintainerNames(pack.maintainers);
       }
     } else {
       await pres.body?.cancel();
@@ -610,6 +671,10 @@ export async function resolveNpmPackage(target: NpmTarget): Promise<NpmResolutio
     license: licenseString(manifest.license),
     maintainerCount: Array.isArray(manifest.maintainers) ? manifest.maintainers.length : 0,
     lastMonthDownloads: downloads,
+    publisher: typeof manifest._npmUser?.name === "string" && manifest._npmUser.name ? manifest._npmUser.name : null,
+    maintainers: packMaintainers ?? maintainerNames(manifest.maintainers),
+    versionCount,
+    weeklyDownloads,
     tarballUrl,
     integrityVerified,
     integrityAlgo,

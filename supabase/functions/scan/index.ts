@@ -56,6 +56,8 @@ import {
   runDeepRead,
 } from "../_shared/deep-read.ts";
 import { verifyUnrecognizedHosts } from "../_shared/host-verify.ts";
+import { reconcileSummary } from "../_shared/summary.ts";
+import { npmReputationView, type NpmReputationView } from "../_shared/npm.ts";
 import {
   isValidNpmName,
   type NpmDivergence,
@@ -819,7 +821,38 @@ function reputationFromOwner(ownerRow: OwnerRow | null): {
   };
 }
 
+/** Owner card for an npm package: publisher + package, from real registry signals. */
+function npmOwnerView(v: NpmReputationView, established: boolean) {
+  return {
+    handle: v.publisher ?? v.package,
+    name: v.package,
+    age: v.ageLabel ?? "",
+    established,
+    repos: v.maintainers?.length ?? 0,
+    note: "",
+  };
+}
+
 function reshapeCached(row: ReportRow, ownerRow: OwnerRow | null): unknown {
+  // npm rows have no GitHub owner row; never render the "npm / unknown / new / 0"
+  // placeholders. Rows saved since the fix carry the registry view in stats_json.npm;
+  // older rows show only the package name.
+  if (row.owner_login === "npm") {
+    const stats = (row.stats_json ?? {}) as Record<string, unknown>;
+    const v = (stats.npm as NpmReputationView | undefined) ??
+      { package: row.repo_name, version: "" } as NpmReputationView;
+    const base = reshapeCachedBase(row, ownerRow) as Record<string, unknown>;
+    return {
+      ...base,
+      ownerHistory: npmOwnerView(v, false),
+      reputation: { stars: "—", forks: "—", sentiment: "", sentScore: 0, location: null },
+      npm: v,
+    };
+  }
+  return reshapeCachedBase(row, ownerRow);
+}
+
+function reshapeCachedBase(row: ReportRow, ownerRow: OwnerRow | null): unknown {
   return {
     id: `${row.owner_login}/${row.repo_name}`,
     owner: row.owner_login,
@@ -1651,7 +1684,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           established: owner.established,
           ageDays: owner.ageDays,
           // -1 = unknown (model returned no sentiment); 0 = a genuine negative read.
-          sentScore: typeof model.reputation?.sentScore === "number"
+          // npm has no community data: a model-guessed sentiment must not move the score.
+          sentScore: !npmMeta && typeof model.reputation?.sentScore === "number"
             ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
             : -1,
           stars: metadata.stars,
@@ -1669,6 +1703,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const score = scoreResult.score;
       const scoreBreakdown = scoreResult.breakdown;
       const verdict = enforceVerdictRails(model.verdict, score);
+      // The model wrote its summary before the score existed; make it agree with
+      // the computed verdict (lead with score + reasons, drop contradicting claims).
+      const summary = reconcileSummary(model.summary ?? "", verdict, score, scoreBreakdown);
 
       await emit({
         t: "stage",
@@ -1759,7 +1796,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // what we persist (ownerHistory via the owner columns, reputation via
       // reputation_json), so a fresh render and a later cached render of the same
       // commit are byte-identical (BUG-17, determinism per commit SHA).
-      const ownerView = {
+      // npm: real registry signals only (publisher, maintainers, first publish,
+      // downloads, versions); fields that were unavailable are absent, never junk.
+      const npmView = npmMeta ? npmReputationView(npmMeta) : null;
+      const ownerView = npmView ? npmOwnerView(npmView, owner.established) : {
         handle: owner.login,
         name: owner.name ?? owner.login,
         age: owner.ageLabel,
@@ -1773,8 +1813,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         // log chapter, not conflated into a stars count.
         stars: npmMeta ? "—" : formatNumber(metadata.stars),
         forks: npmMeta ? "—" : formatNumber(metadata.forks),
-        sentiment: model.reputation?.sentiment ?? "",
-        sentScore: typeof model.reputation?.sentScore === "number"
+        sentiment: npmView ? "" : model.reputation?.sentiment ?? "",
+        sentScore: !npmView && typeof model.reputation?.sentScore === "number"
           ? Math.round(clamp(model.reputation.sentScore, 0, 100, 0))
           : 0,
         // U4: the owner's GitHub location, stored so the world map can plot a dot at
@@ -1847,10 +1887,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
               verdict,
               cached: false,
               deep,
-              summary: model.summary ?? "",
+              summary,
               confidence,
               scan_path: scanPath,
-              stats_json: stats,
+              stats_json: npmView ? { ...stats, npm: npmView } : stats,
               packages_json: model.packages ?? [],
               risky_json: risky,
               logs_json: logs,
@@ -1895,8 +1935,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
           verdict,
           cached: false,
           deep,
-          summary: model.summary ?? "",
+          summary,
           ownerHistory: ownerView,
+          ...(npmView ? { npm: npmView } : {}),
           reputation: repView,
           stats,
           packages: model.packages ?? [],
