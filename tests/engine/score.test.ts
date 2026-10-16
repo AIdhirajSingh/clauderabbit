@@ -22,6 +22,7 @@ const NO_REP: ReputationSignals = {
   npmFirstPublishDays: null,
   maintainerChangedWithin30d: null,
   weeklyDownloads: null,
+  repoStars: null,
   evidence: [],
   unavailable: [],
 };
@@ -70,6 +71,9 @@ const rf = (over: Partial<TaggedReaderFinding>): TaggedReaderFinding => ({
 const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdict: string }> = [
   { name: "clean run, no reputation signals", in: {}, score: 85, verdict: "Low risk" },
   { name: "clean run with established owner and downloads", in: { reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
+  { name: "clean established GitHub repo with 1000+ stars reaches 90", in: { reputation: { ...NO_REP, ownerAgeDays: 3000, ownerEstablished: true, repoStars: 1000 } }, score: 90, verdict: "No threats observed" },
+  { name: "999 stars earn no popularity point", in: { reputation: { ...NO_REP, ownerAgeDays: 3000, ownerEstablished: true, repoStars: 999 } }, score: 88, verdict: "Low risk" },
+  { name: "stars plus downloads stay within the reputation bound", in: { reputation: { ...STRONG_REP, repoStars: 50_000 } }, score: 90, verdict: "No threats observed" },
   { name: "one canary hit alone lands under 30", in: { behaviour: beh({ canaryHits: ["AWS_SECRET_ACCESS_KEY sent to c2.example"] }) }, score: 15, verdict: "Malicious" },
   { name: "canary with strong reputation is still capped at 15", in: { behaviour: beh({ canaryHits: ["x"] }), reputation: STRONG_REP }, score: 15, verdict: "Malicious" },
   { name: "decoy credential read", in: { behaviour: beh({ decoyReads: ["/home/cr/.ssh/id_rsa"] }) }, score: 50, verdict: "High risk" },

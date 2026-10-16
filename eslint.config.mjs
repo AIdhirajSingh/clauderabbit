@@ -39,7 +39,8 @@ const eslintConfig = [
       "design-source/**",
       "supabase/functions/**",
       "sandbox/**",
-      "**/sandbox/**",
+      // Fixture packages the keyless e2e test installs and runs (CommonJS on purpose).
+      "tests/fixtures/**",
       ".claude/**",
       ".next/**",
     ],

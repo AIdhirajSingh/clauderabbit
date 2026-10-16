@@ -200,6 +200,10 @@ test("reputation: signals and unavailable sources are reported separately", () =
   assert.equal(r.npmFirstPublishDays, 3);
   assert.equal(r.weeklyDownloads, null);
   assert.deepEqual(r.unavailable, ["npm download counts"]);
+  const gh = computeReputation({ owner: { login: "octo", type: "User", createdAt: iso(4000), publicRepos: 40 }, ownerLookedUp: true, repoStars: 1234 }, NOW);
+  assert.equal(gh.repoStars, 1234);
+  assert.ok(gh.evidence.includes("GitHub repository stars: 1234"));
+  assert.equal(computeReputation({ ownerLookedUp: false }, NOW).repoStars, null);
   const failed = computeReputation({ owner: null, ownerLookedUp: true }, NOW);
   assert.deepEqual(failed.unavailable, ["GitHub owner history (lookup failed)"]);
   assert.equal(failed.ownerAgeDays, null);

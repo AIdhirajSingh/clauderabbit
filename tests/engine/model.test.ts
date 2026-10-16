@@ -232,7 +232,7 @@ function scored() {
     readerFindings: [],
     docs: null,
     capabilities: [],
-    reputation: { ownerAgeDays: 10, ownerEstablished: false, npmFirstPublishDays: 2, maintainerChangedWithin30d: false, weeklyDownloads: 3, evidence: [], unavailable: [] },
+    reputation: { ownerAgeDays: 10, ownerEstablished: false, npmFirstPublishDays: 2, maintainerChangedWithin30d: false, weeklyDownloads: 3, repoStars: null, evidence: [], unavailable: [] },
     failedStages: [],
   });
 }

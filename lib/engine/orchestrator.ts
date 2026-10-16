@@ -1,0 +1,644 @@
+/**
+ * runScan: the one scan pipeline every surface calls (DESIGN.md sections 2, 6).
+ *
+ *   resolve -> SHA cache (hit: replay the stored events, done) -> claim the run
+ *   (a second request for the same SHA attaches) -> fetch + verify + untar in
+ *   memory -> reachability graph -> in parallel: analysis sandbox scanners, OSV,
+ *   reputation, Luna readers, detonation in a fresh E2B VM -> OSV on what was
+ *   installed -> deterministic score -> Luna writes the report -> persist.
+ *
+ * Every step emits ordered events on one bus (live to the caller, batched into
+ * scan_events for Realtime and replay). A failed stage lowers coverage, which
+ * caps the score and lands in `not_verified`; it never produces a confident
+ * verdict. Both sandboxes are created for this scan only and killed in
+ * `finally`.
+ */
+
+import { randomUUID } from "node:crypto";
+import { ArchiveError, parseTarball, type ParsedArchive } from "./archive";
+import type { EngineConfig } from "./config";
+import { createRunEventBus, type RunEventBus } from "./events";
+import { makeCanaries, type Canaries } from "./forensics/capture";
+import type { ModelAdapter, ModelUsage } from "./model/adapter";
+import { buildDocsSlice, buildFlaggedSlice, buildInstallSlice, runDocsReader, runFlaggedReader, runInstallReader } from "./model/readers";
+import { writeReport } from "./model/writer";
+import { buildReachGraph, type ReachGraph } from "./reach/graph";
+import { computeReputation, fetchGithubOwner, fetchWeeklyDownloads, type ReputationSignals } from "./reputation";
+import { fetchGithubTarball, resolveGithub, verifyGithubArchive, type GithubResolution } from "./resolve/github";
+import { fetchNpmTarball, npmCommitKey, resolveNpm, type NpmResolution } from "./resolve/npm";
+import { fetchOperatorTarball } from "./resolve/tarball";
+import { runAnalysis, type AnalysisResult } from "./sandbox/analyze";
+import { detonate, type DetonationResult } from "./sandbox/detonate";
+import { SandboxCreateError, type SandboxProvider } from "./sandbox/provider";
+import { computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
+import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
+import { runHeuristics, type HeuristicResult } from "./static/heuristics";
+import type { ScanStore, TargetKind } from "./store";
+import {
+  EngineError,
+  type DependencyRef,
+  type ErrorCode,
+  type MaliciousDependency,
+  type ReaderFinding,
+  type ReportPayload,
+  type ScanEvent,
+  type ScanOutcome,
+  type ScanRequest,
+  type StageName,
+  type StaticFinding,
+  type TaggedFinding,
+  type TaggedReaderFinding,
+} from "./types";
+
+export interface EngineDeps {
+  model: ModelAdapter;
+  sandbox: SandboxProvider;
+  store: ScanStore;
+  fetch: typeof fetch;
+  now: () => number;
+  config: EngineConfig;
+  /** Run id factory (tests pin it); defaults to crypto.randomUUID. */
+  newRunId?: () => string;
+  /** Random bytes for canaries (tests pin it); defaults to crypto.randomBytes. */
+  random?: (n: number) => Uint8Array;
+}
+
+export interface RunScanOptions {
+  signal?: AbortSignal;
+  onEvent?: (e: ScanEvent) => void;
+}
+
+/** libfaketime speed during install and entry (DESIGN.md section 3.3 step 8). */
+export const FAKE_CLOCK_RATE = 30;
+
+interface Resolved {
+  kind: TargetKind;
+  subject: string;
+  display: string;
+  ownerLogin: string;
+  repoName: string;
+  /** Cache key; for npm with a sha512 registry digest it is known before the fetch. */
+  commitSha: string | null;
+  github?: GithubResolution;
+  npm?: NpmResolution;
+}
+
+function deadline(ms: number, outer: AbortSignal): AbortSignal {
+  return AbortSignal.any([outer, AbortSignal.timeout(ms)]);
+}
+
+function errMessage(err: unknown): string {
+  return (err as Error)?.message ?? String(err);
+}
+
+function codeOf(err: unknown): ErrorCode {
+  if (err instanceof EngineError) return err.code;
+  if (err instanceof ArchiveError) return err.reason === "too_large" ? "too_large" : "integrity";
+  if (err instanceof SandboxCreateError) return "capacity";
+  if ((err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError") return "timeout";
+  return "internal";
+}
+
+/** Listener gate: events are held until the run's path (cached or fresh) is known. */
+function gate(onEvent?: (e: ScanEvent) => void) {
+  let open = false;
+  let held: ScanEvent[] = [];
+  return {
+    listener(e: ScanEvent) {
+      if (!onEvent) return;
+      if (open) onEvent(e);
+      else held.push(e);
+    },
+    release() {
+      open = true;
+      if (onEvent) for (const e of held) onEvent(e);
+      held = [];
+    },
+    drop() {
+      held = [];
+    },
+  };
+}
+
+function addUsage(total: ModelUsage, u: ModelUsage | undefined) {
+  if (!u) return;
+  total.inputTokens += u.inputTokens;
+  total.outputTokens += u.outputTokens;
+}
+
+async function resolveTarget(req: ScanRequest, deps: EngineDeps, signal: AbortSignal): Promise<Resolved> {
+  const t = req.target;
+  const timeoutMs = deps.config.deadlines.resolveMs;
+  if (t.kind === "github") {
+    const r = await resolveGithub({ owner: t.owner, repo: t.repo, ...(t.ref ? { ref: t.ref } : {}) }, { fetch: deps.fetch, token: deps.config.githubToken, timeoutMs, signal });
+    return { kind: "github", subject: `${r.owner}/${r.repo}`, display: `${r.owner}/${r.repo}`, ownerLogin: r.owner, repoName: r.repo, commitSha: r.sha, github: r };
+  }
+  if (t.kind === "npm") {
+    const r = await resolveNpm({ name: t.name, ...(t.version ? { version: t.version } : {}) }, { fetch: deps.fetch, timeoutMs, maxPackumentBytes: deps.config.limits.maxPackumentBytes, signal });
+    const sha512 = r.integrity && /^sha512-[A-Za-z0-9+/]+=*$/.test(r.integrity.trim()) ? r.integrity.trim() : null;
+    return {
+      kind: "npm",
+      subject: `npm:${r.name}`,
+      display: `npm:${r.name}@${r.version}`,
+      ownerLogin: "npm",
+      repoName: r.name,
+      commitSha: sha512 ? npmCommitKey(r.version, sha512) : null,
+      npm: r,
+    };
+  }
+  if (!req.caller.operator) throw new EngineError("unauthorized", "tarball targets need the operator key");
+  return { kind: "tarball", subject: `tarball:${t.label}`, display: t.label, ownerLogin: "tarball", repoName: t.label, commitSha: t.integrity.trim() };
+}
+
+interface Fetched {
+  bytes: Uint8Array;
+  archive: ParsedArchive;
+  commitSha: string;
+}
+
+async function fetchAndVerify(req: ScanRequest, r: Resolved, deps: EngineDeps, signal: AbortSignal, emitStage: (n: StageName, s: "start" | "done", d?: string) => void): Promise<Fetched> {
+  const limits = deps.config.limits;
+  const timeoutMs = deps.config.deadlines.fetchMs;
+  let bytes: Uint8Array;
+  let commitSha = r.commitSha;
+  emitStage("fetch", "start");
+  if (r.kind === "github") {
+    bytes = await fetchGithubTarball(r.github!.owner, r.github!.repo, r.github!.sha, { fetch: deps.fetch, token: deps.config.githubToken, timeoutMs, signal }, limits.maxCompressedBytes);
+  } else if (r.kind === "npm") {
+    const v = await fetchNpmTarball(r.npm!, { fetch: deps.fetch, timeoutMs, maxPackumentBytes: limits.maxPackumentBytes, signal }, limits.maxCompressedBytes);
+    bytes = v.bytes;
+    commitSha = npmCommitKey(r.npm!.version, v.sha512);
+  } else {
+    const t = req.target as Extract<ScanRequest["target"], { kind: "tarball" }>;
+    const v = await fetchOperatorTarball({ url: t.url, integrity: t.integrity, label: t.label }, { fetch: deps.fetch, timeoutMs, signal }, limits.maxCompressedBytes);
+    bytes = v.bytes;
+  }
+  emitStage("fetch", "done", `${bytes.length} bytes`);
+  emitStage("verify", "start");
+  const archive = await parseTarball(bytes, limits);
+  if (r.kind === "github") verifyGithubArchive(archive, r.github!.sha);
+  emitStage("verify", "done", `${archive.files.size} files${archive.truncated ? `, truncated (${archive.truncatedReason})` : ""}`);
+  return { bytes, archive, commitSha: commitSha! };
+}
+
+function tag(findings: StaticFinding[], graph: ReachGraph): TaggedFinding[] {
+  return findings.map((f) => ({ ...f, reach: graph.classify(f.file) }));
+}
+
+function tagReaders(findings: ReaderFinding[], graph: ReachGraph): TaggedReaderFinding[] {
+  return findings.map((f) => ({ ...f, reach: graph.classify(f.file) }));
+}
+
+function mergeMalicious(a: MaliciousDependency[], b: MaliciousDependency[]): MaliciousDependency[] {
+  const m = new Map<string, MaliciousDependency>();
+  for (const d of [...a, ...b]) m.set(`${d.ecosystem}:${d.name}@${d.version}`, d);
+  return [...m.values()];
+}
+
+export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanOptions = {}): Promise<ScanOutcome> {
+  const cfg = deps.config;
+  const startedAt = deps.now();
+  const runId = (deps.newRunId ?? randomUUID)();
+  const outer = AbortSignal.any([opts.signal ?? new AbortController().signal, AbortSignal.timeout(cfg.deadlines.scanMs)]);
+  const g = gate(opts.onEvent);
+  let claimed = false;
+  let discard = false;
+  const preclaim: ScanEvent[] = [];
+  const bus: RunEventBus = createRunEventBus({
+    runId,
+    startedAt,
+    now: deps.now,
+    listeners: [(e) => g.listener(e)],
+    persist: async (batch) => {
+      if (discard) return;
+      if (!claimed) {
+        preclaim.push(...batch);
+        return;
+      }
+      const all = preclaim.splice(0, preclaim.length).concat(batch);
+      if (all.length > 0) await deps.store.appendEvents(all);
+    },
+  });
+  const timings: Record<string, number> = {};
+  const stageStart = new Map<StageName, number>();
+  const emitStage = (name: StageName, status: "start" | "done" | "error" | "skipped", detail?: string) => {
+    if (status === "start") stageStart.set(name, deps.now());
+    bus.emit({ type: "stage", data: { name, status, ...(detail ? { detail: detail.slice(0, 500) } : {}) } });
+    if (status === "done" || status === "error") {
+      const ms = Math.round(deps.now() - (stageStart.get(name) ?? deps.now()));
+      timings[name] = ms;
+      bus.emit({ type: "timing", data: { name, ms } });
+    }
+  };
+  const check = (name: string, ok: boolean, detail?: string) => bus.emit({ type: "check", data: { name, ok, ...(detail ? { detail: detail.slice(0, 500) } : {}) } });
+
+  const fail = async (err: unknown, stage: StageName | null): Promise<ScanOutcome> => {
+    const code = codeOf(err);
+    const message = errMessage(err).slice(0, 500);
+    if (stage) emitStage(stage, "error", message);
+    g.release();
+    if (claimed) {
+      try {
+        await deps.store.finishRun(runId, { status: "error", errorCode: code, timings });
+      } catch (e) {
+        check("persist_error_state", false, errMessage(e));
+      }
+    } else {
+      discard = true;
+    }
+    await bus.close();
+    return { kind: "error", runId: claimed ? runId : null, code, message };
+  };
+
+  // ---- resolve and cache --------------------------------------------------------
+  let resolved: Resolved;
+  emitStage("resolve", "start");
+  try {
+    resolved = await resolveTarget(req, deps, deadline(cfg.deadlines.resolveMs, outer));
+  } catch (err) {
+    return fail(err, "resolve");
+  }
+  emitStage("resolve", "done", resolved.commitSha ? `${resolved.display} at ${resolved.commitSha.slice(0, 24)}` : resolved.display);
+
+  let fetched: Fetched | null = null;
+  if (resolved.commitSha === null) {
+    // npm without a sha512 registry digest: the cache key is the sha512 of the bytes we verify.
+    try {
+      fetched = await fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
+    } catch (err) {
+      return fail(err, "fetch");
+    }
+    resolved.commitSha = fetched.commitSha;
+  }
+  const commitSha = resolved.commitSha!;
+
+  if (req.regenerate && req.caller.operator) {
+    emitStage("cache", "skipped", "operator regenerate");
+  } else {
+    emitStage("cache", "start");
+    try {
+      const hit = await deps.store.findCached(resolved.subject, commitSha);
+      if (hit) {
+        g.drop();
+        discard = true;
+        await bus.close();
+        if (opts.onEvent) for (const e of hit.events) opts.onEvent({ ...e, replayed: true });
+        return { kind: "cached", runId: hit.runId, report: hit.report };
+      }
+      emitStage("cache", "done", "miss");
+    } catch (err) {
+      emitStage("cache", "error", errMessage(err));
+      check("cache_lookup", false, errMessage(err));
+    }
+  }
+
+  try {
+    const claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.model.modelId, template: deps.sandbox.template });
+    if (claim.status === "running") {
+      g.drop();
+      discard = true;
+      await bus.close();
+      return { kind: "attached", runId: claim.runId };
+    }
+  } catch (err) {
+    return fail(new EngineError("internal", `could not record the run: ${errMessage(err)}`), null);
+  }
+  claimed = true;
+  g.release();
+
+  try {
+    const underCap = await deps.store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
+    if (!underCap) {
+      check("daily_budget", false, "today's sandbox or model budget is spent; cached reports still serve");
+      return fail(new EngineError("budget_exhausted", "the daily scan budget is spent; retry tomorrow or open a cached report"), null);
+    }
+  } catch (err) {
+    check("daily_budget", false, errMessage(err));
+  }
+
+  // ---- fetch, verify, reach ---------------------------------------------------------
+  if (!fetched) {
+    try {
+      fetched = await fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
+    } catch (err) {
+      return fail(err, stageStart.has("verify") ? "verify" : "fetch");
+    }
+  }
+  const { archive, bytes } = fetched;
+  if (archive.rejected.length > 0) check("archive_entries_rejected", false, `${archive.rejected.length} unsafe entries dropped (${[...new Set(archive.rejected.map((r) => r.reason))].join(", ")})`);
+  if (archive.truncated) check("archive_truncated", false, `archive cut at the ${archive.truncatedReason} cap`);
+
+  emitStage("reach", "start");
+  const graph = buildReachGraph(archive.files);
+  const heur: HeuristicResult = runHeuristics(archive.files);
+  emitStage("reach", "done", `${graph.install.size} install, ${graph.import.size} import${graph.unbounded ? ", unbounded" : ""}`);
+
+  const usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
+  const failedStages: string[] = [];
+  const target = resolved.display;
+  const sandboxMs: number[] = [];
+
+  // ---- parallel fan-out -----------------------------------------------------------------
+  emitStage("static", "start");
+  const analysisP: Promise<AnalysisResult | null> = (async () => {
+    const t0 = deps.now();
+    try {
+      const r = await runAnalysis(
+        deps.sandbox,
+        { runId, files: archive.files, ecosystems: graph.ecosystems.length > 0 ? graph.ecosystems : ["npm"], sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, commandTimeoutMs: cfg.deadlines.analysisMs },
+        {
+          onLine: (tool, stream, text) => bus.transcript(tool, stream, text),
+          onKilled: (ok, detail) => check("sandbox_killed", ok, detail),
+        },
+      );
+      sandboxMs.push(deps.now() - t0);
+      for (const e of r.errors.slice(0, 10)) check("scanner_error", false, e);
+      emitStage("static", r.complete ? "done" : "error", `${r.findings.length} scanner finding(s)${r.complete ? "" : "; coverage incomplete"}`);
+      return r;
+    } catch (err) {
+      sandboxMs.push(deps.now() - t0);
+      emitStage("static", "error", errMessage(err));
+      return null;
+    }
+  })();
+
+  emitStage("osv", "start");
+  const lockDeps = depsFromArchive(archive.files);
+  const osvP: Promise<OsvResult | null> = queryOsv(lockDeps, { fetch: deps.fetch, timeoutMs: cfg.deadlines.osvMs, signal: outer })
+    .then((r) => {
+      emitStage("osv", "done", `${r.queried} locked dependencies, ${r.malicious.length} malicious`);
+      return r;
+    })
+    .catch((err: unknown) => {
+      emitStage("osv", "error", errMessage(err));
+      return null;
+    });
+
+  const repP: Promise<ReputationSignals> = (async () => {
+    const t0 = deps.now();
+    const ctx = { fetch: deps.fetch, timeoutMs: cfg.deadlines.resolveMs, token: cfg.githubToken, signal: outer };
+    let rep: ReputationSignals;
+    if (resolved.kind === "github") {
+      const owner = await fetchGithubOwner(resolved.ownerLogin, ctx, deps.store.ownerCache);
+      rep = computeReputation({ owner, ownerLookedUp: true, repoStars: resolved.github!.info.stars }, deps.now());
+    } else if (resolved.kind === "npm") {
+      const weekly = await fetchWeeklyDownloads(resolved.npm!.name, ctx);
+      rep = computeReputation({ ownerLookedUp: false, npm: resolved.npm!, weeklyDownloads: weekly }, deps.now());
+    } else {
+      rep = computeReputation({ ownerLookedUp: false }, deps.now());
+    }
+    timings.reputation = Math.round(deps.now() - t0);
+    return rep;
+  })();
+
+  emitStage("readers", "start");
+  const readerSignal = () => deadline(cfg.deadlines.readerMs, outer);
+  let readersOk = true;
+  const installReaderP = runInstallReader(deps.model, target, buildInstallSlice(archive.files, graph), readerSignal())
+    .then((r) => {
+      addUsage(usage, r.usage);
+      bus.transcript("reader.install", "model", r.output.summary);
+      return r;
+    })
+    .catch((err: unknown) => {
+      readersOk = false;
+      check("reader_install", false, errMessage(err));
+      return null;
+    });
+  const docsReaderP = runDocsReader(deps.model, target, buildDocsSlice(archive.files, graph, heur.capabilities), readerSignal())
+    .then((r) => {
+      addUsage(usage, r.usage);
+      bus.transcript("reader.docs", "model", r.output.summary);
+      return r;
+    })
+    .catch((err: unknown) => {
+      readersOk = false;
+      check("reader_docs", false, errMessage(err));
+      return null;
+    });
+  const flaggedReaderP = analysisP.then(async (analysis) => {
+    const all = tag([...heur.findings, ...(analysis?.findings ?? [])], graph);
+    const slice = buildFlaggedSlice(all, archive.files);
+    if (slice.files.size === 0) return { findings: [] as ReaderFinding[], summary: "" };
+    try {
+      const r = await runFlaggedReader(deps.model, target, slice, readerSignal());
+      addUsage(usage, r.usage);
+      bus.transcript("reader.flagged", "model", r.output.summary);
+      return { findings: r.findings, summary: r.output.summary };
+    } catch (err) {
+      readersOk = false;
+      check("reader_flagged", false, errMessage(err));
+      return null;
+    }
+  });
+
+  emitStage("detonate", "start");
+  const canaries: Canaries = makeCanaries(deps.random);
+  const detonateP: Promise<DetonationResult | SandboxCreateError | Error> = (async () => {
+    const t0 = deps.now();
+    try {
+      const d = await detonate(
+        deps.sandbox,
+        {
+          runId,
+          mode: resolved.kind === "npm" ? "npm-package" : "repo",
+          packageName: resolved.kind === "npm" ? resolved.npm!.name : null,
+          tarball: bytes,
+          canaries,
+          installTimeoutMs: cfg.deadlines.installMs,
+          entryTimeoutMs: cfg.deadlines.entryMs,
+          totalTimeoutMs: cfg.deadlines.detonateTotalMs,
+          sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs,
+          fakeRate: FAKE_CLOCK_RATE,
+        },
+        {
+          onLog: (stream, text) => bus.transcript("install", stream, text),
+          onKilled: (ok, detail) => check("sandbox_killed", ok, detail),
+        },
+      );
+      sandboxMs.push(deps.now() - t0);
+      return d;
+    } catch (err) {
+      sandboxMs.push(deps.now() - t0);
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  })();
+
+  const [analysis, osv, rep, installReader, docsReader, flagged, det] = await Promise.all([analysisP, osvP, repP, installReaderP, docsReaderP, flaggedReaderP, detonateP]);
+  emitStage("readers", readersOk ? "done" : "error");
+
+  if (det instanceof SandboxCreateError) {
+    return fail(new EngineError("capacity", "no sandbox capacity to run this scan; retry shortly"), "detonate");
+  }
+  let detonation: DetonationResult | null = null;
+  if (det instanceof Error) {
+    emitStage("detonate", "error", errMessage(det));
+    failedStages.push("The detonation sandbox stopped before the run finished.");
+  } else {
+    detonation = det;
+    for (const p of det.processes) bus.emit({ type: "process", data: p });
+    for (const c of det.forgedCalls) bus.emit({ type: "forged_call", data: c });
+    for (const f of det.files) bus.emit({ type: "file", data: f });
+    for (const c of det.checks) check(c.name, c.ok, c.detail);
+    for (const m of det.integrityMismatches) check("mirror_integrity_mismatch", false, `${m.host}${m.path ?? ""}`);
+    if (det.stats.pthFiles.length > 0) check("pth_files_installed", true, det.stats.pthFiles.join(", ").slice(0, 400));
+    bus.transcript("install", "stdout", det.transcripts.install.stdout);
+    bus.transcript("install", "stderr", det.transcripts.install.stderr);
+    bus.transcript("entry", "stdout", det.transcripts.entry.stdout);
+    bus.transcript("entry", "stderr", det.transcripts.entry.stderr);
+    Object.assign(timings, det.timings);
+    emitStage("detonate", "done", `install ${det.install}, entry ${det.entry}, ${det.forgedCalls.length} forged call(s)`);
+  }
+
+  // ---- OSV pass 2 on the installed tree ------------------------------------------------------
+  let malicious: MaliciousDependency[] = osv?.malicious ?? [];
+  let osvOk = osv !== null;
+  const installed: DependencyRef[] = detonation?.installedDeps ?? [];
+  const queried = new Set(lockDeps.map((d) => `${d.ecosystem}:${d.name}@${d.version}`));
+  const fresh = installed.filter((d) => !queried.has(`${d.ecosystem}:${d.name}@${d.version}`));
+  let osv2: OsvResult | null = null;
+  if (fresh.length > 0) {
+    try {
+      osv2 = await queryOsv(fresh, { fetch: deps.fetch, timeoutMs: cfg.deadlines.osvMs, signal: outer });
+      malicious = mergeMalicious(malicious, osv2.malicious);
+      check("osv_installed_tree", true, `${osv2.queried} installed dependencies, ${osv2.malicious.length} malicious`);
+    } catch (err) {
+      osvOk = false;
+      check("osv_installed_tree", false, errMessage(err));
+    }
+  }
+
+  // ---- score ---------------------------------------------------------------------------------------
+  emitStage("score", "start");
+  const staticFindings = tag([...heur.findings, ...(analysis?.findings ?? [])], graph);
+  const readerFindings = tagReaders([...(installReader?.findings ?? []), ...(flagged?.findings ?? []), ...(docsReader?.findings ?? [])], graph);
+  const behaviour = deriveBehaviour({
+    forgedCalls: detonation?.forgedCalls ?? [],
+    files: detonation?.files ?? [],
+    processes: detonation?.processes ?? [],
+    canaryInFiles: detonation?.canaryInFiles ?? [],
+  });
+  const docsClaims: DocsClaims | null = docsReader?.claims ?? null;
+  if (analysis === null) failedStages.push("The static scanner sandbox did not complete.");
+  const result: ScoreResult = computeScore({
+    behaviour,
+    install: detonation?.install ?? "failed",
+    entry: detonation?.entry ?? "skipped",
+    archiveTruncated: archive.truncated,
+    coverage: { scanners: analysis?.complete ?? false, osv: osvOk, readers: readersOk },
+    malicious,
+    staticFindings,
+    readerFindings,
+    docs: docsClaims,
+    capabilities: heur.capabilities.map((c) => ({ ...c, reach: graph.classify(c.file) })),
+    reputation: rep,
+    failedStages,
+  });
+  emitStage("score", "done", `${result.score} ${result.verdict}`);
+
+  // ---- report ----------------------------------------------------------------------------------------
+  emitStage("report", "start");
+  const written = await writeReport(
+    deps.model,
+    {
+      target,
+      score: result.score,
+      verdict: result.verdict,
+      breakdown: result.breakdown,
+      notVerified: result.notVerified,
+      readerNotes: [installReader?.output.summary ?? "", flagged?.summary ?? "", docsReader?.output.summary ?? ""],
+      statedPurpose: docsReader?.output.stated_purpose ?? null,
+    },
+    deadline(cfg.deadlines.writerMs, outer),
+  );
+  addUsage(usage, written.usage);
+  bus.transcript("writer", "model", `${written.headline}\n${written.summary}`);
+  if (written.writer === "deterministic") check("writer_fallback", false, [...written.errors, ...written.rejections.map((r) => r.join("; "))].join(" | ").slice(0, 400) || "model output rejected");
+  emitStage("report", "done", written.writer);
+
+  const evidence = {
+    behaviour: result.breakdown.filter((d) => d.group === "behaviour").flatMap((d) => [d.detail, ...(d.evidence ?? [])]).slice(0, 40),
+    code: result.breakdown.filter((d) => d.group === "static" || d.group === "intel" || d.group === "docs").flatMap((d) => [d.detail, ...(d.evidence ?? [])]).slice(0, 40),
+    reputation: [...rep.evidence, ...result.breakdown.filter((d) => d.group === "reputation").map((d) => d.detail)].slice(0, 20),
+  };
+  if (evidence.behaviour.length === 0 && detonation) {
+    evidence.behaviour.push(`Install ${detonation.install} and entry ${detonation.entry} in the sandbox; the forge answered ${detonation.forgedCalls.length} call(s) and none reached a non-registry host.`);
+  }
+  timings.total = Math.round(deps.now() - startedAt);
+  const report: ReportPayload = {
+    run_id: runId,
+    target,
+    commit_sha: commitSha,
+    score: result.score,
+    verdict: result.verdict,
+    band: result.band,
+    summary: written.summary,
+    headline: written.headline,
+    evidence,
+    breakdown: result.breakdown,
+    not_verified: result.notVerified,
+    forensics: {
+      version: 2,
+      install: detonation?.install ?? "failed",
+      entry: detonation?.entry ?? "skipped",
+      ecosystem: detonation?.ecosystem ?? "none",
+      install_command: detonation?.installCommand ?? "",
+      forged_calls: detonation?.forgedCalls ?? [],
+      files: detonation?.files ?? [],
+      processes: (detonation?.processes ?? []).slice(0, 100),
+      canary_in_files: detonation?.canaryInFiles ?? [],
+      checks: detonation?.checks ?? [],
+      stats: detonation?.stats ?? null,
+      sandbox_id: detonation?.sandboxId ?? null,
+      analysis_sandbox_id: analysis?.sandboxId ?? null,
+      scanners: analysis?.tools ?? {},
+      reach: { install: graph.install.size, import: graph.import.size, unbounded: graph.unbounded, entries: graph.entries.slice(0, 50) },
+      archive: { files: archive.files.size, truncated: archive.truncated, rejected: archive.rejected.length },
+    },
+    packages: {
+      locked: lockDeps.length,
+      installed: installed.slice(0, 500),
+      malicious,
+      advisories: [...(osv?.advisories ?? []), ...(osv2?.advisories ?? [])].slice(0, 200),
+    },
+    model_id: deps.model.modelId,
+    template: deps.sandbox.template,
+    timings,
+    writer: written.writer,
+  };
+
+  // ---- persist ---------------------------------------------------------------------------------------
+  emitStage("persist", "start");
+  try {
+    await deps.store.saveReport({
+      runId,
+      targetKind: resolved.kind,
+      subject: resolved.subject,
+      ownerLogin: resolved.ownerLogin,
+      repoName: resolved.repoName,
+      commitSha,
+      report,
+      packages: report.packages,
+      risky: [...staticFindings.filter((f) => f.reach !== "unreachable").slice(0, 100), ...readerFindings.slice(0, 36)],
+      logs: Object.entries(timings).map(([name, ms]) => ({ name, ms })),
+      stats: { files: archive.files.size, forged_calls: detonation?.forgedCalls.length ?? 0, processes: detonation?.processes.length ?? 0 },
+    });
+    emitStage("persist", "done");
+  } catch (err) {
+    emitStage("persist", "error", errMessage(err));
+  }
+  try {
+    const seconds = Math.ceil(sandboxMs.reduce((s, x) => s + x, 0) / 1000);
+    await deps.store.chargeBudget({ sandboxSeconds: seconds, tokens: usage.inputTokens + usage.outputTokens, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
+  } catch (err) {
+    check("budget_charge", false, errMessage(err));
+  }
+  await bus.close();
+  try {
+    await deps.store.finishRun(runId, { status: "done", timings });
+  } catch (err) {
+    // The report row is already written; a stale running row expires (expire_stale_runs).
+    void err;
+  }
+  return { kind: "fresh", runId, report };
+}

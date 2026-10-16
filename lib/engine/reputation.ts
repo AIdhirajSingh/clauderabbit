@@ -31,6 +31,8 @@ export interface ReputationSignals {
   npmFirstPublishDays: number | null;
   maintainerChangedWithin30d: boolean | null;
   weeklyDownloads: number | null;
+  /** GitHub stargazers_count of a repository target, from the resolver's repo metadata. */
+  repoStars: number | null;
   evidence: string[];
   unavailable: string[];
 }
@@ -140,6 +142,8 @@ export interface ReputationInput {
   ownerLookedUp: boolean;
   npm?: NpmResolution | null;
   weeklyDownloads?: number | null;
+  /** stargazers_count of the GitHub repository target (GitHub targets only). */
+  repoStars?: number | null;
 }
 
 export function computeReputation(input: ReputationInput, now: number): ReputationSignals {
@@ -171,12 +175,15 @@ export function computeReputation(input: ReputationInput, now: number): Reputati
     if (weekly !== null) evidence.push(`npm weekly downloads: ${weekly}`);
     else unavailable.push("npm download counts");
   }
+  const stars = typeof input.repoStars === "number" && input.repoStars >= 0 ? input.repoStars : null;
+  if (stars !== null) evidence.push(`GitHub repository stars: ${stars}`);
   return {
     ownerAgeDays,
     ownerEstablished: established,
     npmFirstPublishDays: firstDays,
     maintainerChangedWithin30d: changed,
     weeklyDownloads: weekly,
+    repoStars: stars,
     evidence,
     unavailable,
   };

@@ -354,7 +354,8 @@ S static (reachable files only; dedup by file:line; floor -40):
 D docs: declared "no network"/"pure" contradicted by observed behaviour ..... -15
         contradicted only by reachable static capability ................... -6
 R reputation (bounded [-8, +5]): owner < 60 d -5; npm first publish < 30 d -4;
-  maintainer set changed < 30 d -3; established owner +3; downloads > 100k/wk +2
+  maintainer set changed < 30 d -3; established owner +3; npm downloads > 100k/wk +2;
+  GitHub repo target with stargazers_count >= 1000 +2 (from the resolver's repo metadata)
 ```
 Behaviour outweighs static: B reaches -85, S stops at -40, and a single canary hit alone lands under 30.
 

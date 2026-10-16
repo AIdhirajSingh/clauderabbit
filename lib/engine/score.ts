@@ -73,6 +73,8 @@ export const W_NPM_NEW = -4; // npm first publish younger than 30 days
 export const W_MAINTAINER_CHANGED = -3; // npm maintainer set changed within 30 days
 export const W_OWNER_ESTABLISHED = 3; // owner older than a year with 3+ public repositories
 export const W_DOWNLOADS = 2; // more than 100k npm downloads per week
+export const W_STARS = 2; // GitHub repository target with STARS_THRESHOLD or more stars
+export const STARS_THRESHOLD = 1000;
 export const REPUTATION_MIN = -8;
 export const REPUTATION_MAX = 5;
 
@@ -418,6 +420,9 @@ function reputationDeltas(r: ReputationSignals): { total: number; deltas: ScoreD
   }
   if (r.weeklyDownloads !== null && r.weeklyDownloads > 100_000) {
     deltas.push({ group: "reputation", code: "high_downloads", points: W_DOWNLOADS, detail: `${r.weeklyDownloads} npm downloads in the last week.` });
+  }
+  if (r.repoStars !== null && r.repoStars >= STARS_THRESHOLD) {
+    deltas.push({ group: "reputation", code: "popular_repo", points: W_STARS, detail: `GitHub repository has ${r.repoStars} stars.` });
   }
   const raw = deltas.reduce((s, d) => s + d.points, 0);
   return { total: Math.min(REPUTATION_MAX, Math.max(REPUTATION_MIN, raw)), deltas };
