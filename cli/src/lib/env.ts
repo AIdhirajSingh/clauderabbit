@@ -1,83 +1,29 @@
 /**
- * Configuration for the ClaudeRabbit CLI.
+ * Configuration from the environment (CLI and stdio MCP server). Only public values: the site the
+ * CLI talks to (`/api/scan`, `/cli-auth`, report pages) and the client
+ * timeout. No key of any kind lives here.
  *
- * ClaudeRabbit is a free, no-login, public product: the Supabase URL and the
- * Supabase PUBLISHABLE key are not secrets. They are the exact two values the
- * ClaudeRabbit web app itself ships in its client bundle (see the repo root
- * `.env.example` and `docs/INFRASTRUCTURE.md` — the publishable key is
- * explicitly documented as safe client-side). This CLI ships with them as
- * built-in defaults so it works with zero setup, and lets them be overridden
- * via env vars for a fork or a future production deployment.
- *
- * These are the SAME defaults the production-verified `mcp-server/` package
- * uses, so the CLI hits the same live API.
+ *   CLAUDE_RABBIT_SITE_URL          default https://clauderabbit.in
+ *   CLAUDE_RABBIT_SCAN_TIMEOUT_MS   default 150000 (server maxDuration 120 s plus slack)
  */
 
-/** Default Supabase project URL (ClaudeRabbit's production project). */
-const DEFAULT_SUPABASE_URL = "https://mjvlczaytkhvsolnhhkz.supabase.co";
-
-/** Default Supabase publishable key (client-safe, matches the web app). */
-const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
-  "sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B";
-
-/** Default public site origin for building report-page and sign-in links. */
 const DEFAULT_SITE_URL = "https://clauderabbit.in";
-
-/** Default ceiling on how long `scan` will wait for a fresh fast-path scan to finish. */
-const DEFAULT_SCAN_TIMEOUT_MS = 120_000;
-
-/**
- * Default ceiling on how long the CLI will hold the live sandbox detonation
- * connection open (the `/api/deep` dispatch). A real detonation lands in ~2.5–4
- * min; this is generous so the run reports its final sandbox-verified result
- * rather than giving up early. Overridable via CLAUDE_RABBIT_DEEP_TIMEOUT_MS.
- */
-const DEFAULT_DEEP_TIMEOUT_MS = 330_000;
+const DEFAULT_SCAN_TIMEOUT_MS = 150_000;
 
 export interface ClaudeRabbitConfig {
-  supabaseUrl: string;
-  supabasePublishableKey: string;
   siteUrl: string;
   scanTimeoutMs: number;
-  deepTimeoutMs: number;
 }
 
-function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, "");
-}
-
-/** Read and validate configuration from the environment, with safe public defaults. */
 export function loadConfig(): ClaudeRabbitConfig {
-  const supabaseUrl = trimTrailingSlash(
-    process.env.CLAUDE_RABBIT_SUPABASE_URL?.trim() || DEFAULT_SUPABASE_URL,
-  );
-  const supabasePublishableKey =
-    process.env.CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY?.trim() ||
-    DEFAULT_SUPABASE_PUBLISHABLE_KEY;
-  const siteUrl = trimTrailingSlash(
-    process.env.CLAUDE_RABBIT_SITE_URL?.trim() || DEFAULT_SITE_URL,
-  );
-  const timeoutRaw = process.env.CLAUDE_RABBIT_SCAN_TIMEOUT_MS?.trim();
-  const parsedTimeout = timeoutRaw ? Number.parseInt(timeoutRaw, 10) : NaN;
-  const scanTimeoutMs =
-    Number.isFinite(parsedTimeout) && parsedTimeout > 0
-      ? parsedTimeout
-      : DEFAULT_SCAN_TIMEOUT_MS;
-  const deepTimeoutRaw = process.env.CLAUDE_RABBIT_DEEP_TIMEOUT_MS?.trim();
-  const parsedDeepTimeout = deepTimeoutRaw ? Number.parseInt(deepTimeoutRaw, 10) : NaN;
-  const deepTimeoutMs =
-    Number.isFinite(parsedDeepTimeout) && parsedDeepTimeout > 0
-      ? parsedDeepTimeout
-      : DEFAULT_DEEP_TIMEOUT_MS;
-
-  if (!supabaseUrl) {
-    throw new Error("CLAUDE_RABBIT_SUPABASE_URL resolved to an empty value.");
+  const siteUrl = (process.env.CLAUDE_RABBIT_SITE_URL?.trim() || DEFAULT_SITE_URL).replace(/\/+$/, "");
+  try {
+    const u = new URL(siteUrl);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("bad protocol");
+  } catch {
+    throw new Error("CLAUDE_RABBIT_SITE_URL must be an absolute http(s) URL.");
   }
-  if (!supabasePublishableKey) {
-    throw new Error(
-      "CLAUDE_RABBIT_SUPABASE_PUBLISHABLE_KEY resolved to an empty value.",
-    );
-  }
-
-  return { supabaseUrl, supabasePublishableKey, siteUrl, scanTimeoutMs, deepTimeoutMs };
+  const raw = process.env.CLAUDE_RABBIT_SCAN_TIMEOUT_MS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return { siteUrl, scanTimeoutMs: Number.isFinite(n) && n > 0 ? n : DEFAULT_SCAN_TIMEOUT_MS };
 }

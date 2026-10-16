@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   // MCP stdio servers must never write to stdout outside the protocol frames;
   // stderr is safe for operator-facing diagnostics.
   console.error(
-    `clauderabbit-mcp running on stdio (target: ${config.supabaseUrl})`,
+    `clauderabbit-mcp running on stdio (target: ${config.siteUrl}/api/scan)`,
   );
 }
 

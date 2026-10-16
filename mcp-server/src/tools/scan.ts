@@ -13,15 +13,9 @@
  */
 
 import { z } from "zod";
-import {
-  awaitForensics,
-  runDeepScan,
-  scanRepo as callScanRepo,
-} from "../claude-rabbit-client.js";
-import type { ScanArgs } from "../claude-rabbit-client.js";
+import { formatResponse, postScan, toStructured, type ScanTarget } from "../scan-api.js";
 import { readToken, signInRequiredResult } from "../auth.js";
 import type { ClaudeRabbitConfig } from "../env.js";
-import { formatReport } from "../format.js";
 
 export const scanInputSchema = {
   owner: z
@@ -135,8 +129,8 @@ function parseNpmTarget(input: string): NpmTarget | null {
 
 type ResolvedTarget =
   | { ok: false; error: string }
-  | { ok: true; ecosystem: "github"; owner: string; repo: string; label: string; args: ScanArgs }
-  | { ok: true; ecosystem: "npm"; label: string; args: ScanArgs };
+  | { ok: true; ecosystem: "github"; owner: string; repo: string; label: string; args: ScanTarget }
+  | { ok: true; ecosystem: "npm"; label: string; args: ScanTarget };
 
 /**
  * Decide whether this is an npm or a GitHub scan and build the request args.
@@ -184,7 +178,7 @@ function resolveTarget(input: ScanInput): ResolvedTarget {
     owner,
     repo,
     label: `${owner}/${repo}`,
-    args: { owner, repo, ref: input.ref },
+    args: { ecosystem: "github", owner, repo, ...(input.ref ? { ref: input.ref } : {}) },
   };
 }
 
@@ -200,68 +194,17 @@ export async function runScanTool(config: ClaudeRabbitConfig, rawInput: unknown)
   if (!token) return signInRequiredResult(config.siteUrl);
 
   const input = scanInput.parse(rawInput);
-
   const resolved = resolveTarget(input);
   if (!resolved.ok) return textError(resolved.error);
 
-  const result = await callScanRepo(config, resolved.args, token);
-
-  if (!result.ok) {
-    return textError(`ClaudeRabbit scan failed for ${resolved.label}: ${result.error}`);
-  }
-  let report = result.report;
-
-  // ESCALATION → REAL SANDBOX. When the fast path decided a live detonation is
-  // warranted (`report.deep`) but the sandbox hasn't run (no `forensics`), trigger
-  // the SAME production dispatch the website uses (`/api/deep`) and wait for the
-  // sandbox-verified report — so the tool returns the real runtime score, not the
-  // scarier static-only interim. GitHub targets only: the detonation clones
-  // `owner/repo@sha` (npm-artifact detonation is a separate harness capability).
-  if (
-    resolved.ecosystem === "github" &&
-    report.deep &&
-    !report.forensics &&
-    typeof report.commit_sha === "string" &&
-    report.commit_sha
-  ) {
-    const deep = await runDeepScan(config, {
-      owner: resolved.owner,
-      repo: resolved.repo,
-      sha: report.commit_sha,
-    });
-    if (deep.ok) {
-      // persisted → forensics already attached (one confirming re-read); pending →
-      // poll the report row until they land. Pinned to report.commit_sha (the
-      // EXACT commit that was dispatched) so a fast-moving repo's default branch
-      // advancing mid-poll can never substitute a fresh, non-escalated scan of a
-      // newer commit as if it were this run's result — see awaitForensics.
-      const verified = await awaitForensics(config, resolved.args, token, report.commit_sha, {
-        tries: deep.persisted ? 3 : 36,
-      });
-      if (verified) report = verified;
-    }
-    // unavailable / error → keep the escalation-decided report; `sandboxActuallyRan`
-    // stays false (honest) and the detonation, if dispatched, completes server-side.
-  }
-
-  // Build the report link from the target's canonical identity. For npm, use the
-  // RETURNED report's identity (owner="npm", name=package) so the link points at
-  // /npm/<package>, matching the report page and the CLI surface; for GitHub keep
-  // the exact /owner/repo link as before.
-  const reportUrl =
-    resolved.ecosystem === "npm"
-      ? `${config.siteUrl}/${report.owner}/${report.name}`
-      : `${config.siteUrl}/${resolved.owner}/${resolved.repo}`;
-
-  const { text, structured } = formatReport(report, reportUrl, { fresh: !result.report.cached });
-
+  const result = await postScan(config, resolved.args, token, "mcp");
+  if (!result.ok && result.status === 401) return signInRequiredResult(config.siteUrl);
+  const structured = toStructured(result);
   return {
+    ...(result.ok ? {} : { isError: true }),
     content: [
-      { type: "text" as const, text },
-      {
-        type: "text" as const,
-        text: `\n<structured-data>${JSON.stringify(structured)}</structured-data>`,
-      },
+      { type: "text" as const, text: formatResponse(result) },
+      { type: "text" as const, text: `\n<structured-data>${JSON.stringify(structured)}</structured-data>` },
     ],
     structuredContent: structured,
   };

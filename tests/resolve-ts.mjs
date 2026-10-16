@@ -26,7 +26,21 @@ function hasExtension(specifier) {
   return /\.[cm]?[jt]sx?$/.test(specifier) || /\.json$/.test(specifier);
 }
 
+// The tsconfig path alias `@/*` maps to the repository root, as in Next.
+const ROOT_URL = new URL("../", import.meta.url);
+
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier.startsWith("@/")) {
+    const target = new URL(specifier.slice(2), ROOT_URL).href;
+    if (hasExtension(specifier)) return nextResolve(target, context);
+    for (const ext of [...EXT_CANDIDATES, "/index.ts", "/index.tsx"]) {
+      try {
+        return await nextResolve(target + ext, context);
+      } catch {
+        // Try the next candidate extension.
+      }
+    }
+  }
   const isRelative = specifier.startsWith("./") || specifier.startsWith("../");
   if (isRelative && !hasExtension(specifier)) {
     for (const ext of EXT_CANDIDATES) {

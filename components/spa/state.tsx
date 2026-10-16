@@ -38,7 +38,8 @@ import {
   type RiskyItemView,
 } from "@/lib/report-view";
 import { parseScanTarget, type ScanTarget } from "@/lib/parse-repo";
-import { runScan, runDeepScan, type ScanArgs, type ScanStage } from "@/lib/scan";
+import { runScan, type ScanArgs, type ScanStage } from "@/lib/scan";
+import type { Ad } from "@/lib/engine/types";
 import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
@@ -80,15 +81,6 @@ const PROC_TAIL_MS = 560;
 const TOAST_MS = 3400;
 /** Delay between picking a suggestion chip and firing the scan. */
 const SUGGESTION_PICK_MS = 140;
-/**
- * After the inline deep run is DISPATCHED, the Cloud Run container attaches its own
- * forensics to the report row independently of the /api/deep response — so the
- * client confirms the result by POLLING the public report row, immune to any
- * serverless streaming-duration cap. A real detonation lands in ~2.5–3.5 min; poll
- * up to 5 min before falling back to an honest "still finishing" message.
- */
-const DEEP_FORENSICS_POLL_MS = 5 * 60 * 1000;
-const DEEP_FORENSICS_POLL_INTERVAL_MS = 3000;
 /**
  * localStorage key for a repo to restore into the scan box after an optional
  * sign-in. Sign-in NEVER gates a scan (BUG-11), but a user who signs in mid-flow
@@ -151,6 +143,8 @@ interface State {
   sidebarCollapsed: boolean;
   /** Live scan results keyed by "owner/repo" id (real repos, not demo). */
   liveReports: Record<string, Report>;
+  /** The ad payload that came with each live scan result, keyed like liveReports. */
+  liveAds: Record<string, Ad>;
   /**
    * True while a REAL scan's network request is in flight: the processing
    * screen runs the generic chapter timeline (no pre-known demo logs) and the
@@ -236,6 +230,7 @@ const initialState: State = {
   theme: "light",
   sidebarCollapsed: false,
   liveReports: {},
+  liveAds: {},
   procLive: false,
   procStages: [],
   procActiveCh: null,
@@ -1223,144 +1218,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           const report = result.report;
 
-          // ── INLINE DEEP RUN (the moat, no queue) ────────────────────────────
-          // The fast path tripped the escalation gate (deep) but has NOT detonated
-          // yet (no forensics). Do NOT navigate to the static report — stay on the
-          // processing screen and spawn a real sealed sandbox VM inline, streaming
-          // its milestones into the SAME timeline. We navigate only once the
-          // forensics are captured + attached, to a genuine "Sandbox run".
-          if (report.deep && !report.forensics && report.commit_sha) {
-            const sha = report.commit_sha;
-            // Use the CANONICAL owner/repo the report is actually stored under, NOT the
-            // user-typed input. GitHub redirects a renamed/transferred repo (e.g. the
-            // user types facebook/react but the canonical is react/react), and the
-            // fast-path stores the report + the sha under the canonical login. Passing
-            // the typed owner would make BOTH the /api/deep attach and the read-after-
-            // write re-fetch look up a (owner, repo, sha) row that doesn't exist → a 404
-            // "Report not found" → the detonation runs but never earns "Sandbox run".
-            const dOwner = report.owner;
-            const dRepo = report.name;
-            // Record WHY it escalated as an honest completed chapter, flip the
-            // timeline into deep mode, then let the deep stream drive the rest.
-            procStagesRef.current = [
-              ...procStagesRef.current,
-              {
-                ch: "Escalation",
-                kind: "warn",
-                lines: [
-                  "Fast-path signals were ambiguous — escalating to a live sandbox detonation.",
-                ],
-              },
-            ];
-            patch({
-              procDeep: true,
-              procStages: procStagesRef.current,
-              procActiveCh: "Spawning sealed sandbox VM",
-              procActiveLines: [],
-            });
-
-            const deep = await runDeepScan({ owner: dOwner, repo: dRepo, sha, onStage });
-            if (token !== liveScanToken.current) return;
-
-            // A genuine, nothing-is-running failure (dispatch failed / repo never
-            // scanned): stop here and show the static read + an honest note. Do NOT
-            // poll — there is no detonation to wait for.
-            if (!deep.ok && deep.fatal) {
-              const curF = stateRef.current;
-              patch({
-                screen: "report",
-                procLive: false,
-                procDeep: false,
-                activeRepoId: id,
-                liveReports: { ...curF.liveReports, [id]: report },
-                scanCount: curF.scanCount + 1,
-                scannedIds: curF.scannedIds.includes(id) ? curF.scannedIds : [...curF.scannedIds, id],
-                showLogs: false,
-              });
-              toast(deep.error, "var(--amber)");
-              return;
-            }
-
-            // Otherwise the detonation was dispatched. The Cloud Run container
-            // attaches its own forensics to the report row INDEPENDENTLY of the
-            // /api/deep response lifetime — so a serverless platform cutting the
-            // long-held stream (or the server's bounded wait elapsing) never means
-            // failure. POLL the public report row until forensics land (or a
-            // generous deadline), showing honest progress. This is the timeout-proof
-            // half of the dispatch: the server triggers + streams early stages, the
-            // client confirms the result.
-            let updated: typeof report | null = null;
-            if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-              const startedAt = Date.now();
-              const deadline = startedAt + DEEP_FORENSICS_POLL_MS;
-              while (token === liveScanToken.current) {
-                const rep = await fetchLatestReportRest(SUPABASE_URL, SUPABASE_ANON_KEY, dOwner, dRepo);
-                if (token !== liveScanToken.current) return;
-                if (rep?.forensics && rep.commit_sha === sha) {
-                  updated = rep;
-                  break;
-                }
-                if (Date.now() >= deadline) break;
-                // Honest live progress while the sandbox runs (the granular per-step
-                // timeline is preserved in the final report's own logs).
-                const secs = Math.round((Date.now() - startedAt) / 1000);
-                patch({
-                  procActiveCh: "Running in the isolated sandbox",
-                  procActiveLines: [`Detonating the repo and capturing its real behavior… (${secs}s)`],
-                });
-                await new Promise((res) => setTimeout(res, DEEP_FORENSICS_POLL_INTERVAL_MS));
-              }
-            }
-            if (token !== liveScanToken.current) return;
-
-            const finalReport = updated ?? report;
-            const cur = stateRef.current;
-            patch({
-              screen: "report",
-              procLive: false,
-              procDeep: false,
-              activeRepoId: id,
-              liveReports: { ...cur.liveReports, [id]: finalReport },
-              scanCount: cur.scanCount + 1,
-              scannedIds: cur.scannedIds.includes(id)
-                ? cur.scannedIds
-                : [...cur.scannedIds, id],
-              dynamicUsed: cur.dynamicUsed + 1,
-              showLogs: false,
-            });
-
-            if (updated?.forensics) {
-              // Refresh the board so the new world-map dot + deep-run count appear.
-              const supabase = getSupabase();
-              if (supabase) {
-                void fetchBoardData(supabase)
-                  .then((data) => {
-                    if (token === liveScanToken.current) patch({ board: data, boardPage: 0 });
-                  })
-                  .catch(() => {});
-              }
-              toast("Sandbox run complete. Forensics attached.", bandColor(finalReport.score));
-            } else if (!deep.ok) {
-              // A non-fatal error, and forensics never landed within the poll window.
-              toast(deep.error, "var(--amber)");
-            } else {
-              // Dispatched and still running past the poll window — honest, not a
-              // false "no record": the report updates itself once it finishes.
-              toast(
-                "The sandbox run is still finishing — refresh in a moment to see the full result.",
-                "var(--amber)",
-              );
-            }
-            return;
-          }
-
-          // ── fast-path resolution (no escalation) ────────────────────────────
-          const cur = stateRef.current;
+          // The 2.0 engine runs the code in the sandbox on every scan; the
+          // result is final when the stream ends.
+                    const cur = stateRef.current;
           patch({
             screen: "report",
             procLive: false,
             activeRepoId: id,
             liveReports: { ...cur.liveReports, [id]: report },
+            liveAds: { ...cur.liveAds, [id]: result.ad },
             scanCount: cur.scanCount + 1,
             scannedIds: cur.scannedIds.includes(id) ? cur.scannedIds : [...cur.scannedIds, id],
             stage1Used: cur.stage1Used + (report.deep ? 0 : 1),
@@ -1382,7 +1248,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           patch({ failed: true, procError: message, procLive: false, procActiveCh: null });
         });
     },
-    [patch, toast, getSupabase],
+    [patch, toast],
   );
 
   const doScan = useCallback(() => {
@@ -1434,19 +1300,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // ── REAL path: a real backend scan, run immediately (no gate). The target is
     // a GitHub repo or an npm package; the edge function resolves the default
     // branch (GitHub) or the published version/dist-tag (npm). ──
-    // A target we already scanned this session: serve the live-cached report.
-    // EXCEPT when that cached copy is an escalated-but-incomplete sandbox run
-    // (deep === true, no forensics yet) — that state can arrive here from the
-    // account-history hydration (loadUserHistory reads the DB's latest row
-    // as-is) just as easily as from an in-session scan, so without this check
-    // a genuinely incomplete run would be served as "final" forever: every
-    // resubmission of the same repo would short-circuit right back to the
-    // stale "Sandbox run incomplete" badge and never reach the retry path
-    // below (startLiveProcessing -> runScan -> the deep-retry branch) that
-    // already exists specifically to finish an interrupted detonation.
+    // A target already scanned this session: serve the report from this session.
     const cachedReport = stateRef.current.liveReports[id];
-    const cachedIsIncompleteRun = Boolean(cachedReport?.deep && !cachedReport.forensics);
-    if (cachedReport && !cachedIsIncompleteRun && stateRef.current.scannedIds.includes(id)) {
+    if (cachedReport && stateRef.current.scannedIds.includes(id)) {
       patch({
         activeRepoId: id,
         sourceScreen: from,

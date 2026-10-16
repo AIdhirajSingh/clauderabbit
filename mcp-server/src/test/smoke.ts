@@ -38,7 +38,7 @@ function printResult(label: string, result: unknown): void {
 
 async function main(): Promise<void> {
   const { server, config } = await buildServer();
-  console.log(`Target Supabase project: ${config.supabaseUrl}`);
+  console.log(`Target site: ${config.siteUrl}`);
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "smoke-test-client", version: "0.1.0" });

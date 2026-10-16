@@ -413,13 +413,7 @@ export function buildForensicsView(f: Forensics | undefined): ForensicsView | un
 export function enforceVerdict(verdict: string, score: number): string {
   const trimmed = (verdict || "").trim();
   if (!trimmed || trimmed.toLowerCase() === VERDICT_BARE_SAFE) {
-    return score >= 90
-      ? "Trusted"
-      : score >= 80
-        ? "Likely safe"
-        : score >= 60
-          ? "Caution"
-          : "High risk";
+    return bandLabel(score);
   }
   return trimmed;
 }

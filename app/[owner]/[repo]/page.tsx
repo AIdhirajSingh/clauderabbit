@@ -23,6 +23,8 @@ import { buildReportView, logColor } from "@/lib/report-view";
 import { fetchLatestReport } from "@/lib/report-fetch";
 import { safeJsonLd } from "@/lib/json-ld";
 import { ReportBody } from "@/components/spa/components/ReportBody";
+import { AdSlot } from "@/components/ads/AdSlot";
+import { webAdFor } from "@/lib/ads-web";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import type { Report } from "@/lib/types";
 
@@ -178,9 +180,12 @@ export default async function ReportPage({ params }: RouteParams) {
         clean={clean}
         logsCta={<ServerLogs report={report} />}
         footer={
+          <>
+            <AdSlot ad={webAdFor({ kind: "github", name: `${view.owner}/${view.name}` })} />
           <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t4)" }}>
             Auto-published at {SITE_URL.replace(/^https?:\/\//, "")}/{view.owner}/{view.name} · re-checked when the repo changes
           </div>
+          </>
         }
       />
       <ServerFooter />
