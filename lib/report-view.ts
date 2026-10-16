@@ -1,16 +1,16 @@
 /**
- * Shared report-view derivation — the single source of truth for turning a
+ * Shared report-view derivation, the single source of truth for turning a
  * `Report` into the enriched `RepoView` the report UI reads (the prototype's
  * `viewRepo()`). Extracted from `components/spa/state.tsx` so the SAME
  * derivation drives the SPA report screen AND the server-rendered public report
- * page (`app/[owner]/[repo]/page.tsx`) — a demo repo and a live scan result
+ * page (`app/[owner]/[repo]/page.tsx`), a demo repo and a live scan result
  * become identical view objects.
  *
  * This module is pure (no React, no "use client") so it is safe to import from
  * both Server Components and Client Components.
  *
  * Per CLAUDE.md: reputation signals and code/behavior signals stay structurally
- * separate, and a bare "Safe" verdict is never produced (the edge function and
+ * separate, and a bare "Safe" verdict is never produced (lib/engine/score.ts and
  * `enforceVerdict` here both guard this).
  */
 
@@ -122,7 +122,7 @@ export interface RepoView extends Omit<Report, "packages" | "risky" | "logs"> {
   /** The enriched forensic record, present only for escalated/deep repos. */
   _forensics?: ForensicsView;
   /**
-   * The HONEST "the sandbox actually ran" signal — true ONLY when a forensic
+   * The HONEST "the sandbox actually ran" signal, true ONLY when a forensic
    * record is present. Drives the runtime-vs-static verdict language and the
    * Sandbox-run-vs-Static-read badge. Never the bare `deep`/`scan_path` flag,
    * which only records that escalation was DECIDED, not that it executed.
@@ -133,7 +133,7 @@ export interface RepoView extends Omit<Report, "packages" | "risky" | "logs"> {
 // ───────────── pure derivation helpers (ported from the prototype) ─────────────
 
 /**
- * The final-verdict note. `ranSandbox` is the HONEST signal — true ONLY when the
+ * The final-verdict note. `ranSandbox` is the HONEST signal, true ONLY when the
  * sandbox actually ran and produced a forensic record. When it is false the note
  * speaks strictly in static terms: it never claims "we observed [runtime]" or
  * "blocked outbound attempts" for a scan that was never executed (BUG-2, the
@@ -146,38 +146,50 @@ function finalNote(score: number, forensics: ForensicsView | undefined, deep: bo
   if (!forensics) {
     // THREE-WAY HONESTY on the static surface. "Never escalated" and "escalation
     // attempted but the sandbox run did not complete" are DIFFERENT truths and must
-    // never share a sentence. `deep` (persisted at escalation-DECISION time by the
-    // fast path — scan/index.ts: `const deep = escalate`) distinguishes them:
+    // never share a sentence. On pre-2.0 rows `deep` was persisted at
+    // escalation-DECISION time by the 1.x scanner, so it distinguishes them
+    // (2.0 rows always carry deep=true with a forensic record):
     //   deep=false, no forensics → never escalated, a pure static read.
     //   deep=true,  no forensics → escalation was flagged but produced no runtime
     //                              record; the sandbox run did not complete. State
-    //                              that plainly — it is NOT a static-read clearance,
+    //                              that plainly, it is NOT a static-read clearance,
     //                              and it never claims a runtime observation (none exists).
     if (deep) {
       if (score >= 80)
-        return "We flagged this repo for a live sandbox detonation, but the sandbox run did not complete on this pass — so its runtime behavior is unverified. This verdict reflects the static read only, not an observed detonation.";
+        return "We flagged this repo for a live sandbox detonation, but the sandbox run did not complete on this pass, so its runtime behavior is unverified. This verdict reflects the static read only, not an observed detonation.";
       if (score >= 60)
-        return "We flagged this repo for a live sandbox detonation, but the sandbox run did not complete on this pass — so its runtime behavior is unverified. Run it only inside a sandbox or throwaway environment.";
-      return "We flagged this repo for a live sandbox detonation because the static read was not clean, but the sandbox run did not complete on this pass — so its runtime behavior is unverified. Treat it as dangerous and run it only inside a fully disposable environment.";
+        return "We flagged this repo for a live sandbox detonation, but the sandbox run did not complete on this pass, so its runtime behavior is unverified. Run it only inside a sandbox or throwaway environment.";
+      return "We flagged this repo for a live sandbox detonation because the static read was not clean, but the sandbox run did not complete on this pass, so its runtime behavior is unverified. Treat it as dangerous and run it only inside a fully disposable environment.";
     }
-    // NEVER escalated — a pure static read. Keyed on the score band.
+    // NEVER escalated, a pure static read. Keyed on the score band.
     if (score >= 90)
       return "No malicious behavior in our static read, and reputation is strong. Runtime was not executed in a sandbox on this pass, so this is a static-read clearance, not a guarantee.";
     if (score >= 80)
       return "No malicious behavior in our static read. The caveats above are worth noting and the owner is not yet long-established. Runtime was not executed in a sandbox on this pass.";
     if (score >= 60)
       return "Static analysis flagged undisclosed install-time behavior. This is not confirmed malicious, but it is more than this tool needs, and runtime was not executed in a sandbox on this pass. Run it only inside a sandbox or throwaway environment.";
-    return "Static analysis flagged behavior consistent with malware — install-time network/shell execution, credential access, or obfuscation. Runtime was not executed in a sandbox on this pass, so this is a static-read warning, not an observed detonation. Treat it as dangerous and run it only inside a fully disposable environment.";
+    return "Static analysis flagged behavior consistent with malware: install-time network/shell execution, credential access, or obfuscation. Runtime was not executed in a sandbox on this pass, so this is a static-read warning, not an observed detonation. Treat it as dangerous and run it only inside a fully disposable environment.";
   }
 
   // RAN in the sandbox (escalation OWNS the report): state what running it showed
-  // with CONFIDENCE — no "unverified / not a guarantee / only partially exercised /
+  // with CONFIDENCE, no "unverified / not a guarantee / only partially exercised /
   // the run was limited" hedge (U1). The run is the point, not a caveat. The two
   // rails that remain are not hedges: never a bare "Safe" (the verdict carries
   // evidence), and the low-score reason names the static + reputation concerns
   // (explanation, not a hedge). Caught-attack language must survive (never softened).
   if (forensics._caughtAttack) {
+    // Caught evidence stands even when part of the record was lost.
     return "We ran it in the sandbox and caught it attempting credential access or outbound exfiltration. Every outbound attempt was intercepted and never reached its destination. This is malware behavior; do not run it outside a fully disposable environment.";
+  }
+  // 2.0: a run that produced no usable forensic record never reads as clean.
+  const observation = forensics.raw.run_observation;
+  if (observation === "not_observed") {
+    if (score >= 60)
+      return "We started it in the sandbox, but the run did not produce a complete forensic record, so its runtime behaviour was not observed. This verdict reflects the static read and reputation only.";
+    return "We started it in the sandbox, but the run did not produce a complete forensic record, so its runtime behaviour was not observed. The static read and reputation drive this score. Run it only inside a fully disposable environment.";
+  }
+  if (observation === "partial") {
+    return "We ran it in the sandbox. Part of the forensic record was cut by a size cap, and in the recorded part we observed no credential access or outbound exfiltration; behaviour in the cut part was not observed.";
   }
   // Ran, nothing malicious observed. Say exactly that, plainly. When the score is
   // low it is driven by the static read + reputation, which we NAME as the reason.
@@ -188,10 +200,10 @@ function finalNote(score: number, forensics: ForensicsView | undefined, deep: bo
 
 function notVerified(ranSandbox: boolean, deep: boolean): string[] {
   // U1: an escalated repo (the sandbox RAN it) carries NO "what we could not verify"
-  // list — running the code is the point, not a caveat, and the report states what
+  // list, running the code is the point, not a caveat, and the report states what
   // the run showed with confidence. The list is for reports where runtime was NOT
   // exercised. When the repo was flagged for escalation but the run did not complete
-  // (deep, no forensics), the wording says exactly that — never the never-escalated
+  // (deep, no forensics), the wording says exactly that, never the never-escalated
   // "was not executed in a sandbox" phrasing, so the two states stay distinct.
   if (ranSandbox) return [];
   return [
@@ -242,7 +254,7 @@ const MAX_FORENSIC_ITEMS = 200;
 /** A one-line geolocation label for a network attempt, or "" when unknown. */
 function geoLabel(host: string | null, geos: ForensicsGeolocation[]): string {
   // Only attribute a geolocation to the host it actually belongs to. No
-  // `geos[0]` fallback — attributing one host's geo to a different host would
+  // `geos[0]` fallback, attributing one host's geo to a different host would
   // misrepresent the forensic record.
   const g = geos.find((x) => x.host && host && x.host === host);
   if (!g) return "";
@@ -287,7 +299,7 @@ function decodeInertPayload(b64: string): string {
 }
 
 /**
- * Build the enriched forensic view from a raw record. Pure — usable from a
+ * Build the enriched forensic view from a raw record. Pure, usable from a
  * Server Component and the SPA. Returns undefined when there is no record.
  */
 export function buildForensicsView(f: Forensics | undefined): ForensicsView | undefined {
@@ -356,7 +368,7 @@ export function buildForensicsView(f: Forensics | undefined): ForensicsView | un
   );
 
   // Real bug fix: merely CAPTURING a host (capturedHosts.length > 0) is not
-  // itself evidence of an attack — a build-time fetch to an unrecognized-but-
+  // itself evidence of an attack, a build-time fetch to an unrecognized-but-
   // benign host with no credential involvement is classified by the verdict
   // itself as a supply-chain caution (`attack_egress_intercepted: false`), yet
   // this OR'd in `capturedHosts.length > 0` regardless, so the report's own
@@ -407,19 +419,13 @@ export function buildForensicsView(f: Forensics | undefined): ForensicsView | un
 /**
  * RAIL ENFORCEMENT: never let a bare "Safe" verdict reach the UI, and ensure a
  * present verdict maps to the score band when it is empty or a bare "Safe".
- * Mirrors the edge function's `enforceVerdictRails` so the rail holds even if a
+ * Mirrors the engine's verdict words (lib/engine/score.ts) so the rail holds even if a
  * row somehow stored a bare verdict.
  */
 export function enforceVerdict(verdict: string, score: number): string {
   const trimmed = (verdict || "").trim();
   if (!trimmed || trimmed.toLowerCase() === VERDICT_BARE_SAFE) {
-    return score >= 90
-      ? "Trusted"
-      : score >= 80
-        ? "Likely safe"
-        : score >= 60
-          ? "Caution"
-          : "High risk";
+    return bandLabel(score);
   }
   return trimmed;
 }
@@ -449,11 +455,11 @@ export function buildReportView(r: Report): RepoView {
     : undefined;
   // The honest signal: the sandbox ran iff it produced a forensic record. The
   // `deep`/`scan_path` flags only record that escalation was decided.
-  const ranSandbox = !!forensicsView;
-  // Stored-summary policy: the fast path writes the static summary; a SUCCESSFUL
-  // escalation overwrites it with a runtime-first summary (both correct as stored).
-  // The one case that needs reconciling at render is an ESCALATED-BUT-INCOMPLETE
-  // repo (deep, no forensics): the fast-path model summary can still carry the
+  const ranSandbox = !!forensicsView && forensicsView.raw.run_observation !== "not_observed";
+  // Stored-summary policy for pre-2.0 rows: the old static pass wrote the static
+  // summary; a SUCCESSFUL escalation overwrote it with a runtime-first summary (both
+  // correct as stored). The one case that needs reconciling at render is an
+  // ESCALATED-BUT-INCOMPLETE row (deep, no forensics): the old static summary can still carry the
   // static "runtime was not executed in a sandbox on this pass" clause, which
   // contradicts the "Sandbox run incomplete" badge + the "the sandbox run did not
   // complete" final note. Replace only that exact clause with the honest incomplete
@@ -479,7 +485,8 @@ export function buildReportView(r: Report): RepoView {
     _ring: RING_CIRC * (1 - r.score / 100),
     _hasRisky: r.risky.length > 0,
     _finalNote: finalNote(r.score, forensicsView, r.deep),
-    _notVerified: notVerified(ranSandbox, r.deep),
+    // 2.0 rows carry the deterministic score's own not_verified list (never empty); it wins.
+    _notVerified: r.notVerified && r.notVerified.length > 0 ? r.notVerified : notVerified(ranSandbox, r.deep),
     _repBar: r.reputation.sentScore,
     _ownerInitial: (r.ownerHistory.name || "?").slice(0, 1).toUpperCase(),
     _ageColor: r.ownerHistory.established ? "var(--t1)" : "var(--amber)",

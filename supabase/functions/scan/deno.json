@@ -1,6 +1,0 @@
-{
-  "imports": {
-    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2",
-    "@std/tar/untar-stream": "jsr:@std/tar@0.1/untar-stream"
-  }
-}

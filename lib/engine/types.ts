@@ -1,0 +1,266 @@
+/**
+ * Shared types for the 2.0 scan engine (docs/2.0/DESIGN.md sections 4, 6 and 8).
+ *
+ * Every module under lib/engine imports its contracts from here so the event
+ * schema, the score inputs and the report payload stay one definition.
+ */
+
+/** What a scan targets. `tarball` is the operator-only target (CR_OPERATOR_KEY). */
+export type ScanTarget =
+  | { kind: "github"; owner: string; repo: string; ref?: string }
+  | { kind: "npm"; name: string; version?: string }
+  | { kind: "tarball"; url: string; integrity: string; label: string };
+
+/** Which surface asked for the scan. Drives the ad payload and auth rules. */
+export type Surface = "web" | "cli" | "mcp" | "mcp-remote";
+
+export interface ScanCaller {
+  surface: Surface;
+  /** Supabase user id when signed in (CLI/MCP always, web optionally). */
+  userId: string | null;
+  /** Client IP from Vercel headers, used only for the anti-abuse floor. */
+  ip: string | null;
+  deviceId: string | null;
+  /** True when a valid CR_OPERATOR_KEY header was presented. */
+  operator: boolean;
+}
+
+export interface ScanRequest {
+  target: ScanTarget;
+  caller: ScanCaller;
+  /** Operator-only: run a fresh scan over a cached report. */
+  regenerate: boolean;
+}
+
+export type ErrorCode =
+  | "invalid_target"
+  | "not_found"
+  | "private_repo"
+  | "rate_limited"
+  | "upstream"
+  | "integrity"
+  | "too_large"
+  | "unauthorized"
+  | "budget_exhausted"
+  | "capacity"
+  | "timeout"
+  | "internal";
+
+export type Phase = "install" | "entry";
+
+export type StageName =
+  | "cache"
+  | "resolve"
+  | "fetch"
+  | "verify"
+  | "reach"
+  | "static"
+  | "osv"
+  | "readers"
+  | "detonate"
+  | "score"
+  | "report"
+  | "persist";
+
+export type TranscriptSource =
+  | "install"
+  | "entry"
+  | "semgrep"
+  | "guarddog"
+  | "yara"
+  | "reader.install"
+  | "reader.flagged"
+  | "reader.docs"
+  | "writer";
+
+export interface StageEventData {
+  name: StageName;
+  status: "start" | "done" | "error" | "skipped";
+  detail?: string;
+}
+export interface TimingEventData {
+  name: string;
+  ms: number;
+}
+export interface TranscriptEventData {
+  source: TranscriptSource;
+  stream: "stdout" | "stderr" | "model";
+  text: string;
+}
+export interface ForgedCallData {
+  phase: Phase;
+  proto: "http" | "https" | "dns" | "tcp";
+  host: string;
+  port: number;
+  method?: string;
+  path?: string;
+  sni?: string;
+  req_bytes: number;
+  forged_kind: string;
+  tls?: "intercepted" | "refused";
+  canary_hits: string[];
+}
+export interface FileEventData {
+  phase: Phase;
+  op: "write" | "create" | "unlink" | "rename" | "chmod" | "read_decoy";
+  path: string;
+  pid: number;
+}
+export interface ProcessEventData {
+  phase: Phase;
+  pid: number;
+  ppid: number;
+  argv: string[];
+}
+export interface CheckEventData {
+  name: string;
+  ok: boolean;
+  detail?: string;
+}
+
+export type ScanEventBody =
+  | { type: "stage"; data: StageEventData }
+  | { type: "timing"; data: TimingEventData }
+  | { type: "transcript"; data: TranscriptEventData }
+  | { type: "forged_call"; data: ForgedCallData }
+  | { type: "file"; data: FileEventData }
+  | { type: "process"; data: ProcessEventData }
+  | { type: "check"; data: CheckEventData };
+
+export type ScanEventType = ScanEventBody["type"];
+
+export const SCAN_EVENT_TYPES: readonly ScanEventType[] = [
+  "stage",
+  "timing",
+  "transcript",
+  "forged_call",
+  "file",
+  "process",
+  "check",
+];
+
+export type ScanEvent = { run_id: string; seq: number; t_ms: number; replayed?: boolean } & ScanEventBody;
+
+/** Severity used across static scanners, heuristics and reader findings. */
+export type Severity = "high" | "medium" | "low";
+
+export type FindingSource = "heuristic" | "semgrep" | "yara" | "guarddog";
+
+/** One static finding (heuristic or scanner), before reachability tagging. */
+export interface StaticFinding {
+  source: FindingSource;
+  rule: string;
+  severity: Severity;
+  file: string;
+  /** 1-based line, or null when the tool reports none. */
+  line: number | null;
+  message: string;
+  snippet?: string;
+}
+
+/** A static finding after the reachability graph has classified its file. */
+export interface TaggedFinding extends StaticFinding {
+  reach: "install" | "import" | "unreachable";
+}
+
+/** A finding produced by a Luna reader (bounded, schema-validated). */
+export interface ReaderFinding {
+  reader: "install" | "flagged" | "docs";
+  file: string;
+  line: number | null;
+  severity: Severity;
+  verdict: "malicious" | "suspicious" | "benign";
+  title: string;
+  rationale: string;
+}
+
+export interface TaggedReaderFinding extends ReaderFinding {
+  reach: "install" | "import" | "unreachable";
+}
+
+/** Score groups. Reputation is always kept apart from code and behaviour. */
+export type ScoreGroup = "behaviour" | "intel" | "static" | "docs" | "reputation" | "cap";
+
+export interface ScoreDelta {
+  group: ScoreGroup;
+  code: string;
+  points: number;
+  detail: string;
+  evidence?: string[];
+}
+
+export type Verdict = "No threats observed" | "Low risk" | "Caution" | "High risk" | "Malicious";
+export type Band = "green" | "blue" | "yellow" | "red";
+
+export interface MaliciousDependency {
+  ecosystem: "npm" | "PyPI";
+  name: string;
+  version: string;
+  ids: string[];
+}
+
+export interface DependencyRef {
+  ecosystem: "npm" | "PyPI";
+  name: string;
+  version: string;
+}
+
+export interface EvidenceItem {
+  group: ScoreGroup;
+  text: string;
+}
+
+/** Ad payload attached to every response (section 8.3). */
+export type Ad =
+  | {
+      kind: "adsense";
+      placement: "scan_result";
+      client: string;
+      slot: string;
+      format: "auto";
+      adtest: "on" | "off";
+    }
+  | {
+      kind: "house";
+      placement: "scan_result";
+      id: string;
+      label: "Sponsored";
+      headline: string;
+      body: string;
+      url: string;
+    };
+
+export interface ReportPayload {
+  run_id: string;
+  target: string;
+  commit_sha: string;
+  score: number;
+  verdict: Verdict;
+  band: Band;
+  summary: string;
+  headline: string;
+  evidence: { behaviour: string[]; code: string[]; reputation: string[] };
+  breakdown: ScoreDelta[];
+  not_verified: string[];
+  forensics: unknown;
+  packages: unknown;
+  model_id: string;
+  template: string;
+  timings: Record<string, number>;
+  writer: "model" | "deterministic";
+}
+
+export type ScanOutcome =
+  | { kind: "cached" | "fresh"; runId: string; report: ReportPayload }
+  | { kind: "attached"; runId: string }
+  | { kind: "error"; runId: string | null; code: ErrorCode; message: string };
+
+/** Typed engine error carrying the API error code. */
+export class EngineError extends Error {
+  readonly code: ErrorCode;
+  constructor(code: ErrorCode, message: string) {
+    super(message);
+    this.name = "EngineError";
+    this.code = code;
+  }
+}

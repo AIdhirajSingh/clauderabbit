@@ -1,14 +1,11 @@
 /**
- * Real scan wiring — calls the deployed `scan` Supabase Edge Function and maps
- * its structured JSON response onto the app's `Report` shape so the SPA can
- * render a live scan exactly the way it renders a demo repo.
+ * Real scan wiring: posts to the same-origin `POST /api/scan` (the Vercel
+ * function that runs the whole 2.0 engine), reads its NDJSON event stream and
+ * maps the final payload onto the app's `Report` shape so the SPA renders a
+ * live scan exactly the way it renders a stored report. No secret is ever used
+ * here (CLAUDE.md: only the publishable key is client-side).
  *
- * The function URL is derived from the public Supabase URL; the publishable key
- * is sent as both `apikey` and `Authorization: Bearer` (the function is
- * deployed `--no-verify-jwt`, so the anon key is enough to invoke it). No
- * secret is ever used here (CLAUDE.md: only the publishable key is client-side).
- *
- * Errors are returned as a typed discriminated union — never thrown to the
+ * Errors are returned as a typed discriminated union, never thrown to the
  * caller — so the UI can branch on a friendly message (network / not-found /
  * rate-limit / generic) and show the existing `failed` state.
  */
@@ -37,17 +34,23 @@ import type {
   Severity,
 } from "./types";
 import { enforceVerdict } from "./report-view";
+import type { Ad, ReportPayload, ScanEvent, StageName } from "./engine/types";
 import { normalizeLocDisplay } from "./format";
 
-/** A successful scan returns a normalized `Report`; a failure carries a message. */
+/**
+ * A scan result: the normalized `Report` the screens render, the engine's own
+ * report (score breakdown, evidence groups, `not_verified`) and the ad that came
+ * with the response. A failure carries a message and, when the server sent one,
+ * the ad too.
+ */
 export type ScanResult =
-  | { ok: true; report: Report }
-  | { ok: false; error: string };
+  | { ok: true; report: Report; engine: ReportPayload; ad: Ad; runId: string; outcome: "cached" | "fresh"; reportUrl: string }
+  | { ok: false; error: string; code?: string; ad?: Ad };
 
 /**
- * A real, streamed scan-stage event (BUG-5/6). The edge function emits one
- * `active` event when a stage starts and one `done` event (with real lines) when
- * it completes. The processing timeline renders these — never canned text.
+ * A streamed scan-stage event for the processing timeline, derived from the
+ * engine's real `stage` events: `active` when a stage starts, `done` (with
+ * real lines) when it completes.
  */
 export interface ScanStage {
   ch: string;
@@ -58,41 +61,24 @@ export interface ScanStage {
 
 /** Fields shared by every scan request, regardless of ecosystem. */
 interface ScanArgsBase {
+  /** Anonymous device id; rides along for the burst floor only. */
   deviceId?: string;
-  /**
-   * The current user's Supabase session access token, when signed in. Sent as
-   * `Authorization: Bearer <token>` so the edge function can verify it server-
-   * side (`auth.getUser(token)`) and attribute the scan to a TRUSTED user id.
-   * The publishable `apikey` header is still sent for gateway routing.
-   */
+  /** The signed-in user's Supabase session token, sent as a Bearer. Optional: the web never requires sign-in. */
   accessToken?: string;
-  /**
-   * Called for each REAL streamed scan-stage event as it arrives. Optional — when
-   * omitted (or when the response is a non-streamed cache hit) no stages fire.
-   */
+  /** Called for each stage event as it arrives (live and replayed). */
   onStage?: (stage: ScanStage) => void;
-  /**
-   * Set ONLY by the remote MCP server (app/mcp/route.ts) to identify itself to
-   * the edge function's CLI/MCP login gate. The web app never sets this, so its
-   * existing anonymous-scan behavior is completely unaffected — the gate only
-   * triggers when this header is present (see supabase/functions/scan/index.ts
-   * `clientKind`).
-   */
-  clientKind?: "mcp";
+  /** Called for every raw engine event (transcript, forged calls, files, processes, checks). */
+  onEvent?: (event: ScanEvent) => void;
 }
 
-/** A GitHub owner/repo scan target — the default ecosystem, shape unchanged. */
+/** A GitHub owner/repo scan target. */
 export interface GithubScanArgs extends ScanArgsBase {
   owner: string;
   repo: string;
   ref?: string;
 }
 
-/**
- * An npm PACKAGE scan target. The edge function resolves and scans the published
- * registry ARTIFACT (not the linked repo); `owner`/`repo` are omitted. Sent as
- * `{ ecosystem: "npm", package, version? }` per the shared scan contract.
- */
+/** An npm package scan target: the integrity-verified registry tarball. */
 export interface NpmScanArgs extends ScanArgsBase {
   ecosystem: "npm";
   package: string;
@@ -102,8 +88,8 @@ export interface NpmScanArgs extends ScanArgsBase {
 /** A scan request is either a GitHub repo or an npm package. */
 export type ScanArgs = GithubScanArgs | NpmScanArgs;
 
-/** Hard ceiling for a single scan request — longer than the slowest deep read. */
-const SCAN_TIMEOUT_MS = 90_000;
+/** Client ceiling for one scan request: the server's maxDuration plus slack. */
+const SCAN_TIMEOUT_MS = 130_000;
 
 /**
  * Split accumulated NDJSON text into complete lines plus a trailing remainder.
@@ -365,6 +351,7 @@ function normalizeHonesty(v: unknown): ForensicsHonesty {
 export function normalizeForensics(raw: unknown): Forensics | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as Record<string, unknown>;
+  if (r.version === 2) return forensicsFromV2(r);
   const looksLikeRecord =
     (typeof r.schema === "string" && r.schema.startsWith("claude-rabbit/forensic-record")) ||
     "network_intent" in r ||
@@ -385,10 +372,114 @@ export function normalizeForensics(raw: unknown): Forensics | undefined {
   };
 }
 
+const REGISTRY_KINDS_V2 = new Set(["mirror", "registry"]);
+const SUSPICIOUS_BIN_V2 = new Set(["curl", "wget", "nc", "ncat", "netcat", "powershell", "pwsh", "base64", "crontab"]);
+
 /**
- * Map an arbitrary structured scan payload (edge-function response OR a row's
+ * Map a 2.0 forensic record (`version: 2`, written by lib/engine/orchestrator.ts:
+ * forged_calls, files, processes, checks, install/entry outcomes, coverage) onto
+ * the `Forensics` shape the report renders. The record is attacker-influenced, so
+ * every field is type-checked and every array is bounded.
+ */
+export function forensicsFromV2(r: Record<string, unknown>): Forensics {
+  const install = str(r.install, "failed");
+  const entry = str(r.entry, "skipped");
+  const calls = objArray(r.forged_calls);
+  const scored = calls.filter((c) => !(REGISTRY_KINDS_V2.has(str(c.forged_kind)) && str(c.proto) !== "dns" && /^(registry\.npmjs\.org|pypi\.org|files\.pythonhosted\.org)$/.test(str(c.host))) && str(c.proto) !== "dns");
+  const canaryCalls = calls.filter((c) => strArray(c.canary_hits).length > 0);
+  const files = objArray(r.files);
+  const processes = objArray(r.processes);
+  const checks = objArray(r.checks);
+  const decoys = files.filter((f) => f.op === "read_decoy").map((f) => str(f.path)).filter(Boolean);
+  const dropped = files.filter((f) => f.op === "create" || f.op === "write").map((f) => str(f.path)).filter(Boolean);
+  const bins = new Set<string>();
+  for (const p of processes) {
+    const a0 = strArray(p.argv)[0] ?? "";
+    const b = a0.slice(a0.lastIndexOf("/") + 1);
+    if (SUSPICIOUS_BIN_V2.has(b)) bins.add(b);
+  }
+  const hosts = [...new Set(scored.map((c) => str(c.host)).filter(Boolean))];
+  const contained = checks.some((c) => c.name === "egress_contained" && c.ok === true);
+  const cov = obj(r.forensic_coverage);
+  const coverage = str(cov.coverage);
+  const lostByCheck = checks.some((c) => c.name === "forensics_collected" && c.ok === false);
+  const observation: NonNullable<Forensics["run_observation"]> =
+    install !== "completed" || coverage === "lost" || lostByCheck ? "not_observed" : coverage === "partial" ? "partial" : "observed";
+  const canaryInFiles = strArray(r.canary_in_files);
+  return {
+    schema: "claude-rabbit/forensic-record@2",
+    generated_at: "",
+    target: "",
+    what_it_ran: {
+      project_type: strOrNull(r.ecosystem),
+      install_command: strOrNull(r.install_command),
+      run_command: null,
+      auto_build_succeeded: install === "completed",
+      ran_without_crash: entry === "completed",
+      build_exit_code: null,
+      run_exit_code: null,
+    },
+    network_intent: {
+      attempts: scored.map((c) => ({
+        intended_host: strOrNull(c.host),
+        sni: strOrNull(c.sni),
+        http_host_header: null,
+        dest_port: numOrNull(c.port),
+        transport: strOrNull(c.proto),
+        tls: c.tls === "intercepted" || c.tls === "refused",
+        tls_handshake: strOrNull(c.tls),
+        http_method: strOrNull(c.method),
+        http_path: strOrNull(c.path),
+        http_headers: null,
+        would_be_payload_b64: null,
+        payload_len: numOrNull(c.req_bytes),
+        captured_at: null,
+      })),
+      attempt_count: scored.length,
+      intended_destinations: hosts.map((h) => ({ host: h, intended_ips: [] })),
+      geolocations: [],
+    },
+    in_vm_behavior: {
+      high_value_credential_reads: decoys.length,
+      high_value_credential_reads_succeeded: decoys.length,
+      credential_reads_detail: decoys.map((p) => ({ path: p, succeeded: true, high_value: true })),
+      suspicious_binaries: [...bins],
+      files_dropped_count: dropped.length,
+      files_dropped: dropped,
+      high_cpu: false,
+      run_cpu_cores_busy: 0,
+      process_exec_count: processes.length,
+    },
+    payload_analysis: { decoded_payloads: [], ai_intent_summary: null, ai_model: null, ai_analysis_error: null },
+    containment: {
+      external_monitor_saw_egress: false,
+      in_vm_saw_egress: scored.length > 0,
+      no_real_packet_reached_destination: contained,
+      containment_notes: contained
+        ? "Every outbound call from the package was redirected to the in-VM forge, which answered it; nothing left the sandbox."
+        : "The containment probe result was not recorded for this run.",
+      egress_control_probe: null,
+    },
+    verdict: {
+      dynamic_score: 0,
+      score_color: "",
+      one_word: "",
+      headline: "",
+      code_behavior_findings: [],
+      captured_network_intent: hosts,
+      egress_intercepted_count: scored.length,
+      attack_egress_intercepted: canaryCalls.length > 0 || canaryInFiles.length > 0,
+      not_verified: [],
+    },
+    honesty: { possibly_dormant_unverified: false, notes: [] },
+    run_observation: observation,
+  };
+}
+
+/**
+ * Map an arbitrary structured scan payload (engine payload OR a row's
  * blended object) onto the strict `Report` shape. Tolerant of missing fields:
- * the edge function already validates and clamps, but we re-coerce so a partial
+ * the engine already validates and clamps, but we re-coerce so a partial
  * or surprising payload still renders.
  */
 export function normalizeReport(raw: unknown): Report {
@@ -442,6 +533,7 @@ export function normalizeReport(raw: unknown): Report {
     risky: normalizeRisky(r.risky),
     logs: normalizeLogs(r.logs),
     ...(forensics ? { forensics } : {}),
+    ...(strArray(r.not_verified).length > 0 ? { notVerified: strArray(r.not_verified) } : {}),
     // Carry the resolved commit SHA so the inline deep run can pin its detonation
     // to (and attach forensics onto) this exact report row.
     ...(typeof r.commit_sha === "string" && r.commit_sha ? { commit_sha: r.commit_sha } : {}),
@@ -472,324 +564,146 @@ export function normalizeNpm(raw: unknown): NpmReputation | undefined {
   return v;
 }
 
-function functionUrl(): string {
-  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!base) {
-    throw new Error("NEXT_PUBLIC_SUPABASE_URL is not configured");
+const STAGE_LABEL: Record<StageName, string> = {
+  cache: "Cache",
+  resolve: "Resolve",
+  fetch: "Fetch",
+  verify: "Verify integrity",
+  reach: "Reachability",
+  static: "Static scanners",
+  osv: "OSV lookup",
+  readers: "Model readers",
+  detonate: "Sandbox run",
+  score: "Score",
+  report: "Report",
+  persist: "Save",
+};
+
+/** Map an engine stage event onto the timeline shape. Timing and other types return null. */
+export function toScanStage(e: ScanEvent, timings: Map<string, number>): ScanStage | null {
+  if (e.type === "timing") {
+    timings.set(e.data.name, e.data.ms);
+    return null;
   }
-  return `${base.replace(/\/$/, "")}/functions/v1/scan`;
+  if (e.type !== "stage") return null;
+  const ch = STAGE_LABEL[e.data.name] ?? e.data.name;
+  if (e.data.status === "start") return { ch, status: "active" };
+  const lines = [e.data.detail ?? "", e.data.status === "skipped" ? "skipped" : ""].filter((l) => l.length > 0);
+  return { ch, status: "done", kind: e.data.status === "error" ? "bad" : "ok", lines };
+}
+
+/** Map the engine ReportPayload onto the `Report` the existing screens render. */
+export function reportFromPayload(p: ReportPayload, target: { owner: string; name: string }, cached: boolean): Report {
+  const risky: RiskyItem[] = [
+    ...p.evidence.behaviour.map((t) => ({ title: "Observed when run", severity: (p.score < 60 ? "high" : "low") as Severity, kind: "behavior" as RiskKind, detail: t })),
+    ...p.evidence.code.map((t) => ({ title: "Found in the code", severity: (p.score < 60 ? "med" : "low") as Severity, kind: "code" as RiskKind, detail: t })),
+    ...p.evidence.reputation.map((t) => ({ title: "Reputation signal", severity: "low" as Severity, kind: "rep" as RiskKind, detail: t })),
+  ];
+  const logs: LogChapter[] = Object.entries(p.timings).map(([name, ms]) => ({ ch: STAGE_LABEL[name as StageName] ?? name, kind: "ok", lines: [`${Math.round(ms)} ms`] }));
+  return normalizeReport({
+    owner: target.owner,
+    name: target.name,
+    score: p.score,
+    verdict: p.verdict,
+    cached,
+    deep: true,
+    summary: [p.headline, p.summary].filter((x) => x).join(" "),
+    risky,
+    logs,
+    commit_sha: p.commit_sha,
+  });
+}
+
+function targetLabel(args: ScanArgs): { owner: string; name: string } {
+  return "ecosystem" in args ? { owner: "npm", name: args.package } : { owner: args.owner, name: args.repo };
 }
 
 /**
- * Run a real scan against the deployed edge function. Always resolves to a
- * `ScanResult` — network and HTTP errors are mapped to friendly messages, never
- * thrown.
+ * Run one scan through `POST /api/scan` (same origin). Streams the engine's
+ * events (NDJSON) into `onStage` / `onEvent` and resolves with the final
+ * result line. Every response carries an ad, success or failure.
  */
 export async function runScan(args: ScanArgs): Promise<ScanResult> {
-  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-  if (!key) {
-    return { ok: false, error: "Scanner is not configured." };
-  }
-
-  // A half-open stream that stalls would otherwise spin the loader forever, so
-  // every scan is bounded by a hard ceiling timeout via an AbortController.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
-  // Build the target-specific body. An npm scan sends { ecosystem, package,
-  // version? }; a GitHub scan sends { owner, repo, ref? } exactly as before. The
-  // deviceId (anti-abuse fingerprint) rides along in both, as it always has.
-  const requestBody: Record<string, unknown> =
+  const body: Record<string, unknown> =
     "ecosystem" in args
-      ? {
-          ecosystem: "npm",
-          package: args.package,
-          ...(args.version ? { version: args.version } : {}),
-          ...(args.deviceId ? { deviceId: args.deviceId } : {}),
-        }
-      : {
-          owner: args.owner,
-          repo: args.repo,
-          ...(args.ref ? { ref: args.ref } : {}),
-          ...(args.deviceId ? { deviceId: args.deviceId } : {}),
-        };
+      ? { ecosystem: "npm", package: args.package, ...(args.version ? { version: args.version } : {}), ...(args.deviceId ? { deviceId: args.deviceId } : {}) }
+      : { ecosystem: "github", owner: args.owner, repo: args.repo, ...(args.ref ? { ref: args.ref } : {}), ...(args.deviceId ? { deviceId: args.deviceId } : {}) };
   try {
     let res: Response;
     try {
-      res = await fetch(functionUrl(), {
+      res = await fetch("/api/scan", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // `apikey` is the publishable key — it routes the request at the
-          // Functions gateway. The Bearer carries the USER session token when
-          // signed in (so the function can verify + attribute it); otherwise it
-          // falls back to the publishable key for the logged-out free scan.
-          apikey: key,
-          Authorization: `Bearer ${args.accessToken ?? key}`,
-          ...(args.clientKind ? { "X-ClaudeRabbit-Client": args.clientKind } : {}),
+          Accept: "application/x-ndjson",
+          "X-ClaudeRabbit-Client": "web",
+          ...(args.accessToken ? { Authorization: `Bearer ${args.accessToken}` } : {}),
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
     } catch {
-      if (controller.signal.aborted) {
-        return { ok: false, error: "The scan timed out. Please try again." };
-      }
-      return {
-        ok: false,
-        error: "Network error reaching the scanner. Check your connection and retry.",
-      };
-    }
-
-    if (!res.ok) {
-      // The function returns { error } with a meaningful status code (early
-      // errors + the cache path stay non-streamed JSON). Prefer the function's
-      // specific message; fall back to a status-derived friendly string.
-      const GENERIC = "The scan could not be completed.";
-      let message = GENERIC;
-      try {
-        const body = (await res.json()) as { error?: string };
-        if (typeof body.error === "string" && body.error) message = body.error;
-      } catch {
-        // Non-JSON error body — keep the status-derived fallback below.
-      }
-      if (message === GENERIC) {
-        if (res.status === 404) {
-          message = "Repository not found. Check the owner and repo name.";
-        } else if (res.status === 429) {
-          message = "GitHub rate limit hit. Please try again in a few minutes.";
-        }
-      }
-      return { ok: false, error: message };
-    }
-
-    // A FRESH scan streams NDJSON stage events; a cache hit (or any non-stream
-    // response) is plain JSON. Detect by Content-Type and consume accordingly.
-    const contentType = res.headers.get("content-type") ?? "";
-    const isStream =
-      (contentType.includes("ndjson") || contentType.includes("event-stream")) && !!res.body;
-    if (isStream && res.body) {
-      try {
-        return await consumeScanStream(res.body, args.onStage);
-      } catch {
-        if (controller.signal.aborted) {
-          return { ok: false, error: "The scan timed out. Please try again." };
-        }
-        return { ok: false, error: "The scanner returned an unreadable response." };
-      }
-    }
-
-    let payload: unknown;
-    try {
-      payload = await res.json();
-    } catch {
-      return { ok: false, error: "The scanner returned an unreadable response." };
-    }
-    return { ok: true, report: normalizeReport(payload) };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** A parsed NDJSON event from a scan / deep-run stream. */
-type StreamEvent = Record<string, unknown>;
-
-/**
- * Read an NDJSON ReadableStream line by line, invoking `onEvent` for each parsed
- * object. Buffers partial lines across chunks (a JSON object can split across two
- * reads) and skips any unparseable line rather than aborting. Shared by the
- * fast-path scan stream and the inline deep-run stream.
- */
-async function readNdjsonStream(
-  body: ReadableStream<Uint8Array>,
-  onEvent: (e: StreamEvent) => void,
-): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const handle = (line: string): void => {
-    let ev: unknown;
-    try {
-      ev = JSON.parse(line);
-    } catch {
-      return; // stray/blank/partial line — skip, never abort the stream
-    }
-    if (ev && typeof ev === "object") onEvent(ev as StreamEvent);
-  };
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const split = splitNdjson(buffer, decoder.decode(value, { stream: true }));
-      buffer = split.rest;
-      for (const line of split.lines) handle(line);
-    }
-    const tail = buffer.trim();
-    if (tail) handle(tail);
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // reader already released
-    }
-  }
-}
-
-/** Map a wire `stage` event to a `ScanStage`, or null when it is not one. */
-function toScanStage(e: StreamEvent): ScanStage | null {
-  if (e.t !== "stage" || typeof e.ch !== "string" || (e.status !== "active" && e.status !== "done")) {
-    return null;
-  }
-  return {
-    ch: e.ch,
-    status: e.status,
-    ...(typeof e.kind === "string" ? { kind: e.kind } : {}),
-    ...(Array.isArray(e.lines)
-      ? { lines: (e.lines as unknown[]).filter((l): l is string => typeof l === "string") }
-      : {}),
-  };
-}
-
-/**
- * Consume the NDJSON scan stream: surface each `stage` via `onStage`, capture the
- * final `report`, and map an in-band `error` event to a failed result.
- */
-async function consumeScanStream(
-  body: ReadableStream<Uint8Array>,
-  onStage?: (stage: ScanStage) => void,
-): Promise<ScanResult> {
-  let report: Report | null = null;
-  let error: string | null = null;
-  await readNdjsonStream(body, (e) => {
-    const stage = toScanStage(e);
-    if (stage) {
-      onStage?.(stage);
-    } else if (e.t === "result") {
-      report = normalizeReport(e.report);
-    } else if (e.t === "error") {
-      error = typeof e.error === "string" && e.error ? e.error : "The scan failed.";
-    }
-  });
-  if (error) return { ok: false, error };
-  if (report) return { ok: true, report };
-  return { ok: false, error: "The scan ended without a result. Please retry." };
-}
-
-/** Hard ceiling for an inline deep run (the sandbox dead-man's-switch caps the VM at 30m). */
-const DEEP_SCAN_TIMEOUT_MS = 20 * 60 * 1000;
-
-/** Arguments for an inline deep (dynamic sandbox) run. */
-export interface DeepScanArgs {
-  owner: string;
-  repo: string;
-  /** The fast-path resolved commit SHA — pins the detonation + the forensics attach. */
-  sha: string;
-  onStage?: (stage: ScanStage) => void;
-  /**
-   * Absolute origin to POST `/api/deep` to. Omit in the browser (a relative
-   * `/api/deep` is correct there). REQUIRED when calling server-side — e.g. the
-   * remote `/mcp` route reusing this exact dispatch — since a relative fetch has
-   * no origin to resolve against off the browser.
-   */
-  baseUrl?: string;
-}
-
-/**
- * Result of an inline deep run.
- * - `{ ok: true, persisted: true }` — forensics attached to the report row (done).
- * - `{ ok: true, persisted: false, pending: true }` — the detonation was dispatched
- *   and was still running when the stream ended (the server's bounded wait elapsed,
- *   or the serverless platform cut the long-held stream). The Cloud Run container
- *   attaches its own forensics independently, so the caller should POLL the report
- *   row until they appear rather than concluding a failure.
- * - `{ ok: false, error, fatal: true }` — a genuine failure (nothing is running):
- *   dispatch failed, or the repo was never scanned. Do not poll.
- */
-export type DeepScanResult =
-  | { ok: true; persisted: boolean; pending?: boolean }
-  | { ok: false; error: string; fatal?: boolean };
-
-/**
- * Run the dynamic sandbox INLINE via the local deep-scan controller route
- * (`/api/deep`), streaming its real progress. The route spawns the GCP detonation
- * directly (no queue), captures forensics, tears the VM down, and persists the
- * forensics onto this report row — after which the report renders "Sandbox run".
- * Never throws; always resolves to a `DeepScanResult`.
- */
-export async function runDeepScan(args: DeepScanArgs): Promise<DeepScanResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEEP_SCAN_TIMEOUT_MS);
-  try {
-    let res: Response;
-    try {
-      res = await fetch(`${args.baseUrl ?? ""}/api/deep`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ owner: args.owner, repo: args.repo, sha: args.sha }),
-        signal: controller.signal,
-      });
-    } catch {
-      if (controller.signal.aborted) return { ok: false, error: "The sandbox run timed out." };
-      return { ok: false, error: "Could not reach the sandbox controller." };
+      if (controller.signal.aborted) return { ok: false, error: "The scan timed out. Please try again." };
+      return { ok: false, error: "Network error reaching the scanner. Check your connection and retry." };
     }
     if (!res.ok || !res.body) {
-      let msg = "The sandbox run could not start.";
+      let parsed: { message?: string; code?: string; ad?: Ad } = {};
       try {
-        const b = (await res.json()) as { error?: string; reason?: string };
-        if (b.reason === "unavailable") {
-          // The route's own gate-rejection text (`b.error`) is written for the
-          // person operating the sandbox controller ("set CR_ALLOW_LOCAL_DEEP=1
-          // ..."), not for a real visitor — this is the expected, documented
-          // state on Vercel (docs/DEPLOY.md), not an error to alarm them with.
-          msg =
-            "A live sandbox detonation isn't available from this deployment right now — this result reflects the static read only.";
-        } else if (typeof b.error === "string" && b.error) {
-          // A genuine failure from a controller that WAS available (e.g. a
-          // real Cloud Run execution error) — keep the real, specific detail.
-          msg = b.error;
-        }
+        parsed = (await res.json()) as typeof parsed;
       } catch {
-        // non-JSON body — keep the default message
+        // Non-JSON error body: fall back to the status text below.
       }
-      return { ok: false, error: msg };
+      return { ok: false, error: parsed.message || `The scan could not be completed (HTTP ${res.status}).`, ...(parsed.code ? { code: parsed.code } : {}), ...(parsed.ad ? { ad: parsed.ad } : {}) };
     }
-    let persisted = false;
-    let pending = false;
-    let error: string | null = null;
-    let fatal = false;
-    let sawResult = false;
-    try {
-      await readNdjsonStream(res.body, (e) => {
-        const stage = toScanStage(e);
-        if (stage) {
-          args.onStage?.(stage);
-        } else if (e.t === "result") {
-          sawResult = true;
-          persisted = e.persisted === true;
-        } else if (e.t === "pending") {
-          pending = true;
-        } else if (e.t === "error") {
-          error = typeof e.error === "string" && e.error ? e.error : "The sandbox run failed.";
-          fatal = e.fatal === true;
+
+    const timings = new Map<string, number>();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let final: Record<string, unknown> | null = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      const chunk = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const { lines, rest } = splitNdjson(buffer, done ? chunk + "\n" : chunk);
+      buffer = rest;
+      for (const line of lines) {
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
         }
-      });
-    } catch {
-      if (controller.signal.aborted) return { ok: false, error: "The sandbox run timed out." };
-      // A mid-stream read failure isn't itself proof of failure — the detonation
-      // may still be running and attaching forensics. Treat it as pending so the
-      // caller polls the report row rather than declaring a failure.
-      return { ok: true, persisted: false, pending: true };
+        if (msg.type === "event" && msg.event && typeof msg.event === "object") {
+          const e = msg.event as ScanEvent;
+          args.onEvent?.(e);
+          const stage = toScanStage(e, timings);
+          if (stage) args.onStage?.(stage);
+        } else if (msg.type === "result" || msg.type === "error") {
+          final = msg;
+        }
+      }
+      if (done) break;
     }
-    // A genuine, nothing-is-running failure — do not poll.
-    if (error && fatal) return { ok: false, error, fatal: true };
-    if (persisted) return { ok: true, persisted: true };
-    // Anything else — an explicit "pending", a non-fatal error, or a stream that
-    // simply ended without a result (the serverless platform cut the long-held
-    // connection) — means the detonation was dispatched and is likely still
-    // running. Signal pending so the caller polls the report row for forensics.
-    if (pending || error || !sawResult) {
-      return { ok: true, persisted: false, pending: true };
+    if (!final) return { ok: false, error: "The scan stream ended without a result. Please try again." };
+    if (final.type === "error") {
+      return { ok: false, error: str(final.message, "The scan could not be completed."), code: str(final.code), ...(final.ad ? { ad: final.ad as Ad } : {}) };
     }
-    return { ok: true, persisted: false };
+    const payload = final.report as ReportPayload;
+    const outcome = final.outcome === "cached" ? "cached" : "fresh";
+    return {
+      ok: true,
+      report: reportFromPayload(payload, targetLabel(args), outcome === "cached"),
+      engine: payload,
+      ad: final.ad as Ad,
+      runId: str(final.run_id),
+      outcome,
+      reportUrl: str(final.report_url),
+    };
+  } catch (err) {
+    if (controller.signal.aborted) return { ok: false, error: "The scan timed out. Please try again." };
+    return { ok: false, error: err instanceof Error ? err.message : "The scan could not be completed." };
   } finally {
     clearTimeout(timeout);
   }

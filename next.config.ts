@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { contentSecurityPolicy } from "./lib/csp";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -34,39 +35,6 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/api/export/pdf": ["./node_modules/@sparticuz/chromium/**"],
   },
-  // The /api/deep route shells out to `sandbox/orchestrate.sh` and reads
-  // `sandbox/results/*` from the REAL filesystem at runtime (process.cwd()), so
-  // Next's file tracer can't statically resolve those paths and conservatively
-  // bundles the whole project into that function. Exclude those heavy/irrelevant
-  // SOURCE trees to keep the serverless function small and under platform size
-  // limits.
-  //
-  // Real production bug this caused (fixed): `node_modules/**` AND `.next/**`
-  // were ALSO in this list. The route is gated closed on Vercel
-  // (CR_ALLOW_LOCAL_DEEP unset), but that gate check runs INSIDE the handler —
-  // Vercel still has to load and evaluate the route module's top-level imports
-  // (including `@supabase/supabase-js`, used by `confirmForensicsAttached`) on
-  // every cold start, gate or no gate. Turbopack bundles that kind of
-  // node_modules dependency into its OWN compiled chunk file under
-  // `.next/server/chunks/` (not a raw copy of the `node_modules/` source), so
-  // excluding `.next/**` stripped that chunk out of the deployed function too —
-  // both exclusions pointed at the same real dependency by two different
-  // paths. Every real invocation 500'd with `Error [ChunkLoadError] ... Cannot
-  // find module '.next/server/chunks/[root-of-the-server]__*.js`
-  // (MODULE_NOT_FOUND)` before the gate ever ran — silently, since the
-  // client-facing toast treats any dispatch failure as the same honest
-  // "sandbox unavailable" message. Removing both lets the tracer include only
-  // what this route actually needs (still nowhere near the full project).
-  outputFileTracingExcludes: {
-    "/api/deep": [
-      "sandbox/**",
-      "docs/**",
-      "design-source/**",
-      "supabase/**",
-      "tests/**",
-      "public/**",
-    ],
-  },
   // Security headers (production-grade) + the embeddable trust badge.
   async headers() {
     // Hardening headers safe on every route (they don't affect embedding).
@@ -77,25 +45,8 @@ const nextConfig: NextConfig = {
       { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), browsing-topics=()" },
       { key: "X-DNS-Prefetch-Control", value: "on" },
     ];
-    // A functional CSP: self + the inline styles the design uses + Supabase for the
-    // anon REST/auth reads + data/https images. The two typefaces (Instrument Serif +
-    // Geist) are self-hosted via next/font — their files are served from our own origin
-    // and the @font-face CSS is inlined — so no external font host needs to be allowed;
-    // `font-src 'self'` covers the self-hosted woff2 files. This is strictly tighter than
-    // allowing fonts.googleapis.com / fonts.gstatic.com.
-    // frame-ancestors 'none' clickjack-proofs the app (the badge route below re-opens framing).
-    const csp = [
-      "default-src 'self'",
-      "base-uri 'self'",
-      "object-src 'none'",
-      "form-action 'self'",
-      "frame-ancestors 'none'",
-      "img-src 'self' data: https:",
-      "font-src 'self' data:",
-      "style-src 'self' 'unsafe-inline'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-      "connect-src 'self' https://*.supabase.co https://*.supabase.in",
-    ].join("; ");
+    // The CSP (lib/csp.ts) allows Supabase https/wss and the AdSense origins the web ad needs.
+    const csp = contentSecurityPolicy();
     return [
       {
         // every route EXCEPT the embeddable badge (negative lookahead)

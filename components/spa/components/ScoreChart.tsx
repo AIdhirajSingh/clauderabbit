@@ -36,10 +36,10 @@ const BAR_GAP = 20;
 
 export function ScoreChart({ distribution, loaded }: ScoreChartProps) {
   const bars: Bar[] = [
-    { label: "Dangerous", range: "<60", value: distribution.red, color: "var(--red)" },
+    { label: "High risk", range: "<60", value: distribution.red, color: "var(--red)" },
     { label: "Caution", range: "60–79", value: distribution.amber, color: "var(--amber)" },
-    { label: "Likely safe", range: "80–89", value: distribution.blue, color: "var(--blue)" },
-    { label: "Secure", range: "90+", value: distribution.green, color: "var(--green)" },
+    { label: "Low risk", range: "80–89", value: distribution.blue, color: "var(--blue)" },
+    { label: "No threats observed", range: "90+", value: distribution.green, color: "var(--green)" },
   ];
 
   const total = bars.reduce((s, b) => s + b.value, 0);

@@ -56,7 +56,7 @@ test("reportToMarkdown never renders a bare 'Safe' verdict, even for a hypotheti
   // enforceVerdict (via buildReportView) must have replaced the bare "Safe" with
   // a score-banded, honest verdict word.
   assert.doesNotMatch(md, /\*\*Verdict:\*\* Safe\b/);
-  assert.match(md, /\*\*Verdict:\*\* (Trusted|Likely safe|Caution|High risk)/);
+  assert.match(md, /\*\*Verdict:\*\* (No threats observed|Low risk|Caution|High risk)/);
 });
 
 test("reportToMarkdown includes a clean-state note when there are no risky items", () => {

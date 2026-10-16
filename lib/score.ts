@@ -43,14 +43,11 @@ export function bandTint(score: number): string {
   return "var(--" + bandVar(band(score)) + "-t)";
 }
 
-export function bandLabel(
-  score: number,
-): "High trust" | "Likely safe" | "Caution" | "Dangerous" {
-  return score >= 90
-    ? "High trust"
-    : score >= 80
-      ? "Likely safe"
-      : score >= 60
-        ? "Caution"
-        : "Dangerous";
+/**
+ * Band label shown next to a score. Same words as the engine verdicts
+ * (lib/engine/score.ts verdictFor) for the four bands; none of them is a bare
+ * "Safe" and none claims more certainty than the evidence carries.
+ */
+export function bandLabel(score: number): "No threats observed" | "Low risk" | "Caution" | "High risk" {
+  return score >= 90 ? "No threats observed" : score >= 80 ? "Low risk" : score >= 60 ? "Caution" : "High risk";
 }

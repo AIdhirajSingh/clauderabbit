@@ -94,16 +94,17 @@ USAGE
   clauderabbit <command> [options]
 
 COMMANDS
-  scan <target> [--json] [--ref <ref>]
-      Print a ClaudeRabbit verdict for <target> — owner/repo, a GitHub URL,
-      owner/repo@ref, or an npm package name. An npm package is scanned as its
-      REAL published registry artifact (the exact tarball \`npm install\` fetches),
-      NOT the GitHub repo its package.json links to — so it catches a compromised
-      publish that exists only in the tarball. For npm, --ref selects the
-      version/dist-tag. Cache-aware: if the target's current commit/artifact
-      already has a report it comes back immediately; otherwise a real fast-path
-      scan runs. You never need to choose which case applies.
-      --json  Emit the documented machine-readable object (see README).
+  scan <target> [--json] [--ref <ref>] [--quiet]
+      Scan <target> (owner/repo, a GitHub URL, owner/repo@ref, or an npm
+      package) and print the verdict, score, evidence (behaviour, code and
+      reputation kept apart), what was not verified, the report URL and a
+      sponsored line. Every scan runs the code in a throwaway sandbox: install
+      hooks and the entry point execute with all network calls answered by a
+      forge. npm packages are scanned as the integrity-verified registry
+      tarball \`npm install\` fetches. For npm, --ref selects the version or
+      dist-tag. A report for the same commit or artifact returns from cache.
+      --json   Emit the machine-readable object.
+      --quiet  Skip the per-stage progress lines.
 
   mcp install
       Wire the ClaudeRabbit MCP server into Claude Desktop's
@@ -121,12 +122,9 @@ COMMANDS
 
   help | version
 
-NOTES
-  A scan runs the FAST PATH only (static scanners + reputation + a model read).
-  It can DECIDE a repo should escalate to the dynamic sandbox without the
-  sandbox having actually run. "Did the sandbox run" is reported honestly and
-  keyed off a forensic record being present (sandboxActuallyRan in --json),
-  never off the escalation flag alone.
+ENVIRONMENT
+  CLAUDE_RABBIT_SITE_URL         API and report site (default https://clauderabbit.in)
+  CLAUDE_RABBIT_SCAN_TIMEOUT_MS  client wait for one scan (default 150000)
 `;
 
 async function main(argv: string[]): Promise<number> {

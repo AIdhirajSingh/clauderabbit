@@ -6,7 +6,7 @@ run through the sandbox.
 
 This guide covers how to get it running locally and what we look for in a pull request.
 
-## Before you start — the two rails that never bend
+## Before you start, the two rails that never bend
 
 ClaudeRabbit is a security product, so the bar is higher, not lower. Two rules override everything
 else, and a change that breaks either will not be merged:
@@ -18,20 +18,20 @@ else, and a change that breaks either will not be merged:
    safety-critical code in the project and gets the most care.
 
 Two more structural rules: **secrets stay server-side** (only the Supabase URL + publishable key are
-ever client-side — never commit `.env*` or `*-key.json`), and **reputation signals stay separate
+ever client-side, never commit `.env*` or `*-key.json`), and **reputation signals stay separate
 from code/behavior signals** everywhere a verdict is explained.
 
-The UI is a faithful port of the shipped Claude Design spec (`design.md`) — please preserve it
+The UI is a faithful port of the shipped Claude Design spec (`design.md`), please preserve it
 exactly rather than redesigning. Minimal, faithful adaptations to fit Next.js are fine.
 
 ## Prerequisites
 
 - **Node.js 24** (LTS) and npm.
 - Optional, only if you're working on those layers:
-  - **Supabase CLI** — for the database and edge functions.
-  - **Deno** — for the edge-function unit tests.
+  - **Supabase CLI**: for the database migrations.
+  - **Python 3**: for the forge unit tests (`npm run test:python`, stdlib only).
 
-You do **not** need any cloud credentials or a Supabase project to work on most of the web layer —
+You do **not** need any cloud credentials or a Supabase project to work on most of the web layer -
 the client only needs the two public env values below.
 
 ## Local setup
@@ -44,7 +44,7 @@ cp .env.example .env.local     # fill in the Supabase URL + publishable key (bot
 npm run dev                    # http://localhost:2311
 ```
 
-The `cli/` and `mcp-server/` packages are self-contained — each has its own `package.json` and is
+The `cli/` and `mcp-server/` packages are self-contained, each has its own `package.json` and is
 built independently (`cd cli && npm install && npm run build`). See the
 [repo layout](README.md#repo-layout) for what lives where.
 
@@ -56,8 +56,8 @@ Before opening a PR, these must all pass:
 npm run lint          # eslint
 npm run typecheck     # tsc --noEmit
 npm run build         # next build
-npm test              # app/lib/component unit tests
-npm run test:functions   # Deno edge-function tests (needs Deno) — scoring + static-scan
+npm test              # engine, keyless e2e scan, PGlite migration round trip, app tests
+npm run test:python   # forge unit tests (Python stdlib)
 ```
 
 The same set (plus a gitleaks secret-scan) is defined as a CI workflow in
@@ -65,15 +65,15 @@ The same set (plus a gitleaks secret-scan) is defined as a CI workflow in
 
 ## Opening a pull request
 
-- **Branch** off `main` and keep PRs small and focused — one logical change per PR.
+- **Branch** off `main` and keep PRs small and focused, one logical change per PR.
 - **Verify by running**, not just by reading. "It renders" is not "it works." Tell us in the PR
   description what you actually ran and observed.
-- **Keep the checks green** — lint, typecheck, and build must pass.
-- **Never commit secrets** — no `.env*`, no service-account JSON. `.gitignore` covers the common
+- **Keep the checks green**, lint, typecheck, and build must pass.
+- **Never commit secrets**, no `.env*`, no service-account JSON. `.gitignore` covers the common
   cases; double-check anything new.
-- **Don't weaken the rails** — no bare "Safe", no change that erodes sandbox isolation, no blending
+- **Don't weaken the rails**, no bare "Safe", no change that erodes sandbox isolation, no blending
   of reputation and behavior signals.
-- **Preserve the design** — don't redesign UI that's ported from `design.md`.
+- **Preserve the design**, don't redesign UI that's ported from `design.md`.
 - Write a clear commit message that says *what* changed and *why*.
 
 ## What to work on
@@ -85,7 +85,7 @@ The same set (plus a gitleaks secret-scan) is defined as a CI workflow in
 
 ## Reporting a vulnerability
 
-Please **do not** open a public issue for a security vulnerability — especially anything touching the
+Please **do not** open a public issue for a security vulnerability, especially anything touching the
 sandbox isolation, egress containment, or secret handling. Report it privately through
 [GitHub Security Advisories](https://github.com/AIdhirajSingh/clauderabbit/security/advisories/new)
 so it can be fixed before it's disclosed.

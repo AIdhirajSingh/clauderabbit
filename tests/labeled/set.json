@@ -1,0 +1,1184 @@
+{
+  "version": 1,
+  "description": "ClaudeRabbit 2.0 labeled set. Clean: popular GitHub repos pinned by full commit SHA (GitHub API metadata). Malicious: npm and PyPI versions with an OSV MAL- advisory, pinned by version and registry integrity (OSV and registry metadata only; no package bytes were downloaded to build this file). Scored on key day by scripts/labeled-run.mjs.",
+  "entries": [
+    {
+      "id": "gh-expressjs-express",
+      "kind": "github",
+      "target": "expressjs/express",
+      "pin": {
+        "sha": "a419aa7350389a275ab45fde2e849ed1f02449ef"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/expressjs/express/commits/master",
+        "default_branch": "master",
+        "stars": 69571,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-chalk-chalk",
+      "kind": "github",
+      "target": "chalk/chalk",
+      "pin": {
+        "sha": "47fc05abd46171b235e24174cd2dba83d25bf037"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/chalk/chalk/commits/main",
+        "default_branch": "main",
+        "stars": 23327,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-sindresorhus-got",
+      "kind": "github",
+      "target": "sindresorhus/got",
+      "pin": {
+        "sha": "05b4476913da39a47dd8e20d29e250f28b0a6dca"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/sindresorhus/got/commits/main",
+        "default_branch": "main",
+        "stars": 14953,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-sindresorhus-execa",
+      "kind": "github",
+      "target": "sindresorhus/execa",
+      "pin": {
+        "sha": "cc7bcab5650cb3c95ccb3e5d484159cc748a0133"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/sindresorhus/execa/commits/main",
+        "default_branch": "main",
+        "stars": 7619,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-sindresorhus-ky",
+      "kind": "github",
+      "target": "sindresorhus/ky",
+      "pin": {
+        "sha": "3541888878c4d303a8bc2ad61815f4e048f55a5d"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/sindresorhus/ky/commits/main",
+        "default_branch": "main",
+        "stars": 17120,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-lodash-lodash",
+      "kind": "github",
+      "target": "lodash/lodash",
+      "pin": {
+        "sha": "2b5e6f7399a7b48005140b5d5c6bc6c0e62919a8"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/lodash/lodash/commits/main",
+        "default_branch": "main",
+        "stars": 61288,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-axios-axios",
+      "kind": "github",
+      "target": "axios/axios",
+      "pin": {
+        "sha": "326843a3902d73c9f6af9bad7b55e2412566a251"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/axios/axios/commits/v1.x",
+        "default_branch": "v1.x",
+        "stars": 109302,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-tj-commander.js",
+      "kind": "github",
+      "target": "tj/commander.js",
+      "pin": {
+        "sha": "ba6d13ddb4243e5913367734f8c159089ffe7834"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/tj/commander.js/commits/master",
+        "default_branch": "master",
+        "stars": 28423,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-yargs-yargs",
+      "kind": "github",
+      "target": "yargs/yargs",
+      "pin": {
+        "sha": "8021675da05763e13d9744aef953be65c0fd878f"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/yargs/yargs/commits/main",
+        "default_branch": "main",
+        "stars": 11505,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-debug-js-debug",
+      "kind": "github",
+      "target": "debug-js/debug",
+      "pin": {
+        "sha": "666dbc50680933bde9e7fde3a6c3241102e8f60b"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/debug-js/debug/commits/master",
+        "default_branch": "master",
+        "stars": 11458,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-pinojs-pino",
+      "kind": "github",
+      "target": "pinojs/pino",
+      "pin": {
+        "sha": "b29dbe97820630e7128e464c50263b427965ec99"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/pinojs/pino/commits/main",
+        "default_branch": "main",
+        "stars": 18250,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-winstonjs-winston",
+      "kind": "github",
+      "target": "winstonjs/winston",
+      "pin": {
+        "sha": "ff0b79de8562bb322c390fbc82fe71c11f373428"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/winstonjs/winston/commits/master",
+        "default_branch": "master",
+        "stars": 24525,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-fastify-fastify",
+      "kind": "github",
+      "target": "fastify/fastify",
+      "pin": {
+        "sha": "37df44a421817e7bb048fce834bf691abb0999d6"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/fastify/fastify/commits/main",
+        "default_branch": "main",
+        "stars": 37284,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-koajs-koa",
+      "kind": "github",
+      "target": "koajs/koa",
+      "pin": {
+        "sha": "2fecd029c6ce6b79d65158d28a76538f7f6b0378"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/koajs/koa/commits/master",
+        "default_branch": "master",
+        "stars": 35679,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-hapijs-hapi",
+      "kind": "github",
+      "target": "hapijs/hapi",
+      "pin": {
+        "sha": "b90c41b9006143421dc715c01d86e6f4933af1e4"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/hapijs/hapi/commits/master",
+        "default_branch": "master",
+        "stars": 14787,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-nestjs-nest",
+      "kind": "github",
+      "target": "nestjs/nest",
+      "pin": {
+        "sha": "c215fd9b4f583486c6ce39a3c43f257dc67e8329"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/nestjs/nest/commits/master",
+        "default_branch": "master",
+        "stars": 76853,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-vercel-ms",
+      "kind": "github",
+      "target": "vercel/ms",
+      "pin": {
+        "sha": "4ff48cec099f0514c3e9bbca18706c9c21122bfb"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/vercel/ms/commits/main",
+        "default_branch": "main",
+        "stars": 5560,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-uuidjs-uuid",
+      "kind": "github",
+      "target": "uuidjs/uuid",
+      "pin": {
+        "sha": "b9ed7c753ec7c6db913849a7117be0efc0a3c186"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/uuidjs/uuid/commits/main",
+        "default_branch": "main",
+        "stars": 15340,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-date-fns-date-fns",
+      "kind": "github",
+      "target": "date-fns/date-fns",
+      "pin": {
+        "sha": "717ce0a807ea4c6b540d015b5c408723175b2838"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/date-fns/date-fns/commits/main",
+        "default_branch": "main",
+        "stars": 36648,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-moment-moment",
+      "kind": "github",
+      "target": "moment/moment",
+      "pin": {
+        "sha": "c2a703a4d84aa57ee2722ff8fb4a8016279fb3c4"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/moment/moment/commits/develop",
+        "default_branch": "develop",
+        "stars": 47895,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-iamkun-dayjs",
+      "kind": "github",
+      "target": "iamkun/dayjs",
+      "pin": {
+        "sha": "436bde0bcded312781cbe45dc2b0ef079a36d8e3"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/iamkun/dayjs/commits/dev",
+        "default_branch": "dev",
+        "stars": 48661,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-colinhacks-zod",
+      "kind": "github",
+      "target": "colinhacks/zod",
+      "pin": {
+        "sha": "680d19f7d1e042e55934209caeb79bc843b94f44"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/colinhacks/zod/commits/main",
+        "default_branch": "main",
+        "stars": 44142,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-ajv-validator-ajv",
+      "kind": "github",
+      "target": "ajv-validator/ajv",
+      "pin": {
+        "sha": "f177fe323420ccb23e1a79445fd470cbf80aee7c"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/ajv-validator/ajv/commits/master",
+        "default_branch": "master",
+        "stars": 14862,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-jquery-jquery",
+      "kind": "github",
+      "target": "jquery/jquery",
+      "pin": {
+        "sha": "c2f27864e4ffc2d1409c289fcb9a42b6165dfeaf"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/jquery/jquery/commits/main",
+        "default_branch": "main",
+        "stars": 59869,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-prettier-prettier",
+      "kind": "github",
+      "target": "prettier/prettier",
+      "pin": {
+        "sha": "344d6dc42c8057fbf5573326b52dbc8a43635e7e"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/prettier/prettier/commits/main",
+        "default_branch": "main",
+        "stars": 52374,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-eslint-eslint",
+      "kind": "github",
+      "target": "eslint/eslint",
+      "pin": {
+        "sha": "4637f9827a1ba137498eaee70957850621082815"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/eslint/eslint/commits/main",
+        "default_branch": "main",
+        "stars": 27563,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-mochajs-mocha",
+      "kind": "github",
+      "target": "mochajs/mocha",
+      "pin": {
+        "sha": "2c2b89600e3ba8225bf11d7919e698060a55c86e"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/mochajs/mocha/commits/main",
+        "default_branch": "main",
+        "stars": 22902,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-jestjs-jest",
+      "kind": "github",
+      "target": "jestjs/jest",
+      "pin": {
+        "sha": "61050e9323e742539dc2360236671110e37329e6"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/jestjs/jest/commits/main",
+        "default_branch": "main",
+        "stars": 45484,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-vitest-dev-vitest",
+      "kind": "github",
+      "target": "vitest-dev/vitest",
+      "pin": {
+        "sha": "fb150158b3499ae9e2bd52defd90b0a09b860424"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/vitest-dev/vitest/commits/main",
+        "default_branch": "main",
+        "stars": 17246,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-webpack-webpack",
+      "kind": "github",
+      "target": "webpack/webpack",
+      "pin": {
+        "sha": "e12e1224c2824c0cc78d6f3faf4cfa47926aa3cf"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/webpack/webpack/commits/main",
+        "default_branch": "main",
+        "stars": 65975,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-rollup-rollup",
+      "kind": "github",
+      "target": "rollup/rollup",
+      "pin": {
+        "sha": "5104039159e04f1a0c4df5761dde4ff199c93428"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/rollup/rollup/commits/master",
+        "default_branch": "master",
+        "stars": 26301,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-evanw-esbuild",
+      "kind": "github",
+      "target": "evanw/esbuild",
+      "pin": {
+        "sha": "f6058f8364fe7ab91ca57a83e02577ed74c9cae4"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/evanw/esbuild/commits/main",
+        "default_branch": "main",
+        "stars": 40092,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-vitejs-vite",
+      "kind": "github",
+      "target": "vitejs/vite",
+      "pin": {
+        "sha": "df7503cc499e0b49e45701e3be7546918ee9d322"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/vitejs/vite/commits/main",
+        "default_branch": "main",
+        "stars": 83350,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-babel-babel",
+      "kind": "github",
+      "target": "babel/babel",
+      "pin": {
+        "sha": "35ff368dcd325e112fea8528ac800acc2a40849f"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/babel/babel/commits/main",
+        "default_branch": "main",
+        "stars": 44054,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-microsoft-typescript",
+      "kind": "github",
+      "target": "microsoft/TypeScript",
+      "pin": {
+        "sha": "abcbb2e69d2a86d9ffee66582a0dd0339b674733"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/microsoft/TypeScript/commits/main",
+        "default_branch": "main",
+        "stars": 111498,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-react-react",
+      "kind": "github",
+      "target": "react/react",
+      "pin": {
+        "sha": "098d2e87a1f7142947418d15f63f975b58c4685b"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/react/react/commits/main",
+        "default_branch": "main",
+        "stars": 251160,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-vuejs-core",
+      "kind": "github",
+      "target": "vuejs/core",
+      "pin": {
+        "sha": "bf5f0dd877dd3c23ce85c2cbc1dd771567e84c8c"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/vuejs/core/commits/main",
+        "default_branch": "main",
+        "stars": 54648,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-sveltejs-svelte",
+      "kind": "github",
+      "target": "sveltejs/svelte",
+      "pin": {
+        "sha": "40bb08482f4857d91221638dec544a532bc35389"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/sveltejs/svelte/commits/main",
+        "default_branch": "main",
+        "stars": 88386,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-preactjs-preact",
+      "kind": "github",
+      "target": "preactjs/preact",
+      "pin": {
+        "sha": "0935fecd7e8244417a39e8470c9e7f440e51379b"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/preactjs/preact/commits/main",
+        "default_branch": "main",
+        "stars": 38934,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-immerjs-immer",
+      "kind": "github",
+      "target": "immerjs/immer",
+      "pin": {
+        "sha": "8848a5b16938e5681a890d73de7bda24b5080498"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/immerjs/immer/commits/main",
+        "default_branch": "main",
+        "stars": 28987,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-reduxjs-redux",
+      "kind": "github",
+      "target": "reduxjs/redux",
+      "pin": {
+        "sha": "56abca4749921d68f40cda20afd2043af9751f72"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/reduxjs/redux/commits/master",
+        "default_branch": "master",
+        "stars": 61474,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-tanstack-query",
+      "kind": "github",
+      "target": "TanStack/query",
+      "pin": {
+        "sha": "eb94a5b445c6c30f172ade440d7a2eac99a2bcbf"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/TanStack/query/commits/main",
+        "default_branch": "main",
+        "stars": 50439,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-socketio-socket.io",
+      "kind": "github",
+      "target": "socketio/socket.io",
+      "pin": {
+        "sha": "1eaa582d3b453e3e6f522300ed05b10da0a0799b"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/socketio/socket.io/commits/main",
+        "default_branch": "main",
+        "stars": 63220,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-websockets-ws",
+      "kind": "github",
+      "target": "websockets/ws",
+      "pin": {
+        "sha": "85319a7297318e4c16dd1b0a3c4d8a69b1b55f17"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/websockets/ws/commits/master",
+        "default_branch": "master",
+        "stars": 22807,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-nodemailer-nodemailer",
+      "kind": "github",
+      "target": "nodemailer/nodemailer",
+      "pin": {
+        "sha": "8454a24ba7ad3b32cca1aed07ae7fc05aa960f19"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/nodemailer/nodemailer/commits/master",
+        "default_branch": "master",
+        "stars": 17684,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-psf-requests",
+      "kind": "github",
+      "target": "psf/requests",
+      "pin": {
+        "sha": "611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/psf/requests/commits/main",
+        "default_branch": "main",
+        "stars": 54461,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-pallets-flask",
+      "kind": "github",
+      "target": "pallets/flask",
+      "pin": {
+        "sha": "d086db856be187255b8ec61ef409357393020f32"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/pallets/flask/commits/main",
+        "default_branch": "main",
+        "stars": 74911,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-pallets-click",
+      "kind": "github",
+      "target": "pallets/click",
+      "pin": {
+        "sha": "2247b35ea1c47c727d7a06e51fa280e12a863ff6"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/pallets/click/commits/main",
+        "default_branch": "main",
+        "stars": 17789,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-fastapi-fastapi",
+      "kind": "github",
+      "target": "fastapi/fastapi",
+      "pin": {
+        "sha": "bb7f314287bf36e04539c572a2256d94ea45f0d6"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/fastapi/fastapi/commits/master",
+        "default_branch": "master",
+        "stars": 103142,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "gh-pydantic-pydantic",
+      "kind": "github",
+      "target": "pydantic/pydantic",
+      "pin": {
+        "sha": "5adfeaaaea947f81f0f01868604f219084ec151a"
+      },
+      "expected": "clean",
+      "source": {
+        "resolved_via": "GitHub API repos/pydantic/pydantic/commits/main",
+        "default_branch": "main",
+        "stars": 29056,
+        "archived": false,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-01-0redi7qgbz0uv-1.0.0",
+      "kind": "npm",
+      "target": "npm:01-0redi7qgbz0uv@1.0.0",
+      "pin": {
+        "version": "1.0.0",
+        "integrity": "sha512-0Z+XGoE89kpGCOwHoHY70hqrxdmHbwlodTdGDdECUOH6RrwJXpK0S0kYuGryH3YRM6ReBucFmFMURNBoN9dc8w=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3666",
+        "osv_modified": "2026-05-13T20:23:10.838933Z",
+        "osv_summary": "Malicious code in 01-0redi7qgbz0uv (npm)",
+        "artifact": "https://registry.npmjs.org/01-0redi7qgbz0uv/-/01-0redi7qgbz0uv-1.0.0.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-0ctf-chalweb-1.0.0",
+      "kind": "npm",
+      "target": "npm:0ctf-chalweb@1.0.0",
+      "pin": {
+        "version": "1.0.0",
+        "integrity": "sha512-ACz+EB+WV8ZplIt3nj9pYKFQc6k/aq5tOlet20uPBE7Qonlx7NKwDLUWCKXloMy6lI1Y/LPuz85wlJZFZTqnLA=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3667",
+        "osv_modified": "2026-05-13T20:23:06.851561Z",
+        "osv_summary": "Malicious code in 0ctf-chalweb (npm)",
+        "artifact": "https://registry.npmjs.org/0ctf-chalweb/-/0ctf-chalweb-1.0.0.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-0e-0.0.103",
+      "kind": "npm",
+      "target": "npm:0e@0.0.103",
+      "pin": {
+        "version": "0.0.103",
+        "integrity": "sha512-VHV8PSuW4f3Emfn8vSDo4w6MBnN6qR2iz5JwVvPL/UHbd+355RoAeoDZOaxYZkRvFdHT7AN82cZIX/R8KswzYg=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2025-49456",
+        "osv_modified": "2026-05-13T20:23:24.985722Z",
+        "osv_summary": "Malicious code in 0e (npm)",
+        "artifact": "https://registry.npmjs.org/0e/-/0e-0.0.103.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-0xegg2024-1.0.2",
+      "kind": "npm",
+      "target": "npm:0xegg2024@1.0.2",
+      "pin": {
+        "version": "1.0.2",
+        "integrity": "sha512-3U5Pk9nCLajGoW9FLn/FccCX+T7dSiiyUGu+ADsB9Htk2+JdDJjbfd5wg/hs/uDtcVHJEXKbA4boCV8E0pRb3w=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3668",
+        "osv_modified": "2026-05-13T20:23:26.910493Z",
+        "osv_summary": "Malicious code in 0xegg2024 (npm)",
+        "artifact": "https://registry.npmjs.org/0xegg2024/-/0xegg2024-1.0.2.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-100jsss-1.0.0",
+      "kind": "npm",
+      "target": "npm:100jsss@1.0.0",
+      "pin": {
+        "version": "1.0.0",
+        "integrity": "sha512-XdJRZtNjPON/3MLd3bRgtAwBrKY7HMwatMgU3CiVLR/4RoYw4qHUCddqOPu3y99IVs8e8HKC+JYoFquylpiiwg=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3669",
+        "osv_modified": "2026-05-13T20:23:26.191824Z",
+        "osv_summary": "Malicious code in 100jsss (npm)",
+        "artifact": "https://registry.npmjs.org/100jsss/-/100jsss-1.0.0.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-11j-1.2.8",
+      "kind": "npm",
+      "target": "npm:11j@1.2.8",
+      "pin": {
+        "version": "1.2.8",
+        "integrity": "sha512-rEF58HIFXrRd+Lfeoug8HaSHkBm6qU3TPc39ulU3ljkYoK76aFJOfvk3UrlNXYW9TfX6JtDYKCcv2jkG4dlgqg=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3670",
+        "osv_modified": "2026-05-13T20:23:30.921173Z",
+        "osv_summary": "Malicious code in 11j (npm)",
+        "artifact": "https://registry.npmjs.org/11j/-/11j-1.2.8.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-1cat-tunnel-client-zx-1.0.2",
+      "kind": "npm",
+      "target": "npm:1cat-tunnel-client-zx@1.0.2",
+      "pin": {
+        "version": "1.0.2",
+        "integrity": "sha512-/5qY16ulHM95Nwp9wO8upfc+Zq6Uupus+T7VBaf3runxhMs5OsMfYisrEZCM0eKCyAIt9nRtNSMr41MBgwubVg=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-4778",
+        "osv_modified": "2026-05-26T09:31:44.607108430Z",
+        "osv_summary": "Malicious code in 1cat-tunnel-client-zx (npm)",
+        "artifact": "https://registry.npmjs.org/1cat-tunnel-client-zx/-/1cat-tunnel-client-zx-1.0.2.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-1co-1.0.1",
+      "kind": "npm",
+      "target": "npm:1co@1.0.1",
+      "pin": {
+        "version": "1.0.1",
+        "integrity": "sha512-0j3+dj8Lz8eUR6q8BDLmklo7Y1dw173HrIXVWamH35i4BxmzWqOa+1npxlkjESWWumWmfCHzM5nPtoozYHUoIA=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3671",
+        "osv_modified": "2026-05-13T20:23:05.242218Z",
+        "osv_summary": "Malicious code in 1co (npm)",
+        "artifact": "https://registry.npmjs.org/1co/-/1co-1.0.1.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-1mi-1.0.3",
+      "kind": "npm",
+      "target": "npm:1mi@1.0.3",
+      "pin": {
+        "version": "1.0.3",
+        "integrity": "sha512-bE6qO7vCQZNCIoN7k7lsdRwan7Zy29XTtMUEpbIdYyd4IwkF6M5cKJ2kE1FhPm1FgbzRRv26BL7OqOEc0kGR+A=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3672",
+        "osv_modified": "2026-05-13T20:21:52.003365Z",
+        "osv_summary": "Malicious code in 1mi (npm)",
+        "artifact": "https://registry.npmjs.org/1mi/-/1mi-1.0.3.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-3pool-sushibar-1.0.0",
+      "kind": "npm",
+      "target": "npm:3pool-sushibar@1.0.0",
+      "pin": {
+        "version": "1.0.0",
+        "integrity": "sha512-2gWpEcrZ1+7FlPh0r3MN3tz2dKxCjYZatJyM/zcA3PXTDO8+sWlUvT6wi0l3VrKvFsOhF5Ma3Df6po0IhyLuUA=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3673",
+        "osv_modified": "2026-05-13T20:21:39.561171Z",
+        "osv_summary": "Malicious code in 3pool-sushibar (npm)",
+        "artifact": "https://registry.npmjs.org/3pool-sushibar/-/3pool-sushibar-1.0.0.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-6161test1234-1.0.0",
+      "kind": "npm",
+      "target": "npm:6161test1234@1.0.0",
+      "pin": {
+        "version": "1.0.0",
+        "integrity": "sha512-sepgZIj4Ha0yCXAYvBuYeIIZZO6/2EBelcAFb8Otxp1iJQuhOr9T4rbOpQkzmNAaY4LVvhMEeYrw2XqNSQs1sQ=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-2967",
+        "osv_modified": "2026-04-23T21:11:11.149410Z",
+        "osv_summary": "Malicious code in 6161test1234 (npm)",
+        "artifact": "https://registry.npmjs.org/6161test1234/-/6161test1234-1.0.0.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-66o-0.0.3",
+      "kind": "npm",
+      "target": "npm:66o@0.0.3",
+      "pin": {
+        "version": "0.0.3",
+        "integrity": "sha512-0NsRR26Jz09VA+BqPChvJKb8D3SPKcgCuduhf7ZjI+N627SmdbWoGhEx7KWQsEFANFV7bWO1kQ/Q90GRfA4IOQ=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3674",
+        "osv_modified": "2026-05-13T20:21:51.392697Z",
+        "osv_summary": "Malicious code in 66o (npm)",
+        "artifact": "https://registry.npmjs.org/66o/-/66o-0.0.3.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-6cc-0.2.8",
+      "kind": "npm",
+      "target": "npm:6cc@0.2.8",
+      "pin": {
+        "version": "0.2.8",
+        "integrity": "sha512-G1b7TvL0PWiTwQf37ttP5YgCT4FcFTYgO9KPsVMZyxRtoCXppyD4isYkCoz1fp3UTCFeiPFKuvOe9a0jQ/u3mw=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3675",
+        "osv_modified": "2026-05-13T20:23:28.314058Z",
+        "osv_summary": "Malicious code in 6cc (npm)",
+        "artifact": "https://registry.npmjs.org/6cc/-/6cc-0.2.8.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "npm-88q-1.1.1",
+      "kind": "npm",
+      "target": "npm:88q@1.1.1",
+      "pin": {
+        "version": "1.1.1",
+        "integrity": "sha512-1oWBMIsXMqbyVKJ2pdl6tXJwbIn53jvHqHwWMbTVfx7DGH6T5OCmKD095U3b1s74dlpdAvAAoVpGlpWJT3nMjw=="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3676",
+        "osv_modified": "2026-05-13T20:20:34.524509Z",
+        "osv_summary": "Malicious code in 88q (npm)",
+        "artifact": "https://registry.npmjs.org/88q/-/88q-1.1.1.tgz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16"
+      }
+    },
+    {
+      "id": "pypi-a3s-code-5.2.8",
+      "kind": "tarball",
+      "ecosystem": "PyPI",
+      "target": "https://files.pythonhosted.org/packages/58/30/afca4bd8583b8251ab32dfff7b9825d4d00f118333ed079c45c643c892cf/a3s_code-5.2.8.tar.gz",
+      "label": "pypi/a3s-code@5.2.8",
+      "pin": {
+        "version": "5.2.8",
+        "integrity": "sha256-9O/HXOmbcUGNZZa+3yXjCx5oE3QSEnKsnjdpS8eUv1A="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-10753",
+        "osv_modified": "2026-07-16T19:20:02.479773680Z",
+        "osv_summary": "Malicious code in a3s-code (PyPI)",
+        "artifact": "https://files.pythonhosted.org/packages/58/30/afca4bd8583b8251ab32dfff7b9825d4d00f118333ed079c45c643c892cf/a3s_code-5.2.8.tar.gz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16",
+        "pypi_sha256": "f4efc75ce99b71418d6596bedf25e30b1e681374121272ac9e37694bc794bf50"
+      }
+    },
+    {
+      "id": "pypi-always-updates-139.2",
+      "kind": "tarball",
+      "ecosystem": "PyPI",
+      "target": "https://files.pythonhosted.org/packages/fe/cd/ea5edfd7bf83d1e0757eb4d8e8a708974164327f0fbaa1b30ae5145cb81b/always_updates-139.2.tar.gz",
+      "label": "pypi/always-updates@139.2",
+      "pin": {
+        "version": "139.2",
+        "integrity": "sha256-Yx2mKR5e2LFY+xgnl3/SCc2ILakSMtlKgZNCxNApEzg="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3685",
+        "osv_modified": "2026-05-13T20:22:39.066831Z",
+        "osv_summary": "Malicious code in always-updates (PyPI)",
+        "artifact": "https://files.pythonhosted.org/packages/fe/cd/ea5edfd7bf83d1e0757eb4d8e8a708974164327f0fbaa1b30ae5145cb81b/always_updates-139.2.tar.gz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16",
+        "pypi_sha256": "631da6291e5ed8b158fb1827977fd209cd882da91232d94a819342c4d0291338"
+      }
+    },
+    {
+      "id": "pypi-amino-fix-2.1.8",
+      "kind": "tarball",
+      "ecosystem": "PyPI",
+      "target": "https://files.pythonhosted.org/packages/99/d3/e0ecdc4ceae60e65486f85fcb180f949bd435a79d8c43c11d20d251ff347/amino.fix-2.1.8.tar.gz",
+      "label": "pypi/amino-fix@2.1.8",
+      "pin": {
+        "version": "2.1.8",
+        "integrity": "sha256-uhwGkWQhZPpSO/LRH/RIrybnhp8ZWmnU6ZCTRkgDSOc="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3686",
+        "osv_modified": "2026-06-15T03:00:55.097953687Z",
+        "osv_summary": "Malicious code in amino-fix (PyPI)",
+        "artifact": "https://files.pythonhosted.org/packages/99/d3/e0ecdc4ceae60e65486f85fcb180f949bd435a79d8c43c11d20d251ff347/amino.fix-2.1.8.tar.gz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16",
+        "pypi_sha256": "ba1c0691642164fa523bf2d11ff448af26e7869f195a69d4e9909346480348e7"
+      }
+    },
+    {
+      "id": "pypi-bioql-3.0.2",
+      "kind": "tarball",
+      "ecosystem": "PyPI",
+      "target": "https://files.pythonhosted.org/packages/d7/31/0656dd55ba01a3f99602654a7d63d8525ef9d4ad6686bfc284738fb1e516/bioql-3.0.2.tar.gz",
+      "label": "pypi/bioql@3.0.2",
+      "pin": {
+        "version": "3.0.2",
+        "integrity": "sha256-xHAWCQJe74dnaPN968hJNXJjrzpgi68p3lDptJ6bRLc="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2025-47868",
+        "osv_modified": "2025-10-11T00:23:14Z",
+        "osv_summary": "Malicious code in bioql (PyPI)",
+        "artifact": "https://files.pythonhosted.org/packages/d7/31/0656dd55ba01a3f99602654a7d63d8525ef9d4ad6686bfc284738fb1e516/bioql-3.0.2.tar.gz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16",
+        "pypi_sha256": "c4701609025eef876768f37debc849357263af3a608baf29de50e9b49e9b44b7"
+      }
+    },
+    {
+      "id": "pypi-buddyme-0.2.5",
+      "kind": "tarball",
+      "ecosystem": "PyPI",
+      "target": "https://files.pythonhosted.org/packages/47/c5/b83a33abf48e2745eed0b559f642a26395453c1a639031d1e909e2435af5/buddyme-0.2.5.tar.gz",
+      "label": "pypi/buddyme@0.2.5",
+      "pin": {
+        "version": "0.2.5",
+        "integrity": "sha256-/kTiYcVHXcd3K80/mV4GPOCb6TagPEaU+6X6f9ZuzKk="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-4743",
+        "osv_modified": "2026-05-26T06:03:09.198215717Z",
+        "osv_summary": "Malicious code in buddyme (PyPI)",
+        "artifact": "https://files.pythonhosted.org/packages/47/c5/b83a33abf48e2745eed0b559f642a26395453c1a639031d1e909e2435af5/buddyme-0.2.5.tar.gz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16",
+        "pypi_sha256": "fe44e261c5475dc7772bcd3f995e063ce09be936a03c4694fba5fa7fd66ecca9"
+      }
+    },
+    {
+      "id": "pypi-mymaldependency-2.1.1",
+      "kind": "tarball",
+      "ecosystem": "PyPI",
+      "target": "https://files.pythonhosted.org/packages/75/ad/00854a6201068d1160b864a38ffaece8351a7732243a9bc4d1aaa4a688d8/MyMalDependency-2.1.1.tar.gz",
+      "label": "pypi/mymaldependency@2.1.1",
+      "pin": {
+        "version": "2.1.1",
+        "integrity": "sha256-RYmctX2v5bjgAqhxyQhLtKTQhvlpBPIBDRdfRFXqyPY="
+      },
+      "expected": "malicious",
+      "source": {
+        "osv_id": "MAL-2026-3694",
+        "osv_modified": "2026-05-13T20:22:40.161523Z",
+        "osv_summary": "Malicious code in mymaldependency (PyPI)",
+        "artifact": "https://files.pythonhosted.org/packages/75/ad/00854a6201068d1160b864a38ffaece8351a7732243a9bc4d1aaa4a688d8/MyMalDependency-2.1.1.tar.gz",
+        "artifact_head_status": 200,
+        "resolved_at": "2026-10-16",
+        "pypi_sha256": "45899cb57dafe5b8e002a871c9084bb4a4d086f96904f2010d175f4455eac8f6"
+      }
+    }
+  ]
+}

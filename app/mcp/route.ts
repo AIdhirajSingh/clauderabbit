@@ -1,55 +1,38 @@
 /**
- * /mcp — the remote (Streamable HTTP) MCP server, for claude.ai custom
- * connectors and any other HTTP-capable MCP client. The stdio server
- * (`mcp-server/`) is for local tools that can read `~/.clauderabbit/` and
- * launch a browser; this one runs on Vercel with neither, so it needs real
- * OAuth (see app/oauth/, app/.well-known/) instead — see CLAUDE.md and the
- * `20260704000002_oauth_for_remote_mcp.sql` migration for why.
- *
- * The tool logic itself is NOT reimplemented here: `runScan` (lib/scan.ts)
- * and `buildReportView` (lib/report-view.ts) are the exact same functions
- * the SSR report page and the SPA already use — this route is a thin
- * MCP-shaped wrapper around them. One cache-aware tool (`scan`): `runScan`
- * itself already returns the existing report instantly when one exists for
- * the current commit, or runs a real scan otherwise, so there's nothing a
- * second "read-only" tool would add.
- *
- * Path is domain-portable by construction: everything below is relative
- * (`req.url`'s origin, via `siteOrigin()`), so the endpoint is just
- * `<domain>/mcp` — it moved from the placeholder `*.vercel.app` domain to
- * the real `clauderabbit.in` with no code change.
+ * Remote MCP server over Streamable HTTP at `/mcp` for claude.ai custom
+ * connectors (DESIGN.md section 8.2). Stateless: a fresh server and transport
+ * per request. The caller signs in through the OAuth flow
+ * (`/.well-known/oauth-authorization-server`, `/oauth/authorize`,
+ * `/oauth/token`) and presents the resulting `cr_cli_` bearer. The `scan`
+ * tool runs the same engine pipeline as `/api/scan` in-process with
+ * `caller.surface = "mcp-remote"` and returns verdict, score, `not_verified`,
+ * report URL and the ad as text.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { createClient } from "@supabase/supabase-js";
-import { runScan, runDeepScan } from "@/lib/scan";
-import { buildReportView } from "@/lib/report-view";
-import { formatReportText, structuredReport } from "./format";
+import { bearerToken, verifyCliToken } from "@/lib/engine/auth";
+import { EngineError, type ScanTarget } from "@/lib/engine/types";
+import { createSupabaseStore, type SupabaseStore } from "@/lib/engine/store";
+import { finalLineStructured, finalLineText } from "@/lib/server/report-text";
+import { adForSurface, callerFrom, executeScan, missingServerKeys, rateLimitFor, serverConfig, type FinalLine } from "@/lib/server/scan-service";
 import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Long enough to actually run + await a live sandbox detonation (the deep path
-// self-resolves at ~270s inside /api/deep), not just the fast path.
-export const maxDuration = 300;
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
+// Same ceiling as /api/scan: every scan runs the code in a fresh E2B sandbox in this request.
+export const maxDuration = 180;
 
 function siteOrigin(req: Request): string {
   return process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || new URL(req.url).origin;
 }
 
-/** Verify a `cr_cli_...` bearer token via the same RPC the scan function uses. */
-async function verifyToken(token: string): Promise<string | null> {
-  if (!token.startsWith("cr_cli_") || !SUPABASE_URL || !SUPABASE_KEY) return null;
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data, error } = await supabase.rpc("verify_cli_token", { p_token: token });
-  if (error || typeof data !== "string") return null;
-  return data;
+async function verifyToken(store: SupabaseStore, token: string): Promise<string | null> {
+  try {
+    return await verifyCliToken(store.db, token);
+  } catch {
+    return null;
+  }
 }
 
 function unauthorized(req: Request): Response {
@@ -63,74 +46,44 @@ function unauthorized(req: Request): Response {
   });
 }
 
-function buildServer(accessToken: string, req: Request): McpServer {
-  const server = new McpServer({ name: "clauderabbit-mcp-remote", version: "0.1.0" });
+function buildServer(req: Request, store: SupabaseStore): McpServer {
+  const server = new McpServer({ name: "clauderabbit-mcp-remote", version: "2.0.0" });
 
   server.registerTool(
     "scan",
     {
       title: "Scan a GitHub repo or npm package with ClaudeRabbit",
       description:
-        "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact — the exact tarball `npm install` fetches, integrity-verified — not the GitHub repo its package.json links to, so it catches a compromised publish that exists only in the tarball. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately; otherwise a real fast-path scan runs. When the fast path decides a GitHub repo warrants the dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the request budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result). Never returns a bare \"Safe\" verdict.",
+        "Runs the package or repository in a throwaway sandbox (install hooks and entry point, all network calls answered by a forge) alongside static scanners, OSV malicious-package lookups and model readers, then returns a deterministic 0-100 score, a verdict, the evidence split into behaviour, code and reputation, and what was not verified. Pass `owner` + `repo` for GitHub or `package` (optionally `version`) for npm; npm scans use the integrity-verified registry tarball that `npm install` fetches. A report for the same commit or artifact returns from cache. Never returns a bare \"Safe\".",
       inputSchema: scanInputShape,
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },
     async (args) => {
-      const toolError = (text: string) => ({ isError: true as const, content: [{ type: "text" as const, text }] });
-
-      // Resolve GitHub vs npm from the structured args (pure, unit-tested — see
-      // scan-target.ts). An npm `package` takes precedence; otherwise owner+repo.
       const resolved = resolveMcpScanTarget(args);
-      if (!resolved.ok) return toolError(resolved.error);
-      const target = resolved.target;
-
-      const scanArgs: Parameters<typeof runScan>[0] =
-        target.kind === "npm"
-          ? { ecosystem: "npm", package: target.package, ...(target.version ? { version: target.version } : {}), accessToken, clientKind: "mcp" }
-          : { owner: target.owner, repo: target.repo, ref: target.ref, accessToken, clientKind: "mcp" };
-      const reportUrl = `${siteOrigin(req)}/${target.reportPath}`;
-
-      const result = await runScan(scanArgs);
-      if (!result.ok) {
-        return toolError(`ClaudeRabbit scan failed for ${target.label}: ${result.error}`);
+      const config = serverConfig();
+      if (!resolved.ok) {
+        const ad = adForSurface(config, "mcp-remote", null);
+        const final: FinalLine = { type: "error", code: "invalid_target", message: resolved.error, run_id: null, ad };
+        return { isError: true as const, content: [{ type: "text" as const, text: finalLineText(final) }], structuredContent: finalLineStructured(final) };
       }
-
-      // ESCALATION → REAL SANDBOX. GitHub targets only: the detonation clones
-      // owner/repo@sha (npm-artifact detonation is a separate harness capability,
-      // matching the stdio surface). When the fast path decided a live detonation
-      // is warranted (`report.deep`) but the sandbox hasn't run (no `forensics`),
-      // trigger the SAME production dispatch the website uses (`runDeepScan` → POST
-      // `/api/deep`, Cloud Run REST via the cr-dispatch SA) and re-read the
-      // sandbox-verified report — bounded by this route's maxDuration (the deep
-      // wait self-resolves at ~270s inside /api/deep). npm escalations return the
-      // escalation-decided report honestly (sandboxActuallyRan:false).
-      let report = result.report;
-      if (target.kind === "github" && report.deep && !report.forensics && report.commit_sha) {
-        const { owner, repo } = target;
-        const sha = report.commit_sha;
-        const deep = await runDeepScan({ owner, repo, sha, baseUrl: siteOrigin(req) });
-        if (deep.ok) {
-          // Pin the re-read to the EXACT escalated commit (`ref: sha`, not a
-          // ref-less default-branch re-resolve) and require the returned report's
-          // commit_sha to match before accepting it — so a fast-moving repo's
-          // default branch advancing mid-run can never substitute a fresh,
-          // non-escalated scan of a newer commit as this run's result (a real bug
-          // caught live and fixed across all three surfaces).
-          const again = await runScan({ owner, repo, ref: sha, accessToken, clientKind: "mcp" });
-          if (again.ok && again.report.commit_sha === sha) report = again.report;
+      const t = resolved.target;
+      const target: ScanTarget = t.kind === "npm" ? { kind: "npm", name: t.package, ...(t.version ? { version: t.version } : {}) } : { kind: "github", owner: t.owner, repo: t.repo, ...(t.ref ? { ref: t.ref } : {}) };
+      const ctx = await callerFrom(req.headers, "mcp-remote", null, config, store);
+      let final: FinalLine;
+      const rl = await rateLimitFor(ctx);
+      if (rl && !rl.allowed) {
+        final = { type: "error", code: "rate_limited", message: `too many scans from this account; retry in ${rl.retryAfter} s`, run_id: null, ad: adForSurface(config, "mcp-remote", target), retryAfter: rl.retryAfter };
+      } else {
+        try {
+          final = await executeScan(ctx, target, false, { signal: req.signal });
+        } catch (err) {
+          final = { type: "error", code: err instanceof EngineError ? err.code : "internal", message: err instanceof Error ? err.message.slice(0, 500) : "scan failed", run_id: null, ad: adForSurface(config, "mcp-remote", target) };
         }
       }
-
-      const view = buildReportView(report);
-      const fresh = !result.report.cached;
-      const text = formatReportText(view, reportUrl, fresh);
-      const structured = structuredReport(view, reportUrl, fresh);
       return {
-        content: [
-          { type: "text" as const, text },
-          { type: "text" as const, text: `\n<structured-data>${JSON.stringify(structured)}</structured-data>` },
-        ],
-        structuredContent: structured,
+        ...(final.type === "error" ? { isError: true as const } : {}),
+        content: [{ type: "text" as const, text: finalLineText(final) }],
+        structuredContent: finalLineStructured(final),
       };
     },
   );
@@ -138,14 +91,24 @@ function buildServer(accessToken: string, req: Request): McpServer {
   return server;
 }
 
-async function handle(req: Request): Promise<Response> {
-  const authHeader = req.headers.get("Authorization") ?? "";
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  const token = match?.[1]?.trim();
-  const userId = token ? await verifyToken(token) : null;
-  if (!userId || !token) return unauthorized(req);
+function storeOrNull(): SupabaseStore | null {
+  try {
+    const config = serverConfig();
+    if (missingServerKeys(config).length > 0) return null;
+    return createSupabaseStore(config);
+  } catch {
+    return null;
+  }
+}
 
-  const server = buildServer(token, req);
+async function handle(req: Request): Promise<Response> {
+  const store = storeOrNull();
+  if (!store) return new Response(JSON.stringify({ error: "server_not_configured" }), { status: 503, headers: { "Content-Type": "application/json" } });
+  const token = bearerToken(req.headers.get("Authorization"));
+  const userId = token ? await verifyToken(store, token) : null;
+  if (!userId) return unauthorized(req);
+
+  const server = buildServer(req, store);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — a fresh server+transport per request, safe for serverless
     enableJsonResponse: true, // plain JSON response; no long-lived SSE stream to keep alive in a serverless function
@@ -184,10 +147,10 @@ export async function DELETE(req: Request): Promise<Response> {
 
 /** Protocol discovery: some clients HEAD the endpoint before ever POSTing. */
 export async function HEAD(req: Request): Promise<Response> {
-  const authHeader = req.headers.get("Authorization") ?? "";
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  const token = match?.[1]?.trim();
-  const userId = token ? await verifyToken(token) : null;
+  const store = storeOrNull();
+  if (!store) return new Response(null, { status: 503 });
+  const token = bearerToken(req.headers.get("Authorization"));
+  const userId = token ? await verifyToken(store, token) : null;
   if (!userId) return unauthorized(req);
   return new Response(null, { status: 200 });
 }

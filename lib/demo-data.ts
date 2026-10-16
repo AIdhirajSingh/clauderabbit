@@ -1,8 +1,8 @@
 /**
  * Cached real-repo scans — the homepage / dashboard showcase set.
  *
- * Every report below is a REAL response from the live `scan` edge function
- * (POST /functions/v1/scan), captured verbatim from a famous public GitHub
+ * Every report below is a REAL response from the pre-2.0 production scanner
+ * (recorded before the 2.0 engine replaced it), captured verbatim from a famous public GitHub
  * repository across multiple owners (chalk, expressjs, pallets, psf, tj,
  * gorilla, sindresorhus). Scores, summaries, owner history, reputation, risky
  * findings, and scan logs are exactly what the scanner returned — nothing here

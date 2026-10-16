@@ -6,7 +6,7 @@
  * row (optionally joined with its owner) into the same `Report` shape the SPA
  * uses, so `lib/report-view.buildReportView` derives an identical `RepoView`.
  *
- * Mirrors the edge function's `reshapeCached` (it builds the same object from
+ * Mirrors the engine's `payloadFromRows` (lib/engine/store.ts builds the same object from
  * the same columns), then runs it through `normalizeReport` for a single
  * coercion path shared with live scan responses.
  */
@@ -30,8 +30,10 @@ export interface ReportRow {
   packages_json: unknown;
   risky_json: unknown;
   logs_json: unknown;
-  /** The dynamic sandbox forensic record (`forensic-record@1`), or null. */
+  /** The dynamic sandbox forensic record (`forensic-record@1` on 1.0 rows, `version: 2` on 2.0 rows), or null. */
   forensics_json?: unknown;
+  /** 2.0 rows: the deterministic score's not_verified list. */
+  not_verified?: unknown;
   owners?: OwnerRow | null;
 }
 
@@ -48,7 +50,7 @@ export interface OwnerRow {
   reputation_json?: unknown;
 }
 
-/** Format an integer with k/M suffixes, matching the edge function's helper. */
+/** Format an integer with k/M suffixes (same rule as lib/format.ts). */
 function formatNumber(n: number | null): string {
   if (n == null) return "—";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -60,7 +62,7 @@ function formatNumber(n: number | null): string {
  * Reputation for a row: the persisted DETERMINISTIC view (`reputation_json`) when
  * present, so the SSR/cached render matches the fresh scan exactly — including
  * `forks`, which the legacy stats/columns path could not recover. Mirrors the
- * edge function's `reputationFromOwner` (BUG-17). Falls back to columns for
+ * engine's owner reputation view (lib/engine/reputation.ts, BUG-17). Falls back to columns for
  * rows persisted before this view existed.
  */
 function reputationFromOwner(
@@ -136,6 +138,7 @@ export function reportRowToReport(row: ReportRow): Report {
       risky: row.risky_json,
       logs: row.logs_json,
       forensics_json: row.forensics_json,
+      not_verified: row.not_verified,
     });
   }
 
@@ -150,9 +153,9 @@ export function reportRowToReport(row: ReportRow): Report {
     // The real root cause of a genuine, reproducible (not intermittent)
     // "forensic record was not confirmed" bug: this reshape never passed the
     // row's commit_sha through, so every Report built via fetchLatestReport
-    // (the SSR page, the SPA, AND app/api/deep/route.ts's
-    // confirmForensicsAttached) always had commit_sha === undefined —
-    // confirmForensicsAttached's `report.commit_sha === sha` check could
+    // (the SSR page, the SPA, and the pre-2.0 forensics confirmation step)
+    // always had commit_sha === undefined, so that step's
+    // `report.commit_sha === sha` check could
     // therefore never succeed, regardless of whether forensics had genuinely
     // landed (confirmed live: hasForensics was true on every single poll
     // attempt while commit_sha stayed undefined). normalizeReport (lib/scan.ts)
@@ -183,5 +186,6 @@ export function reportRowToReport(row: ReportRow): Report {
     // `normalizeReport` accepts `forensics` or `forensics_json` and coerces it
     // to the strict `Forensics` shape; a null/absent column omits the section.
     forensics_json: row.forensics_json,
+    not_verified: row.not_verified,
   });
 }

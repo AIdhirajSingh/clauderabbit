@@ -35,13 +35,11 @@ function baseRow(owners: ReportRow["owners"]): ReportRow {
 test("carries commit_sha through — regression for a real bug where it was silently dropped", () => {
   // A real, reproducible (not intermittent) bug: reportRowToReport never passed
   // row.commit_sha into the object it built for normalizeReport, so every
-  // Report built via fetchLatestReport (the SSR page, the SPA, AND
-  // app/api/deep/route.ts's confirmForensicsAttached) always had
-  // commit_sha === undefined. confirmForensicsAttached's `report.commit_sha
-  // === sha` check could therefore never succeed — a genuine Cloud Run
+  // Report built via fetchLatestReport (the SSR page, the SPA, and the
+  // pre-2.0 forensics confirmation step) always had commit_sha === undefined,
+  // so a `report.commit_sha === sha` check could never succeed: a genuine
   // detonation would complete and attach real forensics, but the app would
-  // report "Cloud Run execution succeeded but the forensic record was not
-  // confirmed" every single time, never intermittently. Confirmed live: a
+  // report the forensic record as unconfirmed every single time. Confirmed live: a
   // real detonation's forensics were present in the database (has_forensics:
   // true) on every single poll attempt while commit_sha stayed undefined.
   const row = baseRow(null);

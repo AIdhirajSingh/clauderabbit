@@ -11,7 +11,7 @@
  *   - leading `git@github.com:owner/repo.git` (SSH)
  *   - `www.` prefix
  *
- * The owner/repo charset matches the edge function's `isValidOwnerRepo`
+ * The owner/repo charset matches the engine resolver (lib/engine/resolve/github.ts)
  * (`/^[A-Za-z0-9._-]{1,100}$/`) so anything that parses here is acceptable to
  * the backend; invalid characters cause a `null` (treated as a bad input by the
  * caller) rather than a doomed request.
@@ -75,9 +75,8 @@ export function parseRepoInput(input: string): ParsedRepo | null {
 // ─────────────────────────── npm scan targets ───────────────────────────
 // The scan surface now accepts an npm PACKAGE in addition to a GitHub repo.
 // This client-side parser only needs to DETECT an npm target and extract
-// `{ package, version }` — the `scan` edge function re-validates authoritatively
-// (supabase/functions/_shared/npm.ts, a Deno module that must NOT be imported
-// here). The name grammar below mirrors that module's `isValidNpmName`.
+// `{ package, version }`; the scan engine re-validates authoritatively
+// (lib/engine/resolve/npm.ts). The name grammar below mirrors that module.
 
 /** A parsed scan target: either a GitHub repo or an npm package. */
 export type ScanTarget =
@@ -89,7 +88,7 @@ const NPM_UNSCOPED = /^[a-z0-9][a-z0-9._-]*$/i;
 
 /**
  * `npmjs.com` package URL — captures the (possibly scoped) name and an optional
- * `/v/<version>`. Mirrors the edge function's URL matcher so both agree on shape.
+ * `/v/<version>`. Mirrors the engine's URL matcher so both agree on shape.
  */
 const NPM_URL =
   /^(?:https?:\/\/)?(?:www\.)?npmjs\.com\/package\/(@[^/]+\/[^/@?#]+|[^/@?#]+)(?:\/v\/([^/?#]+))?/i;
@@ -113,7 +112,7 @@ function safeDecode(s: string): string {
  * Split a bare npm spec `name[@version]` into `{ package, version? }`, or `null`
  * when the name is not a valid npm name. Uses `lastIndexOf("@")` with an
  * `at > 0` guard so a leading scope `@` (e.g. `@scope/name`) is never mistaken
- * for a version separator — matching the edge function's parser.
+ * for a version separator, matching the engine's parser.
  */
 function splitNpmSpec(spec: string): { package: string; version?: string } | null {
   let name = spec.trim();

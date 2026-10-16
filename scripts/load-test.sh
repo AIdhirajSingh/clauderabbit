@@ -4,9 +4,9 @@
 #
 # Run against a PROD build (`npm run build && npx next start -p <port>`), NOT the
 # dev server. Drives autocannon at the homepage, an SSR report page, and a trust
-# badge — the three surfaces that take organic / SEO traffic. The scan edge
-# function is deliberately NOT load-tested: it makes paid Gemini calls and is
-# rate-limited by design, so hammering it would be both costly and
+# badge: the three surfaces that take organic / SEO traffic. POST /api/scan is
+# deliberately NOT load-tested: every call runs a paid E2B sandbox and OpenAI
+# model calls and is rate-limited by design, so hammering it would be both costly and
 # unrepresentative of steady-state traffic (the cached report path is what scales).
 #
 # Usage:
@@ -40,4 +40,4 @@ echo "Claude Rabbit load test — base=${BASE}"
 run "Homepage"   "${BASE}/"
 run "SSR report" "${BASE}${REPO}"
 run "Trust badge" "${BASE}/badge${REPO}"
-echo "Note: the scan edge function is intentionally NOT load-tested (paid + rate-limited)."
+echo "Note: POST /api/scan is intentionally NOT load-tested (paid + rate-limited)."

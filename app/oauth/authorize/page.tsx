@@ -7,8 +7,8 @@
  * Google/email sign-in as the rest of the app (bouncing through the
  * existing `/auth/callback?next=...`), then mints a short-lived
  * authorization code via `create_oauth_code` and redirects back to the
- * MCP client's redirect_uri with it — the client then redeems the code at
- * the `oauth-token` edge function (PKCE-verified) for a real bearer token.
+ * MCP client's redirect_uri with it. The client then redeems the code at
+ * `/oauth/token` (app/oauth/token/route.ts, PKCE S256 verified) for a real bearer token.
  *
  * Security: redirect_uri is validated against what THIS client_id actually
  * registered (create_oauth_code's own check, server-side) before any code

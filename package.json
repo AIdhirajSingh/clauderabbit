@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "ClaudeRabbit — paste a public GitHub repo, get an honest 0-100 safety score. Open source ships malware, too; we clone it into a sandbox and run it for real.",
+  "description": "ClaudeRabbit: paste a public GitHub repo or npm package and get a 0-100 safety score. Every scan installs and runs the code in a throwaway E2B sandbox behind a forge that answers every outbound call.",
   "scripts": {
     "dev": "next dev -p 2311",
     "build": "next build",
@@ -11,21 +11,24 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/resolve-ts.mjs --test \"tests/**/*.test.ts\" \"app/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\"",
-    "test:functions": "deno test --allow-net --allow-env supabase/functions/",
-    "check:functions": "deno check supabase/functions/scan/index.ts supabase/functions/deep-queue/index.ts supabase/functions/attach-forensics/index.ts supabase/functions/oauth-token/index.ts"
+    "test:python": "python3 -m unittest sandbox/e2b/guest/test_forge_core.py",
+    "template:build": "node sandbox/e2b/build.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sparticuz/chromium": "^149.0.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.108.2",
+    "e2b": "2.56.0",
     "next": "^16.2.9",
+    "openai": "7.34.0",
     "puppeteer-core": "^25.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@types/node": "^26.0.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.0",

@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+# ClaudeRabbit detonation harness (DESIGN.md section 3.3). Runs as ROOT inside a
+# fresh E2B VM created for exactly one scan and killed by the orchestrator in
+# `finally`. Repo code runs only as uid 1001 (`cr`), behind the nftables inner
+# fence, with every outbound connection and DNS query redirected into the forge.
+#
+# Input (written by lib/engine/sandbox/detonate.ts as root):
+#   /root/in/target.tgz            verified tarball bytes (GitHub archive or npm tarball)
+#   /root/in/run.json              {"mode":"npm-package"|"repo","name":str|null,
+#                                   "install_timeout_s":N,"entry_timeout_s":N,"fake_rate":N}
+#   /root/.cr/canary.env           KEY=VALUE canary credentials (0600, root only)
+#   /root/.cr/canary-patterns.txt  canary values and their encodings, one per line
+# Output: /root/out.tgz holding /root/out/{result.json,checks.jsonl,capture.jsonl,
+#   capture.probe.jsonl,trace.install,trace.entry,deps.json,written.txt,canary_files.txt,
+#   install.out,install.err,entry.out,entry.err,forge.log,egress_drops.json}
+# Every collection step has its own timeout; detonate.ts checks that the sum of
+# the budgets below plus install and entry stays inside its command deadline
+# (lib/engine/config.ts HARNESS_OVERHEAD_MS).
+set -euo pipefail
+umask 022
+
+IN=/root/in
+OUT=/root/out
+CRDIR=/root/.cr
+RUN=/run/cr
+CR_USER=cr
+CR_UID=1001
+NODE_BIN=/opt/cr/node/bin
+UV_BIN=/opt/cr/tools/bin
+FAKETIME_LIB=/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1
+TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,connect,sendto,sendmsg,sendmmsg,chmod,fchmodat,chdir,clone,clone3,fork,vfork
+MAX_LOG=262144
+
+log() { printf 'cr: %s\n' "$*"; }
+now_ms() { date +%s%3N; }
+check() {
+  # check <name> <ok:true|false> <detail>
+  jq -cn --arg n "$1" --argjson ok "$2" --arg d "$3" '{name:$n, ok:$ok, detail:$d}' >>"$OUT/checks.jsonl"
+}
+
+rm -rf "$OUT" "$RUN" /work
+mkdir -p "$OUT" "$RUN" /work
+chmod 0700 "$OUT" "$CRDIR"
+: >"$OUT/checks.jsonl"
+T0=$(now_ms)
+
+INSTALL_TIMEOUT=$(jq -r '.install_timeout_s // 20' "$IN/run.json")
+ENTRY_TIMEOUT=$(jq -r '.entry_timeout_s // 4' "$IN/run.json")
+FAKE_RATE=$(jq -r '.fake_rate // 30' "$IN/run.json")
+MODE=$(jq -r '.mode' "$IN/run.json")
+PKG_NAME=$(jq -r '.name // ""' "$IN/run.json")
+SAFE_NAME_RE='^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$'
+case "$MODE" in npm-package|repo) ;; *) log "bad mode"; exit 2 ;; esac
+[[ "$INSTALL_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$ENTRY_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$FAKE_RATE" =~ ^[0-9]+$ ]] || { log "bad run.json"; exit 2; }
+
+id -u "$CR_USER" | grep -qx "$CR_UID"
+
+# ---- 1. per-VM CA -------------------------------------------------------------
+log "phase forge-up"
+mkdir -p "$CRDIR/ca" "$CRDIR/mitm" /etc/cr
+chmod 0700 "$CRDIR/ca" "$CRDIR/mitm"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 60 \
+  -subj "/CN=ClaudeRabbit Sandbox CA $(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -keyout "$CRDIR/ca/key.pem" -out "$CRDIR/ca/cert.pem" >/dev/null 2>&1
+cat "$CRDIR/ca/key.pem" "$CRDIR/ca/cert.pem" >"$CRDIR/mitm/mitmproxy-ca.pem"
+cp "$CRDIR/ca/cert.pem" "$CRDIR/mitm/mitmproxy-ca-cert.pem"
+chmod 0600 "$CRDIR/mitm/mitmproxy-ca.pem" "$CRDIR/ca/key.pem"
+install -m 0644 "$CRDIR/ca/cert.pem" /etc/cr/ca.pem
+cat /etc/cr/ca.pem >>/etc/ssl/certs/ca-certificates.crt
+: >/etc/cr/npmrc-empty
+chmod 0644 /etc/cr/npmrc-empty
+
+# ---- 2. inner fence (nftables meta skuid; the E2B kernel lacks xt_owner) -------
+nft -f - <<NFT
+flush ruleset
+table inet cr {
+  counter cr_udp_drop {}
+  counter cr_icmp_drop {}
+  counter cr_other_drop {}
+  chain out_nat {
+    type nat hook output priority -100;
+    meta skuid $CR_UID udp dport 53 redirect to :5353
+    meta skuid $CR_UID tcp dport 53 redirect to :5353
+    meta skuid $CR_UID ip daddr != 127.0.0.0/8 meta l4proto tcp redirect to :8080
+  }
+  chain out_filter {
+    type filter hook output priority 0; policy accept;
+    meta skuid $CR_UID tcp dport { 49983, 8081 } reject with tcp reset
+    meta skuid $CR_UID ip daddr 127.0.0.0/8 accept
+    meta skuid $CR_UID tcp dport 8080 accept
+    meta skuid $CR_UID udp dport 5353 accept
+    meta skuid $CR_UID meta l4proto udp counter name cr_udp_drop drop
+    meta skuid $CR_UID meta l4proto { icmp, ipv6-icmp } counter name cr_icmp_drop drop
+    meta skuid $CR_UID meta nfproto ipv6 reject
+    meta skuid $CR_UID meta l4proto != tcp counter name cr_other_drop drop
+  }
+}
+NFT
+nft list table inet cr >"$OUT/nft.txt"
+
+# ---- 3. forge -------------------------------------------------------------------
+: >"$OUT/capture.jsonl"
+echo "probe $(date +%s.%N)" >"$OUT/phase"
+/opt/cr/tools/bin/mitmdump --mode transparent@8080 --mode dns@5353 \
+  --set confdir="$CRDIR/mitm" --set connection_strategy=lazy --set upstream_cert=false \
+  --set block_global=false --set termlog_verbosity=warn \
+  -s /opt/cr/forge/forge_addon.py >"$OUT/forge.log" 2>&1 &
+FORGE_PID=$!
+for _ in $(seq 1 50); do
+  if ss -ltn 'sport = :8080' | grep -q LISTEN && ss -lun 'sport = :5353' | grep -q 5353; then break; fi
+  if ! kill -0 "$FORGE_PID" 2>/dev/null; then log "forge exited"; check forge_up false "mitmdump exited"; exit 3; fi
+  sleep 0.1
+done
+ss -ltn 'sport = :8080' | grep -q LISTEN || { check forge_up false "port 8080 not listening"; exit 3; }
+check forge_up true "mitmdump pid $FORGE_PID"
+
+# ---- 4. containment probe (before any repo code) --------------------------------
+PROBE_BODY=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
+  curl -sS --max-time 2 http://example.invalid/cr-probe 2>&1 || true)
+PROBE_TLS=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
+  curl -sS --max-time 2 https://probe.cr-fixture.invalid/cr-probe 2>&1 || true)
+ENVD_REACHED=0
+for ENVD_ADDR in 127.0.0.1 ::1; do
+  if timeout 1 runuser -u "$CR_USER" -- bash -c "exec 3<>/dev/tcp/$ENVD_ADDR/49983" 2>/dev/null; then ENVD_REACHED=1; fi
+done
+sleep 0.3
+mv "$OUT/capture.jsonl" "$OUT/capture.probe.jsonl"
+: >"$OUT/capture.jsonl"
+PROBE_SEEN=$(jq -s '[.[] | select(.host=="example.invalid" and .forged_kind=="json")] | length' "$OUT/capture.probe.jsonl")
+if [ "$PROBE_BODY" = '{"ok":true}' ] && [ "$PROBE_TLS" = '{"ok":true}' ] && [ "$ENVD_REACHED" = 0 ] && [ "$PROBE_SEEN" -ge 1 ]; then
+  check egress_contained true "http and https forged, envd refused, forge captured the probe"
+else
+  check egress_contained false "http=${PROBE_BODY:0:80} https=${PROBE_TLS:0:80} envd_reached=$ENVD_REACHED captured=$PROBE_SEEN"
+  log "containment probe failed; no repo code will run"
+  exit 4
+fi
+
+# ---- 5. decoys and canaries ------------------------------------------------------
+declare -A CANARY
+while IFS='=' read -r k v; do
+  [[ "$k" =~ ^[A-Z_]+$ ]] && [[ "$v" =~ ^[A-Za-z0-9/+_-]+$ ]] && CANARY[$k]=$v
+done <"$CRDIR/canary.env"
+for k in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY NPM_TOKEN GITHUB_TOKEN OPENAI_API_KEY; do
+  [ -n "${CANARY[$k]:-}" ] || { log "missing canary $k"; exit 2; }
+done
+H=/home/$CR_USER
+install -d -o "$CR_USER" -g "$CR_USER" -m 0700 "$H/.ssh" "$H/.aws" "$H/.config" "$H/.config/gh" "$H/.docker" "$H/.cache"
+write_decoy() { install -o "$CR_USER" -g "$CR_USER" -m 0600 /dev/stdin "$1"; }
+PEM_KIND="OPENSSH PRIV""ATE KEY"
+printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$PEM_KIND" "${CANARY[GITHUB_TOKEN]}${CANARY[AWS_SECRET_ACCESS_KEY]}" "$PEM_KIND" | write_decoy "$H/.ssh/id_rsa"
+printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' "${CANARY[AWS_ACCESS_KEY_ID]}" "${CANARY[AWS_SECRET_ACCESS_KEY]}" | write_decoy "$H/.aws/credentials"
+printf '//registry.npmjs.org/:_authToken=%s\n' "${CANARY[NPM_TOKEN]}" | write_decoy "$H/.npmrc"
+printf 'github.com:\n    oauth_token: %s\n    user: cr\n' "${CANARY[GITHUB_TOKEN]}" | write_decoy "$H/.config/gh/hosts.yml"
+printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}\n' "$(printf 'cr:%s' "${CANARY[GITHUB_TOKEN]}" | base64 -w0)" | write_decoy "$H/.docker/config.json"
+printf 'https://cr:%s@github.com\n' "${CANARY[GITHUB_TOKEN]}" | write_decoy "$H/.git-credentials"
+
+BASE_ENV=(
+  HOME="$H" USER="$CR_USER" LOGNAME="$CR_USER" SHELL=/bin/bash LANG=C.UTF-8 TMPDIR=/tmp
+  PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin"
+  LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 FAKETIME_NO_CACHE=1
+  NODE_EXTRA_CA_CERTS=/etc/cr/ca.pem SSL_CERT_FILE=/etc/cr/ca.pem REQUESTS_CA_BUNDLE=/etc/cr/ca.pem UV_SYSTEM_CERTS=1
+  NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
+  npm_config_fetch_timeout=3600000 npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
+  npm_config_update_notifier=false npm_config_cache="$H/.npm" CI=true
+  UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy
+  AWS_ACCESS_KEY_ID="${CANARY[AWS_ACCESS_KEY_ID]}" AWS_SECRET_ACCESS_KEY="${CANARY[AWS_SECRET_ACCESS_KEY]}"
+  NPM_TOKEN="${CANARY[NPM_TOKEN]}" GITHUB_TOKEN="${CANARY[GITHUB_TOKEN]}" OPENAI_API_KEY="${CANARY[OPENAI_API_KEY]}"
+)
+# Collection steps run as cr without the fake clock and without canaries.
+PLAIN_ENV=(HOME="$H" USER="$CR_USER" PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8
+  NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_cache="$H/.npm" UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never)
+
+# ---- 6. extract as cr --------------------------------------------------------------
+install -m 0644 -o "$CR_USER" -g "$CR_USER" "$IN/target.tgz" /work/target.tgz
+chown "$CR_USER:$CR_USER" /work
+ECO=none
+INSTALL_CMD=""
+WORKDIR=/work
+if [ "$MODE" = "npm-package" ]; then
+  [[ "$PKG_NAME" =~ $SAFE_NAME_RE ]] || { check entry_name false "unsafe package name"; exit 2; }
+  install -d -o "$CR_USER" -g "$CR_USER" /work/app
+  runuser -u "$CR_USER" -- cp /work/target.tgz /work/pkg.tgz
+  printf '{"name":"cr-run-app","version":"1.0.0","private":true}\n' | runuser -u "$CR_USER" -- tee /work/app/package.json >/dev/null
+  ECO=npm
+  WORKDIR=/work/app
+  INSTALL_CMD="npm install --no-audit --no-fund /work/pkg.tgz"
+else
+  install -d -o "$CR_USER" -g "$CR_USER" /work/src
+  if ! timeout 6 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then
+    check extract_complete false "repo extraction did not finish inside 6 s"
+  fi
+  WORKDIR=/work/src
+  if [ -f /work/src/package.json ]; then
+    ECO=npm
+    if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then
+      INSTALL_CMD="npm ci --no-audit --no-fund"
+    else
+      INSTALL_CMD="npm install --no-audit --no-fund"
+      if [ -f /work/src/yarn.lock ] || [ -f /work/src/pnpm-lock.yaml ]; then
+        check lockfile_translated true "yarn or pnpm lockfile installed with npm install"
+      fi
+    fi
+  elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then
+    ECO=python
+    INSTALL_CMD="uv venv --quiet /work/.venv --python /usr/bin/python3"
+    if [ -f /work/src/uv.lock ]; then
+      INSTALL_CMD="$INSTALL_CMD && UV_PROJECT_ENVIRONMENT=/work/.venv uv sync --frozen"
+    else
+      if [ -f /work/src/requirements.txt ]; then
+        INSTALL_CMD="$INSTALL_CMD && uv pip install --python /work/.venv/bin/python -r requirements.txt"
+      fi
+      if [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ]; then
+        INSTALL_CMD="$INSTALL_CMD && uv pip install --python /work/.venv/bin/python ."
+      fi
+    fi
+  fi
+fi
+
+# ---- 7-8. install phase -------------------------------------------------------------
+touch "$RUN/start.marker"
+sleep 0.01
+INSTALL_STATUS=skipped
+INSTALL_EXIT=null
+INSTALL_MS=0
+if [ -n "$INSTALL_CMD" ]; then
+  log "phase install ($ECO)"
+  echo "install $(date +%s.%N)" >"$OUT/phase"
+  START=$(now_ms)
+  set +e
+  ( cd "$WORKDIR" && timeout --kill-after=2 "$INSTALL_TIMEOUT" \
+      strace -f --seccomp-bpf -qq -ttt -s 256 -e trace="$TRACE_SET" -o "$OUT/trace.install" -u "$CR_USER" -- \
+      env -i "${BASE_ENV[@]}" bash -c "$INSTALL_CMD" ) >"$OUT/install.out" 2>"$OUT/install.err"
+  INSTALL_EXIT=$?
+  set -e
+  INSTALL_MS=$(( $(now_ms) - START ))
+  case "$INSTALL_EXIT" in
+    0) INSTALL_STATUS=completed ;;
+    124|137) INSTALL_STATUS=timeout; pkill -KILL -u "$CR_UID" || true ;;
+    *) INSTALL_STATUS=failed ;;
+  esac
+  log "install $INSTALL_STATUS exit=$INSTALL_EXIT ms=$INSTALL_MS"
+else
+  check install_manifest false "no package.json, pyproject.toml, setup.py or requirements.txt"
+fi
+if [ "$ECO" = python ] && [ -d /work/.venv ]; then
+  timeout 2 find /work/.venv -name '*.pth' -newer "$RUN/start.marker" -type f >"$OUT/pth.txt" 2>/dev/null || true
+fi
+
+# ---- 9. entry phase ---------------------------------------------------------------------
+ENTRY_SCRIPT="$RUN/entry.sh"
+: >"$ENTRY_SCRIPT"
+entry_line() { printf '%s\n' "$1" >>"$ENTRY_SCRIPT"; }
+if [ "$INSTALL_STATUS" = completed ]; then
+  if [ "$ECO" = npm ]; then
+    if [ "$MODE" = npm-package ]; then
+      MANI="/work/app/node_modules/$PKG_NAME/package.json"
+      REQ="$PKG_NAME"
+    else
+      MANI=/work/src/package.json
+      REQ=/work/src
+    fi
+    if [ -f "$MANI" ]; then
+      BIN=$(jq -r 'if (.bin|type)=="string" then .bin elif (.bin|type)=="object" then (.bin|to_entries[0].value // "") else "" end' "$MANI")
+      TYPE=$(jq -r '.type // "commonjs"' "$MANI")
+      HAS_ENTRY=$(jq -r 'if (.main // .exports // .module) != null then "1" else "0" end' "$MANI")
+      PKG_DIR=$(dirname "$MANI")
+      if [ -n "$BIN" ] && [[ "$BIN" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$BIN" != *..* ]]; then
+        entry_line "node '$PKG_DIR/${BIN#./}' --help || true"
+      fi
+      if [ -f "$PKG_DIR/index.js" ] || [ "$HAS_ENTRY" = 1 ]; then
+        if [ "$TYPE" = module ]; then
+          entry_line "node --input-type=module -e \"await import('$REQ')\""
+        else
+          entry_line "node -e \"require('$REQ')\" || node --input-type=module -e \"await import('$REQ')\""
+        fi
+      elif [ "$MODE" = repo ] && [ "$(jq -r '.scripts.start // ""' "$MANI")" != "" ]; then
+        entry_line "npm start"
+      fi
+    fi
+  elif [ "$ECO" = python ]; then
+    SITE=$(ls -d /work/.venv/lib/python3*/site-packages 2>/dev/null | head -n1 || true)
+    if [ -n "$SITE" ]; then
+      for DI in "$SITE"/*.dist-info; do
+        [ -f "$DI/direct_url.json" ] || continue
+        jq -e '.url | startswith("file:///work/src")' "$DI/direct_url.json" >/dev/null 2>&1 || continue
+        if [ -f "$DI/top_level.txt" ]; then
+          while read -r mod; do
+            if [[ "$mod" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then entry_line "/work/.venv/bin/python -c 'import $mod'"; fi
+          done <"$DI/top_level.txt"
+        elif [ -f "$DI/RECORD" ]; then
+          while IFS=, read -r path _rest; do
+            mod=${path%%/*}
+            if [[ "$mod" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then entry_line "/work/.venv/bin/python -c 'import $mod'"; fi
+          done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*/__init__\.py,' "$DI/RECORD" | sort -u)
+        fi
+        if [ -f "$DI/entry_points.txt" ]; then
+          SCRIPT=$(awk '/^\[console_scripts\]/{f=1;next} /^\[/{f=0} f && /=/{gsub(/ /,"");split($0,a,"=");print a[1];exit}' "$DI/entry_points.txt")
+          if [[ "$SCRIPT" =~ ^[A-Za-z0-9._-]+$ ]]; then entry_line "/work/.venv/bin/$SCRIPT --help || true"; fi
+        fi
+      done
+    fi
+  fi
+fi
+
+ENTRY_STATUS=skipped
+ENTRY_EXIT=null
+ENTRY_MS=0
+CLOCK_REAL=0
+CLOCK_FAKE=0
+if [ -s "$ENTRY_SCRIPT" ]; then
+  chmod 0755 "$RUN"
+  chmod 0644 "$ENTRY_SCRIPT"
+  # Clock check: one faked second must pass in well under one real second.
+  C0=$(now_ms)
+  CLOCK_FAKE=$(timeout 3 runuser -u "$CR_USER" -- env -i LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 \
+    bash -c 'a=$(date +%s%3N); sleep 1; b=$(date +%s%3N); echo $((b-a))' 2>/dev/null || echo 0)
+  CLOCK_REAL=$(( $(now_ms) - C0 ))
+  [[ "$CLOCK_FAKE" =~ ^[0-9]+$ ]] || CLOCK_FAKE=0
+  if [ "$CLOCK_FAKE" -ge 900 ] && [ "$CLOCK_REAL" -lt 500 ]; then
+    check clock_accelerated true "faked ${CLOCK_FAKE}ms in real ${CLOCK_REAL}ms"
+  else
+    check clock_accelerated false "faked ${CLOCK_FAKE}ms in real ${CLOCK_REAL}ms"
+  fi
+  log "phase entry"
+  echo "entry $(date +%s.%N)" >"$OUT/phase"
+  START=$(now_ms)
+  set +e
+  ( cd "$WORKDIR" && timeout --kill-after=1 "$ENTRY_TIMEOUT" \
+      strace -f --seccomp-bpf -qq -ttt -s 256 -e trace="$TRACE_SET" -o "$OUT/trace.entry" -u "$CR_USER" -- \
+      env -i "${BASE_ENV[@]}" bash "$ENTRY_SCRIPT" ) >"$OUT/entry.out" 2>"$OUT/entry.err"
+  ENTRY_EXIT=$?
+  set -e
+  ENTRY_MS=$(( $(now_ms) - START ))
+  case "$ENTRY_EXIT" in
+    0) ENTRY_STATUS=completed ;;
+    124|137) ENTRY_STATUS=timeout ;;
+    *) ENTRY_STATUS=failed ;;
+  esac
+  log "entry $ENTRY_STATUS exit=$ENTRY_EXIT ms=$ENTRY_MS"
+elif [ "$INSTALL_STATUS" = completed ]; then
+  check entry_point false "no bin, main, exports, index.js, start script or importable module found"
+fi
+pkill -KILL -u "$CR_UID" || true
+echo "collect $(date +%s.%N)" >"$OUT/phase"
+
+# ---- 10. collect ---------------------------------------------------------------------------
+DEPS_KIND=none
+if [ "$ECO" = npm ] && [ -d "$WORKDIR/node_modules" ]; then
+  ( cd "$WORKDIR" && timeout 3 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" npm ls --all --json --offline ) >"$OUT/deps.json" 2>/dev/null || true
+  DEPS_KIND=npm-ls
+elif [ "$ECO" = python ] && [ -x /work/.venv/bin/python ]; then
+  timeout 3 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" uv pip list --python /work/.venv/bin/python --format json >"$OUT/deps.json" 2>/dev/null || true
+  DEPS_KIND=uv-pip-list
+fi
+pkill -KILL -u "$CR_UID" || true
+
+# Written files, NUL-separated so a file name holding a newline can never turn
+# into a second path (a FIFO or device the root grep would block on).
+set +e
+timeout 5 find / /tmp /home /work /var /etc /usr/local -xdev \
+  \( -path /proc -o -path /sys -o -path /dev -o -path /root -o -path /opt/cr -o -path /run/cr \) -prune \
+  -o -type f -newer "$RUN/start.marker" -print0 2>/dev/null >"$RUN/written.0"
+FIND_EXIT=$?
+set -e
+[ "$FIND_EXIT" = 124 ] && check canary_file_scan false "written-file listing passed its 5 s budget"
+tr '\0' '\n' <"$RUN/written.0" | head -n 20000 >"$OUT/written.txt" || true
+: >"$OUT/canary_files.txt"
+# Candidates: written regular files outside the npm/uv caches and the venv tree.
+# Every uid 1001 process is dead, so nothing can swap a file for a FIFO now; grep
+# skips devices and FIFOs anyway, and its timeout bounds a huge or sparse file
+# (a timeout is reported, and the scorer treats the record as cut).
+grep -z -v -E '^/(home/cr/\.npm|home/cr/\.cache)/|/node_modules/\.cache/|/\.venv/lib/' "$RUN/written.0" | head -z -n 10000 >"$RUN/check-files.0" || true
+if [ -s "$RUN/check-files.0" ]; then
+  set +e
+  timeout 3 xargs -0 -r grep -l -s -D skip -F -f "$CRDIR/canary-patterns.txt" -- <"$RUN/check-files.0" >>"$OUT/canary_files.txt" 2>/dev/null
+  GREP_EXIT=$?
+  set -e
+  [ "$GREP_EXIT" = 124 ] && check canary_file_scan false "canary search of written files passed its 3 s budget"
+fi
+
+kill "$FORGE_PID" 2>/dev/null || true
+wait "$FORGE_PID" 2>/dev/null || true
+
+for f in install.out install.err entry.out entry.err forge.log; do
+  if [ -f "$OUT/$f" ]; then truncate -s "<$MAX_LOG" "$OUT/$f"; fi
+done
+# Egress the fence dropped (UDP other than DNS, ICMP, other non-TCP), per protocol.
+DROPS='{}'
+for c in udp icmp other; do
+  n=$(nft -j list counter inet cr "cr_${c}_drop" 2>/dev/null | jq '[.nftables[] | .counter? | select(. != null) | .packets] | add // 0' 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  DROPS=$(jq -c --arg k "$c" --argjson v "$n" '. + {($k): $v}' <<<"$DROPS")
+done
+printf '%s\n' "$DROPS" >"$OUT/egress_drops.json"
+
+# Size caps. The capture keeps scored records ahead of registry traffic before it
+# is cut; traces keep their head and tail. Any cut is reported as a check, and
+# the scorer caps a run with a cut record.
+CAP=8388608
+if [ -f "$OUT/capture.jsonl" ] && [ "$(stat -c %s "$OUT/capture.jsonl")" -gt "$CAP" ]; then
+  SIZE=$(stat -c %s "$OUT/capture.jsonl")
+  if timeout 3 jq -c 'select((.forged_kind == "mirror" or .forged_kind == "registry") | not)' "$OUT/capture.jsonl" >"$RUN/cap.scored" 2>/dev/null \
+    && timeout 3 jq -c 'select(.forged_kind == "mirror" or .forged_kind == "registry")' "$OUT/capture.jsonl" >"$RUN/cap.registry" 2>/dev/null; then
+    cat "$RUN/cap.scored" "$RUN/cap.registry" >"$OUT/capture.jsonl"
+  fi
+  truncate -s "<$CAP" "$OUT/capture.jsonl"
+  check forensics_truncated false "capture.jsonl ${SIZE} bytes cut to 8 MB, scored records first"
+fi
+for f in trace.install trace.entry; do
+  if [ -f "$OUT/$f" ] && [ "$(stat -c %s "$OUT/$f")" -gt "$CAP" ]; then
+    SIZE=$(stat -c %s "$OUT/$f")
+    { head -c 4194304 "$OUT/$f"; printf '\n'; tail -c 4194304 "$OUT/$f"; } >"$RUN/$f.cut"
+    mv "$RUN/$f.cut" "$OUT/$f"
+    check forensics_truncated false "$f ${SIZE} bytes cut to its first and last 4 MB"
+  fi
+done
+truncate -s "<$CAP" "$OUT/written.txt"
+
+jq -n \
+  --arg mode "$MODE" --arg eco "$ECO" --arg deps "$DEPS_KIND" \
+  --arg is "$INSTALL_STATUS" --argjson ie "$INSTALL_EXIT" --argjson ims "$INSTALL_MS" --arg icmd "$INSTALL_CMD" \
+  --arg es "$ENTRY_STATUS" --argjson ee "$ENTRY_EXIT" --argjson ems "$ENTRY_MS" \
+  --argjson cr "$CLOCK_REAL" --argjson cf "$CLOCK_FAKE" --argjson total "$(( $(now_ms) - T0 ))" \
+  '{version:1, mode:$mode, ecosystem:$eco, deps_kind:$deps,
+    install:{status:$is, exit_code:$ie, ms:$ims, command:$icmd},
+    entry:{status:$es, exit_code:$ee, ms:$ems},
+    clock:{real_ms:$cr, fake_ms:$cf}, total_ms:$total}' >"$OUT/result.json"
+
+timeout 4 tar -czf /root/out.tmp.tgz -C /root out
+mv /root/out.tmp.tgz /root/out.tgz
+log "done $(jq -c '{install:.install.status, entry:.entry.status}' "$OUT/result.json")"

@@ -23,6 +23,8 @@ import { useApp } from "../state";
 import styles from "../spa.module.css";
 import { BackChevron, RabbitMark } from "../components/glyphs";
 import { ReportBody } from "../components/ReportBody";
+import { AdSlot } from "@/components/ads/AdSlot";
+import { webAdFor } from "@/lib/ads-web";
 
 export function ReportScreen() {
   const app = useApp();
@@ -243,10 +245,14 @@ export function ReportScreen() {
     typeof window !== "undefined" && window.location?.origin
       ? window.location.origin
       : (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311");
+  const ad = (activeId ? app.state.liveAds[activeId] : undefined) ?? webAdFor(r.owner === "npm" ? { kind: "npm", name: r.name } : { kind: "github", name: `${r.owner}/${r.name}` });
   const footer = (
-    <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t6)" }}>
-      Auto-published at {origin.replace(/^https?:\/\//, "")}/{r.owner}/{r.name} · re-checked when the repo changes
-    </div>
+    <>
+      <AdSlot ad={ad} />
+      <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t6)" }}>
+        Auto-published at {origin.replace(/^https?:\/\//, "")}/{r.owner}/{r.name} · re-checked when the repo changes
+      </div>
+    </>
   );
 
   return (

@@ -1,25 +1,18 @@
 /**
- * OAuth 2.0 Authorization Server Metadata (RFC 8414) — this app doubles as
- * its own authorization server for the remote MCP endpoint (app/mcp), so
- * this lives at the conventional root well-known location (no path
- * component to insert, unlike the Protected Resource Metadata document).
- *
- * `token_endpoint` points directly at the `oauth-token` Supabase Edge
- * Function rather than a Next.js route: minting a real token means writing
- * to `cli_tokens` with the service role, and CLAUDE.md's secrets rule keeps
- * that logic in an edge function, never in the Next.js app (see
- * supabase/functions/oauth-token/index.ts).
+ * OAuth 2.0 Authorization Server Metadata (RFC 8414) for the remote MCP login.
+ * Authorization at `/oauth/authorize`, dynamic client registration at
+ * `/oauth/register`, token exchange at `/oauth/token` (a Vercel function on
+ * the server secret; PKCE S256 only, public clients only).
  */
-export const dynamic = "force-dynamic";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
   const origin = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || new URL(req.url).origin;
   return Response.json({
     issuer: origin,
     authorization_endpoint: `${origin}/oauth/authorize`,
-    token_endpoint: `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1/oauth-token`,
+    token_endpoint: `${origin}/oauth/token`,
     registration_endpoint: `${origin}/oauth/register`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],

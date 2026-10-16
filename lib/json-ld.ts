@@ -7,7 +7,7 @@
  * attacker-influenced content: a repo owner/name/README read during a static
  * scan, or (worse) a sandbox-captured hostname from a detonated repo's own
  * network attempt (`attempting to reach <capturedHost>`), threaded through the
- * attach-forensics edge function into the `reports.summary` column with no
+ * scan engine into the `reports.summary` column with no
  * HTML-level filtering.
  *
  * `JSON.stringify` escapes JS/JSON string syntax but does NOT escape `<`, `>`,

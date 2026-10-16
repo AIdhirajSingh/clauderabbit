@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "registries": {
+    "npm": ["registry.npmjs.org"],
+    "pypi_index": ["pypi.org"],
+    "pypi_files": ["files.pythonhosted.org"]
+  },
+  "forge_ip_pool": "198.18.0.0/15",
+  "max_body_capture": 65536,
+  "max_header_value": 2048,
+  "capture_path": "/root/out/capture.jsonl",
+  "phase_path": "/root/out/phase",
+  "mirror_root": "/opt/cr/mirror",
+  "upstream_timeout_s": 15,
+  "upstream_max_bytes": 104857600
+}

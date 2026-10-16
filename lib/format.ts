@@ -2,9 +2,7 @@
  * Human-count formatting — a single, tested place for turning a raw integer
  * into the abbreviated string a report or board stat shows a human (e.g.
  * `302545` -> `"303K"`). Nothing else in the repo has a shared formatter for
- * this (the Deno edge function has its own copy, `formatNumber` in
- * `supabase/functions/scan/index.ts`, which this mirrors in spirit but is not
- * byte-for-byte identical to — that file is a separate runtime).
+ * this.
  *
  * Kept dependency-free and pure so it is trivial to unit test and safe to call
  * from both Server and Client Components.

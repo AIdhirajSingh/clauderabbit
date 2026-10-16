@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The ClaudeRabbit SPA "brain" — a faithful React port of the DC prototype's
+ * The ClaudeRabbit SPA "brain", a faithful React port of the DC prototype's
  * single-component logic (`design-source/Claude Rabbit.dc.html`, the
  * <script> at lines ~983–1374).
  *
@@ -38,7 +38,8 @@ import {
   type RiskyItemView,
 } from "@/lib/report-view";
 import { parseScanTarget, type ScanTarget } from "@/lib/parse-repo";
-import { runScan, runDeepScan, type ScanArgs, type ScanStage } from "@/lib/scan";
+import { runScan, type ScanArgs, type ScanStage } from "@/lib/scan";
+import type { Ad } from "@/lib/engine/types";
 import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
@@ -81,15 +82,6 @@ const TOAST_MS = 3400;
 /** Delay between picking a suggestion chip and firing the scan. */
 const SUGGESTION_PICK_MS = 140;
 /**
- * After the inline deep run is DISPATCHED, the Cloud Run container attaches its own
- * forensics to the report row independently of the /api/deep response — so the
- * client confirms the result by POLLING the public report row, immune to any
- * serverless streaming-duration cap. A real detonation lands in ~2.5–3.5 min; poll
- * up to 5 min before falling back to an honest "still finishing" message.
- */
-const DEEP_FORENSICS_POLL_MS = 5 * 60 * 1000;
-const DEEP_FORENSICS_POLL_INTERVAL_MS = 3000;
-/**
  * localStorage key for a repo to restore into the scan box after an optional
  * sign-in. Sign-in NEVER gates a scan (BUG-11), but a user who signs in mid-flow
  * goes through a full-page OAuth/magic-link redirect that wipes React state, so
@@ -130,7 +122,7 @@ interface State {
   failed: boolean;
   /** The real reason the scan failed (repo not found, rate limit, timeout, ...),
    * shown verbatim on the failed-processing card. Null falls back to a generic
-   * message — never a hardcoded specific claim like "timed out" for a failure
+   * message, never a hardcoded specific claim like "timed out" for a failure
    * that wasn't actually a timeout. */
   procError: string | null;
   toast: string | null;
@@ -151,6 +143,8 @@ interface State {
   sidebarCollapsed: boolean;
   /** Live scan results keyed by "owner/repo" id (real repos, not demo). */
   liveReports: Record<string, Report>;
+  /** The ad payload that came with each live scan result, keyed like liveReports. */
+  liveAds: Record<string, Ad>;
   /**
    * True while a REAL scan's network request is in flight: the processing
    * screen runs the generic chapter timeline (no pre-known demo logs) and the
@@ -158,8 +152,8 @@ interface State {
    */
   procLive: boolean;
   /**
-   * The REAL streamed scan stages for a live scan (BUG-5/6) — each appended as
-   * the edge function emits it, so the timeline reflects actual work, not canned
+   * The REAL streamed scan stages for a live scan (BUG-5/6), each appended as
+   * /api/scan emits it, so the timeline reflects actual work, not canned
    * text on a timer. Empty for demo scans and for a fast cache hit.
    */
   procStages: LogChapter[];
@@ -168,15 +162,15 @@ interface State {
   /**
    * The `lines` carried by the CURRENTLY-ACTIVE stage (if any). Most active stages
    * carry none (just a title + spinner), but the "Queue" stage streams a live
-   * "Queued — position N of M, ~X min" line that must stay visible WHILE waiting —
+   * "Queued, position N of M, ~X min" line that must stay visible WHILE waiting , 
    * so the active chapter renders these rather than only its title. Cleared when
    * the stage completes or a new active stage without lines arrives.
    */
   procActiveLines: string[];
   /**
    * The danger-board bundle (real DB data: ranked caught repos, map dots, live
-   * counts, score histogram). Lazily fetched on first board navigation — never
-   * on the homepage — so the marketing/SEO surface stays cheap. Starts empty
+   * counts, score histogram). Lazily fetched on first board navigation, never
+   * on the homepage, so the marketing/SEO surface stays cheap. Starts empty
    * (`loaded: false`) and is replaced once the fetch resolves.
    */
   board: BoardData;
@@ -227,7 +221,7 @@ const initialState: State = {
   // Personal scan history + usage start EMPTY. A signed-in user's real history is
   // hydrated from the user-scoped `scans` table on sign-in (loadUserHistory), so a
   // fresh account shows a genuinely empty state and a returning user's own history
-  // reloads after a refresh — no demo/phantom rows bleeding across sessions/users.
+  // reloads after a refresh, no demo/phantom rows bleeding across sessions/users.
   scannedIds: [],
   stage1Used: 0,
   dynamicUsed: 0,
@@ -236,6 +230,7 @@ const initialState: State = {
   theme: "light",
   sidebarCollapsed: false,
   liveReports: {},
+  liveAds: {},
   procLive: false,
   procStages: [],
   procActiveCh: null,
@@ -322,7 +317,7 @@ export interface HistoryGroup {
 // ───────────────── page-level decorative card data ─────────────────
 // Site-wide background card chrome. `repo` cards name REAL repos with their
 // real live-scan scores/stars (from lib/demo-data, plus the project's own real
-// repos); `web`/`design`/`code` cards are abstract illustration only — no repo
+// repos); `web`/`design`/`code` cards are abstract illustration only, no repo
 // is named and no fabricated verdict score is shown. Nothing here is invented.
 
 const PAGE_COL_A: SnapProps[] = [
@@ -390,7 +385,7 @@ export const BG_COL_A_DBL = [...BG_COL_A, ...BG_COL_A];
 export const BG_COL_B_DBL = [...BG_COL_B, ...BG_COL_B];
 export const BG_COL_C_DBL = [...BG_COL_C, ...BG_COL_C];
 
-// Footer links are REAL destinations on the open-source repository — no dead
+// Footer links are REAL destinations on the open-source repository, no dead
 // `#` links, and nothing implying a feature that does not exist (e.g. no
 // "Pricing": the product is free). Everything points where it says it does.
 const REPO_URL = "https://github.com/AIdhirajSingh/clauderabbit";
@@ -420,7 +415,7 @@ export const FOOTER_COLS: Array<{ links: Array<{ label: string; href: string }> 
 
 /**
  * Repo ids shown as suggestion chips, in order. Derived from the real cached
- * scans in `lib/demo-data.ts` (SUGGESTION_IDS) — the id IS "owner/name", which
+ * scans in `lib/demo-data.ts` (SUGGESTION_IDS), the id IS "owner/name", which
  * is also the chip label. No invented repos.
  */
 const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = SUGGESTION_IDS.map(
@@ -435,8 +430,8 @@ const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = SUGGESTION_IDS.ma
 // reports (from real scans) by id in `liveReports`, falling back to demo REPOS.
 
 /**
- * Stable per-device id for rate-limiting pre-auth scans (the edge function's
- * `deviceId`). Persisted in localStorage; charset bounded to what the function
+ * Stable per-device id for rate-limiting pre-auth scans (the `deviceId` field
+ * of the /api/scan body). Persisted in localStorage; charset bounded to what the function
  * accepts (`[A-Za-z0-9_-]`). Returns undefined if storage/crypto is unavailable.
  */
 function getDeviceId(): string | undefined {
@@ -471,7 +466,7 @@ function nameFromSession(session: Session): string {
   return local || "Account";
 }
 
-/** Derive the avatar URL from a Supabase session — Google exposes `avatar_url`
+/** Derive the avatar URL from a Supabase session, Google exposes `avatar_url`
  * (and sometimes `picture`); GitHub uses `avatar_url`. Empty string when none. */
 function imageFromSession(session: Session): string {
   const meta = (session.user.user_metadata ?? {}) as Record<string, unknown>;
@@ -555,7 +550,7 @@ export interface AppApi {
   boardMoreLoading: boolean;
   /** Append the next page of the ranked danger list (infinite scroll). */
   loadMoreBoard: () => void;
-  /** Ensure the board bundle is loaded (idempotent) — for a rehydrated board screen. */
+  /** Ensure the board bundle is loaded (idempotent), for a rehydrated board screen. */
   ensureBoardLoaded: () => void;
   activity: ActivityView[];
   useCases: UseCase[];
@@ -685,14 +680,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // accumulate here and copy into reducer state, never read stale reducer state.
   const procStagesRef = useRef<LogChapter[]>([]);
   // The report id whose on-demand fetch is in flight. A ref (set synchronously
-  // before the await) dedupes concurrent ensureActiveReport calls — including a
-  // React StrictMode double-mount — without waiting for an async reducer commit.
+  // before the await) dedupes concurrent ensureActiveReport calls, including a
+  // React StrictMode double-mount, without waiting for an async reducer commit.
   const reportFetchRef = useRef<string | null>(null);
   // The user id whose scan history has already been hydrated this mount, so a
   // SIGNED_IN re-fire on tab-focus doesn't re-fetch it. Reset on sign-out.
   const historyUidRef = useRef<string | undefined>(undefined);
 
-  // The browser Supabase client — a stable single instance (useRef, NOT useMemo)
+  // The browser Supabase client, a stable single instance (useRef, NOT useMemo)
   // so we never spawn multiple GoTrueClient instances fighting over the auth
   // lock. Created lazily inside the auth effect (refs must not be written during
   // render); null until then, and null permanently if the publishable env is
@@ -733,7 +728,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ── rehydrate the durable navigation snapshot (mount, post-hydration) ──
   // Runs in a mount effect (NOT during render) so server and client first-paint
-  // agree — avoiding a hydration mismatch — then restores the persisted screen
+  // agree, avoiding a hydration mismatch, then restores the persisted screen
   // and live-report cache. A restored content view (report / leaderboard) is
   // flagged so the auth listener leaves it intact for a returning logged-in
   // user. Declared before the auth effect so it commits first; the auth
@@ -788,7 +783,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ── prefill the scan box from a `?repo=owner/repo` query param (mount) ──
   // The public "not yet scanned" page links home with the repo prefilled, so
-  // the user lands ready to scan it. We only prefill the input (no auto-scan) —
+  // the user lands ready to scan it. We only prefill the input (no auto-scan) , 
   // the user presses Scan when ready (scans are free + unlimited, never gated).
   useEffect(() => {
     try {
@@ -796,7 +791,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const repoParam = params.get("repo");
       if (repoParam) patch({ input: repoParam });
     } catch {
-      // No window / malformed URL — nothing to prefill.
+      // No window / malformed URL, nothing to prefill.
     }
   }, [patch]);
 
@@ -806,7 +801,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // mirror the session into reducer state and keep `sessionRef` fresh for the
   // scan path's Authorization token. Per Supabase guidance we do NOT `await`
   // any supabase call INSIDE the callback (it holds the auth lock and can
-  // deadlock) — the optional profiles-row fetch is deferred to a microtask.
+  // deadlock), the optional profiles-row fetch is deferred to a microtask.
   useEffect(() => {
     const supabase = getSupabase();
     if (!supabase) return;
@@ -832,7 +827,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // this also avoids the authenticated reports-read hang) and MERGED into
     // liveReports without clobbering a scan the user just ran this session. Deferred
     // out of the auth-lock callback; a mid-fetch sign-out/user-switch drops the stale
-    // hydrate. Never throws — history simply stays empty on any error.
+    // hydrate. Never throws, history simply stays empty on any error.
     const loadUserHistory = (session: Session) => {
       const uid = session.user.id;
       void (async () => {
@@ -939,7 +934,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // A real sign-in lands on the dashboard. This is SIGNED_IN for a same-tab
       // sign-in, OR the INITIAL_SESSION right after the auth-callback redirect
-      // (marked with ?auth=ok) — where the browser client already holds the
+      // (marked with ?auth=ok), where the browser client already holds the
       // cookie-borne session and so never emits SIGNED_IN. We read+strip the
       // marker HERE, at event time (not in the effect body), so a StrictMode
       // double-mount can't consume it before the live subscription fires, and a
@@ -961,7 +956,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // ROOT-CAUSE GUARD: Supabase re-emits SIGNED_IN on tab refocus / session
       // revalidation. Landing on every SIGNED_IN bounced a user viewing their
       // report back to the dashboard on tab switch-and-return. Only land on a
-      // GENUINE transition — when the session's user id differs from the one we
+      // GENUINE transition, when the session's user id differs from the one we
       // already landed. A re-fire for the same already-signed-in user is a no-op
       // for navigation, so the current screen (e.g. the report) survives.
       const nextUserId = session?.user.id;
@@ -973,9 +968,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // from the auth-callback redirect (no ?auth=ok): a returning logged-in
         // user. Record the user so a later SIGNED_IN re-fire is a navigation
         // no-op. If a meaningful content view is persisted (report / leaderboard),
-        // LEAVE IT — that is the whole point of the fix. We read the snapshot
+        // LEAVE IT, that is the whole point of the fix. We read the snapshot
         // DIRECTLY here (not a cross-effect ref) so the decision never depends on
-        // whether the rehydration effect has committed yet — it is idempotent and
+        // whether the rehydration effect has committed yet, it is idempotent and
         // timing-independent (review HIGH-1). Land on dashboard only when nothing
         // meaningful is persisted, silently (no "Signed in" toast).
         landedUserRef.current = nextUserId;
@@ -993,7 +988,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         liveScanToken.current++;
         clearNavSnapshot();
         // Clear ALL personal, user-scoped state so nothing bleeds into the next
-        // (or anonymous) session — history, cached live reports, usage counts, and
+        // (or anonymous) session, history, cached live reports, usage counts, and
         // the avatar. Public/board state is untouched.
         patch({
           screen: "home",
@@ -1055,14 +1050,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /**
    * Match the current input against a real cached repo (keyed "owner/name"). Returns the demo
    * id when the input clearly names one (so the showcase flows stay instant), or
-   * null when it does not — a null means "treat as a real repo and scan it live".
+   * null when it does not, a null means "treat as a real repo and scan it live".
    * Unlike the prototype's round-robin fallback, an unmatched input now falls
    * through to a real scan rather than silently picking a random demo.
    */
   const resolveDemoId = useCallback((): string | null => {
     const raw = (stateRef.current.input || "").trim();
     // An UNAMBIGUOUS npm target (npm: prefix, an npmjs.com package URL, or a scoped
-    // @scope/name) must always scan the real published artifact — never a seeded demo
+    // @scope/name) must always scan the real published artifact, never a seeded demo
     // that happens to share the name. The demo matcher below is a loose substring match,
     // so "npm:express" or "npmjs.com/package/express" would otherwise hit the express
     // demo. A bare famous name with no npm signal (just "express") stays a demo, as before.
@@ -1152,7 +1147,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         procError: null,
         procStages: [],
         // A non-null placeholder so the timeline shows a single live spinner
-        // immediately — a fast cache hit (no streamed stages) never flashes a
+        // immediately, a fast cache hit (no streamed stages) never flashes a
         // blank timeline before navigating to the report.
         procActiveCh: "Starting scan",
         procActiveLines: [],
@@ -1165,7 +1160,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const onStage = (stage: ScanStage): void => {
         if (token !== liveScanToken.current) return;
         if (stage.status === "active") {
-          // Carry the active stage's lines so a live "Queued — position N of M,
+          // Carry the active stage's lines so a live "Queued, position N of M,
           // ~X min" line stays visible WHILE waiting (most active stages send none,
           // in which case the chapter shows just its title + spinner as before).
           patch({
@@ -1190,7 +1185,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // attribute the scan server-side.
       const deviceId = getDeviceId();
       const accessToken = sessionRef.current?.access_token;
-      // Route to an npm or a GitHub scan by target kind — only the request shape
+      // Route to an npm or a GitHub scan by target kind, only the request shape
       // changes; streaming, onStage, headers, and error mapping are identical.
       const scanArgs: ScanArgs =
         target.kind === "npm"
@@ -1223,144 +1218,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           const report = result.report;
 
-          // ── INLINE DEEP RUN (the moat, no queue) ────────────────────────────
-          // The fast path tripped the escalation gate (deep) but has NOT detonated
-          // yet (no forensics). Do NOT navigate to the static report — stay on the
-          // processing screen and spawn a real sealed sandbox VM inline, streaming
-          // its milestones into the SAME timeline. We navigate only once the
-          // forensics are captured + attached, to a genuine "Sandbox run".
-          if (report.deep && !report.forensics && report.commit_sha) {
-            const sha = report.commit_sha;
-            // Use the CANONICAL owner/repo the report is actually stored under, NOT the
-            // user-typed input. GitHub redirects a renamed/transferred repo (e.g. the
-            // user types facebook/react but the canonical is react/react), and the
-            // fast-path stores the report + the sha under the canonical login. Passing
-            // the typed owner would make BOTH the /api/deep attach and the read-after-
-            // write re-fetch look up a (owner, repo, sha) row that doesn't exist → a 404
-            // "Report not found" → the detonation runs but never earns "Sandbox run".
-            const dOwner = report.owner;
-            const dRepo = report.name;
-            // Record WHY it escalated as an honest completed chapter, flip the
-            // timeline into deep mode, then let the deep stream drive the rest.
-            procStagesRef.current = [
-              ...procStagesRef.current,
-              {
-                ch: "Escalation",
-                kind: "warn",
-                lines: [
-                  "Fast-path signals were ambiguous — escalating to a live sandbox detonation.",
-                ],
-              },
-            ];
-            patch({
-              procDeep: true,
-              procStages: procStagesRef.current,
-              procActiveCh: "Spawning sealed sandbox VM",
-              procActiveLines: [],
-            });
-
-            const deep = await runDeepScan({ owner: dOwner, repo: dRepo, sha, onStage });
-            if (token !== liveScanToken.current) return;
-
-            // A genuine, nothing-is-running failure (dispatch failed / repo never
-            // scanned): stop here and show the static read + an honest note. Do NOT
-            // poll — there is no detonation to wait for.
-            if (!deep.ok && deep.fatal) {
-              const curF = stateRef.current;
-              patch({
-                screen: "report",
-                procLive: false,
-                procDeep: false,
-                activeRepoId: id,
-                liveReports: { ...curF.liveReports, [id]: report },
-                scanCount: curF.scanCount + 1,
-                scannedIds: curF.scannedIds.includes(id) ? curF.scannedIds : [...curF.scannedIds, id],
-                showLogs: false,
-              });
-              toast(deep.error, "var(--amber)");
-              return;
-            }
-
-            // Otherwise the detonation was dispatched. The Cloud Run container
-            // attaches its own forensics to the report row INDEPENDENTLY of the
-            // /api/deep response lifetime — so a serverless platform cutting the
-            // long-held stream (or the server's bounded wait elapsing) never means
-            // failure. POLL the public report row until forensics land (or a
-            // generous deadline), showing honest progress. This is the timeout-proof
-            // half of the dispatch: the server triggers + streams early stages, the
-            // client confirms the result.
-            let updated: typeof report | null = null;
-            if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-              const startedAt = Date.now();
-              const deadline = startedAt + DEEP_FORENSICS_POLL_MS;
-              while (token === liveScanToken.current) {
-                const rep = await fetchLatestReportRest(SUPABASE_URL, SUPABASE_ANON_KEY, dOwner, dRepo);
-                if (token !== liveScanToken.current) return;
-                if (rep?.forensics && rep.commit_sha === sha) {
-                  updated = rep;
-                  break;
-                }
-                if (Date.now() >= deadline) break;
-                // Honest live progress while the sandbox runs (the granular per-step
-                // timeline is preserved in the final report's own logs).
-                const secs = Math.round((Date.now() - startedAt) / 1000);
-                patch({
-                  procActiveCh: "Running in the isolated sandbox",
-                  procActiveLines: [`Detonating the repo and capturing its real behavior… (${secs}s)`],
-                });
-                await new Promise((res) => setTimeout(res, DEEP_FORENSICS_POLL_INTERVAL_MS));
-              }
-            }
-            if (token !== liveScanToken.current) return;
-
-            const finalReport = updated ?? report;
-            const cur = stateRef.current;
-            patch({
-              screen: "report",
-              procLive: false,
-              procDeep: false,
-              activeRepoId: id,
-              liveReports: { ...cur.liveReports, [id]: finalReport },
-              scanCount: cur.scanCount + 1,
-              scannedIds: cur.scannedIds.includes(id)
-                ? cur.scannedIds
-                : [...cur.scannedIds, id],
-              dynamicUsed: cur.dynamicUsed + 1,
-              showLogs: false,
-            });
-
-            if (updated?.forensics) {
-              // Refresh the board so the new world-map dot + deep-run count appear.
-              const supabase = getSupabase();
-              if (supabase) {
-                void fetchBoardData(supabase)
-                  .then((data) => {
-                    if (token === liveScanToken.current) patch({ board: data, boardPage: 0 });
-                  })
-                  .catch(() => {});
-              }
-              toast("Sandbox run complete. Forensics attached.", bandColor(finalReport.score));
-            } else if (!deep.ok) {
-              // A non-fatal error, and forensics never landed within the poll window.
-              toast(deep.error, "var(--amber)");
-            } else {
-              // Dispatched and still running past the poll window — honest, not a
-              // false "no record": the report updates itself once it finishes.
-              toast(
-                "The sandbox run is still finishing — refresh in a moment to see the full result.",
-                "var(--amber)",
-              );
-            }
-            return;
-          }
-
-          // ── fast-path resolution (no escalation) ────────────────────────────
-          const cur = stateRef.current;
+          // The 2.0 engine runs the code in the sandbox on every scan; the
+          // result is final when the stream ends.
+                    const cur = stateRef.current;
           patch({
             screen: "report",
             procLive: false,
             activeRepoId: id,
             liveReports: { ...cur.liveReports, [id]: report },
+            liveAds: { ...cur.liveAds, [id]: result.ad },
             scanCount: cur.scanCount + 1,
             scannedIds: cur.scannedIds.includes(id) ? cur.scannedIds : [...cur.scannedIds, id],
             stage1Used: cur.stage1Used + (report.deep ? 0 : 1),
@@ -1373,7 +1239,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         })
         .catch((err: unknown) => {
           // This chain also covers the inline deep-run branch above (runDeepScan,
-          // fetchLatestReportRest, fetchBoardData) — those are documented as
+          // fetchLatestReportRest, fetchBoardData), those are documented as
           // non-throwing but that contract isn't airtight, so surface whatever
           // real message comes through instead of always discarding it.
           if (token !== liveScanToken.current) return;
@@ -1382,7 +1248,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           patch({ failed: true, procError: message, procLive: false, procActiveCh: null });
         });
     },
-    [patch, toast, getSupabase],
+    [patch, toast],
   );
 
   const doScan = useCallback(() => {
@@ -1409,7 +1275,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       demoId ??
       (target!.kind === "npm" ? `npm/${target!.package}` : `${target!.owner}/${target!.repo}`);
 
-    // Scans are FREE and UNLIMITED — NEVER gated by sign-in or an ad (BUG-11).
+    // Scans are FREE and UNLIMITED, NEVER gated by sign-in or an ad (BUG-11).
     // Sign-in is offered only to keep history + contribute to the public vetted-
     // repo database; it never blocks a scan, so there is no login/ad gate here.
     if (demoId) {
@@ -1432,21 +1298,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     // ── REAL path: a real backend scan, run immediately (no gate). The target is
-    // a GitHub repo or an npm package; the edge function resolves the default
+    // a GitHub repo or an npm package; the scan engine resolves the default
     // branch (GitHub) or the published version/dist-tag (npm). ──
-    // A target we already scanned this session: serve the live-cached report.
-    // EXCEPT when that cached copy is an escalated-but-incomplete sandbox run
-    // (deep === true, no forensics yet) — that state can arrive here from the
-    // account-history hydration (loadUserHistory reads the DB's latest row
-    // as-is) just as easily as from an in-session scan, so without this check
-    // a genuinely incomplete run would be served as "final" forever: every
-    // resubmission of the same repo would short-circuit right back to the
-    // stale "Sandbox run incomplete" badge and never reach the retry path
-    // below (startLiveProcessing -> runScan -> the deep-retry branch) that
-    // already exists specifically to finish an interrupted detonation.
+    // A target already scanned this session: serve the report from this session.
     const cachedReport = stateRef.current.liveReports[id];
-    const cachedIsIncompleteRun = Boolean(cachedReport?.deep && !cachedReport.forensics);
-    if (cachedReport && !cachedIsIncompleteRun && stateRef.current.scannedIds.includes(id)) {
+    if (cachedReport && stateRef.current.scannedIds.includes(id)) {
       patch({
         activeRepoId: id,
         sourceScreen: from,
@@ -1502,12 +1358,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Make sure the active report screen has a report to render — the guard that
+   * Make sure the active report screen has a report to render, the guard that
    * makes the report screen NEVER blank. When `screen === "report"` for an id
    * not already in `liveReports`/REPOS (a danger-board click, a deep-link, or a
    * rehydrated session), fetch the latest report for that owner/repo and store
    * it. ReportScreen shows a loading state meanwhile and a graceful "couldn't
-   * load" card on failure — it never returns null. Decision logic is the pure,
+   * load" card on failure, it never returns null. Decision logic is the pure,
    * unit-tested `decideReportFetch`; the in-flight ref dedupes concurrent calls
    * (StrictMode-safe) and the resolve is guarded by the live activeRepoId so a
    * stale fetch for a since-navigated id is ignored.
@@ -1536,7 +1392,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       case "fetch": {
         const fetchId = id as string;
         if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-          // Public env missing — graceful error, never a stuck spinner.
+          // Public env missing, graceful error, never a stuck spinner.
           patch({ reportErrorId: fetchId, reportLoadingId: null });
           return;
         }
@@ -1596,7 +1452,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!force && cur.board.loaded) return;
       const supabase = getSupabase();
       if (!supabase) {
-        // No client (env missing) — leave the honest empty board; do not fake.
+        // No client (env missing), leave the honest empty board; do not fake.
         patch({ boardLoading: false });
         return;
       }
@@ -1648,7 +1504,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const openLeaderboard = useCallback(() => {
     patch({ lbReturn: stateRef.current.screen, screen: "leaderboard" });
-    // Fetch real board data on first navigation (lazy — never on the homepage).
+    // Fetch real board data on first navigation (lazy, never on the homepage).
     loadBoard();
   }, [loadBoard, patch]);
   const backFromLeaderboard = useCallback(
@@ -1665,8 +1521,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return `${origin.replace(/\/$/, "")}/auth/callback`;
   }, []);
 
-  /** Start an OAuth provider — a full-page redirect; the callback finishes the session.
-   * Google only — GitHub sign-in was explicitly skipped for launch and is
+  /** Start an OAuth provider, a full-page redirect; the callback finishes the session.
+   * Google only, GitHub sign-in was explicitly skipped for launch and is
    * not a configured Supabase provider, so this never widens back to accept it. */
   const signInWithProvider = useCallback(
     (provider: "google", label: string) => {
@@ -1771,7 +1627,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         a.remove();
         URL.revokeObjectURL(url);
       } catch {
-        toast(`Could not generate the ${failureNoun} — a network error occurred.`, "var(--amber)");
+        toast(`Could not generate the ${failureNoun}, a network error occurred.`, "var(--amber)");
       }
     },
     [toast],
@@ -1785,7 +1641,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
     // Real headless-browser render of the ACTUAL rendered report page (Task 1):
-    // this is no longer window.print() — the server launches a headless Chromium,
+    // this is no longer window.print(), the server launches a headless Chromium,
     // navigates to the live report page, and returns a real single-page PDF.
     // The theme param matches what is on screen right now, so the download looks
     // exactly like what the user was looking at when they clicked PDF.
@@ -1818,7 +1674,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const path = r ? `${r.owner}/${r.name}` : "";
     // Copy the real public report URL (the SEO surface) when one is available.
     // The window-less fallback is effectively unreachable (copyLink only ever
-    // runs from a live click), but it previously hardcoded the prod domain —
+    // runs from a live click), but it previously hardcoded the prod domain , 
     // use the same NEXT_PUBLIC_SITE_URL the SSR page and API routes read from,
     // so it's honest about a non-prod deployment even in that dead path.
     const origin =
@@ -1829,7 +1685,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       navigator.clipboard?.writeText(url);
     } catch {
-      // Clipboard unavailable (insecure context / denied) — still confirm visually.
+      // Clipboard unavailable (insecure context / denied), still confirm visually.
     }
     toast("Link copied: " + url.replace(/^https?:\/\//, ""), "var(--green)");
   }, [toast]);
@@ -1926,7 +1782,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The processing screen drives off a demo repo's known logs OR, for a real
   // scan in flight, the generic live timeline. `procLogs` is whichever applies.
   const procDemoRepo = state.procRepoId ? REPOS[state.procRepoId] : null;
-  // Demo flow only — a live scan's timeline comes from real streamed stages.
+  // Demo flow only, a live scan's timeline comes from real streamed stages.
   const procLogs = useMemo<LogChapter[]>(
     () => procDemoRepo?.logs ?? [],
     [procDemoRepo],
@@ -1961,7 +1817,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
       if (state.procActiveCh != null) {
         // The active chapter normally shows just its title + spinner; when the
-        // active stage carried lines (the live "Queued — position N of M" line),
+        // active stage carried lines (the live "Queued, position N of M" line),
         // render them so the user sees their real, updating queue position.
         out.push(
           mk({ ch: state.procActiveCh, kind: "ok", lines: state.procActiveLines }, "active", true),
@@ -2081,7 +1937,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return groups;
   }, [history]);
 
-  // Real counts only — the user's actual scanned ids and how many scored
+  // Real counts only, the user's actual scanned ids and how many scored
   // dangerous. No invented padding (BUG: was `+ 5` / `+ 2`).
   const scannedCount = state.scannedIds.length;
   const protectedCount = state.scannedIds.filter((id) => {

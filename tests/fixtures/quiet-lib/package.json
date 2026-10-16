@@ -1,0 +1,7 @@
+{
+  "name": "cr-fixture-quiet-lib",
+  "version": "1.0.0",
+  "description": "ClaudeRabbit test fixture: a string padding helper with no install scripts and no network access.",
+  "main": "index.js",
+  "license": "MIT"
+}

@@ -29,19 +29,21 @@ const eslintConfig = [
   },
   {
     // The Next.js app lint scope is the TypeScript web layer only. The other trees
-    // are different runtimes/artifacts and are not linted here: supabase/functions
-    // is Deno, design-source is the raw design export, and sandbox is the host's
-    // Python/bash orchestration plus intentional CommonJS malware fixtures.
+    // are different runtimes/artifacts and are not linted here: design-source is the
+    // raw design export, and sandbox/e2b is the E2B template plus the in-VM guest
+    // harness (Python and bash that run inside the detonation sandbox).
     // `.claude/**` is the (gitignored) Claude Code harness dir — it can contain
     // sibling worktree checkouts of this very repo (each with its own nested
     // sandbox/), so it must be ignored too or ESLint recurses into their fixtures.
     ignores: [
       "design-source/**",
-      "supabase/functions/**",
       "sandbox/**",
-      "**/sandbox/**",
+      // Fixture packages the keyless e2e test installs and runs (CommonJS on purpose).
+      "tests/fixtures/**",
       ".claude/**",
       ".next/**",
+      // `vercel build` writes bundled third-party output under .vercel; never lint it.
+      ".vercel/**",
     ],
   },
 ];

@@ -19,8 +19,8 @@ import { reportToMarkdown } from "@/lib/export-markdown";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Same owner/repo segment charset used across the app (parse-repo.ts /
-// attach-forensics / /api/deep) — 1-100 chars of [A-Za-z0-9._-].
+// Same owner/repo segment charset used across the app (parse-repo.ts and the
+// engine resolver): 1-100 chars of [A-Za-z0-9._-].
 const SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 // Same pattern as app/api/export/pdf/route.ts — never hardcode the published
 // domain; fall back to the real local dev origin.
