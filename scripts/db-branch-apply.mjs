@@ -8,6 +8,11 @@
  *   node scripts/db-branch-apply.mjs --ref <branch-ref> --step down
  *   node scripts/db-branch-apply.mjs --ref <branch-ref> --step roundtrip   (up, down, up)
  *   node scripts/db-branch-apply.mjs --ref <branch-ref> --step verify
+ *   node scripts/db-branch-apply.mjs --ref <branch-ref> --set post-cutover --step roundtrip
+ *
+ * `--set post-cutover` targets supabase/migrations-post-cutover (drop the 1.0
+ * deep queue and the dead daily quota). Those run only after the owner retires
+ * 1.0, because the live 1.0 deep-queue function calls the RPCs they drop.
  *
  * Refuses the production project ref (mjvlczaytkhvsolnhhkz) and any ref listed
  * in CR_PRODUCTION_REFS (comma separated). `--files <prefix>` selects which up
@@ -22,8 +27,10 @@ import { fileURLToPath } from "node:url";
 
 export const PRODUCTION_REFS = new Set(["mjvlczaytkhvsolnhhkz"]);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const UP_DIR = path.join(ROOT, "supabase", "migrations");
-const DOWN_DIR = path.join(ROOT, "supabase", "migrations-down");
+const SETS = {
+  production: { up: path.join(ROOT, "supabase", "migrations"), down: path.join(ROOT, "supabase", "migrations-down") },
+  "post-cutover": { up: path.join(ROOT, "supabase", "migrations-post-cutover"), down: path.join(ROOT, "supabase", "migrations-post-cutover") },
+};
 
 /**
  * @param {string | undefined} ref
@@ -70,7 +77,15 @@ function main(argv) {
     process.stderr.write(`${refusal}\n`);
     process.exit(2);
   }
-  const all = readdirSync(UP_DIR).filter((f) => f.endsWith(".sql")).sort();
+  const setName = arg("set", argv) ?? "production";
+  const dirs = SETS[setName];
+  if (!dirs) {
+    process.stderr.write(`unknown --set ${setName}\n`);
+    process.exit(2);
+  }
+  const UP_DIR = dirs.up;
+  const DOWN_DIR = dirs.down;
+  const all = readdirSync(UP_DIR).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")).sort();
   const ups = all.filter((f) => f.startsWith(prefix));
   const up = () => ups.forEach((f) => run(ref, path.join(UP_DIR, f)));
   const down = () => [...ups].reverse().forEach((f) => run(ref, path.join(DOWN_DIR, f.replace(/\.sql$/, ".down.sql"))));

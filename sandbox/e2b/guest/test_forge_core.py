@@ -147,6 +147,15 @@ class ForgeRegistryTests(unittest.TestCase):
         down.routes = {"https://registry.npmjs.org/left-pad": (503, {}, b"")}
         d = fc.Forge(POLICY, self.mirror, down).handle(req("GET", "registry.npmjs.org", "/left-pad", {"accept": "application/json"}))
         self.assertEqual((d.status, d.forged_kind, d.body), (200, "mirror", PACKUMENT))
+        self.assertEqual(d.integrity, "mirror-metadata", "metadata served from the mirror is marked, never silently trusted")
+
+    def test_blob_verified_only_against_mirror_metadata_is_marked(self):
+        up = FakeUpstream({"https://registry.npmjs.org/left-pad": (200, {"content-type": "application/json"}, PACKUMENT)})
+        fc.Forge(POLICY, self.mirror, up).handle(req("GET", "registry.npmjs.org", "/left-pad", {"accept": "application/json"}))
+        down = FakeUpstream({TARBALL_URL: (200, {}, TARBALL)})
+        down.routes["https://registry.npmjs.org/left-pad"] = (503, {}, b"")
+        d = fc.Forge(POLICY, self.mirror, down).handle(req("GET", "registry.npmjs.org", "/left-pad/-/left-pad-1.3.0.tgz"))
+        self.assertEqual((d.status, d.integrity), (200, "mirror-metadata"), "a digest from mirror metadata is recorded as such")
 
     def test_pypi_file_verified_via_index(self):
         idx = json.dumps({"files": [{"url": WHEEL_URL, "hashes": {"sha256": WHEEL_SHA}}]}).encode()

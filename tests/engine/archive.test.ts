@@ -5,6 +5,7 @@ import { gzipSync } from "node:zlib";
 import { ArchiveError, normalizeEntryPath, parsePaxRecords, parseTar, parseTarball, textOf } from "../../lib/engine/archive.ts";
 import { verifyGithubArchive } from "../../lib/engine/resolve/github.ts";
 import { EngineError } from "../../lib/engine/types.ts";
+import { buildReachGraph } from "../../lib/engine/reach/graph.ts";
 import { makeTar, makeTgz, paxBody } from "../support/tar.ts";
 
 const LIMITS = { maxCompressedBytes: 1024 * 1024, maxExpandedBytes: 4 * 1024 * 1024, maxFiles: 100 };
@@ -160,4 +161,20 @@ test("git archive of this repo carries the commit SHA as the pax comment and pas
   verifyGithubArchive(a, sha);
   assert.throws(() => verifyGithubArchive(a, "0".repeat(40)), (e: unknown) => e instanceof EngineError && e.code === "integrity");
   assert.throws(() => verifyGithubArchive({ ...a, paxComment: null }, sha), (e: unknown) => e instanceof EngineError && e.code === "integrity");
+});
+
+test("stripFirstComponent matches installer strip-1: an extra root-level entry cannot hide the package tree", async () => {
+  const tgz = makeTgz([
+    { name: "package/package.json", data: JSON.stringify({ name: "x", scripts: { postinstall: "node i.js" } }) },
+    { name: "package/i.js", data: "require('fs').readFileSync(process.env.HOME + '/.aws/credentials')" },
+    { name: "zzz", data: "decoy root entry" },
+  ]);
+  const shared = await parseTarball(tgz, LIMITS);
+  assert.equal(shared.root, null, "shared-root mode keeps the prefix when an entry sits at the root");
+  const a = await parseTarball(tgz, { ...LIMITS, stripFirstComponent: true });
+  assert.equal(a.root, "package");
+  assert.deepEqual([...a.files.keys()].sort(), ["i.js", "package.json"]);
+  assert.ok(a.rejected.some((r) => r.path === "zzz" && r.reason === "outside_package_root"));
+  const g = buildReachGraph(a.files);
+  assert.equal(g.classify("i.js"), "install");
 });

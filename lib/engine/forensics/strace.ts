@@ -14,7 +14,21 @@
  * at the harness's cwd, is inherited across clone and follows chdir.
  */
 
+import { isPersistencePath } from "../score";
 import type { FileEventData, Phase, ProcessEventData } from "../types";
+
+const SCORED_BINARIES = new Set(["curl", "wget", "nc", "ncat", "netcat", "powershell", "pwsh", "powershell.exe", "crontab", "base64", "bash", "zsh"]);
+
+/** A file event the score reads: a decoy read or a write to a persistence location. */
+export function isScoreRelevantFile(op: FileEventData["op"], path: string): boolean {
+  return op === "read_decoy" || (op !== "unlink" && isPersistencePath(path));
+}
+
+/** A process the score reads: a download, shell, decode or crontab binary. */
+export function isScoreRelevantProcess(argv: string[]): boolean {
+  const a0 = argv[0] ?? "";
+  return SCORED_BINARIES.has(a0.slice(a0.lastIndexOf("/") + 1));
+}
 
 /** Decoy credential files planted for uid 1001 (sandbox/e2b/guest/cr-detonate.sh step 5). */
 export const DECOY_PATHS = [
@@ -38,6 +52,13 @@ export const MAX_FILE_EVENTS = 250;
 export interface StraceParse {
   processes: ProcessEventData[];
   files: FileEventData[];
+  /**
+   * Datagram sends to a non-loopback address other than DNS (sendto/sendmsg
+   * carrying a destination), as "udp <addr>:<port>". The fence drops them, so
+   * only the trace says where they were going. Attempts count whether or not
+   * the send returned an error.
+   */
+  datagrams: string[];
   stats: { lines: number; unparsed: number; droppedProcesses: number; droppedFiles: number };
 }
 
@@ -245,6 +266,7 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
   const stats = { lines: 0, unparsed: 0, droppedProcesses: 0, droppedFiles: 0 };
   const processes: ProcessEventData[] = [];
   const files: FileEventData[] = [];
+  const datagrams = new Set<string>();
   const seenFiles = new Set<string>();
   const ppid = new Map<number, number>();
   const cwd = new Map<number, string | null>();
@@ -260,7 +282,9 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
     const key = `${op}:${path}`;
     if (seenFiles.has(key)) return;
     seenFiles.add(key);
-    if (files.length >= MAX_FILE_EVENTS) {
+    // Past the display cap only score-relevant events are kept, so a flood of
+    // benign file events can never push a decoy read or persistence write out.
+    if (files.length >= MAX_FILE_EVENTS && !isScoreRelevantFile(op, path)) {
       stats.droppedFiles++;
       return;
     }
@@ -270,6 +294,11 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
   for (const call of straceCalls(text, stats)) {
     const { pid, name, ret } = call;
     const here = cwdOf(pid);
+    if (name === "sendto" || name === "sendmsg" || name === "sendmmsg") {
+      const d = datagramDestination(call.args);
+      if (d && datagrams.size < 100) datagrams.add(d);
+      continue;
+    }
     if (name === "clone" || name === "clone3" || name === "fork" || name === "vfork") {
       if (ret !== null && ret > 0) {
         ppid.set(ret, pid);
@@ -300,7 +329,7 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
           const p = str(args[name === "execve" ? 0 : 1]);
           if (p) argv.push(p);
         }
-        if (processes.length >= MAX_PROCESS_EVENTS) {
+        if (processes.length >= MAX_PROCESS_EVENTS && !isScoreRelevantProcess(argv)) {
           stats.droppedProcesses++;
           break;
         }
@@ -356,5 +385,22 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
         break;
     }
   }
-  return { processes, files, stats };
+  return { processes, files, datagrams: [...datagrams].sort(), stats };
+}
+
+const V4_DEST = /sin_port=htons\((\d+)\),\s*sin_addr=inet_addr\("([0-9.]+)"\)/;
+const V6_DEST = /sin6_port=htons\((\d+)\).*?inet_pton\(AF_INET6,\s*"([0-9a-fA-F:.]+)"/;
+
+/** "udp <addr>:<port>" for a datagram send to a non-loopback, non-DNS destination; null otherwise. */
+export function datagramDestination(args: string): string | null {
+  const m4 = V4_DEST.exec(args);
+  const m6 = m4 ? null : V6_DEST.exec(args);
+  const m = m4 ?? m6;
+  if (!m) return null;
+  const port = Number(m[1]);
+  const addr = m[2]!;
+  if (port === 53 || port === 5353) return null;
+  if (m4 && addr.startsWith("127.")) return null;
+  if (m6 && (addr === "::1" || addr.startsWith("::ffff:127."))) return null;
+  return m6 ? `udp [${addr}]:${port}` : `udp ${addr}:${port}`;
 }

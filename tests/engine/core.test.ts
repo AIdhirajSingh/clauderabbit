@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_E2B_TEMPLATE, DEFAULT_MODEL_ID, isOperatorKey, loadEngineConfig, missingKeys } from "../../lib/engine/config.ts";
+import { deadlineViolations, DEFAULT_DEADLINES, DEFAULT_E2B_TEMPLATE, DEFAULT_MODEL_ID, HARNESS_OVERHEAD_MS, isOperatorKey, loadEngineConfig, missingKeys } from "../../lib/engine/config.ts";
 import { chunkUtf8, createRunEventBus, eventLine, splitNdjson, TRANSCRIPT_BYTES_PER_SOURCE } from "../../lib/engine/events.ts";
 import { adFor, adText, badgeUrl, houseAd } from "../../lib/engine/ads.ts";
 import { computeReputation, fetchGithubOwner, fetchWeeklyDownloads, maintainerChangedWithin, ownerEstablished, type OwnerCache, type OwnerInfo } from "../../lib/engine/reputation.ts";
@@ -207,4 +207,15 @@ test("reputation: signals and unavailable sources are reported separately", () =
   const failed = computeReputation({ owner: null, ownerLookedUp: true }, NOW);
   assert.deepEqual(failed.unavailable, ["GitHub owner history (lookup failed)"]);
   assert.equal(failed.ownerAgeDays, null);
+});
+
+test("config: the detonation deadline covers install, entry and every harness step", () => {
+  assert.deepEqual(deadlineViolations(DEFAULT_DEADLINES), []);
+  assert.ok(DEFAULT_DEADLINES.detonateTotalMs >= DEFAULT_DEADLINES.installMs + DEFAULT_DEADLINES.entryMs + HARNESS_OVERHEAD_MS);
+  const old = { ...DEFAULT_DEADLINES, detonateTotalMs: 30_000, scanMs: 75_000, sandboxTimeoutMs: 90_000 };
+  const v = deadlineViolations(old);
+  assert.equal(v.length, 1, v.join("; "));
+  assert.match(v[0]!, /detonateTotalMs 30000 < installMs \+ entryMs \+ harness overhead/);
+  assert.match(deadlineViolations({ ...DEFAULT_DEADLINES, sandboxTimeoutMs: 80_000 }).join(" "), /sandboxTimeoutMs/);
+  assert.match(deadlineViolations({ ...DEFAULT_DEADLINES, scanMs: 60_000 }).join(" "), /scanMs/);
 });

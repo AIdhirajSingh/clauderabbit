@@ -12,7 +12,10 @@
 #   /root/.cr/canary-patterns.txt  canary values and their encodings, one per line
 # Output: /root/out.tgz holding /root/out/{result.json,checks.jsonl,capture.jsonl,
 #   capture.probe.jsonl,trace.install,trace.entry,deps.json,written.txt,canary_files.txt,
-#   install.out,install.err,entry.out,entry.err,forge.log}
+#   install.out,install.err,entry.out,entry.err,forge.log,egress_drops.json}
+# Every collection step has its own timeout; detonate.ts checks that the sum of
+# the budgets below plus install and entry stays inside its command deadline
+# (lib/engine/config.ts HARNESS_OVERHEAD_MS).
 set -euo pipefail
 umask 022
 
@@ -25,7 +28,7 @@ CR_UID=1001
 NODE_BIN=/opt/cr/node/bin
 UV_BIN=/opt/cr/tools/bin
 FAKETIME_LIB=/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1
-TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,connect,chmod,fchmodat,chdir,clone,clone3,fork,vfork
+TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,connect,sendto,sendmsg,sendmmsg,chmod,fchmodat,chdir,clone,clone3,fork,vfork
 MAX_LOG=262144
 
 log() { printf 'cr: %s\n' "$*"; }
@@ -72,6 +75,9 @@ chmod 0644 /etc/cr/npmrc-empty
 nft -f - <<NFT
 flush ruleset
 table inet cr {
+  counter cr_udp_drop {}
+  counter cr_icmp_drop {}
+  counter cr_other_drop {}
   chain out_nat {
     type nat hook output priority -100;
     meta skuid $CR_UID udp dport 53 redirect to :5353
@@ -80,12 +86,14 @@ table inet cr {
   }
   chain out_filter {
     type filter hook output priority 0; policy accept;
-    meta skuid $CR_UID ip daddr 127.0.0.0/8 tcp dport { 49983, 8081 } reject with tcp reset
+    meta skuid $CR_UID tcp dport { 49983, 8081 } reject with tcp reset
     meta skuid $CR_UID ip daddr 127.0.0.0/8 accept
     meta skuid $CR_UID tcp dport 8080 accept
     meta skuid $CR_UID udp dport 5353 accept
-    meta skuid $CR_UID meta nfproto ipv6 ip6 daddr != ::1 drop
-    meta skuid $CR_UID meta l4proto != tcp drop
+    meta skuid $CR_UID meta l4proto udp counter name cr_udp_drop drop
+    meta skuid $CR_UID meta l4proto { icmp, ipv6-icmp } counter name cr_icmp_drop drop
+    meta skuid $CR_UID meta nfproto ipv6 reject
+    meta skuid $CR_UID meta l4proto != tcp counter name cr_other_drop drop
   }
 }
 NFT
@@ -99,7 +107,7 @@ echo "probe $(date +%s.%N)" >"$OUT/phase"
   --set block_global=false --set termlog_verbosity=warn \
   -s /opt/cr/forge/forge_addon.py >"$OUT/forge.log" 2>&1 &
 FORGE_PID=$!
-for _ in $(seq 1 100); do
+for _ in $(seq 1 50); do
   if ss -ltn 'sport = :8080' | grep -q LISTEN && ss -lun 'sport = :5353' | grep -q 5353; then break; fi
   if ! kill -0 "$FORGE_PID" 2>/dev/null; then log "forge exited"; check forge_up false "mitmdump exited"; exit 3; fi
   sleep 0.1
@@ -109,10 +117,13 @@ check forge_up true "mitmdump pid $FORGE_PID"
 
 # ---- 4. containment probe (before any repo code) --------------------------------
 PROBE_BODY=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
-  curl -sS --max-time 4 http://example.invalid/cr-probe 2>&1 || true)
+  curl -sS --max-time 2 http://example.invalid/cr-probe 2>&1 || true)
 PROBE_TLS=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
-  curl -sS --max-time 4 https://probe.cr-fixture.invalid/cr-probe 2>&1 || true)
-if runuser -u "$CR_USER" -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/49983' 2>/dev/null; then ENVD_REACHED=1; else ENVD_REACHED=0; fi
+  curl -sS --max-time 2 https://probe.cr-fixture.invalid/cr-probe 2>&1 || true)
+ENVD_REACHED=0
+for ENVD_ADDR in 127.0.0.1 ::1; do
+  if timeout 1 runuser -u "$CR_USER" -- bash -c "exec 3<>/dev/tcp/$ENVD_ADDR/49983" 2>/dev/null; then ENVD_REACHED=1; fi
+done
 sleep 0.3
 mv "$OUT/capture.jsonl" "$OUT/capture.probe.jsonl"
 : >"$OUT/capture.jsonl"
@@ -176,7 +187,9 @@ if [ "$MODE" = "npm-package" ]; then
   INSTALL_CMD="npm install --no-audit --no-fund /work/pkg.tgz"
 else
   install -d -o "$CR_USER" -g "$CR_USER" /work/src
-  runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src
+  if ! timeout 6 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then
+    check extract_complete false "repo extraction did not finish inside 6 s"
+  fi
   WORKDIR=/work/src
   if [ -f /work/src/package.json ]; then
     ECO=npm
@@ -231,7 +244,7 @@ else
   check install_manifest false "no package.json, pyproject.toml, setup.py or requirements.txt"
 fi
 if [ "$ECO" = python ] && [ -d /work/.venv ]; then
-  find /work/.venv -name '*.pth' -newer "$RUN/start.marker" -type f >"$OUT/pth.txt" 2>/dev/null || true
+  timeout 2 find /work/.venv -name '*.pth' -newer "$RUN/start.marker" -type f >"$OUT/pth.txt" 2>/dev/null || true
 fi
 
 # ---- 9. entry phase ---------------------------------------------------------------------
@@ -300,7 +313,7 @@ if [ -s "$ENTRY_SCRIPT" ]; then
   chmod 0644 "$ENTRY_SCRIPT"
   # Clock check: one faked second must pass in well under one real second.
   C0=$(now_ms)
-  CLOCK_FAKE=$(runuser -u "$CR_USER" -- env -i LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 \
+  CLOCK_FAKE=$(timeout 3 runuser -u "$CR_USER" -- env -i LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 \
     bash -c 'a=$(date +%s%3N); sleep 1; b=$(date +%s%3N); echo $((b-a))' 2>/dev/null || echo 0)
   CLOCK_REAL=$(( $(now_ms) - C0 ))
   [[ "$CLOCK_FAKE" =~ ^[0-9]+$ ]] || CLOCK_FAKE=0
@@ -334,23 +347,36 @@ echo "collect $(date +%s.%N)" >"$OUT/phase"
 # ---- 10. collect ---------------------------------------------------------------------------
 DEPS_KIND=none
 if [ "$ECO" = npm ] && [ -d "$WORKDIR/node_modules" ]; then
-  ( cd "$WORKDIR" && timeout 10 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" npm ls --all --json --offline ) >"$OUT/deps.json" 2>/dev/null || true
+  ( cd "$WORKDIR" && timeout 3 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" npm ls --all --json --offline ) >"$OUT/deps.json" 2>/dev/null || true
   DEPS_KIND=npm-ls
 elif [ "$ECO" = python ] && [ -x /work/.venv/bin/python ]; then
-  timeout 10 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" uv pip list --python /work/.venv/bin/python --format json >"$OUT/deps.json" 2>/dev/null || true
+  timeout 3 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" uv pip list --python /work/.venv/bin/python --format json >"$OUT/deps.json" 2>/dev/null || true
   DEPS_KIND=uv-pip-list
 fi
 pkill -KILL -u "$CR_UID" || true
 
-find / /tmp /home /work /var /etc /usr/local -xdev \
+# Written files, NUL-separated so a file name holding a newline can never turn
+# into a second path (a FIFO or device the root grep would block on).
+set +e
+timeout 5 find / /tmp /home /work /var /etc /usr/local -xdev \
   \( -path /proc -o -path /sys -o -path /dev -o -path /root -o -path /opt/cr -o -path /run/cr \) -prune \
-  -o -type f -newer "$RUN/start.marker" -print 2>/dev/null | sort -u | head -n 20000 >"$OUT/written.txt" || true
+  -o -type f -newer "$RUN/start.marker" -print0 2>/dev/null >"$RUN/written.0"
+FIND_EXIT=$?
+set -e
+[ "$FIND_EXIT" = 124 ] && check canary_file_scan false "written-file listing passed its 5 s budget"
+tr '\0' '\n' <"$RUN/written.0" | head -n 20000 >"$OUT/written.txt" || true
 : >"$OUT/canary_files.txt"
-: >"$RUN/check-files.txt"
-grep -v -E '^/(work|home/cr/\.npm|home/cr/\.cache)/' "$OUT/written.txt" | head -n 5000 >>"$RUN/check-files.txt" || true
-grep -E '^/work/' "$OUT/written.txt" | grep -v -E '/node_modules/\.cache/|/\.venv/lib/' | head -n 5000 >>"$RUN/check-files.txt" || true
-if [ -s "$RUN/check-files.txt" ]; then
-  tr '\n' '\0' <"$RUN/check-files.txt" | xargs -0 -r grep -l -s -F -f "$CRDIR/canary-patterns.txt" -- >>"$OUT/canary_files.txt" 2>/dev/null || true
+# Candidates: written regular files outside the npm/uv caches and the venv tree.
+# Every uid 1001 process is dead, so nothing can swap a file for a FIFO now; grep
+# skips devices and FIFOs anyway, and its timeout bounds a huge or sparse file
+# (a timeout is reported, and the scorer treats the record as cut).
+grep -z -v -E '^/(home/cr/\.npm|home/cr/\.cache)/|/node_modules/\.cache/|/\.venv/lib/' "$RUN/written.0" | head -z -n 10000 >"$RUN/check-files.0" || true
+if [ -s "$RUN/check-files.0" ]; then
+  set +e
+  timeout 3 xargs -0 -r grep -l -s -D skip -F -f "$CRDIR/canary-patterns.txt" -- <"$RUN/check-files.0" >>"$OUT/canary_files.txt" 2>/dev/null
+  GREP_EXIT=$?
+  set -e
+  [ "$GREP_EXIT" = 124 ] && check canary_file_scan false "canary search of written files passed its 3 s budget"
 fi
 
 kill "$FORGE_PID" 2>/dev/null || true
@@ -359,9 +385,37 @@ wait "$FORGE_PID" 2>/dev/null || true
 for f in install.out install.err entry.out entry.err forge.log; do
   if [ -f "$OUT/$f" ]; then truncate -s "<$MAX_LOG" "$OUT/$f"; fi
 done
-for f in trace.install trace.entry capture.jsonl written.txt; do
-  if [ -f "$OUT/$f" ]; then truncate -s "<8M" "$OUT/$f"; fi
+# Egress the fence dropped (UDP other than DNS, ICMP, other non-TCP), per protocol.
+DROPS='{}'
+for c in udp icmp other; do
+  n=$(nft -j list counter inet cr "cr_${c}_drop" 2>/dev/null | jq '[.nftables[] | .counter? | select(. != null) | .packets] | add // 0' 2>/dev/null || echo 0)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  DROPS=$(jq -c --arg k "$c" --argjson v "$n" '. + {($k): $v}' <<<"$DROPS")
 done
+printf '%s\n' "$DROPS" >"$OUT/egress_drops.json"
+
+# Size caps. The capture keeps scored records ahead of registry traffic before it
+# is cut; traces keep their head and tail. Any cut is reported as a check, and
+# the scorer caps a run with a cut record.
+CAP=8388608
+if [ -f "$OUT/capture.jsonl" ] && [ "$(stat -c %s "$OUT/capture.jsonl")" -gt "$CAP" ]; then
+  SIZE=$(stat -c %s "$OUT/capture.jsonl")
+  if timeout 3 jq -c 'select((.forged_kind == "mirror" or .forged_kind == "registry") | not)' "$OUT/capture.jsonl" >"$RUN/cap.scored" 2>/dev/null \
+    && timeout 3 jq -c 'select(.forged_kind == "mirror" or .forged_kind == "registry")' "$OUT/capture.jsonl" >"$RUN/cap.registry" 2>/dev/null; then
+    cat "$RUN/cap.scored" "$RUN/cap.registry" >"$OUT/capture.jsonl"
+  fi
+  truncate -s "<$CAP" "$OUT/capture.jsonl"
+  check forensics_truncated false "capture.jsonl ${SIZE} bytes cut to 8 MB, scored records first"
+fi
+for f in trace.install trace.entry; do
+  if [ -f "$OUT/$f" ] && [ "$(stat -c %s "$OUT/$f")" -gt "$CAP" ]; then
+    SIZE=$(stat -c %s "$OUT/$f")
+    { head -c 4194304 "$OUT/$f"; printf '\n'; tail -c 4194304 "$OUT/$f"; } >"$RUN/$f.cut"
+    mv "$RUN/$f.cut" "$OUT/$f"
+    check forensics_truncated false "$f ${SIZE} bytes cut to its first and last 4 MB"
+  fi
+done
+truncate -s "<$CAP" "$OUT/written.txt"
 
 jq -n \
   --arg mode "$MODE" --arg eco "$ECO" --arg deps "$DEPS_KIND" \
@@ -373,5 +427,6 @@ jq -n \
     entry:{status:$es, exit_code:$ee, ms:$ems},
     clock:{real_ms:$cr, fake_ms:$cf}, total_ms:$total}' >"$OUT/result.json"
 
-tar -czf /root/out.tgz -C /root out
+timeout 4 tar -czf /root/out.tmp.tgz -C /root out
+mv /root/out.tmp.tgz /root/out.tgz
 log "done $(jq -c '{install:.install.status, entry:.entry.status}' "$OUT/result.json")"

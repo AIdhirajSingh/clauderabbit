@@ -152,9 +152,13 @@ test("rate limit: Vercel client IP, bucket choice, decision, fail-open with the 
   assert.equal(bucketFor({ userId: null, ip: null }).key, GLOBAL_ANON_BUCKET_KEY);
   const denied = await checkRateLimit({ rpc: async () => ({ data: [{ allowed: false, current_count: 21, retry_after: 17 }], error: null }) } as never, { userId: null, ip: "1.2.3.4" });
   assert.deepEqual(denied, { allowed: false, retryAfter: 17, bucket: "ip:1.2.3.4" });
-  const open = await checkRateLimit({ rpc: async () => ({ data: null, error: { message: "db down" } }) } as never, { userId: null, ip: "1.2.3.4" });
-  assert.equal(open.allowed, true);
-  assert.equal(open.limiterError, "db down");
+  const anonDown = await checkRateLimit({ rpc: async () => ({ data: null, error: { message: "db down" } }) } as never, { userId: null, ip: "1.2.3.4" });
+  assert.equal(anonDown.allowed, false, "anonymous callers fail closed while the limiter is down");
+  assert.equal(anonDown.retryAfter, 30);
+  assert.equal(anonDown.limiterError, "db down");
+  const userDown = await checkRateLimit({ rpc: async () => { throw new Error("socket closed"); } } as never, { userId: "u1", ip: "1.2.3.4" });
+  assert.equal(userDown.allowed, true, "signed-in callers pass; the fail-closed budget ledger still bounds spend");
+  assert.equal(userDown.limiterError, "socket closed");
 });
 
 test("request parsing accepts every documented target form and rejects the rest", () => {
@@ -218,4 +222,19 @@ test("remote MCP text: verdict, score, evidence groups, not verified, URL, ad; n
   const err = finalLineText({ type: "error", code: "unauthorized", message: "sign in first", run_id: null, ad, signInUrl: "https://clauderabbit.in/cli-auth" });
   assert.match(err, /Sign in: https:\/\/clauderabbit\.in\/cli-auth/);
   assert.match(err, /\[Sponsored\]/);
+});
+
+test("oauth code grant: redirect_uri required when it was registered, client_id must match, verifier must match", async () => {
+  const { codeGrantError, base64Url } = await import("../../lib/server/oauth.ts");
+  const { createHash } = await import("node:crypto");
+  const verifier = "v".repeat(43);
+  const row = { client_id: "client-a", redirect_uri: "https://claude.ai/api/mcp/auth_callback", code_challenge: base64Url(createHash("sha256").update(verifier).digest()), expires_at: new Date(Date.now() + 60_000).toISOString() };
+  const ok = { clientId: "client-a", redirectUri: row.redirect_uri, verifier };
+  assert.equal(codeGrantError(row, ok, Date.now()), null);
+  assert.equal(codeGrantError(row, { ...ok, redirectUri: "" }, Date.now()), "invalid_grant", "omitting redirect_uri is refused");
+  assert.equal(codeGrantError(row, { ...ok, redirectUri: "https://evil.example/cb" }, Date.now()), "invalid_grant");
+  assert.equal(codeGrantError(row, { ...ok, clientId: "client-b" }, Date.now()), "invalid_client");
+  assert.equal(codeGrantError(row, { ...ok, clientId: "" }, Date.now()), "invalid_client", "omitting client_id is refused");
+  assert.equal(codeGrantError(row, { ...ok, verifier: "w".repeat(43) }, Date.now()), "invalid_grant");
+  assert.equal(codeGrantError(row, ok, Date.now() + 120_000), "invalid_grant", "expired");
 });

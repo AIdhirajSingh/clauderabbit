@@ -10,15 +10,32 @@
 import { parseTarball, textOf } from "../archive";
 import { canaryEnvFile, canaryMatcher, canaryPatternsFile, parseCapture, summarizeCapture, type Canaries } from "../forensics/capture";
 import { parseStrace } from "../forensics/strace";
-import type { PhaseOutcome } from "../score";
+import type { ForensicCoverage, PhaseOutcome } from "../score";
 import { depsFromNpmLs, depsFromUvPipList } from "../static/osv";
 import type { CheckEventData, DependencyRef, FileEventData, ForgedCallData, ProcessEventData } from "../types";
+import { SALVAGE_BUDGET_MS } from "../config";
 import { withSandbox, type SandboxProvider } from "./provider";
 
 export const DETONATE_SCRIPT = "/opt/cr/bin/cr-detonate.sh";
 export const OUT_ARCHIVE = "/root/out.tgz";
 /** Exit code cr-detonate.sh uses when the containment probe fails (no repo code ran). */
 export const EXIT_NOT_CONTAINED = 4;
+/** Partial bundle packed by SALVAGE_COMMAND when the harness never wrote OUT_ARCHIVE. */
+export const SALVAGE_ARCHIVE = "/root/out.partial.tgz";
+/** Wall-clock budget for the salvage command. */
+export const SALVAGE_MS = SALVAGE_BUDGET_MS;
+/**
+ * Run as root when /root/out.tgz is missing (harness overran, crashed or exited
+ * early): stop the harness and every uid 1001 process, cap the live forensic
+ * files, and pack whatever /root/out holds. The bracket in the pattern keeps
+ * pkill from matching this command's own shell.
+ */
+export const SALVAGE_COMMAND = [
+  "pkill -KILL -f 'cr-detonat[e].sh'",
+  "pkill -KILL -u 1001",
+  "for f in /root/out/capture.jsonl /root/out/trace.install /root/out/trace.entry; do [ -f \"$f\" ] && truncate -s '<8M' \"$f\"; done",
+  `timeout 5 tar -czf ${SALVAGE_ARCHIVE} -C /root out`,
+].join("; ");
 
 export interface DetonationInput {
   runId: string;
@@ -50,11 +67,17 @@ export interface DetonationResult {
   files: FileEventData[];
   processes: ProcessEventData[];
   canaryInFiles: string[];
+  /** Non-DNS UDP and ICMP egress attempts the fence dropped. */
+  datagramEgress: string[];
   checks: CheckEventData[];
   installedDeps: DependencyRef[] | null;
   transcripts: { install: { stdout: string; stderr: string }; entry: { stdout: string; stderr: string } };
   timings: Record<string, number>;
   integrityMismatches: Array<{ host: string; path: string | null }>;
+  /** Registry metadata the forge served from the seeded mirror because upstream did not answer. */
+  mirrorMetadata: Array<{ host: string; path: string | null }>;
+  /** How much of the forensic record reached the scorer, and why any part is missing. */
+  forensics: { coverage: ForensicCoverage; gaps: string[] };
   stats: { captureRecords: number; captureInvalid: number; harnessRecords: number; traceLines: number; traceUnparsed: number; dropped: number; writtenFiles: number; pthFiles: string[] };
 }
 
@@ -124,6 +147,40 @@ export async function parseForensicBundle(
   if (typeof result.clock?.real_ms === "number") timings["detonate.clock_real"] = result.clock.real_ms;
   if (typeof result.clock?.fake_ms === "number") timings["detonate.clock_fake"] = result.clock.fake_ms;
   const eco = result.ecosystem === "npm" || result.ecosystem === "python" ? result.ecosystem : "none";
+  const datagramEgress = [...new Set([...ti.datagrams, ...te.datagrams])].sort();
+  let drops: { udp?: unknown; icmp?: unknown; other?: unknown } = {};
+  try {
+    drops = JSON.parse(f("egress_drops.json") ?? "{}") as typeof drops;
+  } catch {
+    drops = {};
+  }
+  const count = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0);
+  if (count(drops.udp) > 0 && !datagramEgress.some((d) => d.startsWith("udp "))) datagramEgress.push(`udp: ${count(drops.udp)} packet(s) dropped by the fence`);
+  if (count(drops.icmp) > 0) datagramEgress.push(`icmp: ${count(drops.icmp)} packet(s) dropped by the fence`);
+  if (count(drops.other) > 0) datagramEgress.push(`non-tcp: ${count(drops.other)} packet(s) dropped by the fence`);
+  const gaps: string[] = [];
+  let coverage: ForensicCoverage = "complete";
+  if (!rtext) {
+    coverage = "lost";
+    gaps.push("The harness did not write its result record, so the phase outcomes were not observed.");
+  }
+  for (const c of checks) {
+    if (c.ok) continue;
+    if (c.name === "forensics_truncated") gaps.push(`Forensic files were cut at the size cap (${c.detail ?? "unspecified"}), so records past the cut were not observed.`);
+    else if (c.name === "canary_file_scan") gaps.push(`The canary search of written files did not finish (${c.detail ?? "unspecified"}).`);
+    else if (c.name === "forensics_collected") gaps.push(`The forensic bundle was incomplete (${c.detail ?? "unspecified"}).`);
+    else if (c.name === "extract_complete") gaps.push(`The repository was not fully extracted in the sandbox (${c.detail ?? "unspecified"}).`);
+    else continue;
+    if (coverage === "complete") coverage = "partial";
+  }
+  if (summary.mirrorMetadata.length > 0) {
+    gaps.push(`${summary.mirrorMetadata.length} registry request(s) were answered from mirror metadata because the upstream registry did not answer, so those files were checked only against the mirror.`);
+    if (coverage === "complete") coverage = "partial";
+  }
+  if (cap.invalid > 0 && coverage === "complete") {
+    coverage = "partial";
+    gaps.push(`${cap.invalid} forge capture record(s) were unreadable.`);
+  }
   return {
     install: rtext ? outcome(result.install?.status) : "failed",
     entry: rtext ? outcome(result.entry?.status) : "skipped",
@@ -133,6 +190,7 @@ export async function parseForensicBundle(
     files: [...ti.files, ...te.files],
     processes: [...ti.processes, ...te.processes],
     canaryInFiles: lines(f("canary_files.txt")).slice(0, 100),
+    datagramEgress,
     checks,
     installedDeps,
     transcripts: {
@@ -141,6 +199,8 @@ export async function parseForensicBundle(
     },
     timings,
     integrityMismatches: summary.integrityMismatches,
+    mirrorMetadata: summary.mirrorMetadata,
+    forensics: { coverage, gaps },
     stats: {
       captureRecords: cap.records.length,
       captureInvalid: cap.invalid,
@@ -183,7 +243,8 @@ export async function detonate(provider: SandboxProvider, input: DetonationInput
           onStderr: (t) => hooks.onLog?.("stderr", t),
         });
       } catch (err) {
-        // The command deadline passed (or the VM stopped answering): keep whatever was collected.
+        // The command deadline passed or the VM stopped answering. The forge and
+        // strace write /root/out live, so the salvage step below packs what exists.
         timedOut = true;
         run = { exitCode: 124, stdout: "", stderr: (err as Error).message ?? String(err) };
       }
@@ -193,33 +254,64 @@ export async function detonate(provider: SandboxProvider, input: DetonationInput
       } catch {
         bytes = null;
       }
-      const base = bytes
-        ? await parseForensicBundle(bytes, input.canaries)
-        : null;
-      const checks = base?.checks ?? [];
+      let salvaged = false;
       if (!bytes) {
-        checks.push({ name: "forensics_collected", ok: false, detail: timedOut ? `harness passed the ${input.totalTimeoutMs} ms deadline` : `harness exited ${run.exitCode} without a forensic bundle` });
+        try {
+          await s.run(SALVAGE_COMMAND, { timeoutMs: SALVAGE_MS });
+          bytes = await s.readFile(SALVAGE_ARCHIVE);
+          salvaged = true;
+        } catch {
+          bytes = null;
+        }
+      }
+      let base: Omit<DetonationResult, "sandboxId" | "harnessExit"> | null = null;
+      if (bytes) {
+        try {
+          base = await parseForensicBundle(bytes, input.canaries);
+        } catch {
+          base = null;
+        }
+      }
+      const checks = base?.checks ?? [];
+      const why = timedOut
+        ? `harness passed the ${input.totalTimeoutMs} ms deadline`
+        : run.exitCode === EXIT_NOT_CONTAINED
+          ? "containment probe failed, so no repo code ran"
+          : `harness exited ${run.exitCode} without a forensic bundle`;
+      const complete = Boolean(base) && !salvaged;
+      if (!complete) {
+        checks.push({ name: "forensics_collected", ok: false, detail: salvaged ? `${why}; partial record salvaged from the live forensic files` : why });
       }
       if (run.exitCode === EXIT_NOT_CONTAINED && !checks.some((c) => c.name === "egress_contained")) {
         checks.push({ name: "egress_contained", ok: false, detail: "containment probe failed; no repo code ran" });
       }
+      // Without the harness's own bundle the phase outcomes come from how the run ended,
+      // and behaviour counts as not observed even when a salvaged record shows some of it.
+      const install: PhaseOutcome = complete ? base!.install : timedOut ? "timeout" : run.exitCode === EXIT_NOT_CONTAINED ? "skipped" : "failed";
+      const entry: PhaseOutcome = complete ? base!.entry : "skipped";
+      const forensics: DetonationResult["forensics"] = complete
+        ? base!.forensics
+        : { coverage: "lost", gaps: [`The sandbox run did not finish its forensic record (${why}).`, ...(base?.forensics.gaps ?? [])] };
       const empty = { stdout: "", stderr: run.stderr.slice(-4000) };
       return {
         sandboxId: s.id,
         harnessExit: run.exitCode,
-        install: base?.install ?? (timedOut ? "timeout" : run.exitCode === EXIT_NOT_CONTAINED ? "skipped" : "failed"),
-        entry: base?.entry ?? "skipped",
+        install,
+        entry,
         ecosystem: base?.ecosystem ?? "none",
         installCommand: base?.installCommand ?? "",
         forgedCalls: base?.forgedCalls ?? [],
         files: base?.files ?? [],
         processes: base?.processes ?? [],
         canaryInFiles: base?.canaryInFiles ?? [],
+        datagramEgress: base?.datagramEgress ?? [],
         checks,
         installedDeps: base?.installedDeps ?? null,
         transcripts: base?.transcripts ?? { install: empty, entry: { stdout: "", stderr: "" } },
         timings: { ...(base?.timings ?? {}), "detonate.upload": upload, "detonate.total": Date.now() - t0 },
         integrityMismatches: base?.integrityMismatches ?? [],
+        mirrorMetadata: base?.mirrorMetadata ?? [],
+        forensics,
         stats: base?.stats ?? { captureRecords: 0, captureInvalid: 0, harnessRecords: 0, traceLines: 0, traceUnparsed: 0, dropped: 0, writtenFiles: 0, pthFiles: [] },
       };
     },

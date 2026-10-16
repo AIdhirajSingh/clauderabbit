@@ -83,6 +83,18 @@ export const CAP_MALICIOUS_DEP = 25;
 export const CAP_INSTALL_INCOMPLETE = 74;
 export const CAP_ENTRY_INCOMPLETE = 89;
 export const CAP_NOT_PROVEN = 89;
+/** The detonation produced no forensic record (lost bundle, overrun, crash, failed containment probe). */
+export const CAP_FORENSICS_LOST = 59;
+/** Part of the forensic record was cut by a size cap or a timed-out collection step. */
+export const CAP_FORENSICS_PARTIAL = 74;
+
+/**
+ * How much of the detonation's forensic record reached the scorer.
+ *  - complete: the bundle was read and nothing score-relevant was cut;
+ *  - partial: the bundle was read but a harness size cap or collection timeout cut part of it;
+ *  - lost: no bundle (or only a salvaged one without the harness result), so behaviour was not observed.
+ */
+export type ForensicCoverage = "complete" | "partial" | "lost";
 
 // ---- behaviour derivation from forensics ------------------------------------
 
@@ -167,6 +179,8 @@ export interface ForensicSummary {
   processes: ProcessEventData[];
   /** Written files whose content held a canary value. */
   canaryInFiles: string[];
+  /** Non-DNS datagram or ICMP egress the fence dropped (strace destinations or fence counters). */
+  datagramEgress?: string[];
 }
 
 export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
@@ -189,6 +203,8 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
     else nonDist.push(host);
   }
   for (const p of f.canaryInFiles) canary.push(`canary copied into written file ${p}`);
+  // A dropped UDP or ICMP attempt scores like a non-distribution contact.
+  for (const d of f.datagramEgress ?? []) nonDist.push(d);
   const decoy: string[] = [];
   const persist: string[] = [];
   for (const e of f.files) {
@@ -230,6 +246,8 @@ export interface ScoreInput {
   install: PhaseOutcome;
   entry: PhaseOutcome;
   archiveTruncated: boolean;
+  /** Forensic coverage of the detonation, and the reasons for any gap (each becomes a not_verified line). */
+  forensics: { coverage: ForensicCoverage; gaps: string[] };
   coverage: { scanners: boolean; osv: boolean; readers: boolean };
   malicious: MaliciousDependency[];
   staticFindings: TaggedFinding[];
@@ -474,6 +492,14 @@ export function computeScore(input: ScoreInput): ScoreResult {
   };
 
   const notVerified = [...BASE_NOT_VERIFIED];
+  if (input.forensics.coverage === "lost") {
+    applyCap(CAP_FORENSICS_LOST, "cap_forensics_lost", `The sandbox run produced no forensic record, so behaviour was not observed and the score is capped at ${CAP_FORENSICS_LOST}.`);
+    notVerified.push("The sandbox run did not produce a forensic record, so install-time and runtime behaviour were not observed.");
+  } else if (input.forensics.coverage === "partial") {
+    applyCap(CAP_FORENSICS_PARTIAL, "cap_forensics_partial", `Part of the sandbox forensic record was cut, so the score is capped at ${CAP_FORENSICS_PARTIAL}.`);
+    notVerified.push("Part of the sandbox forensic record was cut, so behaviour in the cut part was not observed.");
+  }
+  for (const g of input.forensics.gaps) notVerified.push(g);
   if (input.behaviour.canaryHits.length > 0 || input.behaviour.persistenceWrites.length > 0) {
     applyCap(CAP_CANARY_OR_PERSISTENCE, "cap_canary_or_persistence", `Credential exfiltration or persistence caps the score at ${CAP_CANARY_OR_PERSISTENCE}.`);
   }
@@ -498,6 +524,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   const proven =
     input.install === "completed" &&
     input.entry === "completed" &&
+    input.forensics.coverage === "complete" &&
     !input.archiveTruncated &&
     B === 0 &&
     I === 0 &&

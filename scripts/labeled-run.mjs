@@ -150,7 +150,20 @@ export function metrics(rows) {
   const fn = avail.filter((r) => r.expected === "malicious" && !r.flagged).length;
   const tn = avail.filter((r) => r.expected === "clean" && !r.flagged).length;
   const walls = avail.map((r) => r.wallMs).sort((a, b) => a - b);
-  const pct = (p) => (walls.length ? walls[Math.min(walls.length - 1, Math.floor((p / 100) * walls.length))] : null);
+  const pct = (p) => percentile(walls, p);
+  // The 8 s target is about fresh scans: cached hits are excluded from the scan-time numbers.
+  const fresh = avail.filter((r) => r.outcome !== "cached");
+  const freshWall = fresh.map((r) => r.wallMs).sort((a, b) => a - b);
+  const engine = fresh.map((r) => r.engineMs).filter((x) => typeof x === "number").sort((a, b) => a - b);
+  const stageNames = [...new Set(fresh.flatMap((r) => Object.keys(r.stages ?? {})))].sort();
+  const stages = Object.fromEntries(
+    stageNames.map((n) => {
+      const xs = fresh.map((r) => Number(r.stages?.[n])).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+      return [n, { p50: percentile(xs, 50), p95: percentile(xs, 95), n: xs.length }];
+    }),
+  );
+  const scanP50 = percentile(engine.length ? engine : freshWall, 50);
+  const scanP95 = percentile(engine.length ? engine : freshWall, 95);
   return {
     total: rows.length,
     available: avail.length,
@@ -159,8 +172,28 @@ export function metrics(rows) {
     precision: tp + fp ? tp / (tp + fp) : null,
     recall: tp + fn ? tp / (tp + fn) : null,
     escalation: avail.length ? avail.filter((r) => r.escalated).length / avail.length : null,
-    p50: pct(50), p90: pct(90), max: walls.length ? walls[walls.length - 1] : null,
+    p50: pct(50), p90: pct(90), p95: pct(95), max: walls.length ? walls[walls.length - 1] : null,
+    fresh: fresh.length,
+    scanP50,
+    scanP95,
+    targetMs: TARGET_SCAN_MS,
+    gapP50: scanP50 === null ? null : scanP50 - TARGET_SCAN_MS,
+    gapP95: scanP95 === null ? null : scanP95 - TARGET_SCAN_MS,
+    stages,
   };
+}
+
+/** The owner's per-scan time target. */
+export const TARGET_SCAN_MS = 8_000;
+
+/** Nearest-rank percentile over an ascending array; null when empty. */
+export function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
+}
+
+function fmtGap(x) {
+  return x === null ? "n/a" : x > 0 ? `+${x} ms over` : `${-x} ms under`;
 }
 
 function fmtRate(x) {
@@ -180,7 +213,13 @@ export function renderMarkdown(site, rows, m, startedAt) {
     `| Precision | ${fmtRate(m.precision)} |`,
     `| Recall | ${fmtRate(m.recall)} |`,
     `| Escalation (Caution or worse) | ${fmtRate(m.escalation)} |`,
-    `| Wall time p50 / p90 / max | ${m.p50 ?? "n/a"} ms / ${m.p90 ?? "n/a"} ms / ${m.max ?? "n/a"} ms |`,
+    `| Wall time p50 / p90 / p95 / max (all available) | ${m.p50 ?? "n/a"} ms / ${m.p90 ?? "n/a"} ms / ${m.p95 ?? "n/a"} ms / ${m.max ?? "n/a"} ms |`,
+    `| Fresh scan time p50 / p95 (engine timings.total, ${m.fresh} fresh scans) | ${m.scanP50 ?? "n/a"} ms / ${m.scanP95 ?? "n/a"} ms |`,
+    `| Against the ${m.targetMs} ms target | p50 ${fmtGap(m.gapP50)}, p95 ${fmtGap(m.gapP95)} |`,
+    "",
+    "| Stage | p50 ms | p95 ms | scans |",
+    "|---|---|---|---|",
+    ...Object.entries(m.stages).map(([n, v]) => `| ${n} | ${v.p50 ?? "n/a"} | ${v.p95 ?? "n/a"} | ${v.n} |`),
     "",
     "| id | expected | verdict | score | status | wall ms | engine total ms | events | note |",
     "|---|---|---|---|---|---|---|---|---|",
@@ -208,8 +247,9 @@ async function scanOne(site, e, opts) {
   const wallMs = Date.now() - t0;
   const j = judge(e, final);
   const report = final.type === "result" ? final.report : null;
-  const engineMs = report?.timings ? Object.values(report.timings).reduce((a, b) => Math.max(a, Number(b) || 0), 0) : null;
-  return { id: e.id, expected: e.expected, verdict: report?.verdict ?? null, score: report?.score ?? null, outcome: final.outcome ?? null, wallMs, engineMs, events, ...j };
+  const timings = report?.timings && typeof report.timings === "object" ? report.timings : null;
+  const engineMs = timings ? (Number.isFinite(Number(timings.total)) ? Number(timings.total) : Object.values(timings).reduce((a, b) => Math.max(a, Number(b) || 0), 0)) : null;
+  return { id: e.id, expected: e.expected, verdict: report?.verdict ?? null, score: report?.score ?? null, outcome: final.outcome ?? null, wallMs, engineMs, stages: timings, events, ...j };
 }
 
 async function main() {
@@ -246,7 +286,7 @@ async function main() {
   );
   const m = metrics(rows);
   writeFileSync(opts.out, renderMarkdown(opts.site, rows, m, startedAt));
-  console.log(`precision ${fmtRate(m.precision)} recall ${fmtRate(m.recall)} escalation ${fmtRate(m.escalation)} unavailable ${m.unavailable}; wrote ${path.relative(ROOT, opts.out)}`);
+  console.log(`precision ${fmtRate(m.precision)} recall ${fmtRate(m.recall)} escalation ${fmtRate(m.escalation)} unavailable ${m.unavailable}; fresh scan p50 ${m.scanP50 ?? "n/a"} ms p95 ${m.scanP95 ?? "n/a"} ms vs ${m.targetMs} ms target; wrote ${path.relative(ROOT, opts.out)}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

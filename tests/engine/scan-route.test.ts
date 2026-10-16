@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { POST, maxDuration, runtime } from "../../app/api/scan/route.ts";
+import { DEFAULT_DEADLINES } from "../../lib/engine/config.ts";
 
 const BASE_ENV = {
   NEXT_PUBLIC_SITE_URL: "https://clauderabbit.in",
@@ -34,9 +35,10 @@ function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T
 
 const req = (body: unknown, headers: Record<string, string> = {}) => new Request("https://clauderabbit.in/api/scan", { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
 
-test("route config: node runtime, maxDuration 120", () => {
+test("route config: node runtime, maxDuration 180 covers the scan deadline", () => {
   assert.equal(runtime, "nodejs");
-  assert.equal(maxDuration, 120);
+  assert.equal(maxDuration, 180);
+  assert.ok(maxDuration * 1000 > DEFAULT_DEADLINES.scanMs + 15_000);
 });
 
 test("invalid target: 400 with an ad", async () => {
@@ -76,4 +78,22 @@ test("web surface gets the AdSense payload with adtest on when the IDs are set",
     const body = (await res.json()) as { ad: Record<string, string> };
     assert.deepEqual(body.ad, { kind: "adsense", placement: "scan_result", client: "ca-pub-1234567890123456", slot: "1234567890", format: "auto", adtest: "on" });
   });
+});
+
+test("every response carries an ad: config error, replay by target, replay by run id", async () => {
+  await withEnv({ ...BASE_ENV, NEXT_PUBLIC_SITE_URL: "not a url" }, async () => {
+    const res = await POST(req({ target: "npm:left-pad" }));
+    assert.equal(res.status, 503);
+    const body = (await res.json()) as { ad: { kind: string; url?: string } | null };
+    assert.ok(body.ad, "config error path carries an ad");
+    assert.equal(body.ad!.kind, "house");
+  });
+  const { GET: replay } = await import("../../app/api/scan/replay/route.ts");
+  const r1 = await replay(new Request("https://clauderabbit.in/api/scan/replay?target=&sha="));
+  assert.equal(r1.status, 400);
+  assert.ok(((await r1.json()) as { ad?: unknown }).ad);
+  const { GET: events } = await import("../../app/api/runs/[runId]/events/route.ts");
+  const r2 = await events(new Request("https://clauderabbit.in/api/runs/x/events", { headers: { "x-clauderabbit-client": "cli" } }), { params: Promise.resolve({ runId: "not-a-uuid" }) });
+  assert.equal(r2.status, 400);
+  assert.equal(((await r2.json()) as { ad?: { kind: string } }).ad?.kind, "house");
 });

@@ -2,7 +2,8 @@
  * OAuth 2.1 token endpoint for the remote MCP login flow (RFC 6749 section
  * 4.1.3, PKCE per RFC 7636). Redeems the one-time code that `/oauth/authorize`
  * created (oauth_codes, deleted on read so it cannot be replayed), checks
- * expiry, redirect_uri and the S256 code_verifier, then mints a `cr_cli_`
+ * expiry, client_id, redirect_uri (required whenever the authorization request
+ * carried one) and the S256 code_verifier, then mints a `cr_cli_`
  * token stored only as its SHA-256 hash in cli_tokens: the same token kind
  * `verify_cli_token` accepts from the CLI and stdio MCP. Runs on the server
  * secret; nothing here reaches a client.
@@ -10,7 +11,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { serviceClient } from "@/lib/engine/store";
-import { pkceMatches } from "@/lib/server/oauth";
+import { codeGrantError, type StoredCode } from "@/lib/server/oauth";
 import { serverConfig } from "@/lib/server/scan-service";
 
 export const runtime = "nodejs";
@@ -43,6 +44,7 @@ export async function POST(req: Request): Promise<Response> {
   const code = (params.code ?? "").trim();
   const verifier = (params.code_verifier ?? "").trim();
   const redirectUri = (params.redirect_uri ?? "").trim();
+  const clientId = (params.client_id ?? "").trim();
   if (!code || !verifier) return oauthJson({ error: "invalid_request" }, 400);
 
   let db;
@@ -58,11 +60,10 @@ export async function POST(req: Request): Promise<Response> {
     .select("user_id, client_id, redirect_uri, code_challenge, expires_at")
     .limit(1);
   if (error) return oauthJson({ error: "server_error" }, 500);
-  const row = rows?.[0] as { user_id: string; redirect_uri: string; code_challenge: string; expires_at: string } | undefined;
+  const row = rows?.[0] as (StoredCode & { user_id: string }) | undefined;
   if (!row) return oauthJson({ error: "invalid_grant" }, 400);
-  if (new Date(row.expires_at).getTime() < Date.now()) return oauthJson({ error: "invalid_grant" }, 400);
-  if (redirectUri && redirectUri !== row.redirect_uri) return oauthJson({ error: "invalid_grant" }, 400);
-  if (!pkceMatches(verifier, row.code_challenge)) return oauthJson({ error: "invalid_grant" }, 400);
+  const bad = codeGrantError(row, { clientId, redirectUri, verifier }, Date.now());
+  if (bad) return oauthJson({ error: bad }, bad === "invalid_client" ? 401 : 400);
 
   const token = `cr_cli_${randomBytes(32).toString("hex")}`;
   const tokenHash = createHash("sha256").update(token).digest("hex");

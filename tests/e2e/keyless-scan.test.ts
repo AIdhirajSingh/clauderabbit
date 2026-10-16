@@ -144,6 +144,13 @@ test("keyless e2e: the phone-home fixture is caught by the forge, scored Malicio
 
     // One ordered stream covering all seven event types, persisted for replay.
     assertOrdered(events);
+    // Evidence before noise: every forged_call and file event precedes the first process event,
+    // so the per-run event cap can only ever cut process events.
+    const firstProcess = events.findIndex((e) => e.type === "process");
+    const lastEvidence = Math.max(...events.map((e, i) => (e.type === "forged_call" || e.type === "file" ? i : -1)));
+    assert.ok(firstProcess > lastEvidence, `process events start at ${firstProcess}, evidence ends at ${lastEvidence}`);
+    const fxCov = (report.forensics as { coverage: { complete: boolean; failed: string[] } }).coverage;
+    assert.deepEqual(fxCov, { complete: true, failed: [] }, "a complete run is the one the SHA cache serves");
     for (const t of SCAN_EVENT_TYPES) assert.ok(events.some((e) => e.type === t), `missing event type ${t}`);
     const stored = store.events.get(outcome.runId)!;
     assert.equal(stored.length, events.length);

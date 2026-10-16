@@ -368,6 +368,11 @@ class Forge:
         self.fetch = fetch
         self.clock = clock
         self.digests: dict = {}
+        # Blob URLs whose expected digest came from mirror metadata (upstream was
+        # down). Those blobs are verified only against the seeded mirror, so the
+        # capture marks them "mirror-metadata" and the score treats the run's
+        # coverage as partial.
+        self.mirror_digest_urls: set = set()
         self._lock = threading.Lock()
         self._ip_by_name: dict = {}
         self._name_by_ip: dict = {}
@@ -410,10 +415,14 @@ class Forge:
             return self._metadata(req, kind)
         return self._blob(req, kind)
 
-    def _remember(self, kind: str, url: str, content_type: str, body: bytes) -> None:
+    def _remember(self, kind: str, url: str, content_type: str, body: bytes, from_mirror: bool = False) -> None:
         found = npm_digests_from_packument(body) if kind == "npm-packument" else pypi_digests_from_index(body, url, content_type)
         with self._lock:
             self.digests.update(found)
+            if from_mirror:
+                self.mirror_digest_urls.update(found.keys())
+            else:
+                self.mirror_digest_urls.difference_update(found.keys())
 
     def _metadata(self, req: Request, kind: str) -> Decision:
         accept = req.header("accept") or "application/json"
@@ -430,8 +439,8 @@ class Forge:
         cached = self.mirror.get_meta(url, accept)
         if cached is not None:
             ctype, body = cached
-            self._remember(kind, req.url, ctype, body)
-            return Decision(200, {"Content-Type": ctype}, body, "mirror", note=f"upstream {status}")
+            self._remember(kind, req.url, ctype, body, from_mirror=True)
+            return Decision(200, {"Content-Type": ctype}, body, "mirror", note=f"upstream {status}", integrity="mirror-metadata")
         if status in (404, 410):
             return Decision(status, {"Content-Type": "application/json"}, b'{"error":"not found"}', "registry")
         return Decision(502, {"Content-Type": "text/plain"}, b"registry unavailable", "registry", note=f"upstream {status}")
@@ -453,7 +462,9 @@ class Forge:
                 if cached is None:
                     return None
                 headers, body = {"content-type": cached[0]}, cached[1]
-            self._remember("npm-packument", meta_url, headers.get("content-type", "application/json"), body)
+                self._remember("npm-packument", meta_url, headers.get("content-type", "application/json"), body, from_mirror=True)
+            else:
+                self._remember("npm-packument", meta_url, headers.get("content-type", "application/json"), body)
         else:
             project = pypi_project_from_filename(req.bare_path.rsplit("/", 1)[-1])
             if not project:
@@ -469,7 +480,9 @@ class Forge:
                 if cached is None:
                     return None
                 headers, body = {"content-type": cached[0]}, cached[1]
-            self._remember("pypi-simple", idx_url, headers.get("content-type", "application/json"), body)
+                self._remember("pypi-simple", idx_url, headers.get("content-type", "application/json"), body, from_mirror=True)
+            else:
+                self._remember("pypi-simple", idx_url, headers.get("content-type", "application/json"), body)
         with self._lock:
             return self.digests.get(req.url)
 
@@ -477,10 +490,12 @@ class Forge:
         sri = self._expected_digest(req, kind)
         if not sri:
             return Decision(502, {"Content-Type": "text/plain"}, b"no published digest", "registry", integrity="no_digest")
+        with self._lock:
+            ok = "mirror-metadata" if req.url in self.mirror_digest_urls else "verified"
         ctype = "application/octet-stream"
         cached = self.mirror.get_blob(sri)
         if cached is not None:
-            return Decision(200, {"Content-Type": ctype}, cached, "mirror", integrity="verified")
+            return Decision(200, {"Content-Type": ctype}, cached, "mirror", integrity=ok)
         status, _headers, body = self.fetch(req.url, {"Accept": "*/*"})
         if status != 200:
             return Decision(502 if status >= 500 else status, {"Content-Type": "text/plain"}, b"registry unavailable", "registry", note=f"upstream {status}")
@@ -490,7 +505,7 @@ class Forge:
             self.mirror.put_blob(sri, body)
         except (OSError, ValueError):
             pass
-        return Decision(200, {"Content-Type": ctype}, body, "registry", integrity="verified")
+        return Decision(200, {"Content-Type": ctype}, body, "registry", integrity=ok)
 
 
 # ---- capture -----------------------------------------------------------------

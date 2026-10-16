@@ -139,3 +139,53 @@ test("capture: parse, phase filter, canary hits in path, headers, base64 and gzi
   assert.deepEqual(b.nonDistributionHosts, ["c2.example", "evil.example", "h2.example", "h3.example"]);
   assert.deepEqual(b.tlsRefused, ["evil.example"]);
 });
+
+test("caps keep every score-relevant record: a C2 after 200 registry calls and a decoy read after 250 file creates still score", () => {
+  const canaries = makeCanaries();
+  const m = canaryMatcher(canaries);
+  const rec = (host: string, kind: string, phase = "install") => ({ t: 1, phase, proto: "https", host, port: 443, method: "GET", path: "/x", sni: host, req_headers: {}, req_bytes: 0, req_body_b64: "", forged_kind: kind, tls: "intercepted" });
+  const lines = [
+    ...Array.from({ length: 260 }, () => rec("registry.npmjs.org", "registry")),
+    rec("c2.attacker.example", "json"),
+    { ...rec("q8z1x7w3v5u9t2s4r6p0o8n1m3l5k7j9h2g4f6d8s0a1z3x5c7v9b2.tunnel.example", "dns"), proto: "dns" },
+  ].map((r) => JSON.stringify(r));
+  const s = summarizeCapture(parseCapture(lines.join("\n")).records, m);
+  assert.ok(s.forgedCalls.some((c) => c.host === "c2.attacker.example"), "non-registry host past the cap is kept");
+  assert.ok(s.droppedForgedCalls > 0, "plain registry calls past the cap are dropped from the display list");
+  const b = deriveBehaviour({ forgedCalls: s.forgedCalls, files: [], processes: [], canaryInFiles: [] });
+  assert.deepEqual(b.nonDistributionHosts, ["c2.attacker.example"]);
+  assert.equal(b.tunnelingDns.length, 1);
+
+  const trace = [
+    ...Array.from({ length: 300 }, (_, i) => `101 1700000000.${String(i).padStart(6, "0")} openat(AT_FDCWD, "/opt/junk/f${i}", O_WRONLY|O_CREAT, 0644) = 3`),
+    `101 1700000001.000000 openat(AT_FDCWD, "/home/cr/.aws/credentials", O_RDONLY) = 4`,
+    `101 1700000001.000100 openat(AT_FDCWD, "/home/cr/.bashrc", O_WRONLY|O_APPEND) = 5`,
+    ...Array.from({ length: 300 }, (_, i) => `101 1700000002.${String(i).padStart(6, "0")} execve("/usr/bin/true", ["true", "${i}"], 0x1 /* 1 vars */) = 0`),
+    `101 1700000003.000000 execve("/usr/bin/curl", ["curl", "http://x.example"], 0x1 /* 1 vars */) = 0`,
+  ].join("\n");
+  const p = parseStrace(trace, { phase: "install", initialCwd: "/work/src" });
+  assert.ok(p.stats.droppedFiles > 0 && p.stats.droppedProcesses > 0);
+  const tb = deriveBehaviour({ forgedCalls: [], files: p.files, processes: p.processes, canaryInFiles: [] });
+  assert.deepEqual(tb.decoyReads, ["/home/cr/.aws/credentials"]);
+  assert.deepEqual(tb.persistenceWrites, ["/home/cr/.bashrc"]);
+  assert.equal(tb.suspiciousInstallExecs.length, 1);
+});
+
+test("mirror-metadata capture records are surfaced, never silently trusted", () => {
+  const r = { t: 1, phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method: "GET", path: "/left-pad", sni: null, req_headers: {}, req_bytes: 0, req_body_b64: "", forged_kind: "mirror", tls: "intercepted", integrity: "mirror-metadata" };
+  const s = summarizeCapture(parseCapture(JSON.stringify(r)).records, canaryMatcher(makeCanaries()));
+  assert.deepEqual(s.mirrorMetadata, [{ host: "registry.npmjs.org", path: "/left-pad" }]);
+});
+
+test("datagram sends to raw addresses are recorded and score like a non-distribution contact", () => {
+  const trace = [
+    `7 1.0 sendto(5, "x", 1, 0, {sa_family=AF_INET, sin_port=htons(9999), sin_addr=inet_addr("192.0.2.7")}, 16) = -1 EPERM (Operation not permitted)`,
+    `7 1.1 sendto(5, "q", 1, 0, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("8.8.8.8")}, 16) = 1`,
+    `7 1.2 sendmsg(6, {msg_name={sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:db8::1", &sin6_addr), sin6_scope_id=0}, msg_namelen=28}, 0) = -1 EPERM (Operation not permitted)`,
+    `7 1.3 sendto(5, "x", 1, 0, {sa_family=AF_INET, sin_port=htons(7000), sin_addr=inet_addr("127.0.0.1")}, 16) = 1`,
+  ].join("\n");
+  const p = parseStrace(trace, { phase: "install", initialCwd: "/work/src" });
+  assert.deepEqual(p.datagrams, ["udp 192.0.2.7:9999", "udp [2001:db8::1]:443"]);
+  const b = deriveBehaviour({ forgedCalls: [], files: [], processes: [], canaryInFiles: [], datagramEgress: p.datagrams });
+  assert.deepEqual(b.nonDistributionHosts, ["udp 192.0.2.7:9999", "udp [2001:db8::1]:443"]);
+});

@@ -14,8 +14,12 @@
  *  - devices and FIFOs are skipped and recorded in `rejected`;
  *  - pax (`x`, `g`) and GNU long-name (`L`, `K`) records are honored, and the
  *    pax global `comment` (git archive writes the commit SHA there) is exposed;
- *  - a single shared top-level directory (GitHub `owner-repo-sha/`, npm
- *    `package/`) is stripped and reported as `root`.
+ *  - by default a single shared top-level directory is stripped and reported
+ *    as `root`; with `stripFirstComponent` (every scan target: GitHub
+ *    `owner-repo-sha/`, npm `package/`, operator tarballs) the first path
+ *    component of every entry is stripped unconditionally, matching pacote's
+ *    strip:1 and the VM's `tar --strip-components=1`, and root-level entries
+ *    (which neither installer keeps) are dropped and listed in `rejected`.
  */
 
 import { createGunzip } from "node:zlib";
@@ -24,6 +28,8 @@ export interface ArchiveLimits {
   maxCompressedBytes: number;
   maxExpandedBytes: number;
   maxFiles: number;
+  /** Strip the first path component of every entry (npm and tar strip-1 semantics). */
+  stripFirstComponent?: boolean;
 }
 
 export interface ArchiveLink {
@@ -36,7 +42,7 @@ export interface ArchiveLink {
 
 export interface RejectedEntry {
   path: string;
-  reason: "absolute_path" | "path_traversal" | "nul_in_path" | "empty_path" | "special_file" | "link_escapes_root";
+  reason: "absolute_path" | "path_traversal" | "nul_in_path" | "empty_path" | "special_file" | "link_escapes_root" | "outside_package_root";
 }
 
 export interface ParsedArchive {
@@ -217,7 +223,7 @@ interface RawEntry {
 /** Parse an uncompressed tar buffer. `inputTruncated` marks a capped gunzip. */
 export function parseTar(
   tar: Uint8Array,
-  limits: Pick<ArchiveLimits, "maxFiles">,
+  limits: Pick<ArchiveLimits, "maxFiles" | "stripFirstComponent">,
   inputTruncated = false,
 ): ParsedArchive {
   const raw: RawEntry[] = [];
@@ -317,11 +323,33 @@ export function parseTar(
     off = nextOff;
   }
 
-  // Strip one shared top-level directory when every entry sits under it.
-  const firstSegs = new Set(raw.map((e) => e.path.split("/")[0]));
-  const allNested = raw.length > 0 && raw.every((e) => e.path.includes("/"));
-  const root = allNested && firstSegs.size === 1 ? [...firstSegs][0]! : null;
-  const strip = (p: string) => (root !== null ? p.slice(root.length + 1) : p);
+  let root: string | null;
+  let strip: (p: string) => string;
+  if (limits.stripFirstComponent) {
+    // Installer semantics: the first component goes for every entry; root-level entries are not installed.
+    const counts = new Map<string, number>();
+    const kept: RawEntry[] = [];
+    for (const e of raw) {
+      const i = e.path.indexOf("/");
+      if (i === -1 || i === e.path.length - 1) {
+        rejected.push({ path: e.path, reason: "outside_package_root" });
+        continue;
+      }
+      const seg = e.path.slice(0, i);
+      counts.set(seg, (counts.get(seg) ?? 0) + 1);
+      kept.push(e);
+    }
+    raw.length = 0;
+    raw.push(...kept);
+    root = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    strip = (p: string) => p.slice(p.indexOf("/") + 1);
+  } else {
+    // Strip one shared top-level directory when every entry sits under it.
+    const firstSegs = new Set(raw.map((e) => e.path.split("/")[0]));
+    const allNested = raw.length > 0 && raw.every((e) => e.path.includes("/"));
+    root = allNested && firstSegs.size === 1 ? [...firstSegs][0]! : null;
+    strip = (p: string) => (root !== null ? p.slice(root.length + 1) : p);
+  }
 
   const files = new Map<string, Uint8Array>();
   const links: ArchiveLink[] = [];

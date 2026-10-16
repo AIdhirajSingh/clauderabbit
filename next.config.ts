@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { contentSecurityPolicy } from "./lib/csp";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -44,25 +45,8 @@ const nextConfig: NextConfig = {
       { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), browsing-topics=()" },
       { key: "X-DNS-Prefetch-Control", value: "on" },
     ];
-    // A functional CSP: self + the inline styles the design uses + Supabase for the
-    // anon REST/auth reads + data/https images. The two typefaces (Instrument Serif +
-    // Geist) are self-hosted via next/font — their files are served from our own origin
-    // and the @font-face CSS is inlined — so no external font host needs to be allowed;
-    // `font-src 'self'` covers the self-hosted woff2 files. This is strictly tighter than
-    // allowing fonts.googleapis.com / fonts.gstatic.com.
-    // frame-ancestors 'none' clickjack-proofs the app (the badge route below re-opens framing).
-    const csp = [
-      "default-src 'self'",
-      "base-uri 'self'",
-      "object-src 'none'",
-      "form-action 'self'",
-      "frame-ancestors 'none'",
-      "img-src 'self' data: https:",
-      "font-src 'self' data:",
-      "style-src 'self' 'unsafe-inline'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-      "connect-src 'self' https://*.supabase.co https://*.supabase.in",
-    ].join("; ");
+    // The CSP (lib/csp.ts) allows Supabase https/wss and the AdSense origins the web ad needs.
+    const csp = contentSecurityPolicy();
     return [
       {
         // every route EXCEPT the embeddable badge (negative lookahead)

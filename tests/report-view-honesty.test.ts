@@ -220,3 +220,47 @@ test("an escalated-but-incomplete summary reconciles the stale 'not executed' cl
   // The descriptive part of the summary is preserved (only the stale clause changed).
   assert.ok(/industry-standard project/i.test(v.summary), "descriptive text preserved: " + v.summary);
 });
+
+// ---- 2.0 rows (forensics_json version 2) -----------------------------------------
+
+function v2(over: Record<string, unknown> = {}) {
+  return {
+    version: 2,
+    install: "completed",
+    entry: "completed",
+    ecosystem: "npm",
+    install_command: "npm install --no-audit --no-fund /work/pkg.tgz",
+    forged_calls: [
+      { phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, forged_kind: "registry", req_bytes: 0, canary_hits: [] },
+      { phase: "install", proto: "http", host: "c2.cr-fixture.invalid", port: 80, method: "POST", path: "/collect", forged_kind: "json", req_bytes: 120, canary_hits: ["AWS_SECRET_ACCESS_KEY"] },
+    ],
+    files: [{ phase: "install", op: "read_decoy", path: "/home/cr/.aws/credentials", pid: 9 }],
+    processes: [{ phase: "install", pid: 9, ppid: 1, argv: ["node", "postinstall.js"] }],
+    canary_in_files: [],
+    checks: [{ name: "egress_contained", ok: true }],
+    forensic_coverage: { coverage: "complete", gaps: [] },
+    ...over,
+  };
+}
+const V2_NOT_VERIFIED = ["Behaviour outside the observed install and entry windows.", "Code paths not triggered by install or the entry point."];
+
+test("2.0 row with a canary hit renders the caught-attack note, the forged call, and the stored not_verified list", () => {
+  const view = buildReportView(makeReport({ score: 0, verdict: "Malicious", deep: true, forensics_json: v2(), not_verified: V2_NOT_VERIFIED }));
+  assert.ok(view._forensics, "the version 2 record is recognized");
+  assert.equal(view._ranSandbox, true);
+  assert.match(view._finalNote, /caught it attempting credential access or outbound exfiltration/);
+  assert.doesNotMatch(view._finalNote, /did not complete on this pass/);
+  assert.deepEqual(view._forensics!._capturedHosts, ["c2.cr-fixture.invalid"]);
+  assert.equal(view._forensics!.raw.in_vm_behavior.high_value_credential_reads, 1);
+  assert.deepEqual(view._notVerified, V2_NOT_VERIFIED);
+});
+
+test("2.0 row whose forensic record was lost never reads as an observed clean run", () => {
+  const view = buildReportView(
+    makeReport({ score: 59, verdict: "High risk", deep: true, forensics_json: v2({ install: "timeout", entry: "skipped", forged_calls: [], files: [], forensic_coverage: { coverage: "lost", gaps: ["x"] } }), not_verified: ["The sandbox run did not produce a forensic record, so install-time and runtime behaviour were not observed."] }),
+  );
+  assert.equal(view._ranSandbox, false);
+  assert.match(view._finalNote, /runtime behaviour was not observed/);
+  assert.doesNotMatch(view._finalNote, /observed no malicious behavior/);
+  assert.match(view._notVerified.join(" "), /not observed/);
+});

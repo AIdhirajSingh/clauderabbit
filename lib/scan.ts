@@ -351,6 +351,7 @@ function normalizeHonesty(v: unknown): ForensicsHonesty {
 export function normalizeForensics(raw: unknown): Forensics | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as Record<string, unknown>;
+  if (r.version === 2) return forensicsFromV2(r);
   const looksLikeRecord =
     (typeof r.schema === "string" && r.schema.startsWith("claude-rabbit/forensic-record")) ||
     "network_intent" in r ||
@@ -368,6 +369,110 @@ export function normalizeForensics(raw: unknown): Forensics | undefined {
     containment: normalizeContainment(r.containment),
     verdict: normalizeForensicsVerdict(r.verdict),
     honesty: normalizeHonesty(r.honesty),
+  };
+}
+
+const REGISTRY_KINDS_V2 = new Set(["mirror", "registry"]);
+const SUSPICIOUS_BIN_V2 = new Set(["curl", "wget", "nc", "ncat", "netcat", "powershell", "pwsh", "base64", "crontab"]);
+
+/**
+ * Map a 2.0 forensic record (`version: 2`, written by lib/engine/orchestrator.ts:
+ * forged_calls, files, processes, checks, install/entry outcomes, coverage) onto
+ * the `Forensics` shape the report renders. The record is attacker-influenced, so
+ * every field is type-checked and every array is bounded.
+ */
+export function forensicsFromV2(r: Record<string, unknown>): Forensics {
+  const install = str(r.install, "failed");
+  const entry = str(r.entry, "skipped");
+  const calls = objArray(r.forged_calls);
+  const scored = calls.filter((c) => !(REGISTRY_KINDS_V2.has(str(c.forged_kind)) && str(c.proto) !== "dns" && /^(registry\.npmjs\.org|pypi\.org|files\.pythonhosted\.org)$/.test(str(c.host))) && str(c.proto) !== "dns");
+  const canaryCalls = calls.filter((c) => strArray(c.canary_hits).length > 0);
+  const files = objArray(r.files);
+  const processes = objArray(r.processes);
+  const checks = objArray(r.checks);
+  const decoys = files.filter((f) => f.op === "read_decoy").map((f) => str(f.path)).filter(Boolean);
+  const dropped = files.filter((f) => f.op === "create" || f.op === "write").map((f) => str(f.path)).filter(Boolean);
+  const bins = new Set<string>();
+  for (const p of processes) {
+    const a0 = strArray(p.argv)[0] ?? "";
+    const b = a0.slice(a0.lastIndexOf("/") + 1);
+    if (SUSPICIOUS_BIN_V2.has(b)) bins.add(b);
+  }
+  const hosts = [...new Set(scored.map((c) => str(c.host)).filter(Boolean))];
+  const contained = checks.some((c) => c.name === "egress_contained" && c.ok === true);
+  const cov = obj(r.forensic_coverage);
+  const coverage = str(cov.coverage);
+  const lostByCheck = checks.some((c) => c.name === "forensics_collected" && c.ok === false);
+  const observation: NonNullable<Forensics["run_observation"]> =
+    install !== "completed" || coverage === "lost" || lostByCheck ? "not_observed" : coverage === "partial" ? "partial" : "observed";
+  const canaryInFiles = strArray(r.canary_in_files);
+  return {
+    schema: "claude-rabbit/forensic-record@2",
+    generated_at: "",
+    target: "",
+    what_it_ran: {
+      project_type: strOrNull(r.ecosystem),
+      install_command: strOrNull(r.install_command),
+      run_command: null,
+      auto_build_succeeded: install === "completed",
+      ran_without_crash: entry === "completed",
+      build_exit_code: null,
+      run_exit_code: null,
+    },
+    network_intent: {
+      attempts: scored.map((c) => ({
+        intended_host: strOrNull(c.host),
+        sni: strOrNull(c.sni),
+        http_host_header: null,
+        dest_port: numOrNull(c.port),
+        transport: strOrNull(c.proto),
+        tls: c.tls === "intercepted" || c.tls === "refused",
+        tls_handshake: strOrNull(c.tls),
+        http_method: strOrNull(c.method),
+        http_path: strOrNull(c.path),
+        http_headers: null,
+        would_be_payload_b64: null,
+        payload_len: numOrNull(c.req_bytes),
+        captured_at: null,
+      })),
+      attempt_count: scored.length,
+      intended_destinations: hosts.map((h) => ({ host: h, intended_ips: [] })),
+      geolocations: [],
+    },
+    in_vm_behavior: {
+      high_value_credential_reads: decoys.length,
+      high_value_credential_reads_succeeded: decoys.length,
+      credential_reads_detail: decoys.map((p) => ({ path: p, succeeded: true, high_value: true })),
+      suspicious_binaries: [...bins],
+      files_dropped_count: dropped.length,
+      files_dropped: dropped,
+      high_cpu: false,
+      run_cpu_cores_busy: 0,
+      process_exec_count: processes.length,
+    },
+    payload_analysis: { decoded_payloads: [], ai_intent_summary: null, ai_model: null, ai_analysis_error: null },
+    containment: {
+      external_monitor_saw_egress: false,
+      in_vm_saw_egress: scored.length > 0,
+      no_real_packet_reached_destination: contained,
+      containment_notes: contained
+        ? "Every outbound call from the package was redirected to the in-VM forge, which answered it; nothing left the sandbox."
+        : "The containment probe result was not recorded for this run.",
+      egress_control_probe: null,
+    },
+    verdict: {
+      dynamic_score: 0,
+      score_color: "",
+      one_word: "",
+      headline: "",
+      code_behavior_findings: [],
+      captured_network_intent: hosts,
+      egress_intercepted_count: scored.length,
+      attack_egress_intercepted: canaryCalls.length > 0 || canaryInFiles.length > 0,
+      not_verified: [],
+    },
+    honesty: { possibly_dormant_unverified: false, notes: [] },
+    run_observation: observation,
   };
 }
 
@@ -428,6 +533,7 @@ export function normalizeReport(raw: unknown): Report {
     risky: normalizeRisky(r.risky),
     logs: normalizeLogs(r.logs),
     ...(forensics ? { forensics } : {}),
+    ...(strArray(r.not_verified).length > 0 ? { notVerified: strArray(r.not_verified) } : {}),
     // Carry the resolved commit SHA so the inline deep run can pin its detonation
     // to (and attach forensics onto) this exact report row.
     ...(typeof r.commit_sha === "string" && r.commit_sha ? { commit_sha: r.commit_sha } : {}),

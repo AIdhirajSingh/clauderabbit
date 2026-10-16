@@ -161,3 +161,47 @@ test("isUnreachablePath matches path segments, not substrings", () => {
   assert.equal(isUnreachablePath("pkg/fixtures/x.js"), true);
   assert.equal(isUnreachablePath("k8s/deploy.js"), true);
 });
+
+test("install hooks that reach code indirectly are followed: node -e require, npm run chains, node -r, scripts calling scripts", () => {
+  const g = buildReachGraph(
+    filesOf({
+      "package.json": JSON.stringify({
+        name: "h",
+        main: "index.js",
+        scripts: { preinstall: `node -e "require('./test/steal')"`, postinstall: "npm run setup", setup: "cd tools && node -r ../test/hook.js run.js", prepare: "sh ./scripts/a.sh" },
+      }),
+      "index.js": "",
+      "test/steal.js": "",
+      "test/hook.js": "",
+      "tools/run.js": "",
+      "scripts/a.sh": "#!/bin/sh\nnode ../test/b.js\n",
+      "test/b.js": "",
+      "test/untouched.js": "",
+    }),
+  );
+  for (const f of ["test/steal.js", "test/hook.js", "tools/run.js", "scripts/a.sh", "test/b.js"]) assert.equal(g.classify(f), "install", f);
+  assert.equal(g.classify("test/untouched.js"), "unreachable", "tests not named by any hook stay unreachable");
+  assert.equal(g.unbounded, false);
+});
+
+test("an install hook that runs an unknown program makes every non-doc file install-reachable", () => {
+  const g = buildReachGraph(
+    filesOf({
+      "package.json": JSON.stringify({ name: "m", scripts: { install: "make all" } }),
+      "Makefile": "all:\n\tnode test/x.js\n",
+      "test/x.js": "",
+      "README.md": "# m",
+    }),
+  );
+  assert.equal(g.unbounded, true);
+  assert.ok(g.unboundedFrom.includes("package.json scripts.install"));
+  assert.equal(g.classify("test/x.js"), "install");
+  assert.equal(g.classify("README.md"), "unreachable");
+});
+
+test("no root manifest after stripping: non-test files are reachable, never silently unreachable", () => {
+  const g = buildReachGraph(filesOf({ "lib/steal.js": "", "test/a.js": "" }));
+  assert.equal(g.unbounded, true);
+  assert.equal(g.classify("lib/steal.js"), "import");
+  assert.equal(g.classify("test/a.js"), "unreachable");
+});

@@ -64,8 +64,29 @@ export interface EngineDeps {
 }
 
 export interface RunScanOptions {
-  signal?: AbortSignal;
+  /**
+   * Live event listener. There is deliberately no abort signal: a scan always
+   * runs to its own deadline (scanMs) so a client disconnect can never cut OSV,
+   * the readers or the writer short and leave a degraded run behind.
+   */
   onEvent?: (e: ScanEvent) => void;
+}
+
+/**
+ * Stored under forensics.coverage on every 2.0 report. A run whose coverage is
+ * not complete is persisted and shown, but never served as the SHA cache hit:
+ * the next request runs a fresh scan.
+ */
+export interface RunCoverage {
+  complete: boolean;
+  failed: string[];
+}
+
+export function cachedCoverageComplete(report: { forensics?: unknown } | null | undefined): boolean {
+  const f = report?.forensics;
+  if (typeof f !== "object" || f === null) return false;
+  const c = (f as { coverage?: unknown }).coverage;
+  return typeof c === "object" && c !== null && (c as { complete?: unknown }).complete === true;
 }
 
 /** libfaketime speed during install and entry (DESIGN.md section 3.3 step 8). */
@@ -175,7 +196,8 @@ async function fetchAndVerify(req: ScanRequest, r: Resolved, deps: EngineDeps, s
   }
   emitStage("fetch", "done", `${bytes.length} bytes`);
   emitStage("verify", "start");
-  const archive = await parseTarball(bytes, limits);
+  // Strip-1 for every target, exactly as npm (pacote) and the VM (`tar --strip-components=1`) unpack it.
+  const archive = await parseTarball(bytes, { ...limits, stripFirstComponent: true });
   if (r.kind === "github") verifyGithubArchive(archive, r.github!.sha);
   emitStage("verify", "done", `${archive.files.size} files${archive.truncated ? `, truncated (${archive.truncatedReason})` : ""}`);
   return { bytes, archive, commitSha: commitSha! };
@@ -189,6 +211,12 @@ function tagReaders(findings: ReaderFinding[], graph: ReachGraph): TaggedReaderF
   return findings.map((f) => ({ ...f, reach: graph.classify(f.file) }));
 }
 
+/** What the writer and the evidence list are allowed to say about the sandbox run. */
+export function sandboxObservation(d: DetonationResult | null): "observed" | "partial" | "not_observed" {
+  if (!d || d.install !== "completed" || d.forensics.coverage === "lost") return "not_observed";
+  return d.forensics.coverage === "complete" ? "observed" : "partial";
+}
+
 function mergeMalicious(a: MaliciousDependency[], b: MaliciousDependency[]): MaliciousDependency[] {
   const m = new Map<string, MaliciousDependency>();
   for (const d of [...a, ...b]) m.set(`${d.ecosystem}:${d.name}@${d.version}`, d);
@@ -199,7 +227,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const cfg = deps.config;
   const startedAt = deps.now();
   const runId = (deps.newRunId ?? randomUUID)();
-  const outer = AbortSignal.any([opts.signal ?? new AbortController().signal, AbortSignal.timeout(cfg.deadlines.scanMs)]);
+  const outer = AbortSignal.timeout(cfg.deadlines.scanMs);
   const g = gate(opts.onEvent);
   let claimed = false;
   let discard = false;
@@ -277,7 +305,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   } else {
     emitStage("cache", "start");
     try {
-      const hit = await deps.store.findCached(resolved.subject, commitSha);
+      const found = await deps.store.findCached(resolved.subject, commitSha);
+      const hit = found && cachedCoverageComplete(found.report) ? found : null;
+      if (found && !hit) emitStage("cache", "done", "miss: the stored run for this sha has incomplete coverage, so it runs again");
       if (hit) {
         g.drop();
         discard = true;
@@ -285,7 +315,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         if (opts.onEvent) for (const e of hit.events) opts.onEvent({ ...e, replayed: true });
         return { kind: "cached", runId: hit.runId, report: hit.report };
       }
-      emitStage("cache", "done", "miss");
+      if (!found) emitStage("cache", "done", "miss");
     } catch (err) {
       emitStage("cache", "error", errMessage(err));
       check("cache_lookup", false, errMessage(err));
@@ -313,7 +343,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       return fail(new EngineError("budget_exhausted", "the daily scan budget is spent; retry tomorrow or open a cached report"), null);
     }
   } catch (err) {
+    // Fail closed: without a working budget ledger no fresh sandbox or model spend starts.
     check("daily_budget", false, errMessage(err));
+    return fail(new EngineError("capacity", "the scan budget ledger is unavailable; cached reports still serve, retry shortly"), null);
   }
 
   // ---- fetch, verify, reach ---------------------------------------------------------
@@ -476,11 +508,16 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     failedStages.push("The detonation sandbox stopped before the run finished.");
   } else {
     detonation = det;
-    for (const p of det.processes) bus.emit({ type: "process", data: p });
-    for (const c of det.forgedCalls) bus.emit({ type: "forged_call", data: c });
+    // Evidence first: forged calls (canary hits leading), then files, then checks,
+    // then processes, so the per-run event cap can only ever cut process noise.
+    const calls = [...det.forgedCalls].sort((a, b) => b.canary_hits.length - a.canary_hits.length);
+    for (const c of calls) bus.emit({ type: "forged_call", data: c });
     for (const f of det.files) bus.emit({ type: "file", data: f });
     for (const c of det.checks) check(c.name, c.ok, c.detail);
     for (const m of det.integrityMismatches) check("mirror_integrity_mismatch", false, `${m.host}${m.path ?? ""}`);
+    for (const m of det.mirrorMetadata.slice(0, 20)) check("mirror_metadata_served", false, `${m.host}${m.path ?? ""} answered from mirror metadata; upstream did not answer`);
+    if (det.forensics.coverage !== "complete") check("forensic_coverage", false, `${det.forensics.coverage}: ${det.forensics.gaps.join(" ").slice(0, 400)}`);
+    for (const p of det.processes) bus.emit({ type: "process", data: p });
     if (det.stats.pthFiles.length > 0) check("pth_files_installed", true, det.stats.pthFiles.join(", ").slice(0, 400));
     bus.transcript("install", "stdout", det.transcripts.install.stdout);
     bus.transcript("install", "stderr", det.transcripts.install.stderr);
@@ -517,6 +554,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     files: detonation?.files ?? [],
     processes: detonation?.processes ?? [],
     canaryInFiles: detonation?.canaryInFiles ?? [],
+    datagramEgress: detonation?.datagramEgress ?? [],
   });
   const docsClaims: DocsClaims | null = docsReader?.claims ?? null;
   if (analysis === null) failedStages.push("The static scanner sandbox did not complete.");
@@ -525,6 +563,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     install: detonation?.install ?? "failed",
     entry: detonation?.entry ?? "skipped",
     archiveTruncated: archive.truncated,
+    forensics: detonation?.forensics ?? { coverage: "lost", gaps: [] },
     coverage: { scanners: analysis?.complete ?? false, osv: osvOk, readers: readersOk },
     malicious,
     staticFindings,
@@ -547,6 +586,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       breakdown: result.breakdown,
       notVerified: result.notVerified,
       readerNotes: [installReader?.output.summary ?? "", flagged?.summary ?? "", docsReader?.output.summary ?? ""],
+      sandbox: sandboxObservation(detonation),
       statedPurpose: docsReader?.output.stated_purpose ?? null,
     },
     deadline(cfg.deadlines.writerMs, outer),
@@ -561,9 +601,24 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     code: result.breakdown.filter((d) => d.group === "static" || d.group === "intel" || d.group === "docs").flatMap((d) => [d.detail, ...(d.evidence ?? [])]).slice(0, 40),
     reputation: [...rep.evidence, ...result.breakdown.filter((d) => d.group === "reputation").map((d) => d.detail)].slice(0, 20),
   };
-  if (evidence.behaviour.length === 0 && detonation) {
-    evidence.behaviour.push(`Install ${detonation.install} and entry ${detonation.entry} in the sandbox; the forge answered ${detonation.forgedCalls.length} call(s) and none reached a non-registry host.`);
+  if (evidence.behaviour.length === 0) {
+    const seen = sandboxObservation(detonation);
+    if (seen === "observed") {
+      evidence.behaviour.push(`Install ${detonation!.install} and entry ${detonation!.entry} in the sandbox; the forge answered ${detonation!.forgedCalls.length} call(s) and none reached a non-registry host.`);
+    } else if (seen === "partial") {
+      evidence.behaviour.push(`Install ${detonation!.install} and entry ${detonation!.entry} in the sandbox; in the recorded part of the run none of the forge's ${detonation!.forgedCalls.length} call(s) reached a non-registry host, and part of the record was cut.`);
+    } else {
+      evidence.behaviour.push("The sandbox run did not produce a complete forensic record; install-time and runtime behaviour were not observed.");
+    }
   }
+  const failedCoverage: string[] = [];
+  if (!detonation) failedCoverage.push("detonation");
+  else if (detonation.forensics.coverage !== "complete") failedCoverage.push(`forensics_${detonation.forensics.coverage}`);
+  if (!(analysis?.complete ?? false)) failedCoverage.push("scanners");
+  if (!osvOk) failedCoverage.push("osv");
+  if (!readersOk) failedCoverage.push("readers");
+  if (written.writer !== "model") failedCoverage.push("writer");
+  const coverage: RunCoverage = { complete: failedCoverage.length === 0, failed: failedCoverage };
   timings.total = Math.round(deps.now() - startedAt);
   const report: ReportPayload = {
     run_id: runId,
@@ -579,6 +634,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     not_verified: result.notVerified,
     forensics: {
       version: 2,
+      coverage,
+      forensic_coverage: detonation?.forensics ?? { coverage: "lost", gaps: [] },
       install: detonation?.install ?? "failed",
       entry: detonation?.entry ?? "skipped",
       ecosystem: detonation?.ecosystem ?? "none",
@@ -587,6 +644,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       files: detonation?.files ?? [],
       processes: (detonation?.processes ?? []).slice(0, 100),
       canary_in_files: detonation?.canaryInFiles ?? [],
+      datagram_egress: detonation?.datagramEgress ?? [],
       checks: detonation?.checks ?? [],
       stats: detonation?.stats ?? null,
       sandbox_id: detonation?.sandboxId ?? null,

@@ -234,6 +234,12 @@ export interface Forensics {
   containment: ForensicsContainment;
   verdict: ForensicsVerdict;
   honesty: ForensicsHonesty;
+  /**
+   * 2.0 records only: what the sandbox run let us observe. "not_observed" when
+   * install did not complete or the forensic record was lost; "partial" when a
+   * size cap cut part of it. Absent on 1.0 records.
+   */
+  run_observation?: "observed" | "partial" | "not_observed";
 }
 
 /** A full safety report for a single repo. */
@@ -281,6 +287,8 @@ export interface Report {
    * rendered, no empty shell).
    */
   forensics?: Forensics;
+  /** 2.0 rows: the stored not_verified list from the deterministic score (never empty for a 2.0 row). */
+  notVerified?: string[];
   /**
    * The resolved commit SHA this report is for. Carried through so the inline
    * deep run can pin its detonation to (and attach its forensics onto) this exact

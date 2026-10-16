@@ -65,3 +65,20 @@ test("metrics: precision, recall and escalation over available scans only", () =
   assert.match(md, /\| Precision \| 50\.0% \|/);
   assert.match(md, /unavailable 1/);
 });
+
+test("metrics: fresh scan p50/p95 against the 8 s target, per stage, cached hits excluded", () => {
+  const row = (total: number, outcome = "fresh") => ({ expected: "clean", status: "pass", flagged: false, escalated: false, wallMs: total + 300, engineMs: total, outcome, stages: { total, detonate: total - 2000, static: 1500 } });
+  const rows = [row(6000), row(7000), row(9000), row(12000), row(50, "cached")];
+  const m = metrics(rows);
+  assert.equal(m.fresh, 4);
+  assert.equal(m.targetMs, 8000);
+  assert.equal(m.scanP50, 7000);
+  assert.equal(m.scanP95, 12000);
+  assert.equal(m.gapP50, -1000);
+  assert.equal(m.gapP95, 4000);
+  assert.deepEqual(m.stages.detonate, { p50: 5000, p95: 10000, n: 4 });
+  const md = renderMarkdown("https://preview.example", rows.map((r, i) => ({ id: `e${i}`, events: 0, ...r })), m, "2026-10-16T00:00:00Z");
+  assert.match(md, /Fresh scan time p50 \/ p95 .* \| 7000 ms \/ 12000 ms \|/);
+  assert.match(md, /Against the 8000 ms target \| p50 1000 ms under, p95 \+4000 ms over \|/);
+  assert.match(md, /\| detonate \| 5000 \| 10000 \| 4 \|/);
+});

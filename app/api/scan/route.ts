@@ -16,6 +16,7 @@ import { EngineError, type Ad, type ScanEvent } from "@/lib/engine/types";
 import { createSupabaseStore } from "@/lib/engine/store";
 import {
   MAX_BODY_BYTES,
+  adForRequest,
   adForSurface,
   callerFrom,
   executeScan,
@@ -31,7 +32,7 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra } });
@@ -47,7 +48,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     config = serverConfig();
   } catch (err) {
-    return json({ type: "error", error: "internal", code: "internal", message: err instanceof Error ? err.message : "configuration error", run_id: null, ad: null }, 503);
+    return json({ type: "error", error: "internal", code: "internal", message: err instanceof Error ? err.message : "configuration error", run_id: null, ad: adForRequest(surface, null) }, 503);
   }
 
   const raw = await req.text();

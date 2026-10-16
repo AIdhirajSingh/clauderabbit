@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseTarball } from "../../lib/engine/archive.ts";
 import { makeCanaries } from "../../lib/engine/forensics/capture.ts";
 import { runAnalysis } from "../../lib/engine/sandbox/analyze.ts";
-import { detonate, EXIT_NOT_CONTAINED } from "../../lib/engine/sandbox/detonate.ts";
+import { detonate, EXIT_NOT_CONTAINED, SALVAGE_ARCHIVE } from "../../lib/engine/sandbox/detonate.ts";
 import { e2bCreateOptions } from "../../lib/engine/sandbox/e2b.ts";
 import { packFiles } from "../../lib/engine/sandbox/pack.ts";
 import { SandboxCreateError, withSandbox, type CommandResult, type SandboxCreateOptions, type SandboxProvider, type SandboxSession } from "../../lib/engine/sandbox/provider.ts";
@@ -182,12 +182,59 @@ test("detonate: failed containment probe means no repo code ran; a deadline mean
 test("guest harness keeps the safety invariants", () => {
   const sh = readFileSync(join(ROOT, "sandbox/e2b/guest/cr-detonate.sh"), "utf8");
   assert.match(sh, /meta skuid \$CR_UID ip daddr != 127\.0\.0\.0\/8 meta l4proto tcp redirect to :8080/);
-  assert.match(sh, /meta skuid \$CR_UID ip daddr 127\.0\.0\.0\/8 tcp dport \{ 49983, 8081 \} reject/);
-  assert.match(sh, /meta skuid \$CR_UID meta l4proto != tcp drop/);
+  assert.match(sh, /meta skuid \$CR_UID tcp dport \{ 49983, 8081 \} reject with tcp reset/, "envd and 8081 refused for uid 1001 on every address family");
+  assert.match(sh, /meta skuid \$CR_UID meta nfproto ipv6 reject/, "uid 1001 has no IPv6 path past the accepted loopback forge ports");
+  assert.match(sh, /meta skuid \$CR_UID meta l4proto udp counter name cr_udp_drop drop/, "dropped UDP is counted, not silent");
+  assert.match(sh, /meta skuid \$CR_UID meta l4proto != tcp counter name cr_other_drop drop/);
+  assert.match(sh, /for ENVD_ADDR in 127\.0\.0\.1 ::1; do/, "the containment probe checks envd over IPv4 and IPv6");
+  assert.match(sh, /TRACE_SET=.*sendto,sendmsg,sendmmsg/);
+  assert.match(sh, /-print0 2>\/dev\/null >"\$RUN\/written\.0"/, "written files are NUL-separated");
+  assert.match(sh, /timeout 3 xargs -0 -r grep -l -s -D skip -F -f/, "the root canary grep is bounded and skips FIFOs and devices");
+  assert.match(sh, /check forensics_truncated false/, "any size cut is reported");
+  assert.doesNotMatch(sh, /truncate -s "<8M" "\$OUT\/\$f"/, "no silent head-only cut of the capture or traces");
   assert.match(sh, /check egress_contained false .*\n.*\n\s+exit 4/, "repo code never runs when the probe fails");
   assert.match(sh, /-u "\$CR_USER" -- \\\n\s+env -i "\$\{BASE_ENV\[@\]\}" bash -c "\$INSTALL_CMD"/, "install runs as uid 1001 under strace");
   assert.match(sh, /npm_config_dangerously_allow_all_scripts=true/);
   assert.match(sh, /FAKETIME="\+0 x\$FAKE_RATE"/);
   const policy = JSON.parse(readFileSync(join(ROOT, "sandbox/e2b/guest/policy.json"), "utf8"));
   assert.deepEqual(policy.registries.npm, ["registry.npmjs.org"]);
+});
+
+test("detonate: an overrun salvages the live forensic files, keeps their evidence, and marks coverage lost", async () => {
+  const canaries = makeCanaries();
+  const capture = { t: 1, phase: "install", proto: "https", host: "c2.example", port: 443, method: "POST", path: "/c", sni: "c2.example", req_headers: {}, req_bytes: 40, req_body_b64: Buffer.from(canaries.NPM_TOKEN).toString("base64"), forged_kind: "json", tls: "intercepted" };
+  const partial = makeTgz([
+    { name: "out/", type: "dir" },
+    { name: "out/checks.jsonl", data: '{"name":"egress_contained","ok":true}\n' },
+    { name: "out/capture.jsonl", data: JSON.stringify(capture) },
+    { name: "out/trace.install", data: `9 1.0 openat(AT_FDCWD, "/home/cr/.aws/credentials", O_RDONLY) = 3\n` },
+  ]);
+  const s = new StubSession((cmd, self) => {
+    if (cmd.includes("cr-detonate.sh") && !cmd.includes("pkill")) throw new Error("command deadline exceeded");
+    assert.match(cmd, /pkill -KILL -f 'cr-detonat\[e\]\.sh'; pkill -KILL -u 1001; .*tar -czf \/root\/out\.partial\.tgz -C \/root out/);
+    self.files.set(SALVAGE_ARCHIVE, partial);
+    return { exitCode: 0, stdout: "", stderr: "" };
+  });
+  const d = await detonate(new StubProvider(s), { runId: "r", mode: "npm-package", packageName: "evil", tarball: new Uint8Array(1), canaries, installTimeoutMs: 20_000, entryTimeoutMs: 4_000, totalTimeoutMs: 70_000, sandboxTimeoutMs: 95_000, fakeRate: 30 });
+  assert.equal(s.commands.length, 2, "harness, then salvage");
+  assert.equal(d.install, "timeout");
+  assert.equal(d.entry, "skipped");
+  assert.equal(d.forensics.coverage, "lost");
+  assert.deepEqual(d.forgedCalls[0]!.canary_hits, ["NPM_TOKEN"], "salvaged evidence still reaches the score");
+  assert.deepEqual(d.files.map((f) => f.op), ["read_decoy"]);
+  assert.ok(d.checks.some((c) => c.name === "forensics_collected" && !c.ok && /salvaged/.test(c.detail ?? "")));
+  assert.equal(s.killed, 1);
+});
+
+test("detonate: harness truncation and mirror metadata mark coverage partial", async () => {
+  const result = { version: 1, mode: "repo", ecosystem: "npm", deps_kind: "npm-ls", install: { status: "completed", exit_code: 0, ms: 9, command: "npm ci" }, entry: { status: "completed", exit_code: 0, ms: 1 }, clock: { real_ms: 40, fake_ms: 1000 }, total_ms: 99 };
+  const bundle = makeTgz([
+    { name: "out/", type: "dir" },
+    { name: "out/result.json", data: JSON.stringify(result) },
+    { name: "out/checks.jsonl", data: '{"name":"forensics_truncated","ok":false,"detail":"trace.install 9000000 bytes"}\n' },
+    { name: "out/capture.jsonl", data: "" },
+  ]);
+  const d = await detonate(new StubProvider(new StubSession((_c, self) => (self.files.set("/root/out.tgz", bundle), { exitCode: 0, stdout: "", stderr: "" }))), { runId: "r", mode: "repo", packageName: null, tarball: new Uint8Array(1), canaries: makeCanaries(), installTimeoutMs: 20_000, entryTimeoutMs: 4_000, totalTimeoutMs: 70_000, sandboxTimeoutMs: 95_000, fakeRate: 30 });
+  assert.equal(d.forensics.coverage, "partial");
+  assert.match(d.forensics.gaps.join(" "), /cut at the size cap/);
 });

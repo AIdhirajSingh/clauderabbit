@@ -11,7 +11,7 @@
 
 import { adFor, type AdTarget } from "../engine/ads";
 import { identify, bearerToken, type Identity } from "../engine/auth";
-import { isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
+import { DEFAULT_SITE_URL, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
 import { runScan } from "../engine/orchestrator";
 import { checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
@@ -153,6 +153,19 @@ export function adForSurface(config: EngineConfig, surface: Surface, target: Sca
   return adFor(surface, { siteUrl: config.siteUrl, adsense: config.adsense, target: target ? adTargetOf(target) : null });
 }
 
+/**
+ * The ad for a response when the server config can fail to load (config error
+ * paths, replay routes): the configured ad when the config loads, otherwise our
+ * house ad on the default site URL. Every response carries an ad.
+ */
+export function adForRequest(surface: Surface, target: ScanTarget | null): Ad {
+  try {
+    return adForSurface(serverConfig(), surface, target);
+  } catch {
+    return adFor(surface, { siteUrl: DEFAULT_SITE_URL, adsense: { clientId: null, slotId: null, adtest: "on" }, target: target ? adTargetOf(target) : null });
+  }
+}
+
 /** NAMES of the server env vars a fresh scan needs that are absent. */
 export function missingServerKeys(config: EngineConfig): string[] {
   return missingKeys(config);
@@ -201,7 +214,7 @@ export async function executeScan(ctx: CallerContext, target: ScanTarget, regene
   const { config, store, caller } = ctx;
   const ad = adForSurface(config, caller.surface, target);
   const deps = productionDeps(config, store);
-  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator }, deps, { signal: opts.signal, onEvent: opts.onEvent });
+  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator }, deps, { onEvent: opts.onEvent });
   const reportUrl = reportUrlFor(config.siteUrl, target);
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad };
   if (outcome.kind === "attached") {

@@ -177,6 +177,60 @@ export function scriptFiles(command: string): string[] {
   return out;
 }
 
+/** Split a shell command into simple commands on unquoted `&&`, `||`, `;`, `|` and newlines, tokenized with quotes removed. */
+export function shellSegments(command: string): string[][] {
+  const segs: string[][] = [];
+  let tokens: string[] = [];
+  let cur = "";
+  let has = false;
+  let quote: '"' | "'" | null = null;
+  const pushTok = () => {
+    if (has) tokens.push(cur);
+    cur = "";
+    has = false;
+  };
+  const pushSeg = () => {
+    pushTok();
+    if (tokens.length > 0) segs.push(tokens);
+    tokens = [];
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === "\\" && quote === '"' && i + 1 < command.length) cur += command[++i];
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      has = true;
+    } else if (ch === "\\" && i + 1 < command.length) {
+      cur += command[++i];
+      has = true;
+    } else if (ch === ";" || ch === "\n" || ch === "|" || ch === "&") {
+      if ((ch === "|" || ch === "&") && command[i + 1] === ch) i++;
+      pushSeg();
+    } else if (ch === " " || ch === "\t") pushTok();
+    else {
+      cur += ch;
+      has = true;
+    }
+  }
+  pushSeg();
+  return segs;
+}
+
+/** Hook commands that never execute a file of the package itself. */
+const NO_PACKAGE_FILE_COMMANDS = new Set([
+  "echo", "printf", "exit", "true", "false", ":", "test", "[", "mkdir", "rm", "cp", "mv", "chmod", "ln", "touch", "cat",
+  "node-gyp", "node-gyp-build", "prebuild-install", "husky", "tsc", "rimraf", "is-ci", "curl", "wget",
+]);
+const NODE_RUNNERS = new Set(["node", "nodejs", "tsx", "ts-node", "bun"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+const PYTHONS = new Set(["python", "python3"]);
+const PKG_MANAGERS = new Set(["npm", "yarn", "pnpm"]);
+
 export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
   const has = (p: string) => files.has(p);
   const textCache = new Map<string, string | null>();
@@ -303,22 +357,16 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
   };
 
   // npm entries
+  const unresolvedHooks: string[] = [];
   if (pkg) {
     const scripts = pkg.scripts && typeof pkg.scripts === "object" ? (pkg.scripts as Record<string, unknown>) : {};
     for (const hook of NPM_INSTALL_HOOKS) {
       const cmd = scripts[hook];
       if (typeof cmd !== "string") continue;
-      const named = scriptFiles(cmd);
-      let resolvedAny = false;
-      for (const f of named) {
-        const t = join("", f);
-        const r = t === null ? null : resolveJsFile(t) ?? (has(t) ? t : null);
-        if (r) {
-          addEntry(r, "install", `scripts.${hook}`);
-          resolvedAny = true;
-        }
-      }
-      if (!resolvedAny) inlineInstallCommands.push({ hook, command: cmd });
+      const r = resolveHook(cmd, scripts, has, text, resolveJsFile, resolveJs, resolvePyModule);
+      for (const f of r.files) addEntry(f, "install", `scripts.${hook}`);
+      if (r.files.length === 0 || r.inline) inlineInstallCommands.push({ hook, command: cmd });
+      if (r.unresolved) unresolvedHooks.push(`package.json scripts.${hook}`);
     }
     if (has("binding.gyp")) {
       addEntry("binding.gyp", "install", "node-gyp runs binding.gyp on install");
@@ -410,8 +458,13 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
   const install = walk("install");
   const importSet = walk("import");
   for (const f of install) importSet.delete(f);
+  // No root manifest after stripping: nothing tells us what runs, so every non-test file counts as reachable.
+  const noManifest = !pkg && !isPython && !has("package.json");
+  const hookUnbounded = unresolvedHooks.length > 0;
+  for (const h of unresolvedHooks) unboundedFrom.add(h);
+  if (noManifest) unboundedFrom.add("(no root manifest)");
   const unbounded = unboundedFrom.size > 0;
-  const unboundedInstall = [...unboundedFrom].some((f) => install.has(f));
+  const unboundedInstall = hookUnbounded || [...unboundedFrom].some((f) => install.has(f));
 
   return {
     install,
@@ -424,8 +477,213 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
     classify(path: string): Reach {
       if (install.has(path) || INSTALL_MANIFESTS.has(path)) return "install";
       if (importSet.has(path)) return "import";
+      // An install hook that runs files we cannot name: every file but documentation can run at install.
+      if (hookUnbounded && files.has(path) && !isDocPath(path)) return "install";
       if (unbounded && files.has(path) && !isUnreachablePath(path)) return unboundedInstall ? "install" : "import";
       return "unreachable";
     },
   };
+}
+
+/** Documentation only: markdown, reStructuredText, plain text, and docs/ trees. */
+export function isDocPath(path: string): boolean {
+  if (/(^|\/)docs?\//i.test(path)) return true;
+  return /\.(md|markdown|mdx|rst|txt)$/i.test(path.slice(path.lastIndexOf("/") + 1));
+}
+
+interface HookResolution {
+  /** Package files the command runs at install. */
+  files: string[];
+  /** True when the command runs something we could not resolve to package files. */
+  unresolved: boolean;
+  /** True when the command carries inline code (node -e, sh -c, python -c, curl | sh). */
+  inline: boolean;
+}
+
+/**
+ * Resolve an install-hook command to the package files it runs: `npm run X`
+ * chains (recursively), `node -r/--require/--import <f>`, string literals in
+ * `node -e`, `python -c` imports, `python -m`, `sh -c` bodies, shell scripts
+ * that call other scripts, and `cd dir &&` prefixes. Anything that runs an
+ * unknown program sets `unresolved`, which makes the install set unbounded.
+ */
+function resolveHook(
+  command: string,
+  scripts: Record<string, unknown>,
+  has: (p: string) => boolean,
+  text: (p: string) => string | null,
+  resolveJsFile: (base: string) => string | null,
+  resolveJs: (from: string, spec: string) => string | null,
+  resolvePyModule: (dotted: string, roots: string[]) => string[],
+): HookResolution {
+  const out = new Set<string>();
+  let unresolved = false;
+  let inline = false;
+  const seenScripts = new Set<string>();
+  const seenFiles = new Set<string>();
+
+  const fileAt = (cwd: string, rel: string): string | null => {
+    const t = join(cwd, rel.replace(/^\.\//, ""));
+    if (t === null) return null;
+    return resolveJsFile(t) ?? (has(t) ? t : null);
+  };
+  const runFile = (f: string, depth: number) => {
+    out.add(f);
+    // A shell script (no JS/Python extension) runs further commands: follow them.
+    if (!JS_CODE_RE.test(f) && !f.endsWith(".py") && !f.endsWith(".json") && !seenFiles.has(f) && depth < 6) {
+      seenFiles.add(f);
+      const body = text(f);
+      if (body !== null && (/^#!.*\b(?:ba|z|da)?sh\b/.test(body) || f.endsWith(".sh"))) walk(body.replace(/^#!.*\n/, ""), dirname(f), depth + 1);
+    }
+  };
+  const jsCode = (code: string, cwd: string) => {
+    inline = true;
+    const sp = jsSpecifiers(code);
+    if (sp.nonLiteral) unresolved = true;
+    for (const spec of sp.literal) {
+      const r = resolveJs(cwd ? `${cwd}/__hook__.js` : "__hook__.js", spec);
+      if (r) out.add(r);
+    }
+  };
+
+  function walk(cmd: string, base: string, depth: number): void {
+    if (depth > 6) {
+      unresolved = true;
+      return;
+    }
+    let cwd = base;
+    for (const seg of shellSegments(cmd)) {
+      let i = 0;
+      while (i < seg.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(seg[i]!)) i++;
+      if (i >= seg.length) continue;
+      const prog = seg[i]!;
+      const name = prog.slice(prog.lastIndexOf("/") + 1);
+      const args = seg.slice(i + 1);
+      if (name === "cd") {
+        const t = args[0] ? join(cwd, args[0]) : "";
+        cwd = t ?? cwd;
+        continue;
+      }
+      if (name === "npx" || name === "exec") {
+        // `npx <bin>` runs a dependency or a package bin: resolve a local path, otherwise unknown.
+        const target = args.find((a) => !a.startsWith("-"));
+        const f = target ? fileAt(cwd, target) : null;
+        if (f) runFile(f, depth);
+        else unresolved = true;
+        continue;
+      }
+      if (PKG_MANAGERS.has(name)) {
+        const sub = args[0] ?? "";
+        const scriptName = sub === "run" || sub === "run-script" ? args.find((a, k) => k > 0 && !a.startsWith("-")) : name !== "npm" && typeof scripts[sub] === "string" ? sub : undefined;
+        if (scriptName !== undefined) {
+          const body = scripts[scriptName];
+          if (typeof body === "string" && !seenScripts.has(scriptName)) {
+            seenScripts.add(scriptName);
+            walk(body, "", depth + 1);
+          }
+          for (const pre of [`pre${scriptName}`, `post${scriptName}`]) {
+            const b = scripts[pre];
+            if (typeof b === "string" && !seenScripts.has(pre)) {
+              seenScripts.add(pre);
+              walk(b, "", depth + 1);
+            }
+          }
+          continue;
+        }
+        if (["install", "i", "ci", "rebuild", "add"].includes(sub)) continue;
+        unresolved = true;
+        continue;
+      }
+      if (NODE_RUNNERS.has(name)) {
+        let ran = false;
+        for (let k = 0; k < args.length; k++) {
+          const a = args[k]!;
+          if (a === "-e" || a === "--eval" || a === "-p" || a === "--print") {
+            jsCode(args[k + 1] ?? "", cwd);
+            ran = true;
+            k++;
+          } else if (a === "-r" || a === "--require" || a === "--import" || a === "--loader" || a === "--experimental-loader") {
+            const spec = args[k + 1] ?? "";
+            const f = spec.startsWith(".") || spec.startsWith("/") ? fileAt(cwd, spec) : resolveJs(cwd ? `${cwd}/__hook__.js` : "__hook__.js", spec);
+            if (f) out.add(f);
+            k++;
+          } else if (/^--(?:require|import|loader|experimental-loader|eval|print)=/.test(a)) {
+            const v = a.slice(a.indexOf("=") + 1);
+            if (/^--(?:eval|print)=/.test(a)) {
+              jsCode(v, cwd);
+              ran = true;
+            } else {
+              const f = fileAt(cwd, v);
+              if (f) out.add(f);
+            }
+          } else if (a.startsWith("-")) {
+            continue;
+          } else {
+            const f = fileAt(cwd, a);
+            if (f) runFile(f, depth);
+            else unresolved = true;
+            ran = true;
+            break;
+          }
+        }
+        if (!ran) inline = true;
+        continue;
+      }
+      if (SHELLS.has(name)) {
+        const c = args.indexOf("-c");
+        if (c !== -1) {
+          inline = true;
+          walk(args[c + 1] ?? "", cwd, depth + 1);
+          continue;
+        }
+        const script = args.find((a) => !a.startsWith("-"));
+        if (!script) {
+          inline = true; // reads its program from stdin (`curl ... | sh`)
+          continue;
+        }
+        const f = fileAt(cwd, script);
+        if (f) runFile(f, depth);
+        else unresolved = true;
+        continue;
+      }
+      if (PYTHONS.has(name)) {
+        let done = false;
+        for (let k = 0; k < args.length && !done; k++) {
+          const a = args[k]!;
+          if (a === "-c") {
+            inline = true;
+            const sp = pySpecifiers(args[k + 1] ?? "");
+            if (sp.nonLiteral) unresolved = true;
+            for (const mod of sp.absolute) for (const f of resolvePyModule(mod, [cwd, ...PY_ROOTS])) out.add(f);
+            done = true;
+          } else if (a === "-m") {
+            const found = resolvePyModule(args[k + 1] ?? "", [cwd, ...PY_ROOTS]);
+            if (found.length > 0) for (const f of found) out.add(f);
+            else unresolved = true;
+            done = true;
+          } else if (!a.startsWith("-")) {
+            const f = fileAt(cwd, a);
+            if (f) runFile(f, depth);
+            else unresolved = true;
+            done = true;
+          }
+        }
+        continue;
+      }
+      if (NO_PACKAGE_FILE_COMMANDS.has(name)) {
+        if (name === "curl" || name === "wget") inline = true;
+        continue;
+      }
+      // A path to a package file (`./install.sh`, `bin/setup`).
+      const direct = fileAt(cwd, prog);
+      if (direct) {
+        runFile(direct, depth);
+        continue;
+      }
+      unresolved = true;
+    }
+  }
+
+  walk(command, "", 0);
+  return { files: [...out].sort(), unresolved, inline };
 }

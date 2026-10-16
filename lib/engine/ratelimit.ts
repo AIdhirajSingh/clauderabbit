@@ -46,7 +46,11 @@ export interface RateLimitDecision {
   allowed: boolean;
   retryAfter: number;
   bucket: string;
-  /** Set when the limiter RPC failed; the request is let through (fail open) and the reason is reported. */
+  /**
+   * Set when the limiter RPC failed. Signed-in callers are let through (the
+   * daily budget ledger, which fails closed, still bounds spend); anonymous
+   * callers are refused until the limiter answers again.
+   */
   limiterError?: string;
 }
 
@@ -63,20 +67,28 @@ export function bucketFor(caller: { userId: string | null; ip: string | null }):
   return { key: GLOBAL_ANON_BUCKET_KEY, limit: GLOBAL_ANON_MAX_REQUESTS, windowSeconds: GLOBAL_ANON_WINDOW_SECONDS };
 }
 
+/** Retry-After sent to anonymous callers while the limiter is unavailable. */
+export const LIMITER_DOWN_RETRY_SECONDS = 30;
+
 /**
- * Check and count one request. A limiter failure lets the request through
- * (a counter outage never blocks scanning) and returns the reason so the
+ * Check and count one request. On a limiter failure an anonymous caller is
+ * refused (fail closed: an outage must not open unlimited sandbox and model
+ * spend), a signed-in caller is let through, and the reason is returned so the
  * route can log it.
  */
 export async function checkRateLimit(db: Pick<SupabaseClient, "rpc">, caller: { userId: string | null; ip: string | null }): Promise<RateLimitDecision> {
   const b = bucketFor(caller);
+  const down = (reason: string): RateLimitDecision =>
+    caller.userId
+      ? { allowed: true, retryAfter: 0, bucket: b.key, limiterError: reason }
+      : { allowed: false, retryAfter: LIMITER_DOWN_RETRY_SECONDS, bucket: b.key, limiterError: reason };
   try {
     const { data, error } = await db.rpc("check_scan_rate_limit", { p_bucket_key: b.key, p_limit: b.limit, p_window_seconds: b.windowSeconds });
-    if (error) return { allowed: true, retryAfter: 0, bucket: b.key, limiterError: error.message };
+    if (error) return down(error.message);
     const row = (Array.isArray(data) ? data[0] : data) as RpcRow | undefined;
-    if (!row || typeof row.allowed !== "boolean") return { allowed: true, retryAfter: 0, bucket: b.key, limiterError: "check_scan_rate_limit returned no row" };
+    if (!row || typeof row.allowed !== "boolean") return down("check_scan_rate_limit returned no row");
     return { allowed: row.allowed, retryAfter: row.allowed ? 0 : Math.max(1, Number(row.retry_after) || b.windowSeconds), bucket: b.key };
   } catch (err) {
-    return { allowed: true, retryAfter: 0, bucket: b.key, limiterError: err instanceof Error ? err.message : String(err) };
+    return down(err instanceof Error ? err.message : String(err));
   }
 }

@@ -2,6 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BASE_NOT_VERIFIED,
+  CAP_FORENSICS_LOST,
+  CAP_FORENSICS_PARTIAL,
+  CAP_NOT_PROVEN,
   bandFor,
   computeScore,
   deriveBehaviour,
@@ -34,6 +37,7 @@ function input(over: Partial<ScoreInput> = {}): ScoreInput {
     install: "completed",
     entry: "completed",
     archiveTruncated: false,
+    forensics: { coverage: "complete", gaps: [] },
     coverage: { scanners: true, osv: true, readers: true },
     malicious: [],
     staticFindings: [],
@@ -135,6 +139,9 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "install timeout caps at 74 even with strong reputation", in: { install: "timeout", reputation: STRONG_REP }, score: 74, verdict: "Caution" },
   { name: "install skipped caps at 74", in: { install: "skipped", entry: "skipped" }, score: 74, verdict: "Caution" },
   { name: "archive truncated caps at 74", in: { archiveTruncated: true }, score: 74, verdict: "Caution" },
+  { name: "lost forensics cap at 59 even with completed phases and strong reputation", in: { forensics: { coverage: "lost", gaps: [] }, reputation: STRONG_REP }, score: 59, verdict: "High risk" },
+  { name: "lost forensics after an overrun: timeout plus lost caps at 59", in: { install: "timeout", entry: "skipped", forensics: { coverage: "lost", gaps: [] } }, score: 59, verdict: "High risk" },
+  { name: "partial forensics caps at 74", in: { forensics: { coverage: "partial", gaps: ["capture.jsonl was cut at 8 MB."] }, reputation: STRONG_REP }, score: 74, verdict: "Caution" },
   { name: "entry skipped caps at 89", in: { entry: "skipped", reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "entry failed caps at 89", in: { entry: "failed", reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "scanner coverage missing blocks 90", in: { coverage: { scanners: false, osv: true, readers: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
@@ -259,4 +266,16 @@ test("deriveBehaviour maps forensics onto behaviour signals", () => {
   assert.equal(r.score, 0);
   assert.equal(r.verdict, "Malicious");
   assert.equal(r.groups.behaviour, -85);
+});
+
+test("score: a lost detonation never outscores an observed attack and never reads as observed-clean", () => {
+  const lost = computeScore(input({ install: "timeout", entry: "skipped", forensics: { coverage: "lost", gaps: [] } }));
+  const caught = computeScore(input({ behaviour: beh({ canaryHits: ["x"] }) }));
+  assert.ok(lost.score <= CAP_FORENSICS_LOST && lost.score <= CAP_NOT_PROVEN);
+  assert.ok(lost.score < 60, "a lost run lands in High risk or below");
+  assert.ok(caught.score < lost.score, "an observed exfiltration still scores below a lost run");
+  assert.match(lost.notVerified.join("\n"), /did not produce a forensic record/);
+  const partial = computeScore(input({ forensics: { coverage: "partial", gaps: ["trace.install was cut at 8 MB."] } }));
+  assert.ok(partial.score <= CAP_FORENSICS_PARTIAL);
+  assert.ok(partial.notVerified.includes("trace.install was cut at 8 MB."));
 });

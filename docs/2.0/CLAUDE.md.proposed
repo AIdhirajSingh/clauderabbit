@@ -54,6 +54,9 @@ The exact accounts, project IDs, regions, secret names and model strings all liv
 - **Supabase** provides database, auth (Google + email) and Realtime. It runs no functions.
 - **E2B** is the sandbox: one fresh VM per scan from the pinned template in `sandbox/e2b/`.
 - **OpenAI** is the model, through one adapter (`lib/engine/model/`); the model id (`gpt-6-luna`) is config, not code.
+- **Retired in 2.0:** GCP (the golden image, Vertex, the $300 credit), Gemini, the `cr-forge-gateway` and `cr-detonation` services, the deep queue, and every Supabase edge function. Nothing in the 2.0 code path calls them.
+- **1.0 stays running until the owner retires it.** Production keeps serving 1.0 and its `deep-queue` edge function until the owner says otherwise, so the production database gets only the additive 2.0 migrations in `supabase/migrations` (0001 to 0003). The destructive pair in `supabase/migrations-post-cutover` (drop the deep queue, drop the dead daily quota) is applied only after the owner retires 1.0. Every migration runs on a Supabase branch first and carries a reverse file.
+- **Scan time:** the target is about 8 s per fresh scan; the deadlines in `lib/engine/config.ts` are worst-case ceilings, and p50/p95 per stage come from `scripts/labeled-run.mjs` on real runs.
 
 ---
 

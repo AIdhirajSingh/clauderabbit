@@ -30,8 +30,10 @@ export interface ReportRow {
   packages_json: unknown;
   risky_json: unknown;
   logs_json: unknown;
-  /** The dynamic sandbox forensic record (`forensic-record@1`), or null. */
+  /** The dynamic sandbox forensic record (`forensic-record@1` on 1.0 rows, `version: 2` on 2.0 rows), or null. */
   forensics_json?: unknown;
+  /** 2.0 rows: the deterministic score's not_verified list. */
+  not_verified?: unknown;
   owners?: OwnerRow | null;
 }
 
@@ -136,6 +138,7 @@ export function reportRowToReport(row: ReportRow): Report {
       risky: row.risky_json,
       logs: row.logs_json,
       forensics_json: row.forensics_json,
+      not_verified: row.not_verified,
     });
   }
 
@@ -183,5 +186,6 @@ export function reportRowToReport(row: ReportRow): Report {
     // `normalizeReport` accepts `forensics` or `forensics_json` and coerces it
     // to the strict `Forensics` shape; a null/absent column omits the section.
     forensics_json: row.forensics_json,
+    not_verified: row.not_verified,
   });
 }

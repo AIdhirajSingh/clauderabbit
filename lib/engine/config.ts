@@ -73,7 +73,23 @@ export const DEFAULT_LIMITS: EngineLimits = {
   maxPackumentBytes: 24 * 1024 * 1024,
 };
 
-/** Hard deadlines from DESIGN.md section 2.2. */
+/**
+ * Worst-case wall time cr-detonate.sh spends outside install and entry: CA and
+ * fence setup 2 s, forge start 5 s, containment probes 6.3 s, extraction 6 s,
+ * install kill grace 2 s, .pth scan 2 s, clock check 3 s, entry kill grace 1 s,
+ * dependency listing 3 s, written-file listing 5 s, canary search 3 s, fence
+ * counters 0.5 s, capture reordering 6 s, trace cuts 1 s, packing 4 s. Each step
+ * carries its own `timeout` in the harness.
+ */
+export const HARNESS_OVERHEAD_MS = 50_000;
+/** Budget for the salvage pack after an overrun (lib/engine/sandbox/detonate.ts SALVAGE_MS). */
+export const SALVAGE_BUDGET_MS = 8_000;
+
+/**
+ * Hard deadlines (DESIGN.md section 2.2). These are ceilings for the worst case,
+ * not the target: the owner's 8 s target is measured per stage in the event
+ * stream and reported as p50/p95 by scripts/labeled-run.mjs on key day.
+ */
 export const DEFAULT_DEADLINES: EngineDeadlines = {
   preflightMs: 1_500,
   resolveMs: 4_000,
@@ -84,12 +100,29 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
   readerMs: 12_000,
   installMs: 20_000,
   entryMs: 4_000,
-  detonateTotalMs: 30_000,
+  detonateTotalMs: 75_000,
   writerMs: 10_000,
   persistMs: 3_000,
-  scanMs: 75_000,
-  sandboxTimeoutMs: 90_000,
+  scanMs: 115_000,
+  sandboxTimeoutMs: 100_000,
 };
+
+/**
+ * The detonation command deadline must cover install, entry and every harness
+ * step, or an overrun erases the forensic bundle; the VM must outlive the
+ * command plus the salvage; the scan deadline must cover the serial path.
+ * Returns the violated rules (empty when consistent).
+ */
+export function deadlineViolations(d: EngineDeadlines): string[] {
+  const out: string[] = [];
+  const harness = d.installMs + d.entryMs + HARNESS_OVERHEAD_MS;
+  if (d.detonateTotalMs < harness) out.push(`detonateTotalMs ${d.detonateTotalMs} < installMs + entryMs + harness overhead (${harness})`);
+  const vm = d.detonateTotalMs + SALVAGE_BUDGET_MS + 10_000;
+  if (d.sandboxTimeoutMs < vm) out.push(`sandboxTimeoutMs ${d.sandboxTimeoutMs} < detonateTotalMs + salvage + upload margin (${vm})`);
+  const serial = d.resolveMs + d.fetchMs + d.detonateTotalMs + SALVAGE_BUDGET_MS + d.osvMs + d.writerMs + d.persistMs;
+  if (d.scanMs < serial) out.push(`scanMs ${d.scanMs} < resolve + fetch + detonation + salvage + OSV pass 2 + writer + persist (${serial})`);
+  return out;
+}
 
 type Env = Record<string, string | undefined>;
 
@@ -156,8 +189,14 @@ export function loadEngineConfig(env: Env): EngineConfig {
     dailySandboxSecondsCap: positiveInt(env, "CR_DAILY_SANDBOX_SECONDS_CAP", 20_000),
     dailyModelTokensCap: positiveInt(env, "CR_DAILY_MODEL_TOKENS_CAP", 20_000_000),
     limits: { ...DEFAULT_LIMITS },
-    deadlines: { ...DEFAULT_DEADLINES },
+    deadlines: checkedDeadlines({ ...DEFAULT_DEADLINES }),
   };
+}
+
+function checkedDeadlines(d: EngineDeadlines): EngineDeadlines {
+  const v = deadlineViolations(d);
+  if (v.length > 0) throw new Error(`inconsistent scan deadlines: ${v.join("; ")}`);
+  return d;
 }
 
 /** Names of the server env vars a fresh scan needs that are absent. */

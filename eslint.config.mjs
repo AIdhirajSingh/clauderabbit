@@ -42,6 +42,8 @@ const eslintConfig = [
       "tests/fixtures/**",
       ".claude/**",
       ".next/**",
+      // `vercel build` writes bundled third-party output under .vercel; never lint it.
+      ".vercel/**",
     ],
   },
 ];

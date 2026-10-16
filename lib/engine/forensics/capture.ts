@@ -182,18 +182,41 @@ export function recordCanaryHits(r: CaptureRecord, m: CanaryMatcher): CanaryName
 
 const PROTOS = new Set(["http", "https", "dns", "tcp"]);
 
+/** Registry traffic served by the forge's mirror or registry handler (never scored). */
+const REGISTRY_KINDS = new Set(["mirror", "registry"]);
+const REGISTRY_HOST_SET = new Set(["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]);
+
+/**
+ * True when a call can move the score (lib/engine/score.ts deriveBehaviour):
+ * any non-DNS call that is not plain registry traffic, any refused TLS
+ * handshake, and any DNS name long enough to be a tunneling shape. These are
+ * kept past the display cap so a flood of benign calls can never push a
+ * scored call out of the record.
+ */
+export function isScoreRelevantCall(c: ForgedCallData): boolean {
+  if (c.canary_hits.length > 0) return true;
+  if (c.tls === "refused") return true;
+  if (c.proto === "dns") return c.host.length > 40;
+  return !(REGISTRY_KINDS.has(c.forged_kind) && REGISTRY_HOST_SET.has(c.host));
+}
+
 export interface CaptureSummary {
   forgedCalls: ForgedCallData[];
   /** Records from harness phases (probe, collect): excluded from behaviour. */
   harnessRecords: number;
   /** Registry blobs the forge refused because their digest did not match. */
   integrityMismatches: Array<{ host: string; path: string | null }>;
+  /** Plain (not score-relevant) calls left out of the display list past MAX_FORGED_EVENTS. */
   droppedForgedCalls: number;
+  /** Metadata the forge served from the seeded mirror because upstream failed. */
+  mirrorMetadata: Array<{ host: string; path: string | null }>;
 }
 
 export function summarizeCapture(records: CaptureRecord[], m: CanaryMatcher): CaptureSummary {
   const forgedCalls: ForgedCallData[] = [];
   const integrityMismatches: CaptureSummary["integrityMismatches"] = [];
+  const mirrorMetadata: CaptureSummary["mirrorMetadata"] = [];
+  const relevantSeen = new Set<string>();
   let harness = 0;
   let dropped = 0;
   for (const r of records) {
@@ -202,6 +225,7 @@ export function summarizeCapture(records: CaptureRecord[], m: CanaryMatcher): Ca
       continue;
     }
     if (r.integrity === "mismatch") integrityMismatches.push({ host: r.host, path: r.path });
+    if (r.integrity === "mirror-metadata") mirrorMetadata.push({ host: r.host, path: r.path });
     const call: ForgedCallData = {
       phase: r.phase as Phase,
       proto: (PROTOS.has(r.proto) ? r.proto : "tcp") as ForgedCallData["proto"],
@@ -215,12 +239,27 @@ export function summarizeCapture(records: CaptureRecord[], m: CanaryMatcher): Ca
       ...(r.tls === "intercepted" || r.tls === "refused" ? { tls: r.tls } : {}),
       canary_hits: recordCanaryHits(r, m),
     };
-    // Every call with a canary hit is kept; plain calls are capped.
-    if (forgedCalls.length >= MAX_FORGED_EVENTS && call.canary_hits.length === 0) {
-      dropped++;
+    if (forgedCalls.length < MAX_FORGED_EVENTS) {
+      forgedCalls.push(call);
+      if (isScoreRelevantCall(call)) relevantSeen.add(`${call.proto}|${call.host}|${call.tls ?? ""}`);
       continue;
     }
-    forgedCalls.push(call);
+    // Past the display cap: every canary hit is kept, and the first call per
+    // distinct scored shape (proto, host, TLS outcome) is kept, so the score
+    // sees exactly what an uncapped list would give it. Plain calls are dropped.
+    if (call.canary_hits.length > 0) {
+      forgedCalls.push(call);
+      continue;
+    }
+    if (isScoreRelevantCall(call)) {
+      const key = `${call.proto}|${call.host}|${call.tls ?? ""}`;
+      if (!relevantSeen.has(key)) {
+        relevantSeen.add(key);
+        forgedCalls.push(call);
+        continue;
+      }
+    }
+    dropped++;
   }
-  return { forgedCalls, harnessRecords: harness, integrityMismatches, droppedForgedCalls: dropped };
+  return { forgedCalls, harnessRecords: harness, integrityMismatches, droppedForgedCalls: dropped, mirrorMetadata };
 }

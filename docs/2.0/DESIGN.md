@@ -86,15 +86,20 @@ remote `/mcp` all run this one pipeline. Keys on key day: `OPENAI_API_KEY`, `E2B
 | | (a2) OSV querybatch on lockfile deps; heuristics | 400 | 5000 |
 | | (b) reachability graph | 50 | 1000 |
 | | (c) readers: install + docs start at t=1050; flagged reader starts when a1 returns | 2500 each | 12000 each |
-| | (d) detonation: create 600, upload 200, forge-up 1200, install 3000, entry 3000 (fake clock x30), collect 300 | 8300 | install 20000, entry 4000, total 30000 |
+| | (d) detonation: create 600, upload 200, forge-up 1200, install 3000, entry 3000 (fake clock x30), collect 300 | 8300 | install 20000, entry 4000, total 75000 (install + entry + 50000 harness overhead, each harness step under its own `timeout`) |
 | ~7000 | OSV pass 2 on the installed tree (from `npm ls --all --json` / `uv pip list --format json`) | 300 | 4000 |
 | ~7300 | score | 5 | 100 |
 | ~7300 | writer (Luna) | 1500 | 10000 |
 | ~8800 | persist report, close stream | 200 | 3000 |
 
-Global scan deadline 75 s; any stage past its deadline emits `stage{status:"error"}` and a `check`, and the
-score applies the corresponding cap (section 5.4). Sandboxes are created with `timeoutMs = 90000` so E2B
-reaps them even if the function dies.
+Global scan deadline 115 s (route `maxDuration` 180 s); any stage past its deadline emits `stage{status:"error"}` and a `check`, and the
+score applies the corresponding cap (section 5.4). Sandboxes are created with `timeoutMs = 100000` so E2B
+reaps them even if the function dies. `lib/engine/config.ts deadlineViolations` refuses a deadline set where
+the detonation command deadline is shorter than install + entry + harness overhead, where the VM would die
+before the salvage step, or where the scan deadline is shorter than the serial path. When the harness does
+not write its bundle, `detonate.ts` salvages the live forensic files and the score caps the run at 59
+(section 5.4). The 8 s column is the target; the deadlines are worst-case ceilings, and p50/p95 are measured
+by `scripts/labeled-run.mjs` on key day.
 
 ## 3. Detonation design
 

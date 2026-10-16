@@ -8,6 +8,12 @@
  * files in reverse and the up files again, and checks the behaviour the engine
  * relies on: the running-run dedup, the Realtime broadcast per event, the
  * budget floor, stale-run expiry, and the 'run' scan path.
+ *
+ * The two destructive migrations (drop the deep queue, drop the dead daily
+ * quota) live in supabase/migrations-post-cutover, outside the set `supabase db
+ * push` applies, because the live 1.0 deep-queue function calls those RPCs. The
+ * test proves the production set leaves every 1.0 object in place and that the
+ * post-cutover pair applies and reverses on top of it.
  */
 
 import assert from "node:assert/strict";
@@ -20,6 +26,12 @@ import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const UP_DIR = path.join(ROOT, "supabase", "migrations");
 const DOWN_DIR = path.join(ROOT, "supabase", "migrations-down");
+const POST_DIR = path.join(ROOT, "supabase", "migrations-post-cutover");
+const postUp = readdirSync(POST_DIR).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")).sort();
+const postDown = (f: string) => path.join(POST_DIR, f.replace(/\.sql$/, ".down.sql"));
+/** Every object the live 1.0 functions call (pre-2.0 supabase/functions/deep-queue/index.ts and the 1.0 app). */
+const LIVE_1_0_TABLES = ["deep_scan_queue", "deep_dispatch_lock", "reports", "scans", "scan_usage"];
+const LIVE_1_0_FUNCTIONS = ["deep_queue_enqueue", "deep_queue_position", "deep_queue_set_status", "deep_queue_set_stage", "deep_dispatch_try_claim", "deep_dispatch_release", "deep_queue_get_stage", "check_scan_rate_limit", "verify_cli_token"];
 const NEW_PREFIX = "20261016";
 
 const PRELUDE = `
@@ -73,22 +85,32 @@ after(async () => {
   await db.close();
 });
 
-test("the five 2.0 migrations exist, each with a down file", () => {
-  assert.deepEqual(newUp, [
-    "20261016000001_scan_runs_events.sql",
-    "20261016000002_reports_run_path.sql",
-    "20261016000003_scan_budget.sql",
-    "20261016000004_drop_deep_queue.sql",
-    "20261016000005_drop_dead_quota.sql",
-  ]);
+test("the production set is the three additive 2.0 migrations; the destructive pair is post-cutover only", () => {
+  assert.deepEqual(newUp, ["20261016000001_scan_runs_events.sql", "20261016000002_reports_run_path.sql", "20261016000003_scan_budget.sql"]);
   for (const f of newUp) assert.ok(readFileSync(downFor(f), "utf8").length > 0, f);
+  assert.deepEqual(postUp, ["20261016000004_drop_deep_queue.sql", "20261016000005_drop_dead_quota.sql"]);
+  for (const f of postUp) assert.ok(readFileSync(postDown(f), "utf8").length > 0, f);
+  for (const f of newUp) {
+    const sql = readFileSync(path.join(UP_DIR, f), "utf8");
+    for (const obj of [...LIVE_1_0_TABLES, ...LIVE_1_0_FUNCTIONS]) assert.doesNotMatch(sql, new RegExp(`drop (?:table|function)[^;]*\\b${obj}\\b`, "i"), `${f} drops ${obj}`);
+  }
 });
 
-test("up state: new objects present, deep queue and daily quota gone", async () => {
+test("up state (production set): 2.0 objects present and every live 1.0 object untouched", async () => {
   for (const t of ["scan_runs", "scan_events", "scan_budget"]) assert.equal(await exists("table", t), true, t);
+  for (const t of LIVE_1_0_TABLES) assert.equal(await exists("table", t), true, t);
+  for (const f of [...LIVE_1_0_FUNCTIONS, "scan_budget_charge", "expire_stale_runs", "check_and_increment_scan_limit"]) assert.equal(await exists("function", f), true, f);
+  const sp = await db.query<{ def: string }>("select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'reports_scan_path_check'");
+  for (const v of ["cache", "fast", "deep", "deep-static", "run"]) assert.match(sp.rows[0]!.def, new RegExp(`'${v}'`), `1.0 scan_path ${v} still accepted`);
+});
+
+test("post-cutover pair: applies after 1.0 is retired, reverses cleanly", async () => {
+  for (const f of postUp) await apply(path.join(POST_DIR, f));
   for (const t of ["deep_scan_queue", "deep_dispatch_lock", "scan_usage"]) assert.equal(await exists("table", t), false, t);
   for (const f of ["deep_queue_enqueue", "deep_dispatch_try_claim", "check_and_increment_scan_limit"]) assert.equal(await exists("function", f), false, f);
   for (const f of ["scan_budget_charge", "expire_stale_runs", "check_scan_rate_limit", "verify_cli_token"]) assert.equal(await exists("function", f), true, f);
+  for (const f of [...postUp].reverse()) await apply(postDown(f));
+  for (const t of ["deep_scan_queue", "deep_dispatch_lock", "scan_usage"]) assert.equal(await exists("table", t), true, t);
 });
 
 test("down in reverse restores the pre-2.0 schema, then up again succeeds", async () => {
@@ -100,7 +122,7 @@ test("down in reverse restores the pre-2.0 schema, then up again succeeds", asyn
   assert.equal(cols.rows[0]!.n, 0);
   for (const f of newUp) await apply(path.join(UP_DIR, f));
   for (const t of ["scan_runs", "scan_events", "scan_budget"]) assert.equal(await exists("table", t), true, t);
-  assert.equal(await exists("table", "deep_scan_queue"), false);
+  assert.equal(await exists("table", "deep_scan_queue"), true, "the production set never drops the 1.0 queue");
 });
 
 test("reports accept scan_path 'run' with the new columns", async () => {

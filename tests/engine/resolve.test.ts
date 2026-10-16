@@ -222,3 +222,30 @@ test("operator tarball: https only, sha512 or sha256 SRI required, bytes verifie
   const bad = fakeFetch([{ match: spec.url, respond: () => bytes(new Uint8Array([0])) }]);
   await assert.rejects(fetchOperatorTarball(spec, { fetch: bad.fetch, timeoutMs: 1000 }, 1000), isCode("integrity"));
 });
+
+test("fetchWithDeadline covers the body: a server that sends headers then drips is cut at the deadline", async () => {
+  const { createServer } = await import("node:http");
+  const { fetchWithDeadline, readCapped } = await import("../../lib/engine/resolve/http.ts");
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/octet-stream" });
+    res.write("a");
+    const t = setInterval(() => res.write("b"), 50);
+    res.on("close", () => clearInterval(t));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const t0 = Date.now();
+    const res = await fetchWithDeadline(fetch, `http://127.0.0.1:${port}/slow`, {}, 300);
+    await assert.rejects(readCapped(res, 1 << 20), (e: unknown) => e instanceof EngineError && e.code === "timeout");
+    const ms = Date.now() - t0;
+    assert.ok(ms < 2_000, `cut at the 300 ms deadline, took ${ms} ms`);
+    const outer = new AbortController();
+    const res2 = await fetchWithDeadline(fetch, `http://127.0.0.1:${port}/slow`, {}, 10_000, outer.signal);
+    setTimeout(() => outer.abort(new Error("scan deadline")), 150);
+    await assert.rejects(readCapped(res2, 1 << 20), (e: unknown) => e instanceof EngineError && e.code === "timeout");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
