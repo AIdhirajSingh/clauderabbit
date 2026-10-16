@@ -1,6 +1,6 @@
 /**
  * Operator tarball target (DESIGN.md section 4): an https URL plus the sha512
- * SRI the operator expects. Only reachable with a valid CR_OPERATOR_KEY; the
+ * or sha256 SRI the operator expects (PyPI publishes sha256 digests only). Only reachable with a valid CR_OPERATOR_KEY; the
  * caller enforces that before this runs. Used to scan an artifact that is not on
  * GitHub or npm (the labeled set's removed versions, a vendor drop).
  */
@@ -25,8 +25,9 @@ export function validateOperatorTarball(spec: OperatorTarballSpec): void {
   }
   if (u.protocol !== "https:") throw new EngineError("invalid_target", "operator tarball url must be https");
   if (u.username || u.password) throw new EngineError("invalid_target", "operator tarball url must not carry credentials");
-  if (!/^sha512-[A-Za-z0-9+/]{86}==$/.test(spec.integrity.trim())) {
-    throw new EngineError("invalid_target", "operator tarball integrity must be a sha512 SRI string");
+  const integrity = spec.integrity.trim();
+  if (!/^sha512-[A-Za-z0-9+/]{86}==$/.test(integrity) && !/^sha256-[A-Za-z0-9+/]{43}=$/.test(integrity)) {
+    throw new EngineError("invalid_target", "operator tarball integrity must be a sha512 or sha256 SRI string");
   }
   if (!LABEL_RE.test(spec.label)) throw new EngineError("invalid_target", "operator tarball label has invalid characters");
 }

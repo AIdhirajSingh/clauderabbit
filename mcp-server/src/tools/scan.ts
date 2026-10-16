@@ -1,15 +1,14 @@
 /**
- * `scan` — the one ClaudeRabbit tool. Cache-aware by construction: if a
+ * `scan`: the one ClaudeRabbit tool. Cache-aware by construction: if a
  * report already exists for the target's current commit/artifact, it comes
- * back immediately (same cache the web app itself hits); if not, a real
- * fast-path scan runs and its result comes back. The caller never needs to
- * know or choose which case they're in — this collapses what used to be two
- * separate tools (`scan_repo` / `get_report`) into one.
+ * back immediately (same cache the web app itself hits); if not, a full scan
+ * runs (static scanners, reachability, model readers and a detonation of the
+ * code in a fresh E2B sandbox) and its result comes back.
  *
  * Two target kinds: a GitHub repo (`owner` + `repo` [+ `ref`]) or an npm
- * package (`package` [+ `version`]). For npm the edge function scans the REAL
- * published registry artifact — the tarball `npm install` fetches, integrity-
- * verified — not the GitHub repo its package.json happens to link to.
+ * package (`package` [+ `version`]). For npm the scan engine fetches the REAL
+ * published registry artifact (the tarball `npm install` fetches, integrity
+ * verified), not the GitHub repo its package.json happens to link to.
  */
 
 import { z } from "zod";
@@ -40,7 +39,7 @@ export const scanInputSchema = {
     .min(1)
     .optional()
     .describe(
-      "npm package to scan the REAL published registry artifact for (the tarball `npm install` actually fetches, not the repo its package.json links to). Provide this INSTEAD of owner/repo. Accepts a bare name (\"left-pad\"), a scoped name (\"@scope/name\"), an explicit \"npm:left-pad@1.3.0\", or an npmjs.com package URL. A plain \"owner/repo\" is a GitHub target, not npm — use the owner and repo arguments for that.",
+      "npm package to scan the REAL published registry artifact for (the tarball `npm install` actually fetches, not the repo its package.json links to). Provide this INSTEAD of owner/repo. Accepts a bare name (\"left-pad\"), a scoped name (\"@scope/name\"), an explicit \"npm:left-pad@1.3.0\", or an npmjs.com package URL. A plain \"owner/repo\" is a GitHub target, not npm, use the owner and repo arguments for that.",
     ),
   version: z
     .string()
@@ -59,19 +58,19 @@ export const scanToolMeta = {
   name: "scan",
   title: "Scan a GitHub repo or npm package with ClaudeRabbit",
   description:
-    "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact — the exact tarball `npm install` fetches, integrity-verified — not the GitHub repo its package.json links to, so it catches a compromised-publish that exists only in the tarball. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately (no rescan); otherwise a real fast-path scan (fetch + static scanners + reputation + a fast model read) runs and its result comes back. Callers don't need to know or choose which case applies. " +
-    "When the fast path decides the repo warrants ClaudeRabbit's dynamic sandbox, this tool ALSO triggers the real detonation and waits for the sandbox-verified result — so `sandboxActuallyRan` is true and the score reflects what running the code actually did, not just the static read. A detonation that outlives the wait budget returns `sandboxActuallyRan: false` with the run still finishing server-side (scan again shortly for the verified result); always read `sandboxActuallyRan` / the forensics section before calling a result runtime-verified. This tool NEVER returns a bare \"Safe\" verdict — every result states what was and was not observed. Requires a signed-in ClaudeRabbit account (see the tool's error response for a sign-in link if unauthenticated).",
+    "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact (the exact tarball `npm install` fetches, integrity verified), not the GitHub repo its package.json links to. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately; otherwise one full scan runs: static scanners, a reachability graph of install and import code, model readers, and a detonation that installs and runs the code in a fresh throwaway sandbox where every outbound call is answered by a forge and recorded. " +
+    "The result carries the verdict, the score, evidence split into behaviour, code and reputation, and `notVerified` (what this scan did not establish). This tool NEVER returns a bare \"Safe\" verdict. Every result also carries a sponsored message (`ad`). Requires a signed-in ClaudeRabbit account (the error response carries a sign-in link if unauthenticated).",
   // Triggers a real scan when nothing is cached yet, but never mutates or
-  // deletes anything the caller owns — it's read/observe only from the
+  // deletes anything the caller owns, it's read/observe only from the
   // caller's side.
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
 };
 
 // ── npm target detection ─────────────────────────────────────────────────────
-// A small, local, DETECT-only parser (the surface's own idiom). The edge
-// function re-validates authoritatively — this only needs to recognize an
+// A small, local, DETECT-only parser (the surface's own idiom). The scan
+// engine re-validates authoritatively; this only needs to recognize an
 // npm-shaped string and pull out { package, version }. Grammar mirrors
-// supabase/functions/_shared/npm.ts (which is a Deno module we must not import).
+// lib/engine/resolve/npm.ts in the web app.
 
 const NPM_SCOPED_RE = /^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
 const NPM_UNSCOPED_RE = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -147,7 +146,7 @@ function resolveTarget(input: ScanInput): ResolvedTarget {
         error:
           `"${pkgRaw}" is not a valid npm package target. Pass an npm package name ` +
           `(e.g. "left-pad", "@scope/name", "npm:left-pad@1.3.0", or an npmjs.com package URL). ` +
-          `A plain "owner/repo" is a GitHub target — use the owner and repo arguments for that.`,
+          `A plain "owner/repo" is a GitHub target, use the owner and repo arguments for that.`,
       };
     }
     // A trailing @version embedded in the package string wins; otherwise fall

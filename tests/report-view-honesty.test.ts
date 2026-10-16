@@ -202,7 +202,7 @@ test("a NEVER-escalated summary is returned verbatim (no surprise edits)", () =>
 });
 
 test("an escalated-but-incomplete summary reconciles the stale 'not executed' clause with the badge/verdict", () => {
-  // deep=true + no forensics: the fast-path model summary can still carry the static
+  // pre-2.0 row, deep=true + no forensics: the old static summary can still carry the static
   // 'runtime ... was not executed in a sandbox' clause, which contradicts the
   // 'Sandbox run incomplete' badge + 'the sandbox run did not complete' final note.
   const stored =

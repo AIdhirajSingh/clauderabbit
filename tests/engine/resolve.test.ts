@@ -204,12 +204,17 @@ test("readCapped refuses a declared content-length over the cap without reading"
   await assert.rejects(readCapped(res, 100), isCode("too_large"));
 });
 
-test("operator tarball: https only, sha512 SRI required, bytes verified", async () => {
+test("operator tarball: https only, sha512 or sha256 SRI required, bytes verified", async () => {
   const spec = { url: "https://drop.example/pkg.tgz", integrity: SRI, label: "drop/pkg@1" };
   validateOperatorTarball(spec);
   assert.throws(() => validateOperatorTarball({ ...spec, url: "http://drop.example/pkg.tgz" }), isCode("invalid_target"));
   assert.throws(() => validateOperatorTarball({ ...spec, url: "https://u:p@drop.example/pkg.tgz" }), isCode("invalid_target"));
   assert.throws(() => validateOperatorTarball({ ...spec, integrity: "sha256-abc" }), isCode("invalid_target"));
+  assert.throws(() => validateOperatorTarball({ ...spec, integrity: "sha1-" + "A".repeat(27) + "=" }), isCode("invalid_target"));
+  const sha256Spec = { ...spec, integrity: "sha256-" + createHash("sha256").update(TGZ).digest("base64") };
+  validateOperatorTarball(sha256Spec);
+  const ok256 = fakeFetch([{ match: spec.url, respond: () => bytes(TGZ) }]);
+  assert.equal((await fetchOperatorTarball(sha256Spec, { fetch: ok256.fetch, timeoutMs: 1000 }, 1000)).sha512, SRI);
   assert.throws(() => validateOperatorTarball({ ...spec, label: "bad label;" }), isCode("invalid_target"));
   const ok = fakeFetch([{ match: spec.url, respond: () => bytes(TGZ) }]);
   const got = await fetchOperatorTarball(spec, { fetch: ok.fetch, timeoutMs: 1000 }, 1000);

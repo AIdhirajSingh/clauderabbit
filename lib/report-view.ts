@@ -10,7 +10,7 @@
  * both Server Components and Client Components.
  *
  * Per CLAUDE.md: reputation signals and code/behavior signals stay structurally
- * separate, and a bare "Safe" verdict is never produced (the edge function and
+ * separate, and a bare "Safe" verdict is never produced (lib/engine/score.ts and
  * `enforceVerdict` here both guard this).
  */
 
@@ -146,8 +146,9 @@ function finalNote(score: number, forensics: ForensicsView | undefined, deep: bo
   if (!forensics) {
     // THREE-WAY HONESTY on the static surface. "Never escalated" and "escalation
     // attempted but the sandbox run did not complete" are DIFFERENT truths and must
-    // never share a sentence. `deep` (persisted at escalation-DECISION time by the
-    // fast path — scan/index.ts: `const deep = escalate`) distinguishes them:
+    // never share a sentence. On pre-2.0 rows `deep` was persisted at
+    // escalation-DECISION time by the 1.x scanner, so it distinguishes them
+    // (2.0 rows always carry deep=true with a forensic record):
     //   deep=false, no forensics → never escalated, a pure static read.
     //   deep=true,  no forensics → escalation was flagged but produced no runtime
     //                              record; the sandbox run did not complete. State
@@ -407,7 +408,7 @@ export function buildForensicsView(f: Forensics | undefined): ForensicsView | un
 /**
  * RAIL ENFORCEMENT: never let a bare "Safe" verdict reach the UI, and ensure a
  * present verdict maps to the score band when it is empty or a bare "Safe".
- * Mirrors the edge function's `enforceVerdictRails` so the rail holds even if a
+ * Mirrors the engine's verdict words (lib/engine/score.ts) so the rail holds even if a
  * row somehow stored a bare verdict.
  */
 export function enforceVerdict(verdict: string, score: number): string {
@@ -444,10 +445,10 @@ export function buildReportView(r: Report): RepoView {
   // The honest signal: the sandbox ran iff it produced a forensic record. The
   // `deep`/`scan_path` flags only record that escalation was decided.
   const ranSandbox = !!forensicsView;
-  // Stored-summary policy: the fast path writes the static summary; a SUCCESSFUL
-  // escalation overwrites it with a runtime-first summary (both correct as stored).
-  // The one case that needs reconciling at render is an ESCALATED-BUT-INCOMPLETE
-  // repo (deep, no forensics): the fast-path model summary can still carry the
+  // Stored-summary policy for pre-2.0 rows: the old static pass wrote the static
+  // summary; a SUCCESSFUL escalation overwrote it with a runtime-first summary (both
+  // correct as stored). The one case that needs reconciling at render is an
+  // ESCALATED-BUT-INCOMPLETE row (deep, no forensics): the old static summary can still carry the
   // static "runtime was not executed in a sandbox on this pass" clause, which
   // contradicts the "Sandbox run incomplete" badge + the "the sandbox run did not
   // complete" final note. Replace only that exact clause with the honest incomplete

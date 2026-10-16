@@ -238,7 +238,7 @@ export class MockSession implements SandboxSession {
         cwd = join(work, "app");
         pkgDir = join(cwd, "node_modules", run.name);
         mkdirSync(pkgDir, { recursive: true });
-        writeFileSync(join(cwd, "package.json"), '{"name":"cr-detonation-app","version":"1.0.0","private":true}\n');
+        writeFileSync(join(cwd, "package.json"), '{"name":"cr-run-app","version":"1.0.0","private":true}\n');
         cpSync(join(src, "package"), pkgDir, { recursive: true });
       } else {
         cwd = join(work, "src");
@@ -312,7 +312,7 @@ export class MockSession implements SandboxSession {
         const text = readFileSync(f).subarray(0, 1024 * 1024).toString("latin1");
         return patterns.some((p) => text.includes(p));
       });
-      const deps = run.mode === "npm-package" ? { name: "cr-detonation-app", version: "1.0.0", dependencies: { [run.name!]: { version: manifest.version ?? "0.0.0" } } } : { name: "repo", dependencies: {} };
+      const deps = run.mode === "npm-package" ? { name: "cr-run-app", version: "1.0.0", dependencies: { [run.name!]: { version: manifest.version ?? "0.0.0" } } } : { name: "repo", dependencies: {} };
       const result = {
         version: 1,
         mode: run.mode,

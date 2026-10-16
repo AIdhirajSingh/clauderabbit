@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * ClaudeRabbit MCP server — stdio entrypoint.
+ * ClaudeRabbit MCP server: stdio entrypoint.
  *
- * Exposes one cache-aware tool that calls the REAL, deployed, public
- * ClaudeRabbit API (the same Supabase edge function + PostgREST route the
- * Next.js frontend uses) so any MCP-compatible AI coding tool can check a
+ * Exposes one cache-aware tool that calls the REAL, deployed ClaudeRabbit API
+ * (`POST /api/scan`, the same route the Next.js frontend uses) so any MCP-compatible AI coding tool can check a
  * public GitHub repo OR an npm package's safety score before installing or
  * running it:
  *
@@ -13,8 +12,9 @@
  *     registry artifact (not the linked GitHub repo).
  *
  * Either way it returns the existing report immediately if one already exists
- * for the current commit/artifact, otherwise runs a real fast-path scan and
- * returns its result. No scanning or scoring logic lives here — this process is
+ * for the current commit/artifact, otherwise runs one full scan (the code is
+ * installed and run in a fresh sandbox) and returns its result. No scanning or
+ * scoring logic lives here: this process is
  * a pure client of ClaudeRabbit's public API surface. See README.md for setup.
  */
 

@@ -1,6 +1,5 @@
 /**
- * In-process static heuristics (ported from the pre-2.0 regex layer,
- * `supabase/functions/_shared/static-scan.ts`).
+ * In-process static heuristics (ported from the pre-2.0 regex layer).
  *
  * Output is a flat list of findings with file and line. This module does not
  * decide whether a file matters: the reachability graph tags every finding and

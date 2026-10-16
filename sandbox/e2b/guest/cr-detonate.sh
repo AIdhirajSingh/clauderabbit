@@ -170,7 +170,7 @@ if [ "$MODE" = "npm-package" ]; then
   [[ "$PKG_NAME" =~ $SAFE_NAME_RE ]] || { check entry_name false "unsafe package name"; exit 2; }
   install -d -o "$CR_USER" -g "$CR_USER" /work/app
   runuser -u "$CR_USER" -- cp /work/target.tgz /work/pkg.tgz
-  printf '{"name":"cr-detonation-app","version":"1.0.0","private":true}\n' | runuser -u "$CR_USER" -- tee /work/app/package.json >/dev/null
+  printf '{"name":"cr-run-app","version":"1.0.0","private":true}\n' | runuser -u "$CR_USER" -- tee /work/app/package.json >/dev/null
   ECO=npm
   WORKDIR=/work/app
   INSTALL_CMD="npm install --no-audit --no-fund /work/pkg.tgz"

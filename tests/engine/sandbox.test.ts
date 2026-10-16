@@ -136,7 +136,7 @@ test("detonate writes per-run inputs as root, parses the bundle, and kills the V
     { name: "out/capture.jsonl", data: capture.map((c) => JSON.stringify(c)).join("\n") },
     { name: "out/trace.install", data: `9 1.0 execve("/bin/sh", ["sh", "-c", "node i.js"], 0x1 /* 1 vars */) = 0\n` },
     { name: "out/trace.entry", data: "" },
-    { name: "out/deps.json", data: JSON.stringify({ name: "cr-detonation-app", dependencies: { evil: { version: "1.0.0", dependencies: { "left-pad": { version: "1.3.0" } } } } }) },
+    { name: "out/deps.json", data: JSON.stringify({ name: "cr-run-app", dependencies: { evil: { version: "1.0.0", dependencies: { "left-pad": { version: "1.3.0" } } } } }) },
     { name: "out/canary_files.txt", data: "/home/cr/.cache/stolen.txt\n" },
     { name: "out/install.out", data: "added 2 packages" },
   ]);

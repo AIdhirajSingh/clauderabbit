@@ -1,3 +1,5 @@
+> Pre-2.0 history. This was the 1.x system design (two-speed funnel, GCP sandbox). It is superseded by `docs/2.0/DESIGN.md` and kept only as a record.
+
 # Claude Rabbit — System Design & PRD
 
 > The execution north star. Open source ships malware, too — and the attacks that matter run at install with no CVE. We run the code to catch them.

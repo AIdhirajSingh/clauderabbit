@@ -41,7 +41,6 @@
   "exclude": [
     "node_modules",
     "design-source",
-    "supabase/functions",
     "sandbox",
     "mcp-server",
     "cli"

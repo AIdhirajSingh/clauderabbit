@@ -75,9 +75,9 @@ export interface LogChapter {
 }
 
 // ───────────────────────── forensic record ─────────────────────────
-// The structured evidence the dynamic sandbox produces for a repo that
-// escalated to a deep run. Shape mirrors `claude-rabbit/forensic-record@1`
-// (the producer is `sandbox/harness/forensics.py`). It is persisted to the
+// The structured evidence the dynamic sandbox produces. Shape mirrors
+// `claude-rabbit/forensic-record@1` (pre-2.0 rows) and `{version:2}` (2.0 rows,
+// produced by lib/engine/forensics/*). It is persisted to the
 // live `reports.forensics_json` jsonb column and read by anon.
 //
 // Per CLAUDE.md the forensic record is code/behavior + network intent only —
@@ -219,9 +219,9 @@ export interface ForensicsHonesty {
 }
 
 /**
- * The full forensic record for a deep/escalated repo, schema
- * `claude-rabbit/forensic-record@1`. Optional on a `Report` — only escalated
- * repos carry one; a clean fast-path repo simply has none.
+ * The full forensic record for a repo whose code was run, schema
+ * `claude-rabbit/forensic-record@1` or `{version:2}`. Optional on a `Report`:
+ * every 2.0 scan carries one; pre-2.0 rows that never ran the code have none.
  */
 export interface Forensics {
   schema: string;
@@ -276,9 +276,9 @@ export interface Report {
   risky: RiskyItem[];
   logs: LogChapter[];
   /**
-   * The dynamic sandbox forensic record, present only when this repo escalated
-   * to a deep run. A clean fast-path repo omits it (the forensic section is
-   * then not rendered — no empty shell).
+   * The dynamic sandbox forensic record. Every 2.0 scan carries one; a pre-2.0
+   * row that never ran the code omits it (the forensic section is then not
+   * rendered, no empty shell).
    */
   forensics?: Forensics;
   /**

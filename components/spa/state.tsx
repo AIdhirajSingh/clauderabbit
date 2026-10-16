@@ -152,8 +152,8 @@ interface State {
    */
   procLive: boolean;
   /**
-   * The REAL streamed scan stages for a live scan (BUG-5/6) — each appended as
-   * the edge function emits it, so the timeline reflects actual work, not canned
+   * The REAL streamed scan stages for a live scan (BUG-5/6), each appended as
+   * /api/scan emits it, so the timeline reflects actual work, not canned
    * text on a timer. Empty for demo scans and for a fast cache hit.
    */
   procStages: LogChapter[];
@@ -430,8 +430,8 @@ const SUGGESTION_CHIPS: Array<{ id: string; label: string }> = SUGGESTION_IDS.ma
 // reports (from real scans) by id in `liveReports`, falling back to demo REPOS.
 
 /**
- * Stable per-device id for rate-limiting pre-auth scans (the edge function's
- * `deviceId`). Persisted in localStorage; charset bounded to what the function
+ * Stable per-device id for rate-limiting pre-auth scans (the `deviceId` field
+ * of the /api/scan body). Persisted in localStorage; charset bounded to what the function
  * accepts (`[A-Za-z0-9_-]`). Returns undefined if storage/crypto is unavailable.
  */
 function getDeviceId(): string | undefined {
@@ -1298,7 +1298,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     // ── REAL path: a real backend scan, run immediately (no gate). The target is
-    // a GitHub repo or an npm package; the edge function resolves the default
+    // a GitHub repo or an npm package; the scan engine resolves the default
     // branch (GitHub) or the published version/dist-tag (npm). ──
     // A target already scanned this session: serve the report from this session.
     const cachedReport = stateRef.current.liveReports[id];

@@ -10,7 +10,7 @@
  * compromised-publish supply-chain attack an install-time check most needs to
  * catch: a malicious version published only to the registry, pointing
  * `repository` at an innocent, high-reputation repo. The registry→GitHub
- * redirect is therefore gone; the edge function does the real npm work.
+ * redirect is therefore gone; the server-side scan engine does the real npm work.
  *
  * Accepted target shapes:
  *   - owner/repo                          → GitHub { owner, repo }
@@ -21,7 +21,7 @@
  *     URL → npm { package, version? }
  *
  * This parser only needs to DETECT npm and extract `{ package, version }`; the
- * edge function re-validates the npm name authoritatively. It is deliberately
+ * scan engine (lib/engine/resolve/npm.ts) re-validates the npm name authoritatively. It is deliberately
  * conservative: a plain `owner/repo` (exactly one slash, NOT `@`-scoped) is
  * always a GitHub target, never npm.
  */
@@ -120,7 +120,7 @@ function parseNpmTarget(input: string): NpmTarget | null {
  * Resolve a raw target string into a GitHub repo or an npm package target.
  * Synchronous — no network is touched here anymore: the npm registry work that
  * used to happen in this module is now done authoritatively (and against the
- * real published artifact) inside the edge function.
+ * real published artifact) inside the server-side scan engine.
  */
 export function resolveTarget(raw: string): ResolvedTarget {
   const input = raw.trim();

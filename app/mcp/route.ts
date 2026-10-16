@@ -20,8 +20,7 @@ import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Long enough to actually run + await a live sandbox detonation (the deep path
-// self-resolves at ~270s inside /api/deep), not just the fast path.
+// Same ceiling as /api/scan: every scan runs the code in a fresh E2B sandbox in this request.
 export const maxDuration = 120;
 
 function siteOrigin(req: Request): string {

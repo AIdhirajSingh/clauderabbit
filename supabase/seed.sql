@@ -3,7 +3,7 @@
 -- File: supabase/seed.sql  (referenced by config.toml [db.seed] sql_paths)
 --
 -- Seeds the database with REAL scan results captured verbatim from the live
--- `scan` edge function for famous public GitHub repositories across multiple
+-- pre-2.0 production scanner for famous public GitHub repositories across multiple
 -- owners (expressjs, pallets, psf, chalk, tj, gorilla, sindresorhus). Scores,
 -- summaries, owner history, reputation, risky findings, scan logs, and commit
 -- SHAs are exactly what the scanner returned — nothing here is invented.

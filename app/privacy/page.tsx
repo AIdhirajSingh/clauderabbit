@@ -98,11 +98,19 @@ export default function PrivacyPolicy() {
           instructions, never on their own:
         </P>
         <ul style={{ fontSize: 15, color: "var(--t2)", lineHeight: 1.7, margin: "0 0 14px", paddingLeft: 20 }}>
-          <li><strong>Supabase</strong> — hosts our database, authentication, and edge functions.</li>
-          <li><strong>Google</strong> — provides Google Sign-In if you choose that login method.</li>
+          <li><strong>Vercel</strong>: hosts the website and runs every scan.</li>
+          <li><strong>Supabase</strong>: hosts our database, authentication, and the live scan event stream.</li>
+          <li><strong>Google</strong>: provides Google Sign-In if you choose that login method.</li>
           <li>
-            <strong>Google Cloud (Vertex AI)</strong> — powers the model that reads and scores the public repo
-            code you ask us to scan. It does not process your account profile.
+            <strong>OpenAI</strong>: runs the model that reads the public code you ask us to scan and writes the
+            report. It does not process your account profile.
+          </li>
+          <li>
+            <strong>E2B</strong>: provides the throwaway sandbox where the scanned code is installed and run. It does
+            not process your account profile.
+          </li>
+          <li>
+            <strong>Google AdSense</strong>: serves the ad shown with each scan result.
           </li>
         </ul>
 

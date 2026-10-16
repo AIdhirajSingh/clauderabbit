@@ -17,6 +17,7 @@ import { runScan } from "../engine/orchestrator";
 import { checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
 import { parseGithubTarget } from "../engine/resolve/github";
 import { isValidNpmName, parseNpmTarget } from "../engine/resolve/npm";
+import { validateOperatorTarball } from "../engine/resolve/tarball";
 import type { SupabaseStore } from "../engine/store";
 import type { Ad, ErrorCode, ReportPayload, ScanCaller, ScanEvent, ScanTarget, Surface } from "../engine/types";
 
@@ -37,7 +38,9 @@ function s(v: unknown): string | undefined {
 
 /**
  * Accepts `{ target: "owner/repo" | "github:owner/repo" | "npm:name[@version]" | url, ref?, deviceId? }`
- * or the structured `{ ecosystem: "github", owner, repo, ref? } | { ecosystem: "npm", package, version? }`.
+ * or the structured `{ ecosystem: "github", owner, repo, ref? } | { ecosystem: "npm", package, version? }`
+ * or the operator-only `{ ecosystem: "tarball", url, integrity, label }` (the route refuses it without a valid
+ * `x-cr-operator-key`, and the orchestrator checks again).
  */
 export function parseScanBody(body: unknown): ParsedTarget {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, message: "body must be a JSON object" };
@@ -50,6 +53,18 @@ export function parseScanBody(body: unknown): ParsedTarget {
     if (!name || !isValidNpmName(name)) return { ok: false, message: "package must be a valid npm package name" };
     const version = s(b.version);
     return { ok: true, target: { kind: "npm", name, ...(version ? { version } : {}) }, regenerate, deviceId };
+  }
+  if (b.ecosystem === "tarball") {
+    const url = s(b.url);
+    const integrity = s(b.integrity);
+    const label = s(b.label);
+    if (!url || !integrity || !label) return { ok: false, message: "tarball targets need url, integrity and label" };
+    try {
+      validateOperatorTarball({ url, integrity, label });
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : "invalid tarball target" };
+    }
+    return { ok: true, target: { kind: "tarball", url, integrity, label }, regenerate, deviceId };
   }
   if (b.ecosystem === "github") {
     const spec = parseGithubTarget(`${s(b.owner) ?? ""}/${s(b.repo) ?? ""}`);

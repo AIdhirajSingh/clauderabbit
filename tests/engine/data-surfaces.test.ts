@@ -173,6 +173,11 @@ test("request parsing accepts every documented target form and rejects the rest"
   for (const bad of [null, [], {}, { target: "" }, { target: "not a target!" }, { ecosystem: "npm", package: "Bad Name" }]) assert.equal(parseScanBody(bad).ok, false);
   const tarball = parseScanBody({ target: "tarball:x" });
   assert.equal(tarball.ok && tarball.target.kind === "tarball", false);
+  const sri = "sha256-" + createHash("sha256").update("x").digest("base64");
+  const op = parseScanBody({ ecosystem: "tarball", url: "https://files.example/pkg-1.0.tar.gz", integrity: sri, label: "pypi/pkg@1.0" });
+  assert.ok(op.ok && op.target.kind === "tarball" && op.target.integrity === sri);
+  assert.equal(parseScanBody({ ecosystem: "tarball", url: "http://files.example/x.tgz", integrity: sri, label: "x" }).ok, false);
+  assert.equal(parseScanBody({ ecosystem: "tarball", url: "https://files.example/x.tgz", integrity: "md5-x", label: "x" }).ok, false);
 });
 
 test("surfaces: headers, report URLs, replay subjects, realtime topic, status codes", () => {

@@ -1,3 +1,5 @@
+# ClaudeRabbit 2.0 gates. Left disabled (rename to ci.yml to enable).
+# No job holds a model or sandbox key: the keyless e2e runs the stand-in model and the mock sandbox.
 name: CI
 
 on:
@@ -7,8 +9,8 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    name: Lint · Typecheck · Build
+  web:
+    name: Lint, typecheck, test, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +19,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install dependencies
         run: npm ci
@@ -27,6 +33,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Tests (engine, keyless e2e, PGlite migration round trip)
+        run: npm test
+
+      - name: Forge unit tests (Python, stdlib only)
+        run: npm run test:python
+
       - name: Build
         run: npm run build
         env:
@@ -35,16 +47,20 @@ jobs:
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_placeholder
           NEXT_PUBLIC_SITE_URL: http://localhost:2311
 
-  edge-tests:
-    name: Edge-function tests (Deno)
+  clients:
+    name: CLI and stdio MCP server
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: v2.x
-      - name: Deno unit tests (scoring + static-scan)
-        run: deno test supabase/functions/
+          node-version: 24
+      - name: mcp-server build
+        working-directory: mcp-server
+        run: npm ci && npm run build
+      - name: CLI build and test
+        working-directory: cli
+        run: npm ci && npm run build && npm test
 
   secret-scan:
     name: gitleaks

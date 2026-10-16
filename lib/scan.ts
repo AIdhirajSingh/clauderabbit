@@ -1,14 +1,11 @@
 /**
- * Real scan wiring — calls the deployed `scan` Supabase Edge Function and maps
- * its structured JSON response onto the app's `Report` shape so the SPA can
- * render a live scan exactly the way it renders a demo repo.
+ * Real scan wiring: posts to the same-origin `POST /api/scan` (the Vercel
+ * function that runs the whole 2.0 engine), reads its NDJSON event stream and
+ * maps the final payload onto the app's `Report` shape so the SPA renders a
+ * live scan exactly the way it renders a stored report. No secret is ever used
+ * here (CLAUDE.md: only the publishable key is client-side).
  *
- * The function URL is derived from the public Supabase URL; the publishable key
- * is sent as both `apikey` and `Authorization: Bearer` (the function is
- * deployed `--no-verify-jwt`, so the anon key is enough to invoke it). No
- * secret is ever used here (CLAUDE.md: only the publishable key is client-side).
- *
- * Errors are returned as a typed discriminated union — never thrown to the
+ * Errors are returned as a typed discriminated union, never thrown to the
  * caller — so the UI can branch on a friendly message (network / not-found /
  * rate-limit / generic) and show the existing `failed` state.
  */
@@ -375,9 +372,9 @@ export function normalizeForensics(raw: unknown): Forensics | undefined {
 }
 
 /**
- * Map an arbitrary structured scan payload (edge-function response OR a row's
+ * Map an arbitrary structured scan payload (engine payload OR a row's
  * blended object) onto the strict `Report` shape. Tolerant of missing fields:
- * the edge function already validates and clamps, but we re-coerce so a partial
+ * the engine already validates and clamps, but we re-coerce so a partial
  * or surprising payload still renders.
  */
 export function normalizeReport(raw: unknown): Report {
