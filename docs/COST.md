@@ -18,15 +18,16 @@ figure. The 1.x Google Cloud credit no longer funds anything: 2.0 runs on Vercel
 
 ## 2. Sandbox cost per fresh scan (computed)
 
-E2B price: $0.000014 per vCPU-second plus $0.0000045 per GiB-second. Both 2.0 sandboxes use the template default
-of 2 vCPU and 4 GiB, which is $0.0000460 per sandbox-second.
+E2B price: $0.000014 per vCPU-second plus $0.0000045 per GiB-second. Both 2.0 sandboxes run at the template size
+of 1 vCPU and 2 GiB (`lib/engine/sandbox/resources.ts`, the same constants the build and the ledger read), which is
+$0.0000230 per sandbox-second.
 
 | Case | Sandbox seconds | Cost |
 |---|---|---|
-| Detonation at the design budget (8.3 s, DESIGN.md 2.2) | 8.3 | $0.00038 |
-| Analysis sandbox at its budget (4.5 s) | 4.5 | $0.00021 |
-| Detonation at its total hard deadline (30 s) | 30 | $0.00138 |
-| A sandbox reaped at `sandboxTimeoutMs` (90 s, `lib/engine/config.ts`) | 90 | $0.00414 |
+| Detonation at the design budget (8.3 s, DESIGN.md 2.2) | 8.3 | $0.00019 |
+| Analysis sandbox at its budget (4.5 s) | 4.5 | $0.00010 |
+| Detonation at its total hard deadline (30 s) | 30 | $0.00069 |
+| A sandbox reaped at `sandboxTimeoutMs` (90 s, `lib/engine/config.ts`) | 90 | $0.00207 |
 
 Design-budget scan, both sandboxes: about **$0.0006**. Worst case, both sandboxes reaped at 90 s: **$0.0083**.
 

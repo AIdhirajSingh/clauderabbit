@@ -124,6 +124,15 @@ ENVD_REACHED=0
 for ENVD_ADDR in 127.0.0.1 ::1; do
   if timeout 1 runuser -u "$CR_USER" -- bash -c "exec 3<>/dev/tcp/$ENVD_ADDR/49983" 2>/dev/null; then ENVD_REACHED=1; fi
 done
+# Containment proof, smoke detonation only (run.json is root-written before any
+# repo code exists; the orchestrator never sets "proof").
+if [ "$(jq -r '.proof // false' "$IN/run.json")" = true ]; then
+  if timeout 40 /opt/cr/bin/cr-proof.sh "$FORGE_PID" "$OUT/proof.txt"; then
+    check containment_proof true "cr-proof.sh passed"
+  else
+    check containment_proof false "cr-proof.sh failed; see proof.txt"
+  fi
+fi
 sleep 0.3
 mv "$OUT/capture.jsonl" "$OUT/capture.probe.jsonl"
 : >"$OUT/capture.jsonl"

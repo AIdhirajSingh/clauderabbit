@@ -16,6 +16,7 @@ import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Template } from "e2b";
+import { GUARDDOG_VERSION_CMD, SEMGREP_VERSION_CMD, YARA_VERSION_CMD } from "../../lib/engine/sandbox/scanner-versions.ts";
 
 export const TEMPLATE_NAME_DEFAULT = "clauderabbit-detonate";
 
@@ -89,6 +90,15 @@ export function buildTemplate() {
         "/opt/cr/tools/bin/mitmdump --version | grep -q 'Mitmproxy: " + PINS.python.mitmproxy + "'",
         "/opt/cr/tools/bin/semgrep --version | grep -qx '" + PINS.python.semgrep + "'",
       ])
+      // Print and assert the three static scanners' versions (visible in the build log).
+      .runCmd([
+        `echo "cr-scanner semgrep --version: $(${SEMGREP_VERSION_CMD})"`,
+        `echo "cr-scanner guarddog version: $(${GUARDDOG_VERSION_CMD})"`,
+        `test "$(${GUARDDOG_VERSION_CMD})" = "${PINS.python.guarddog}"`,
+        "/opt/cr/tools/bin/guarddog --help >/dev/null",
+        `echo "cr-scanner yara-x version: $(${YARA_VERSION_CMD})"`,
+        `test "$(${YARA_VERSION_CMD})" = "${PINS.python.yaraX}"`,
+      ])
       // The repo user. No sudo, no login shell, uid 1001 (matched by `meta skuid 1001`).
       .runCmd([
         "groupadd --gid 1001 cr",
@@ -101,6 +111,7 @@ export function buildTemplate() {
       .copy("guest/cr-analyze.sh", "/opt/cr/bin/cr-analyze.sh", { mode: 0o755 })
       .copy("guest/cr-yara.py", "/opt/cr/bin/cr-yara.py", { mode: 0o755 })
       .copy("guest/cr-smoke.sh", "/opt/cr/bin/cr-smoke.sh", { mode: 0o755 })
+      .copy("guest/cr-proof.sh", "/opt/cr/bin/cr-proof.sh", { mode: 0o755 })
       .copy("guest/cr-mirror-warm.py", "/opt/cr/bin/cr-mirror-warm.py", { mode: 0o755 })
       .copy("guest/forge_core.py", "/opt/cr/forge/forge_core.py", { mode: 0o644 })
       .copy("guest/forge_addon.py", "/opt/cr/forge/forge_addon.py", { mode: 0o644 })
@@ -114,8 +125,9 @@ export function buildTemplate() {
         "dpkg-query -W -f='${Package}=${Version}\\n' " + APT_PACKAGES.join(" ") + " | jq -R -s 'split(\"\\n\") | map(select(length>0))' > /tmp/apt.json",
         "jq -n --slurpfile apt /tmp/apt.json --arg node \"$(/opt/cr/node/bin/node --version)\" --arg npm \"$(/opt/cr/node/bin/npm --version)\" " +
           "--arg uv \"$(/opt/cr/tools/bin/uv --version)\" --arg mitm \"$(/opt/cr/tools/bin/mitmdump --version | head -n1)\" " +
-          "--arg semgrep \"$(/opt/cr/tools/bin/semgrep --version)\" --arg guarddog \"$(/opt/cr/tools/bin/guarddog --version 2>&1 | tail -n1)\" " +
-          "'{apt:$apt[0], node:$node, npm:$npm, uv:$uv, mitmproxy:$mitm, semgrep:$semgrep, guarddog:$guarddog}' > /opt/cr/manifest.json",
+          "--arg semgrep \"$(/opt/cr/tools/bin/semgrep --version)\" " +
+          `--arg guarddog "$(${GUARDDOG_VERSION_CMD})" --arg yarax "$(${YARA_VERSION_CMD})" ` +
+          "'{apt:$apt[0], node:$node, npm:$npm, uv:$uv, mitmproxy:$mitm, semgrep:$semgrep, guarddog:$guarddog, yara_x:$yarax}' > /opt/cr/manifest.json",
         "rm -f /tmp/apt.json",
       ])
       // Warm the mirror through the forge's own verification path.

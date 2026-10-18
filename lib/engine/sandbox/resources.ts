@@ -4,5 +4,5 @@
  * ledger always prices the size the sandboxes really run at.
  */
 
-export const SANDBOX_CPU_COUNT = 2;
-export const SANDBOX_MEMORY_MB = 4096;
+export const SANDBOX_CPU_COUNT = 1;
+export const SANDBOX_MEMORY_MB = 2048;

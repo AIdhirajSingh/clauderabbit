@@ -129,3 +129,47 @@ test("budget ledger failure fails closed: no sandbox starts", async () => {
   if (out.kind === "error") assert.equal(out.code, "capacity");
   assert.equal(provider.attempts, 0);
 });
+
+/** Records when each VM exists and is running its harness command. */
+class OverlapProvider implements SandboxProvider {
+  readonly template = "overlap";
+  readonly live = new Set<string>();
+  readonly seen: Array<{ purpose: string; othersLive: string[] }> = [];
+  readonly killed: string[] = [];
+  async create(opts: SandboxCreateOptions): Promise<SandboxSession> {
+    const id = `${opts.purpose}-vm`;
+    this.live.add(opts.purpose);
+    const { live, seen, killed } = this;
+    return {
+      id,
+      async writeFile() {},
+      async readFile(): Promise<Uint8Array> {
+        throw new Error("no output");
+      },
+      async run() {
+        // Look 50 ms into the harness command, then hold it: sequential VMs would never see each other.
+        await new Promise((r) => setTimeout(r, 50));
+        seen.push({ purpose: opts.purpose, othersLive: [...live].filter((p) => p !== opts.purpose) });
+        await new Promise((r) => setTimeout(r, 150));
+        return { exitCode: 1, stdout: "", stderr: "scripted failure" };
+      },
+      async kill() {
+        live.delete(opts.purpose);
+        killed.push(id);
+      },
+    };
+  }
+}
+
+test("static analysis VM (Semgrep, GuardDog, YARA) runs concurrently with the detonation VM, and both are killed", async () => {
+  const store = new MemoryStore();
+  const provider = new OverlapProvider();
+  await runScan(req, deps(store, provider));
+  const analyze = provider.seen.find((s) => s.purpose === "analyze");
+  const detonate = provider.seen.find((s) => s.purpose === "detonate");
+  assert.ok(analyze && detonate, JSON.stringify(provider.seen));
+  assert.deepEqual(analyze.othersLive, ["detonate"], "the detonation VM was live while cr-analyze.sh ran");
+  assert.deepEqual(detonate.othersLive, ["analyze"], "the analysis VM was live while cr-detonate.sh ran");
+  assert.deepEqual([...provider.killed].sort(), ["analyze-vm", "detonate-vm"]);
+  assert.equal(provider.live.size, 0);
+});

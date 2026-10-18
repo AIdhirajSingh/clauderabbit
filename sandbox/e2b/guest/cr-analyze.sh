@@ -49,7 +49,7 @@ run_tool() {
 
 : >"$OUT/status.jsonl"
 run_tool semgrep "$OUT/semgrep.json" semgrep scan --config /opt/cr/rules/semgrep --json --metrics=off \
-  --disable-version-check --no-git-ignore --timeout 8 --max-target-bytes 2000000 --jobs 2 "$SRC" &
+  --disable-version-check --no-git-ignore --timeout 8 --max-target-bytes 2000000 --jobs 1 "$SRC" &
 if [ "$NPM" = "true" ]; then
   run_tool guarddog-npm "$OUT/guarddog-npm.json" guarddog npm scan "$SRC" --output-format=json &
 fi

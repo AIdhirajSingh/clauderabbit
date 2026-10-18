@@ -106,7 +106,8 @@ by `scripts/labeled-run.mjs` on key day.
 ### 3.1 Template (pinned definition in repo)
 
 `sandbox/e2b/template.ts` (E2B Template builder v2, SDK `e2b@2.56.0`), built by `sandbox/e2b/build.ts` with
-`Template.build(template, "clauderabbit-detonate", { cpuCount: 2, memoryMB: 4096 })` on key day.
+`Template.build(template, "clauderabbit-detonate", { cpuCount: 1, memoryMB: 2048, tags: [<content tag>] })` from the
+Preview build hook (`npm run vercel-build`), so the E2B key stays a Vercel Preview secret.
 
 - Base: `fromUbuntuImage("24.04")`.
 - apt (versions recorded at build into `/opt/cr/manifest.json`): `ca-certificates nftables strace libfaketime

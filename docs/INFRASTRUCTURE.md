@@ -76,11 +76,18 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 
 - **SDK:** `e2b@2.56.0`.
 - **Template:** defined in `sandbox/e2b/template.ts` (Ubuntu 24.04, Node 24 with checked sha256, uv, mitmproxy,
-  Semgrep, GuardDog, yara-x, nftables, strace, libfaketime; user `cr` uid 1001 with no sudo). Built with
-  `E2B_API_KEY=... npm run template:build` (runs `sandbox/e2b/build.ts`, `cpuCount: 2`, `memoryMB: 4096` from
-  `lib/engine/sandbox/resources.ts`, the same constants the cost ledger prices), which
-  prints `template_id=... build_id=... name=...`. The default name is `clauderabbit-detonate`; set
-  `CR_E2B_TEMPLATE` in Vercel to the built name.
+  Semgrep, GuardDog, yara-x, nftables, strace, libfaketime; user `cr` uid 1001 with no sudo). Built by
+  `sandbox/e2b/build.ts` at `cpuCount: 1`, `memoryMB: 2048` from `lib/engine/sandbox/resources.ts` (the same
+  constants the cost ledger prices). The key never leaves Vercel: `npm run vercel-build` (what Vercel runs) calls
+  `node sandbox/e2b/build.ts --vercel-hook` before `next build`, which builds only on a Preview build
+  (`VERCEL_ENV=preview`) with `E2B_API_KEY` set, and only when the content tag (`sandbox/e2b/content-tag.ts`,
+  sha256 of the template inputs and the VM size) is not already the `default` build. Production builds skip it.
+  The build log line `template_id=... build_id=... name=... tag=c-...` records each build. Manual build:
+  `E2B_API_KEY=... npm run template:build`. The default name is `clauderabbit-detonate`.
+- **Smoke proof:** `POST /api/ops/smoke` on a Preview deployment with header `x-cr-operator-key`
+  (`lib/server/ops-smoke.ts`; 404 on production and without the key) boots a detonation VM running
+  `/opt/cr/bin/cr-smoke.sh` (forge as root, `meta skuid 1001` fence, drop counters, forged replies, via
+  `cr-proof.sh`) and an analysis VM running Semgrep, GuardDog and YARA at the same moment, and kills both.
 - **Per scan:** `Sandbox.create(template, { timeoutMs: 90000, ... })`, so E2B reaps a VM even if the function
   dies. Inside, the forge runs as root and nftables redirects every outbound connection from uid 1001 to it; the
   repo installs and runs as uid 1001 under `FAKETIME` acceleration. Forensics are read as root through the SDK.
