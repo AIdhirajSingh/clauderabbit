@@ -15,7 +15,7 @@
 import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Template } from "e2b";
+import { Template, waitForFile } from "e2b";
 import { GUARDDOG_VERSION_CMD, SEMGREP_VERSION_CMD, YARA_VERSION_CMD } from "../../lib/engine/sandbox/scanner-versions.ts";
 
 export const TEMPLATE_NAME_DEFAULT = "clauderabbit-detonate";
@@ -125,6 +125,7 @@ export function buildTemplate() {
       .copy("guest/cr-smoke.sh", "/opt/cr/bin/cr-smoke.sh", { mode: 0o755 })
       .copy("guest/cr-proof.sh", "/opt/cr/bin/cr-proof.sh", { mode: 0o755 })
       .copy("guest/cr-drops.sh", "/opt/cr/bin/cr-drops.sh", { mode: 0o755 })
+      .copy("guest/cr-warm.sh", "/opt/cr/bin/cr-warm.sh", { mode: 0o755 })
       .copy("guest/cr-mirror-warm.py", "/opt/cr/bin/cr-mirror-warm.py", { mode: 0o755 })
       .copy("guest/forge_core.py", "/opt/cr/forge/forge_core.py", { mode: 0o644 })
       .copy("guest/forge_addon.py", "/opt/cr/forge/forge_addon.py", { mode: 0o644 })
@@ -148,5 +149,9 @@ export function buildTemplate() {
       .runCmd("/usr/bin/python3 /opt/cr/bin/cr-mirror-warm.py /opt/cr/mirror-seed.json")
       // Full smoke detonation; the template build fails unless every assertion holds.
       .runCmd("/opt/cr/bin/cr-smoke.sh")
+      // Start command: runs once before E2B snapshots the template, so every tool a
+      // scan starts is already in the page cache of the snapshot (cold starts were
+      // 1.5 s to 5.7 s per tool in a fresh VM). See guest/cr-warm.sh.
+      .setStartCmd("/opt/cr/bin/cr-warm.sh", waitForFile("/run/cr-warm.done"))
   );
 }
