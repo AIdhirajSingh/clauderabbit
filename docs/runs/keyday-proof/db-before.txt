@@ -1,0 +1,46 @@
+# production mjvlczaytkhvsolnhhkz, before the v2 migrations, 2026-10-18 (supabase db query --linked, raw rows)
+# SQL: docs/runs/keyday-proof/db-snapshot.sql
+
+## rowcounts
+rows=4 | table_name=cli_tokens
+rows=0 | table_name=deep_dispatch_lock
+rows=4 | table_name=deep_scan_queue
+rows=4 | table_name=oauth_clients
+rows=0 | table_name=oauth_codes
+rows=23 | table_name=owners
+rows=2 | table_name=profiles
+rows=39 | table_name=reports
+rows=33 | table_name=scan_rate_limit
+rows=0 | table_name=scan_usage
+rows=74 | table_name=scans
+
+## migrations
+name=initial_schema | version=20260625000001
+name=indexes_and_views | version=20260625000002
+name=forensics | version=20260626000001
+name=reseed_and_forensics | version=20260626000002
+name=board_aggregates | version=20260627000001
+name=clean_fabricated_seed | version=20260627000002
+name=board_latest_then_filter | version=20260627000003
+name=board_dots_minimal_projection | version=20260627000004
+name=board_deep_count_honest | version=20260627000005
+name=scan_burst_rate_limit | version=20260702000001
+name=deep_scan_queue | version=20260702000002
+name=deep_scan_queue_stage | version=20260703000001
+name=allow_deep_static_scan_path | version=20260915080013
+
+## fingerprint
+acl=5e06372283d7e3b13e8dbd8b09c20e20 | cols=77a74e51ff70c02891f247c040f048a6 | cons=b4c0f23e9cb4e03c7d8c44ae786ca580 | fns=9cee99299381f3358fc92dcb8c8cf7b5 | idx=9e5af43cd96bdad949f5e044b97d0a1a | pol=null | schema=auth | total=766d77739e0a85750346542a9477b839 | trg=1cd0723338e79ebc484293b559d70bf9
+acl=e5e4f01cf93b7ac96af5e0a96f1a3bee | cols=8579740ccdb96dbaded995413b1deeec | cons=1a86707e6eefa5d2ed5595add3eb0e31 | fns=978648d9aa9405f664b94571e519b8b0 | idx=c5fb72318e2f0f072a43da374372945b | pol=2662942b2f0ad42b90c8db7e23059fd1 | schema=public | total=bfa7bc7277d9908d5168cdcea22c48ee | trg=9f521a154a93e7cc8d4d44b325176caf
+acl=14b655880b8e1cfd70e25835aff05092 | cols=fbffd4713da57a2c83f78083d57bebbd | cons=9d9c712606a45564dce77285897a773d | fns=3117abfbd5bb23af96540c1808d7ef12 | idx=93ef91329b9bbcce30e3b4783a2bdf91 | pol=null | schema=realtime | total=9cd98d9cbe4fbb06a4f5c6997a275acd | trg=3987dde85654860644988f5ef0e7ede3
+acl=2c33954e60a8f964ac462db7a0f4e407 | cols=36b8bb12696c702eca63693d773c1cd7 | cons=5c8b5e9180c073e18fb1eb8679e1a9c0 | fns=e7b4f761489a8cef9af33cfa0eeb28ea | idx=f20b3633ff131e88eeea01f282227413 | pol=null | schema=storage | total=835c45d6eac5c56380bc4be9c43b413f | trg=5a6bcf91cc8a840492c777f6d0099d29
+
+## v2 objects
+(none: no schema v2, no role cr_v2_server)
+
+## edge functions (supabase functions list --project-ref mjvlczaytkhvsolnhhkz)
+scan version=72 status=ACTIVE updated_at=1791103678985 ezbr_sha256=d2c4cf05148223087eb80ad07f7e3866b6b3d01242687880886bf48e6485a6c3
+attach-forensics version=32 status=ACTIVE updated_at=1783620568184 ezbr_sha256=4918f4b80d98cb58994505fe20ec927632d8b52b22f62ed2d260ee56e3d9d4c2
+deep-queue version=23 status=ACTIVE updated_at=1783753158498 ezbr_sha256=34ffc24adae78aef2b05b25cdd2326559b90fa31d580990a93c2d534196f941a
+oauth-token version=14 status=ACTIVE updated_at=1783157084530 ezbr_sha256=44e639527df47dadf37c186255fe876d5a50553892f122a0b3dd5350ca8e4e21
+billing-guard version=9 status=ACTIVE updated_at=1791101200336 ezbr_sha256=a65516732bb6fe92128931700c7e356fe2a6a9bd49b17d925679710c1ca978e5

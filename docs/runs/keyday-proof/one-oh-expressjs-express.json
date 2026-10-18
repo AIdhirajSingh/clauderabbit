@@ -3,8 +3,8 @@
   "url": "https://mjvlczaytkhvsolnhhkz.supabase.co/functions/v1/scan",
   "http_status": 200,
   "content_type": "application/json",
-  "wall_ms": 2748,
-  "started_at": "2026-10-18T11:27:36.770Z",
+  "wall_ms": 3566,
+  "started_at": "2026-10-18T12:03:13.096Z",
   "body": {
     "id": "expressjs/express",
     "owner": "expressjs",

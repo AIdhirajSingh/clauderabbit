@@ -1,0 +1,57 @@
+{
+ "note": "Condensed from the harness record (scripts/keyday-proof.mjs run --target fixture --surface web, CR_PROOF_OUT_DIR in the session scratch directory). The full 70 KB record with the raw NDJSON stream stays there. Secret scrub check on the full record and its stdout: 0 occurrences each of VERCEL_BYPASS, CR_PROOF_TOKEN, CR_V2_DB_PASSWORD, CR_OPERATOR_KEY.",
+ "target": "fixture",
+ "surface": "web",
+ "repo": "AIdhirajSingh/cr-fixture-phone-home",
+ "pinned_sha": "280ab9649323556891ec399ac1da461598d6f4df",
+ "site": "https://clauderabbit-git-20-adhiraj-singhs-projects-bda59ce5.vercel.app",
+ "deployment": "dpl_DvRkdDqQep8KMae1DeLA22oLDZaR (commit 734f2e9)",
+ "started_at": "2026-10-18T11:59:48.577Z",
+ "http_status": 200,
+ "wall_ms": 20543,
+ "run_id": "060998ba-e8a8-4b50-a78e-2bf0e5635578",
+ "outcome": "fresh",
+ "verdict": "Malicious",
+ "score": 0,
+ "commit_sha": "280ab9649323556891ec399ac1da461598d6f4df",
+ "not_verified": [
+  "Behaviour outside the observed install and entry windows.",
+  "Code paths not triggered by install or the entry point.",
+  "Payloads gated on calendar dates past the accelerated clock window, or on hosts that need real responses.",
+  "Jev checks did not complete, so no model judged the install surface, the flagged code or the documentation."
+ ],
+ "summary_text": "During install, the code sent the planted AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY credentials to c2.cr-fixture.invalid; the forge captured the requests. The process also read /home/cr/.aws/credentials, contacted a non-distribution host, and executed `bash -c npm install --no-audit --no-fund` through an install hook. The behaviour group reached its -85 floor, and the score was capped at 15 for canary exfiltration. Static analysis and Jev checks found no reported findings; Jev checks did not complete. Reputation, separate from code: no reputation facts were reported. Not verified: behaviour outside the observed install and entry windows; code paths not triggered by install or the entry point; payloads gated on calendar dates past the accelerated clock window or on hosts that need real responses; Jev checks did not complete.",
+ "forged_calls": [
+  { "phase": "install", "proto": "dns", "host": "c2.cr-fixture.invalid", "port": 53, "method": "A", "req_bytes": 0, "forged_kind": "dns", "canary_hits": [] },
+  { "phase": "install", "proto": "dns", "host": "c2.cr-fixture.invalid", "port": 53, "method": "AAAA", "req_bytes": 0, "forged_kind": "dns", "canary_hits": [] },
+  { "phase": "install", "proto": "https", "host": "c2.cr-fixture.invalid", "port": 443, "method": "POST", "path": "/collect", "sni": "c2.cr-fixture.invalid", "req_bytes": 148, "forged_kind": "json", "tls": "intercepted", "canary_hits": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] }
+ ],
+ "decoy_reads": [
+  { "phase": "install", "op": "read_decoy", "path": "/home/cr/.aws/credentials", "pid": 1554 }
+ ],
+ "checks": [
+  { "t_ms": 1940, "name": "jev_install", "ok": false, "detail": "AI Gateway refused the Jev call for billing: AI Gateway requires a valid credit card on file to service requests." },
+  { "t_ms": 2149, "name": "jev_docs", "ok": false, "detail": "AI Gateway refused the Jev call for billing: AI Gateway requires a valid credit card on file to service requests." },
+  { "t_ms": 9006, "name": "sandbox_killed", "ok": true, "detail": "detonate sandbox ilr7qpx55fo8ng7dbjahj destroyed" },
+  { "t_ms": 9180, "name": "sandbox_killed", "ok": true, "detail": "analyze sandbox iqew5mxa050v09yy1415j destroyed" },
+  { "t_ms": 9527, "name": "jev_flagged", "ok": false, "detail": "AI Gateway refused the Jev call for billing: AI Gateway requires a valid credit card on file to service requests." },
+  { "t_ms": 9527, "name": "forge_up", "ok": true, "detail": "mitmdump pid 1414" },
+  { "t_ms": 9527, "name": "egress_contained", "ok": true, "detail": "http and https forged, envd refused, forge captured the probe" },
+  { "t_ms": 9527, "name": "clock_accelerated", "ok": true, "detail": "faked 1071ms in real 44ms" }
+ ],
+ "server_timings_ms": {
+  "resolve": 283, "cache": 370, "fetch": 55, "verify": 3, "reach": 5, "osv": 5, "reputation": 840,
+  "static": 7528, "checks": 7867,
+  "detonate.install": 2231, "detonate.entry": 31, "detonate.harness": 5645, "detonate.clock_real": 44, "detonate.clock_fake": 1071, "detonate.upload": 654, "detonate.total": 6621, "detonate": 7866,
+  "score": 1, "report": 4278, "total": 13807, "persist": 415
+ },
+ "cost": {
+  "jev": { "model": "typesafe-ai/jev", "calls": 0, "input_tokens": 0, "output_tokens": 0, "usd": 0, "inr": 0 },
+  "luna": { "model": "gpt-6-luna", "calls": 1, "input_tokens": 2103, "output_tokens": 207, "cached_input_tokens": 0, "cache_write_tokens": 2100, "usd": 0.0003663, "inr": 0.034784 },
+  "e2b": { "seconds": 14.872, "vcpu": 1, "memory_gib": 2, "usd_per_second": 0.000023, "usd": 0.000342056, "inr": 0.032482 },
+  "total_usd": 0.000708356,
+  "total_inr": 0.067265,
+  "fx": { "usd_inr": 94.96, "source": "https://api.frankfurter.app/latest?from=USD&to=INR (ECB reference rate)", "as_of": "2026-10-16" }
+ },
+ "bare_safe": false
+}

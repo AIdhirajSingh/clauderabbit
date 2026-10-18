@@ -1,0 +1,72 @@
+# production mjvlczaytkhvsolnhhkz, after the six v2 migrations, 2026-10-18 (supabase db query --linked, raw rows)
+# SQL: docs/runs/keyday-proof/db-snapshot.sql
+
+## rowcounts (identical to before)
+rows=4 | table_name=cli_tokens
+rows=0 | table_name=deep_dispatch_lock
+rows=4 | table_name=deep_scan_queue
+rows=4 | table_name=oauth_clients
+rows=0 | table_name=oauth_codes
+rows=23 | table_name=owners
+rows=2 | table_name=profiles
+rows=39 | table_name=reports
+rows=33 | table_name=scan_rate_limit
+rows=0 | table_name=scan_usage
+rows=74 | table_name=scans
+
+## migrations (before + six v2 rows)
+name=initial_schema | version=20260625000001
+name=indexes_and_views | version=20260625000002
+name=forensics | version=20260626000001
+name=reseed_and_forensics | version=20260626000002
+name=board_aggregates | version=20260627000001
+name=clean_fabricated_seed | version=20260627000002
+name=board_latest_then_filter | version=20260627000003
+name=board_dots_minimal_projection | version=20260627000004
+name=board_deep_count_honest | version=20260627000005
+name=scan_burst_rate_limit | version=20260702000001
+name=deep_scan_queue | version=20260702000002
+name=deep_scan_queue_stage | version=20260703000001
+name=allow_deep_static_scan_path | version=20260915080013
+name=v2_schema_role | version=20261016000000
+name=v2_scan_runs_events | version=20261016000001
+name=v2_auth_rate_limit | version=20261016000002
+name=v2_scan_budget | version=20261016000003
+name=v2_scan_runs_cost | version=20261018000001
+name=v2_token_tables_deny_policy | version=20261018000002
+
+## fingerprint (diff against before: IDENTICAL)
+acl=5e06372283d7e3b13e8dbd8b09c20e20 | cols=77a74e51ff70c02891f247c040f048a6 | cons=b4c0f23e9cb4e03c7d8c44ae786ca580 | fns=9cee99299381f3358fc92dcb8c8cf7b5 | idx=9e5af43cd96bdad949f5e044b97d0a1a | pol=null | schema=auth | total=766d77739e0a85750346542a9477b839 | trg=1cd0723338e79ebc484293b559d70bf9
+acl=e5e4f01cf93b7ac96af5e0a96f1a3bee | cols=8579740ccdb96dbaded995413b1deeec | cons=1a86707e6eefa5d2ed5595add3eb0e31 | fns=978648d9aa9405f664b94571e519b8b0 | idx=c5fb72318e2f0f072a43da374372945b | pol=2662942b2f0ad42b90c8db7e23059fd1 | schema=public | total=bfa7bc7277d9908d5168cdcea22c48ee | trg=9f521a154a93e7cc8d4d44b325176caf
+acl=14b655880b8e1cfd70e25835aff05092 | cols=fbffd4713da57a2c83f78083d57bebbd | cons=9d9c712606a45564dce77285897a773d | fns=3117abfbd5bb23af96540c1808d7ef12 | idx=93ef91329b9bbcce30e3b4783a2bdf91 | pol=null | schema=realtime | total=9cd98d9cbe4fbb06a4f5c6997a275acd | trg=3987dde85654860644988f5ef0e7ede3
+acl=2c33954e60a8f964ac462db7a0f4e407 | cols=36b8bb12696c702eca63693d773c1cd7 | cons=5c8b5e9180c073e18fb1eb8679e1a9c0 | fns=e7b4f761489a8cef9af33cfa0eeb28ea | idx=f20b3633ff131e88eeea01f282227413 | pol=null | schema=storage | total=835c45d6eac5c56380bc4be9c43b413f | trg=5a6bcf91cc8a840492c777f6d0099d29
+
+## v2 objects (all new)
+schema v2
+role cr_v2_server login=true bypassrls=false inherit=false (CLI output column cut at this width)
+tables (rls=true on all 9): cli_tokens, oauth_clients, oauth_codes, owners, reports, scan_budget, scan_events, scan_rate_limit, scan_runs
+sequences: cli_tokens_id_seq, oauth_clients_id_seq, owners_id_seq, reports_id_seq
+indexes: cli_tokens_pkey, cli_tokens_token_hash_key, idx_v2_cli_tokens_user, idx_v2_oauth_clients_unused, idx_v2_oauth_codes_expires,
+  idx_v2_reports_owner_repo, idx_v2_reports_updated, idx_v2_scan_rate_limit_window, idx_v2_scan_runs_done, idx_v2_scan_runs_report,
+  oauth_clients_client_id_key, oauth_clients_pkey, oauth_codes_pkey, owners_github_login_key, owners_pkey, pk_v2_scan_rate_limit,
+  reports_pkey, scan_budget_pkey, scan_events_pkey, scan_runs_pkey, uq_v2_reports_owner_repo_sha, uq_v2_scan_runs_running
+functions: v2.check_scan_rate_limit(text,integer,integer), v2.cleanup_oauth(), v2.create_oauth_code(uuid,text,text,text,text),
+  v2.expire_stale_runs(), v2.issue_cli_token(uuid), v2.redeem_oauth_code(text), v2.register_oauth_client(text[]),
+  v2.scan_budget_charge(integer,integer,integer,integer), v2.scan_events_broadcast(), v2.touch_updated_at(), v2.verify_cli_token(text)
+policies:
+  cli_tokens.cli_tokens_no_direct_access to public (restrictive, false)
+  oauth_clients.oauth_clients_no_direct_access to public (restrictive, false)
+  oauth_codes.oauth_codes_no_direct_access to public (restrictive, false)
+  owners.owners_server_all to cr_v2_server
+  reports.reports_server_all to cr_v2_server
+  scan_budget.scan_budget_server_all to cr_v2_server
+  scan_events.scan_events_server_all to cr_v2_server
+  scan_rate_limit.scan_rate_limit_server_all to cr_v2_server
+  scan_runs.scan_runs_server_all to cr_v2_server
+
+## edge functions (identical to before)
+scan version=72 status=ACTIVE updated_at=1791103678985 ezbr_sha256=d2c4cf05148223087eb80ad07f7e3866b6b3d01242687880886bf48e6485a6c3
+attach-forensics version=32 status=ACTIVE updated_at=1783620568184 ezbr_sha256=4918f4b80d98cb58994505fe20ec927632d8b52b22f62ed2d260ee56e3d9d4c2
+deep-queue version=23 status=ACTIVE updated_at=1783753158498 ezbr_sha256=34ffc24adae78aef2b05b25cdd2326559b90fa31d580990a93c2d534196f941a
+oauth-token version=14 status=ACTIVE updated_at=1783157084530 ezbr_sha256=44e639527df47dadf37c186255fe876d5a50553892f122a0b3dd5350ca8e4e21
+billing-guard version=9 status=ACTIVE updated_at=1791101200336 ezbr_sha256=a65516732bb6fe92128931700c7e356fe2a6a9bd49b17d925679710c1ca978e5
