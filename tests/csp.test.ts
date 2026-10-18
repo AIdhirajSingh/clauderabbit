@@ -24,7 +24,7 @@ function allows(sources: string[], url: string): boolean {
 }
 
 /**
- * How a CSP3 browser decides whether a script may run under this policy:
+ * How a CSP3 browser decides whether a script runs under this policy:
  * 'strict-dynamic' present means host and scheme sources and 'unsafe-inline'
  * are ignored, so only a matching nonce (or a script created by a trusted
  * script) runs.
