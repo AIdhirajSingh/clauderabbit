@@ -99,18 +99,25 @@ export function buildTemplate() {
         `echo "cr-scanner yara-x version: $(${YARA_VERSION_CMD})"`,
         `test "$(${YARA_VERSION_CMD})" = "${PINS.python.yaraX}"`,
       ])
-      // The repo user. No sudo, no login shell, uid 1001 (matched by `meta skuid 1001`; the
-      // fence keys on the uid only, so the group id is free). The E2B base image already
-      // has a group with gid 1001, so `cr` gets gid 1001 only when that gid is free.
+      // The repo user. No sudo, no login shell, uid 1001 (matched by `meta skuid 1001`).
+      // The E2B base image ships its default account `user` at uid/gid 1001; it moves to
+      // uid/gid 1100 (it stays usable by envd) so uid 1001 belongs to `cr` alone and no
+      // other account is ever caught by, or confused with, the repo user's fence.
       .runCmd([
         "echo \"cr-user base: uid1001=[$(getent passwd 1001 || true)] gid1001=[$(getent group 1001 || true)]\"",
-        "if getent passwd 1001 >/dev/null; then echo 'uid 1001 is already taken in the base image' >&2; exit 1; fi",
-        "if getent group cr >/dev/null; then :; elif getent group 1001 >/dev/null; then groupadd cr; else groupadd --gid 1001 cr; fi",
-        "useradd --uid 1001 --gid cr --create-home --home-dir /home/cr --shell /usr/sbin/nologin cr",
+        "! getent passwd 1100 >/dev/null && ! getent group 1100 >/dev/null",
+        "if [ \"$(getent passwd 1001 | cut -d: -f1)\" = user ]; then usermod -u 1100 user; fi",
+        "if [ \"$(getent group 1001 | cut -d: -f1)\" = user ]; then groupmod -g 1100 user; fi",
+        "find / -xdev \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -uid 1001 -exec chown -h 1100 {} + 2>/dev/null || true",
+        "find / -xdev \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -gid 1001 -exec chgrp -h 1100 {} + 2>/dev/null || true",
+        "! getent passwd 1001 >/dev/null && ! getent group 1001 >/dev/null",
+        "groupadd --gid 1001 cr",
+        "useradd --uid 1001 --gid 1001 --create-home --home-dir /home/cr --shell /usr/sbin/nologin cr",
         "passwd -l cr",
-        "test \"$(id -u cr)\" = 1001",
+        "test \"$(id -u cr)\" = 1001 && test \"$(id -g cr)\" = 1001 && test \"$(id -G cr)\" = 1001",
         "( ! command -v sudo >/dev/null || ! sudo -l -U cr 2>/dev/null | grep -q '(ALL' )",
-        "echo \"cr-user created: $(id cr)\"",
+        "! grep -rqsw cr /etc/sudoers /etc/sudoers.d",
+        "echo \"cr-user created: $(id cr); e2b default account now: $(id user 2>/dev/null || echo none)\"",
       ])
       .copy("guest/cr-detonate.sh", "/opt/cr/bin/cr-detonate.sh", { mode: 0o755 })
       .copy("guest/cr-analyze.sh", "/opt/cr/bin/cr-analyze.sh", { mode: 0o755 })
