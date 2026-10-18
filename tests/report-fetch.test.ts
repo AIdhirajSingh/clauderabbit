@@ -184,3 +184,10 @@ test("fetchLatestReportRest: a thrown/aborted fetch yields null (never hangs the
     globalThis.fetch = orig;
   }
 });
+
+test("REPORT_SELECT names only columns the 1.0 public.reports table has (no 2.0 not_verified)", async () => {
+  const { REPORT_SELECT } = await import("../lib/report-fetch.ts");
+  const top = REPORT_SELECT.replace(/owners\([^)]*\)/, "").split(",").filter(Boolean);
+  assert.ok(!top.includes("not_verified"));
+  for (const c of ["owner_login", "repo_name", "commit_sha", "score", "verdict", "forensics_json"]) assert.ok(top.includes(c), c);
+});

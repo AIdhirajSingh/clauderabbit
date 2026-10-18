@@ -14,9 +14,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { reportRowToReport, type ReportRow } from "./report-row";
 import type { Report } from "./types";
 
-/** The exact column set the report view needs, with the owner row joined. */
+/**
+ * The exact column set the report view needs from the 1.0 `public.reports` table, with the owner row
+ * joined. That table has no `not_verified` column (PostgREST answers 42703 if it is selected, and every
+ * 1.0 fallback page read "not scanned"); 2.0 rows carry it through `lib/server/report-v2.ts`, and a 1.0
+ * row gets its not-verified list from `notVerified()` in lib/report-view.ts.
+ */
 export const REPORT_SELECT =
-  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,forensics_json,not_verified,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score,reputation_json)";
+  "owner_login,repo_name,commit_sha,score,verdict,cached,deep,summary,confidence,scan_path,stats_json,packages_json,risky_json,logs_json,forensics_json,owners(github_login,display_name,account_age_label,established,public_repos,stars_total,sentiment,sentiment_score,reputation_json)";
 
 /**
  * Latest report for (owner, repo) — newest by created_at, owner joined, fully
