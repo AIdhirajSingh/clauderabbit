@@ -18,9 +18,8 @@
 import { cache } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
 import { buildReportView, logColor } from "@/lib/report-view";
-import { fetchLatestReport } from "@/lib/report-fetch";
+import { latestReport } from "@/lib/server/report-source";
 import { safeJsonLd } from "@/lib/json-ld";
 import { ReportBody } from "@/components/spa/components/ReportBody";
 import { AdSlot } from "@/components/ads/AdSlot";
@@ -40,21 +39,16 @@ interface RouteParams {
 /**
  * Latest report for (owner, repo), wrapped in React's `cache` so
  * `generateMetadata` and the page component share a single DB round-trip per
- * request. `cache` wraps a (owner, repo)-only function with the client created
- * INSIDE it; the fetch + reshape is the shared `fetchLatestReport`, byte-identical
- * to the SPA's path (no SSR-vs-client drift). Returns null on miss/error.
+ * request. `latestReport` reads the 2.0 report from schema v2 first and falls
+ * back to the 1.0 public report; both reshape through `reportRowToReport`, the
+ * same path the SPA's /api/report read uses (no SSR-vs-client drift). Returns
+ * null on miss/error.
  */
 const getLatestReport = cache(async function getLatestReport(
   owner: string,
   repo: string,
 ): Promise<Report | null> {
-  let supabase;
-  try {
-    supabase = await createClient();
-  } catch {
-    return null;
-  }
-  return fetchLatestReport(supabase, owner, repo);
+  return latestReport(owner, repo);
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {

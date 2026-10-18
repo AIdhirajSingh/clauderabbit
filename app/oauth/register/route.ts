@@ -1,48 +1,47 @@
 /**
  * OAuth 2.0 Dynamic Client Registration (RFC 7591) for the remote MCP
  * server's login flow. Called by a brand-new MCP client with no user or
- * session yet, so this is intentionally unauthenticated — it just forwards
- * to `register_oauth_client`, an anon-callable RPC that validates the
- * redirect_uris are https (or loopback) and stores them, so the later
- * `/oauth/authorize` step can reject any redirect_uri that wasn't part of
- * this registration (closing the open-redirect hole DCR would otherwise
- * open). See supabase/migrations/20260704000002_oauth_for_remote_mcp.sql.
+ * session yet, so this is intentionally unauthenticated. It calls
+ * `v2.register_oauth_client` as cr_v2_server, which validates that every
+ * redirect_uri is https (or loopback) and stores them, so the later
+ * `/oauth/authorize` step can reject any redirect_uri that was not part of
+ * this registration. See supabase/migrations/20261016000002_v2_auth_rate_limit.sql.
  */
-import { createClient } from "@supabase/supabase-js";
 
+import { v2Executor } from "@/lib/engine/store";
+import { serverConfig } from "@/lib/server/scan-service";
+import { registerOAuthClient } from "@/lib/server/v2-auth";
+
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 
 export async function POST(req: Request): Promise<Response> {
   let body: { redirect_uris?: unknown };
   try {
-    body = await req.json();
+    const text = await req.text();
+    if (text.length > 16_384) return Response.json({ error: "invalid_client_metadata" }, { status: 400 });
+    body = JSON.parse(text) as { redirect_uris?: unknown };
   } catch {
     return Response.json({ error: "invalid_client_metadata" }, { status: 400 });
   }
 
-  const redirectUris = Array.isArray(body.redirect_uris)
-    ? body.redirect_uris.filter((u): u is string => typeof u === "string")
-    : [];
+  const redirectUris = Array.isArray(body?.redirect_uris) ? body.redirect_uris.filter((u): u is string => typeof u === "string") : [];
   if (redirectUris.length === 0) {
     return Response.json({ error: "invalid_redirect_uri" }, { status: 400 });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data, error } = await supabase.rpc("register_oauth_client", {
-    p_redirect_uris: redirectUris,
-  });
-
-  if (error || !data?.[0]?.client_id) {
+  let clientId: string | null;
+  try {
+    clientId = await registerOAuthClient(v2Executor(serverConfig()), redirectUris);
+  } catch {
+    return Response.json({ error: "server_error" }, { status: 500 });
+  }
+  if (!clientId) {
     return Response.json({ error: "invalid_redirect_uri" }, { status: 400 });
   }
 
   return Response.json({
-    client_id: data[0].client_id,
+    client_id: clientId,
     redirect_uris: redirectUris,
     token_endpoint_auth_method: "none",
     grant_types: ["authorization_code"],

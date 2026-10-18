@@ -1,11 +1,11 @@
 /**
  * Burst rate-limit floor for scan requests (DESIGN.md section 4, CLAUDE.md V1
  * scope). There is no daily quota; this only stops a request flood. Counter
- * state lives in Postgres (`check_scan_rate_limit`, migration 20260702000001),
- * so it holds across serverless instances.
+ * state lives in Postgres (`v2.check_scan_rate_limit`, migration
+ * 20261016000002), so it holds across serverless instances.
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SqlExecutor } from "./db";
 
 /** Per caller (user id when signed in, else client IP): requests per window. */
 export const RATE_LIMIT_MAX_REQUESTS = 20;
@@ -76,16 +76,15 @@ export const LIMITER_DOWN_RETRY_SECONDS = 30;
  * spend), a signed-in caller is let through, and the reason is returned so the
  * route can log it.
  */
-export async function checkRateLimit(db: Pick<SupabaseClient, "rpc">, caller: { userId: string | null; ip: string | null }): Promise<RateLimitDecision> {
+export async function checkRateLimit(db: SqlExecutor, caller: { userId: string | null; ip: string | null }): Promise<RateLimitDecision> {
   const b = bucketFor(caller);
   const down = (reason: string): RateLimitDecision =>
     caller.userId
       ? { allowed: true, retryAfter: 0, bucket: b.key, limiterError: reason }
       : { allowed: false, retryAfter: LIMITER_DOWN_RETRY_SECONDS, bucket: b.key, limiterError: reason };
   try {
-    const { data, error } = await db.rpc("check_scan_rate_limit", { p_bucket_key: b.key, p_limit: b.limit, p_window_seconds: b.windowSeconds });
-    if (error) return down(error.message);
-    const row = (Array.isArray(data) ? data[0] : data) as RpcRow | undefined;
+    const rows = await db.query<RpcRow>("select allowed, current_count, retry_after from v2.check_scan_rate_limit($1, $2::int, $3::int)", [b.key, b.limit, b.windowSeconds]);
+    const row = rows[0];
     if (!row || typeof row.allowed !== "boolean") return down("check_scan_rate_limit returned no row");
     return { allowed: row.allowed, retryAfter: row.allowed ? 0 : Math.max(1, Number(row.retry_after) || b.windowSeconds), bucket: b.key };
   } catch (err) {

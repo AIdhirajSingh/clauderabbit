@@ -10,7 +10,7 @@
  * (public report reads are RLS-allowed). No secret is used.
  */
 
-import { createClient } from "@/lib/supabase/server";
+import { latestScore } from "@/lib/server/report-source";
 import { band } from "@/lib/score";
 
 export const revalidate = 600;
@@ -57,23 +57,7 @@ function badgeSvg(label: string, value: string, color: string): string {
 export async function GET(_req: Request, { params }: RouteParams): Promise<Response> {
   const { owner, repo } = await params;
 
-  let score: number | null = null;
-  try {
-    const supabase = await createClient();
-    const { data } = await supabase
-      .from("reports")
-      .select("score")
-      .eq("owner_login", owner)
-      .eq("repo_name", repo)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (data && typeof (data as { score: number }).score === "number") {
-      score = (data as { score: number }).score;
-    }
-  } catch {
-    score = null;
-  }
+  const score = await latestScore(owner, repo);
 
   const svg =
     score == null

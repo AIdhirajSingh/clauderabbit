@@ -65,16 +65,24 @@ export default function CliAuthPage() {
     const supabase = createClient();
     void supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
-        void issueToken(p);
+        void issueToken(p, data.session.access_token);
       } else {
         setStage("needs-login");
       }
     });
 
-    async function issueToken(localPort: number | null) {
+    async function issueToken(localPort: number | null, accessToken: string) {
       setStage("issuing");
-      const { data, error: rpcError } = await supabase.rpc("issue_cli_token");
-      if (rpcError || typeof data !== "string") {
+      let data: string | null = null;
+      try {
+        // The server checks the session JWT, then issues the token into schema v2.
+        const res = await fetch("/api/cli-auth/token", { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
+        const body = (await res.json().catch(() => null)) as { token?: unknown } | null;
+        data = res.ok && typeof body?.token === "string" ? body.token : null;
+      } catch {
+        data = null;
+      }
+      if (typeof data !== "string") {
         setStage("error");
         setError("Could not issue a login token. Close this tab and try again.");
         return;

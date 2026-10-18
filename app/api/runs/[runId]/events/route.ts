@@ -3,7 +3,7 @@
  * seq (DESIGN.md section 6). Public: events are already public on Realtime.
  */
 
-import { createSupabaseStore } from "@/lib/engine/store";
+import { createV2Store } from "@/lib/engine/store";
 import { adForRequest, realtimeChannel, serverConfig, surfaceFromHeader } from "@/lib/server/scan-service";
 
 export const runtime = "nodejs";
@@ -17,7 +17,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ runId: string }
   if (!UUID_RE.test(runId)) return Response.json({ error: "invalid_run_id", ad }, { status: 400 });
   let store;
   try {
-    store = createSupabaseStore(serverConfig());
+    store = createV2Store(serverConfig());
   } catch (err) {
     return Response.json({ error: "internal", message: err instanceof Error ? err.message : "configuration error", ad }, { status: 503 });
   }

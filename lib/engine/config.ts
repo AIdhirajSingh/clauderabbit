@@ -54,7 +54,8 @@ export interface EngineConfig {
   e2bApiKey: string | null;
   supabaseUrl: string | null;
   supabasePublishableKey: string | null;
-  supabaseSecretKey: string | null;
+  /** Pooler URL for the cr_v2_server role (schema v2 only). Server-only; never logged. */
+  databaseUrl: string | null;
   siteUrl: string;
   githubToken: string | null;
   adsense: AdsenseConfig;
@@ -177,7 +178,7 @@ export function loadEngineConfig(env: Env): EngineConfig {
     e2bApiKey: str(env, "E2B_API_KEY"),
     supabaseUrl: str(env, "NEXT_PUBLIC_SUPABASE_URL"),
     supabasePublishableKey: str(env, "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
-    supabaseSecretKey: str(env, "SUPABASE_SECRET_KEY") ?? str(env, "SUPABASE_SERVICE_ROLE_KEY"),
+    databaseUrl: str(env, "CR_V2_DATABASE_URL"),
     siteUrl: siteUrl(env),
     githubToken: str(env, "GITHUB_TOKEN"),
     adsense: {
@@ -205,7 +206,8 @@ export function missingKeys(config: EngineConfig): string[] {
   if (!config.openaiApiKey) missing.push("OPENAI_API_KEY");
   if (!config.e2bApiKey) missing.push("E2B_API_KEY");
   if (!config.supabaseUrl) missing.push("NEXT_PUBLIC_SUPABASE_URL");
-  if (!config.supabaseSecretKey) missing.push("SUPABASE_SECRET_KEY");
+  if (!config.supabasePublishableKey) missing.push("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
+  if (!config.databaseUrl) missing.push("CR_V2_DATABASE_URL");
   return missing;
 }
 

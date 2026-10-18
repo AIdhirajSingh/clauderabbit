@@ -40,7 +40,7 @@ import {
 import { parseScanTarget, type ScanTarget } from "@/lib/parse-repo";
 import { runScan, type ScanArgs, type ScanStage } from "@/lib/scan";
 import type { Ad } from "@/lib/engine/types";
-import { decideReportFetch, fetchLatestReportRest } from "@/lib/report-fetch";
+import { decideReportFetch, fetchLatestReportApi } from "@/lib/report-fetch";
 import {
   EMPTY_BOARD_DATA,
   fetchBoardData,
@@ -91,7 +91,7 @@ const SUGGESTION_PICK_MS = 140;
 const PENDING_REPO_KEY = "cr-pending-repo";
 
 // Public Supabase config (inlined by Next at build). Used for the anonymous
-// on-demand report read (reports are public; see fetchLatestReportRest).
+// on-demand report read (reports are public; see fetchLatestReportApi, served by /api/report).
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
@@ -858,9 +858,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ? await Promise.all(
                   idsNewestFirst.map((id) => {
                     const slash = id.indexOf("/");
-                    return fetchLatestReportRest(
-                      SUPABASE_URL,
-                      SUPABASE_ANON_KEY,
+                    return fetchLatestReportApi(
                       id.slice(0, slash),
                       id.slice(slash + 1),
                     );
@@ -1398,7 +1396,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         reportFetchRef.current = fetchId;
         patch({ reportLoadingId: fetchId, reportErrorId: null });
-        void fetchLatestReportRest(SUPABASE_URL, SUPABASE_ANON_KEY, decision.owner, decision.repo)
+        void fetchLatestReportApi(decision.owner, decision.repo)
           .then((report) => {
             if (reportFetchRef.current === fetchId) reportFetchRef.current = null;
             // Ignore a resolve for a report the user has navigated away from.

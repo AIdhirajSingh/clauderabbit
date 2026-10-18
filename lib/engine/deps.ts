@@ -2,7 +2,7 @@
  * Production wiring for runScan (DESIGN.md section 4). Imports only production
  * implementations: the OpenAI adapter (one model adapter, model id from
  * config) and the E2B provider. The store is passed in by the caller (the API
- * route builds the Supabase store from the server secret). Test stand-ins live
+ * route builds the v2 store on the cr_v2_server connection). Test stand-ins live
  * under tests/ and are never reachable from here.
  */
 

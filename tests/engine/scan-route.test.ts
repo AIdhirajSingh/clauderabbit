@@ -13,7 +13,9 @@ import { DEFAULT_DEADLINES } from "../../lib/engine/config.ts";
 const BASE_ENV = {
   NEXT_PUBLIC_SITE_URL: "https://clauderabbit.in",
   NEXT_PUBLIC_SUPABASE_URL: "https://branch.supabase.test",
-  SUPABASE_SECRET_KEY: "placeholder-not-a-key",
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_placeholder",
+  // Placeholder: no listener on port 1; the paths under test never open a connection.
+  CR_V2_DATABASE_URL: "postgres://cr_v2_server.abcdefghijklmnopqrst:placeholder@127.0.0.1:1/postgres",
   OPENAI_API_KEY: "placeholder-not-a-key",
   E2B_API_KEY: "placeholder-not-a-key",
 };

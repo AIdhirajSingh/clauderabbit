@@ -1,21 +1,22 @@
 /**
  * Data and surface seams (DESIGN.md sections 4, 6, 7.3, 8): the reports-row
  * mapping and its round trip back to a ReportPayload, event row mapping,
- * SupabaseStore against a recording PostgREST double, auth and rate-limit
- * wrappers with stub RPCs, request parsing, report URLs, the branch script's
+ * V2Store against PGlite with every migration applied (as cr_v2_server), auth
+ * and rate-limit wrappers on the same database and on stubs, request parsing, report URLs, the branch script's
  * production refusal, and the remote MCP text rendering.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bearerToken, identify } from "../../lib/engine/auth.ts";
+import { bearerToken, identify, identityBackend } from "../../lib/engine/auth.ts";
 import { bucketFor, checkRateLimit, clientIp, GLOBAL_ANON_BUCKET_KEY } from "../../lib/engine/ratelimit.ts";
-import { eventFromRow, eventToRow, payloadFromRows, reportsRowFor, SupabaseStore, type ReportRecord, type StoredReportRow } from "../../lib/engine/store.ts";
+import { eventFromRow, eventToRow, OWNER_TTL_MS, payloadFromRows, reportsRowFor, V2Store, type ReportRecord, type StoredReportRow } from "../../lib/engine/store.ts";
+import { openV2Database } from "../support/pglite-v2.ts";
+import type { SqlExecutor } from "../../lib/engine/db.ts";
 import type { Ad, ReportPayload, ScanEvent } from "../../lib/engine/types.ts";
 import { finalLineText } from "../../lib/server/report-text.ts";
 import { parseScanBody, realtimeChannel, replaySubject, reportUrlFor, statusFor, surfaceFromHeader } from "../../lib/server/scan-service.ts";
 import { pkceMatches } from "../../lib/server/oauth.ts";
-import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 
 const PAYLOAD: ReportPayload = {
@@ -85,62 +86,84 @@ test("event rows map both ways and unknown types are dropped", () => {
   assert.equal(eventFromRow({ ...row, type: "bogus" }), null);
 });
 
-/** A PostgREST double: records each request, answers from a queue. */
-function restDouble(answers: Array<{ status: number; body: unknown }>) {
-  const calls: Array<{ method: string; url: string; body: string | null }> = [];
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    calls.push({ method: init?.method ?? "GET", url, body: typeof init?.body === "string" ? init.body : null });
-    const a = answers.shift() ?? { status: 200, body: [] };
-    return new Response(a.body === null ? null : JSON.stringify(a.body), { status: a.status, headers: { "Content-Type": "application/json" } });
-  }) as typeof fetch;
-  const db = createClient("https://branch.supabase.test", "sb_secret_test_only", { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: fetchImpl } });
-  return { db, calls };
-}
+test("V2Store on schema v2 as cr_v2_server: claim, dedup, events, report, cache, budget, owners", async () => {
+  const v2 = await openV2Database();
+  try {
+    let now = Date.parse("2026-10-18T10:00:00.000Z");
+    const store = new V2Store(v2.server, () => now);
+    const claim = { runId: PAYLOAD.run_id, targetKind: "github" as const, subject: "acme/lib", commitSha: PAYLOAD.commit_sha, modelId: "gpt-6-luna", template: "clauderabbit-detonate" };
+    assert.deepEqual(await store.claimRun(claim), { status: "claimed", runId: PAYLOAD.run_id });
+    assert.deepEqual(await store.claimRun({ ...claim, runId: "22222222-2222-4222-8222-222222222222" }), { status: "running", runId: PAYLOAD.run_id });
 
-test("SupabaseStore.claimRun expires stale runs, inserts, and attaches on the dedup conflict", async () => {
-  const { db, calls } = restDouble([
-    { status: 200, body: 0 },
-    { status: 409, body: { code: "23505", message: "duplicate key value violates unique constraint \"uq_scan_runs_running\"" } },
-    { status: 200, body: { id: "22222222-2222-4222-8222-222222222222" } },
-  ]);
-  const store = new SupabaseStore(db);
-  const r = await store.claimRun({ runId: PAYLOAD.run_id, targetKind: "github", subject: "acme/lib", commitSha: PAYLOAD.commit_sha, modelId: "gpt-6-luna", template: "t" });
-  assert.deepEqual(r, { status: "running", runId: "22222222-2222-4222-8222-222222222222" });
-  assert.match(calls[0]!.url, /\/rest\/v1\/rpc\/expire_stale_runs$/);
-  assert.equal(calls[1]!.method, "POST");
-  assert.match(calls[1]!.url, /\/rest\/v1\/scan_runs/);
-  assert.equal(JSON.parse(calls[1]!.body!).status, "running");
-  assert.match(calls[2]!.url, /status=eq\.running/);
+    const events: ScanEvent[] = [
+      { run_id: PAYLOAD.run_id, seq: 0, t_ms: 1, type: "stage", data: { name: "resolve", status: "start" } },
+      { run_id: PAYLOAD.run_id, seq: 1, t_ms: 9.6, type: "check", data: { name: "daily_budget", ok: true } },
+    ];
+    await store.appendEvents(events);
+    const sent = await v2.pg.query<{ topic: string; event: string }>("select topic, event from realtime.sent order by event");
+    assert.deepEqual(sent.rows.map((r) => r.topic), [`scan:${PAYLOAD.run_id}`, `scan:${PAYLOAD.run_id}`]);
+
+    assert.equal(await store.findCached("acme/lib", PAYLOAD.commit_sha), null, "a running run is not a cache hit");
+    await store.saveReport(RECORD);
+    await store.finishRun(PAYLOAD.run_id, { status: "done", timings: PAYLOAD.timings });
+    const hit = await store.findCached("acme/lib", PAYLOAD.commit_sha);
+    assert.ok(hit);
+    assert.equal(hit.runId, PAYLOAD.run_id);
+    assert.deepEqual(hit.report, PAYLOAD);
+    assert.deepEqual(hit.events, [events[0], { ...events[1]!, t_ms: 10 }]);
+    assert.deepEqual(await store.loadRun(PAYLOAD.run_id), { id: PAYLOAD.run_id, subject: "acme/lib", commit_sha: PAYLOAD.commit_sha, status: "done", error_code: null });
+
+    // A regenerate overwrites the shared row: the old run is no longer served from it.
+    const run2 = "44444444-4444-4444-8444-444444444444";
+    assert.deepEqual(await store.claimRun({ ...claim, runId: run2 }), { status: "claimed", runId: run2 });
+    await store.saveReport({ ...RECORD, runId: run2, report: { ...PAYLOAD, run_id: run2, score: 40, verdict: "High risk", band: "yellow" } });
+    now += 60_000;
+    await store.finishRun(run2, { status: "done", timings: {} });
+    const again = await store.findCached("acme/lib", PAYLOAD.commit_sha);
+    assert.equal(again?.runId, run2);
+    assert.equal(again?.report.verdict, "High risk");
+    assert.equal((await v2.pg.query<{ n: number }>("select count(*)::int as n from v2.reports")).rows[0]!.n, 1);
+
+    assert.equal(await store.chargeBudget({ sandboxSeconds: 9.4, tokens: 100, capSeconds: 20000, capTokens: 20000000 }), true);
+    assert.equal(await store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: 9, capTokens: 20000000 }), false);
+
+    assert.equal(await store.ownerCache.get("acme"), null);
+    await store.ownerCache.put({ login: "acme", type: "Organization", createdAt: "2015-01-02T03:04:05.000Z", publicRepos: 12 });
+    assert.deepEqual(await store.ownerCache.get("acme"), { login: "acme", type: "Organization", createdAt: "2015-01-02T03:04:05.000Z", publicRepos: 12 });
+    now += OWNER_TTL_MS + 1;
+    assert.equal(await store.ownerCache.get("acme"), null, "expired owner rows are refetched");
+
+    await assert.rejects(store.finishRun("not-a-uuid", { status: "done", timings: {} }), /scan_runs finish: /);
+    const legacy = await v2.pg.query<{ n: number }>("select (select count(*) from public.reports)::int + (select count(*) from public.owners)::int as n");
+    assert.equal(legacy.rows[0]!.n, 0, "nothing lands in the 1.0 tables");
+  } finally {
+    await v2.close();
+  }
 });
 
-test("SupabaseStore.chargeBudget calls scan_budget_charge and appendEvents inserts rows", async () => {
-  const { db, calls } = restDouble([{ status: 200, body: false }, { status: 201, body: null }]);
-  const store = new SupabaseStore(db);
-  assert.equal(await store.chargeBudget({ sandboxSeconds: 9.4, tokens: 100, capSeconds: 20000, capTokens: 20000000 }), false);
-  assert.deepEqual(JSON.parse(calls[0]!.body!), { p_sandbox_seconds: 9, p_tokens: 100, p_cap_seconds: 20000, p_cap_tokens: 20000000 });
-  await store.appendEvents([{ run_id: PAYLOAD.run_id, seq: 0, t_ms: 1, type: "stage", data: { name: "resolve", status: "start" } }]);
-  assert.match(calls[1]!.url, /\/rest\/v1\/scan_events/);
-  assert.deepEqual(JSON.parse(calls[1]!.body!), [{ run_id: PAYLOAD.run_id, seq: 0, t_ms: 1, type: "stage", data: { name: "resolve", status: "start" } }]);
-});
-
-test("SupabaseStore surfaces database errors instead of swallowing them", async () => {
-  const { db } = restDouble([{ status: 500, body: { code: "XX000", message: "boom" } }]);
-  await assert.rejects(new SupabaseStore(db).finishRun(PAYLOAD.run_id, { status: "done", timings: {} }), /scan_runs finish: boom/);
-});
-
-test("auth: bearer parsing, cr_cli_ tokens via verify_cli_token, malformed tokens never reach the RPC", async () => {
+test("auth: bearer parsing, cr_cli_ tokens via v2.verify_cli_token, malformed tokens never reach the database", async () => {
   assert.equal(bearerToken("Bearer abc"), "abc");
   assert.equal(bearerToken("Basic abc"), null);
-  const token = "cr_cli_" + "f".repeat(64);
-  const uid = "33333333-3333-4333-8333-333333333333";
-  let rpcCalls = 0;
-  const db = { rpc: async (name: string, args: Record<string, unknown>) => { rpcCalls++; assert.equal(name, "verify_cli_token"); return { data: args.p_token === token ? uid : null, error: null }; }, auth: { getUser: async () => ({ data: { user: null }, error: { message: "bad jwt" } }) } };
-  assert.deepEqual(await identify(db as never, token), { userId: uid, via: "cli_token" });
-  assert.equal(await identify(db as never, "cr_cli_short"), null);
-  assert.equal(rpcCalls, 1);
-  assert.equal(await identify(db as never, "a.b.c"), null);
-  assert.equal(await identify(db as never, null), null);
+  const v2 = await openV2Database();
+  try {
+    const uid = (await v2.pg.query<{ id: string }>("insert into auth.users (email) values ('a@example.test') returning id::text as id")).rows[0]!.id;
+    const token = (await v2.server.query<{ t: string }>("select v2.issue_cli_token($1::uuid) as t", [uid]))[0]!.t;
+    let jwtCalls = 0;
+    let dbCalls = 0;
+    const counted: SqlExecutor = { query: <T,>(t: string, p?: readonly unknown[]) => { dbCalls++; return v2.server.query<T>(t, p); } };
+    const backend = identityBackend(counted, { supabaseUrl: null, supabasePublishableKey: null });
+    const withJwt = { cliToken: backend.cliToken, jwtUser: async () => { jwtCalls++; return null; } };
+    assert.deepEqual(await identify(withJwt, token), { userId: uid, via: "cli_token" });
+    assert.equal(await identify(withJwt, "cr_cli_" + "f".repeat(64)), null);
+    assert.equal(await identify(withJwt, "cr_cli_short"), null);
+    assert.equal(dbCalls, 2, "the malformed token never reached the database");
+    assert.equal(await identify(withJwt, "a.b.c"), null);
+    assert.equal(jwtCalls, 1);
+    assert.equal(await identify(withJwt, null), null);
+    assert.equal(await backend.jwtUser("a.b.c"), null, "no Auth server configured: no JWT identity");
+  } finally {
+    await v2.close();
+  }
 });
 
 test("rate limit: Vercel client IP, bucket choice, decision, fail-open with the reason", async () => {
@@ -150,15 +173,29 @@ test("rate limit: Vercel client IP, bucket choice, decision, fail-open with the 
   assert.equal(clientIp(h({ "x-forwarded-for": "not-an-ip" })), null);
   assert.equal(bucketFor({ userId: "u1", ip: "1.2.3.4" }).key, "user:u1");
   assert.equal(bucketFor({ userId: null, ip: null }).key, GLOBAL_ANON_BUCKET_KEY);
-  const denied = await checkRateLimit({ rpc: async () => ({ data: [{ allowed: false, current_count: 21, retry_after: 17 }], error: null }) } as never, { userId: null, ip: "1.2.3.4" });
+  const rows = (r: unknown[]) => ({ query: async () => r }) as never;
+  const denied = await checkRateLimit(rows([{ allowed: false, current_count: 21, retry_after: 17 }]), { userId: null, ip: "1.2.3.4" });
   assert.deepEqual(denied, { allowed: false, retryAfter: 17, bucket: "ip:1.2.3.4" });
-  const anonDown = await checkRateLimit({ rpc: async () => ({ data: null, error: { message: "db down" } }) } as never, { userId: null, ip: "1.2.3.4" });
+  const anonDown = await checkRateLimit({ query: async () => { throw new Error("db down"); } } as never, { userId: null, ip: "1.2.3.4" });
   assert.equal(anonDown.allowed, false, "anonymous callers fail closed while the limiter is down");
   assert.equal(anonDown.retryAfter, 30);
   assert.equal(anonDown.limiterError, "db down");
-  const userDown = await checkRateLimit({ rpc: async () => { throw new Error("socket closed"); } } as never, { userId: "u1", ip: "1.2.3.4" });
+  const userDown = await checkRateLimit({ query: async () => { throw new Error("socket closed"); } } as never, { userId: "u1", ip: "1.2.3.4" });
   assert.equal(userDown.allowed, true, "signed-in callers pass; the fail-closed budget ledger still bounds spend");
   assert.equal(userDown.limiterError, "socket closed");
+  const empty = await checkRateLimit(rows([]), { userId: null, ip: "1.2.3.4" });
+  assert.equal(empty.allowed, false);
+
+  const v2 = await openV2Database();
+  try {
+    const caller = { userId: null, ip: "198.51.100.7" };
+    for (let i = 0; i < 20; i++) assert.equal((await checkRateLimit(v2.server, caller)).allowed, true, `request ${i + 1}`);
+    const over = await checkRateLimit(v2.server, caller);
+    assert.equal(over.allowed, false);
+    assert.ok(over.retryAfter >= 1 && over.retryAfter <= 60);
+  } finally {
+    await v2.close();
+  }
 });
 
 test("request parsing accepts every documented target form and rejects the rest", () => {

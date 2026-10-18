@@ -47,17 +47,28 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 
 - **Project:** `clauderabbit`, ref `mjvlczaytkhvsolnhhkz`, region `ap-south-1`, URL
   `https://mjvlczaytkhvsolnhhkz.supabase.co`.
-- **Provides:** Postgres (reports, owners, scan runs, scan events, budget, auth tables), Auth (Google + email),
-  and Realtime. The scan event trigger `scan_events_broadcast` calls `realtime.send(..., 'scan:'||run_id, false)`
-  so clients subscribe to channel `scan:<run_id>`.
+- **Provides:** Postgres, Auth (Google + email) and Realtime. 1.0 lives in schema `public`; 2.0 lives in its
+  own schema `v2` of the same production project (reports, owners, scan runs, scan events, budget, rate limit,
+  CLI tokens, OAuth clients and codes). The 2.0 migrations create objects in `v2` only and never alter, drop or
+  write a 1.0 object. The v2 trigger `v2.scan_events_broadcast` calls
+  `realtime.send(..., 'scan:'||run_id, false)` (Realtime Broadcast, public channel), so clients subscribe to
+  channel `scan:<run_id>` without `v2` being exposed to the Data API.
 - **No Supabase functions.** `supabase/config.toml` sets `[edge_runtime] enabled = false`.
 - **Keys:** the browser holds only `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-  (`sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B`). Vercel server code writes with `SUPABASE_SECRET_KEY`
-  (`sb_secret_...`), falling back to `SUPABASE_SERVICE_ROLE_KEY`.
-- **2.0 migrations:** five up files `supabase/migrations/20261016000001..05_*.sql`, each with a reverse file in
-  `supabase/migrations-down/<name>.down.sql` (outside `migrations/` so the CLI never applies them). They run on a
-  non-production database first with `scripts/db-branch-apply.mjs`, which refuses `mjvlczaytkhvsolnhhkz`.
-  Where they have been applied is recorded in `docs/runs/2.0-backend.md`.
+  (`sb_publishable_HAPgnT9M5Sr166Se8Nx0yg_qxzn-08B`). The 2.0 server reads and writes only as the Postgres login
+  role `cr_v2_server` (`CR_V2_DATABASE_URL`, Supavisor pooler, transaction mode, port 6543, user
+  `cr_v2_server.mjvlczaytkhvsolnhhkz`): USAGE on schema `v2`, per-table DML on v2 tables, EXECUTE on v2
+  functions, no grant on any 1.0 table, NOBYPASSRLS, no CREATEROLE or CREATEDB. Its password is set once with an
+  operator SQL call and lives only in Vercel env and the operator's local secrets file. 2.0 uses no Supabase
+  secret or service key; the 1.0 keys and edge-function secrets stay untouched. The server checks web session
+  JWTs against the Auth server with the publishable key.
+- **2.0 migrations:** four additive up files `supabase/migrations/20261016000000..03_v2_*.sql` (schema and role,
+  runs and events and reports, auth and rate limit, budget), each with a reverse file in
+  `supabase/migrations-down/<name>.down.sql` (outside `migrations/` so the CLI never applies them).
+  `tests/db/migrations.test.ts` proves on PGlite that the public, auth, realtime and extensions catalogs are
+  identical before and after the set and after its reverse. They are applied to production through the Supabase
+  MCP `apply_migration` with names prefixed `v2_`; `supabase/migrations-post-cutover/` stays unapplied until 1.0
+  retires. Where they have been applied is recorded in `docs/runs/2.0-keyday.md`.
 
 ---
 
@@ -100,7 +111,7 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 | `CR_E2B_TEMPLATE` | Vercel server | no (default `clauderabbit-detonate`) | template name |
 | `NEXT_PUBLIC_SUPABASE_URL` | client + server | yes | Supabase URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | client + server | yes | publishable key |
-| `SUPABASE_SECRET_KEY` | Vercel server | yes | `sb_secret_...` for writes; fallback `SUPABASE_SERVICE_ROLE_KEY` |
+| `CR_V2_DATABASE_URL` | Vercel server | yes | pooler URL for role `cr_v2_server` (schema v2 only); 2.0 reads no Supabase secret key |
 | `NEXT_PUBLIC_SITE_URL` | client + server | yes | canonical site URL |
 | `GITHUB_TOKEN` | Vercel server | no | higher GitHub API limit |
 | `NEXT_PUBLIC_ADSENSE_CLIENT_ID` | client + server | no | `ca-pub-...` |

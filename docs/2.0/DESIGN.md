@@ -235,7 +235,7 @@ lib/engine/
   config.ts            env parsing; MODEL_ID default "gpt-6-luna" (override CR_MODEL_ID); template name; caps
   types.ts             ScanTarget, ScanRequest, ScanOutcome, ScanEvent, Finding, ReportPayload
   orchestrator.ts      runScan()
-  deps.ts              productionDeps(): OpenAIAdapter + E2BProvider + SupabaseStore/Sink
+  deps.ts              productionDeps(): OpenAIAdapter + E2BProvider + V2Store/Sink
   events.ts            EventSink, fan-out, NDJSON encoder, truncation rules
   archive.ts           gunzip + tar (pax/ustar) parse in memory, limits, path normalization
   resolve/github.ts    ref -> SHA, codeload tarball, pax comment == SHA check
@@ -258,7 +258,7 @@ lib/engine/
   forensics/capture.ts capture.jsonl parser + canary search
   score.ts             deterministic score (section 5)
   ads.ts               ad payloads (section 8.3)
-  store.ts             ScanStore interface + SupabaseStore (runs, events, reports, budget, dedup)
+  store.ts             ScanStore interface + V2Store (schema v2 as cr_v2_server: runs, events, reports, budget, dedup)
   ratelimit.ts         check_scan_rate_limit RPC wrapper, client IP from Vercel headers
   auth.ts              cr_cli_ token (verify_cli_token) and Supabase JWT verification
 sandbox/e2b/ template.ts build.ts mirror-seed.json guest/{cr-detonate.sh,cr-analyze.sh,cr-yara.py,
@@ -414,22 +414,34 @@ resolves the latest `done` run for that SHA. A cache hit streams the stored even
 ### 7.1 Migrations (each up file in `supabase/migrations/`, each down file at
 `supabase/migrations-down/<same name>.down.sql`; down files live outside `migrations/` so the CLI never applies them)
 
-1. `20261016000001_scan_runs_events.sql`: table `scan_runs(id uuid pk default gen_random_uuid(), target_kind
-   text check in ('github','npm','tarball'), subject text not null, commit_sha text not null, status text check
-   in ('running','done','error') default 'running', error_code text, started_at timestamptz default now(),
-   finished_at timestamptz, timings jsonb, report_id bigint references reports(id) on delete set null,
-   model_id text, template text)`; partial unique index `(subject, commit_sha) where status='running'`;
-   index `(subject, commit_sha, finished_at desc) where status='done'`. Table `scan_events(run_id uuid references
-   scan_runs(id) on delete cascade, seq int, t_ms int, type text check in (...7 types), data jsonb, primary key
-   (run_id, seq))`. Trigger `scan_events_broadcast` after insert for each row: `perform realtime.send(
-   jsonb_build_object('seq',new.seq,'t_ms',new.t_ms,'data',new.data), new.type, 'scan:'||new.run_id::text,
-   false)`. RLS: public select on both, service role all. Function `expire_stale_runs()` marks `running` rows
-   older than 5 min as `error` (`error_code='stale'`), called by the orchestrator before the dedup insert.
-2. `20261016000002_reports_run_path.sql`: `reports.scan_path` and `scans.scan_path` checks gain `'run'`; add
-   `reports.run_id uuid`, `reports.score_breakdown jsonb`, `reports.not_verified jsonb`.
-3. `20261016000003_scan_budget.sql`: `scan_budget(day date pk, sandbox_seconds bigint, model_tokens bigint)`,
-   RPC `scan_budget_charge(p_sandbox_seconds int, p_tokens int, p_cap_seconds int, p_cap_tokens int) returns
-   boolean` (security definer, service role only). RLS service only.
+Owner decision (key day): no Supabase branch and no new project. 2.0 lives in the production project in its own
+schema `v2`. The 2.0 set is additive: it creates schema `v2`, objects inside it and the login role
+`cr_v2_server`, and never alters, drops or writes a 1.0 object (`public`, `auth`, `realtime`, `extensions` stay
+byte-identical, proven in `tests/db/migrations.test.ts`).
+
+0. `20261016000000_v2_schema_role.sql`: schema `v2` (no PUBLIC grant), role `cr_v2_server` (LOGIN, NOINHERIT,
+   NOBYPASSRLS, no CREATEROLE or CREATEDB, no password in the file), `USAGE on schema v2` to it, helper
+   `v2.touch_updated_at()`.
+1. `20261016000001_v2_scan_runs_events.sql`: `v2.owners` (reputation cache), `v2.reports` (same column names as
+   the 1.0 row; `scan_path` only `'run'`; verdict only the five 2.0 words, so a bare "Safe" cannot be stored),
+   `v2.scan_runs` (partial unique index `(subject, commit_sha) where status='running'`), `v2.scan_events`
+   (primary key `(run_id, seq)`), trigger `v2.scan_events_broadcast` (security definer) that calls
+   `realtime.send(jsonb_build_object('seq',new.seq,'t_ms',new.t_ms,'data',new.data), new.type,
+   'scan:'||new.run_id::text, false)`, function `v2.expire_stale_runs()`. RLS on every table with one policy,
+   `to cr_v2_server`; grants to `cr_v2_server` only.
+2. `20261016000002_v2_auth_rate_limit.sql`: `v2.scan_rate_limit` + `v2.check_scan_rate_limit`; `v2.cli_tokens`
+   + `v2.issue_cli_token(user)` + `v2.verify_cli_token(token)` (falls back to a read-only lookup in
+   `public.cli_tokens` so a 1.0 token still signs in); `v2.oauth_clients`, `v2.oauth_codes`,
+   `v2.register_oauth_client`, `v2.create_oauth_code(user, ...)` (accepts a client registered in
+   `public.oauth_clients`, read-only), `v2.redeem_oauth_code` (delete on read), `v2.cleanup_oauth`. The browser
+   never calls these: `/api/cli-auth/token` and `/api/oauth/code` check the session JWT, then call them as
+   `cr_v2_server`.
+3. `20261016000003_v2_scan_budget.sql`: `v2.scan_budget(day date pk, sandbox_seconds bigint, model_tokens
+   bigint)`, `v2.scan_budget_charge(p_sandbox_seconds int, p_tokens int, p_cap_seconds int, p_cap_tokens int)
+   returns boolean`.
+
+Post-cutover only (`supabase/migrations-post-cutover/`, never applied while 1.0 runs):
+
 4. `20261016000004_drop_deep_queue.sql`: drop `deep_scan_queue`, `deep_dispatch_lock` and their RPCs
    (`deep_queue_*`, `deep_dispatch_try_claim`, `deep_dispatch_release`). Down recreates them from the original
    DDL of `20260702000002`, `20260703000001`, `20260711000001`.
@@ -438,13 +450,13 @@ resolves the latest `done` run for that SHA. A cache hit streams the stored even
 
 ### 7.2 Where they run
 
-Only on a Supabase branch of project `mjvlczaytkhvsolnhhkz`, never on production. Each up then down then up is
-run on the branch and the outputs recorded. Local syntax tests: PGlite (`@electric-sql/pglite`, devDependency)
-with a prelude that creates stub `auth.users` and `realtime.send` so up/down round-trips run in `npm test`.
+On the production project `mjvlczaytkhvsolnhhkz`, through the Supabase MCP `apply_migration` with names
+prefixed `v2_`, after the PGlite round trip passes (`@electric-sql/pglite`, devDependency, with a prelude that
+creates stub `auth.users` and `realtime.send`). The run record is `docs/runs/2.0-keyday.md`.
 
 ### 7.3 Report compatibility
 
-The engine writes a `reports` row the existing pages read: `owner_login`/`repo_name` (`"npm"` + package name
+The engine writes a `v2.reports` row the report pages read (they fall back to the 1.0 `public.reports` row when no v2 row exists): `owner_login`/`repo_name` (`"npm"` + package name
 for npm), `commit_sha` (git SHA; for npm `<version>+<sha512 integrity>`), `score`, `verdict`, `summary`,
 `scan_path='run'`, `deep=true`, `cached=false`, `confidence`, `stats_json`, `packages_json` (deps + OSV),
 `risky_json` (findings tagged `behavior`/`code`/`rep`), `logs_json` (stage chapters), `forensics_json`
@@ -498,7 +510,7 @@ then `(adsbygoogle = window.adsbygoogle || []).push({})`. `adtest` is `"on"` unl
 | `CR_E2B_TEMPLATE` | Vercel server | no (default `clauderabbit-detonate`) | template name |
 | `NEXT_PUBLIC_SUPABASE_URL` | client + server | yes | Supabase URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | client + server | yes | publishable key |
-| `SUPABASE_SECRET_KEY` | Vercel server | yes | `sb_secret_...` for writes; fallback `SUPABASE_SERVICE_ROLE_KEY` |
+| `CR_V2_DATABASE_URL` | Vercel server | yes | pooler URL for role `cr_v2_server` (schema v2 only); no Supabase secret key |
 | `NEXT_PUBLIC_SITE_URL` | client + server | yes | canonical site URL |
 | `GITHUB_TOKEN` | Vercel server | no | higher GitHub API limit |
 | `NEXT_PUBLIC_ADSENSE_CLIENT_ID` | client + server | no | `ca-pub-...` |

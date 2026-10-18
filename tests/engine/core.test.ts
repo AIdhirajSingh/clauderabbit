@@ -20,7 +20,7 @@ test("config: defaults, overrides and validation", () => {
   assert.equal(c.operatorKey, null);
   assert.equal(c.dailySandboxSecondsCap, 20_000);
   assert.equal(c.dailyModelTokensCap, 20_000_000);
-  assert.deepEqual(missingKeys(c), ["OPENAI_API_KEY", "E2B_API_KEY", "NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SECRET_KEY"]);
+  assert.deepEqual(missingKeys(c), ["OPENAI_API_KEY", "E2B_API_KEY", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "CR_V2_DATABASE_URL"]);
   const o = loadEngineConfig({
     CR_MODEL_ID: "other-model",
     CR_MODEL_REASONING_EFFORT: "high",
@@ -28,7 +28,9 @@ test("config: defaults, overrides and validation", () => {
     OPENAI_API_KEY: "k1",
     E2B_API_KEY: "k2",
     NEXT_PUBLIC_SUPABASE_URL: "https://x.supabase.co",
-    SUPABASE_SERVICE_ROLE_KEY: "legacy",
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+    CR_V2_DATABASE_URL: "postgres://cr_v2_server.abcdefghijklmnopqrst:pw@pooler.test:6543/postgres",
+    SUPABASE_SERVICE_ROLE_KEY: "ignored-by-2.0",
     NEXT_PUBLIC_SITE_URL: "https://preview.example/path",
     NEXT_PUBLIC_ADSENSE_TEST: "OFF",
     CR_OPERATOR_KEY: OPERATOR,
@@ -36,7 +38,8 @@ test("config: defaults, overrides and validation", () => {
   });
   assert.equal(o.modelId, "other-model");
   assert.equal(o.reasoningEffort, "high");
-  assert.equal(o.supabaseSecretKey, "legacy");
+  assert.equal(o.databaseUrl, "postgres://cr_v2_server.abcdefghijklmnopqrst:pw@pooler.test:6543/postgres");
+  assert.equal("supabaseSecretKey" in o, false, "2.0 reads no Supabase secret key");
   assert.equal(o.siteUrl, "https://preview.example");
   assert.equal(o.adsense.adtest, "off");
   assert.equal(o.dailySandboxSecondsCap, 100);

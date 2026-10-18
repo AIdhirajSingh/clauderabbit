@@ -3,7 +3,7 @@
  * Replays the latest completed run for that subject and SHA (DESIGN.md section 6).
  */
 
-import { createSupabaseStore } from "@/lib/engine/store";
+import { createV2Store } from "@/lib/engine/store";
 import { adForRequest, realtimeChannel, replaySubject, serverConfig, surfaceFromHeader } from "@/lib/server/scan-service";
 
 export const runtime = "nodejs";
@@ -17,7 +17,7 @@ export async function GET(req: Request): Promise<Response> {
   if (!subject || !sha || sha.length > 300) return Response.json({ error: "invalid_target", message: "target and sha are required", ad }, { status: 400 });
   let store;
   try {
-    store = createSupabaseStore(serverConfig());
+    store = createV2Store(serverConfig());
   } catch (err) {
     return Response.json({ error: "internal", message: err instanceof Error ? err.message : "configuration error", ad }, { status: 503 });
   }

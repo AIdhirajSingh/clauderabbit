@@ -13,7 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { bearerToken, verifyCliToken } from "@/lib/engine/auth";
 import { EngineError, type ScanTarget } from "@/lib/engine/types";
-import { createSupabaseStore, type SupabaseStore } from "@/lib/engine/store";
+import { createV2Store, type V2Store } from "@/lib/engine/store";
 import { finalLineStructured, finalLineText } from "@/lib/server/report-text";
 import { adForSurface, callerFrom, executeScan, missingServerKeys, rateLimitFor, serverConfig, type FinalLine } from "@/lib/server/scan-service";
 import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
@@ -27,7 +27,7 @@ function siteOrigin(req: Request): string {
   return process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || new URL(req.url).origin;
 }
 
-async function verifyToken(store: SupabaseStore, token: string): Promise<string | null> {
+async function verifyToken(store: V2Store, token: string): Promise<string | null> {
   try {
     return await verifyCliToken(store.db, token);
   } catch {
@@ -46,7 +46,7 @@ function unauthorized(req: Request): Response {
   });
 }
 
-function buildServer(req: Request, store: SupabaseStore): McpServer {
+function buildServer(req: Request, store: V2Store): McpServer {
   const server = new McpServer({ name: "clauderabbit-mcp-remote", version: "2.0.0" });
 
   server.registerTool(
@@ -91,11 +91,11 @@ function buildServer(req: Request, store: SupabaseStore): McpServer {
   return server;
 }
 
-function storeOrNull(): SupabaseStore | null {
+function storeOrNull(): V2Store | null {
   try {
     const config = serverConfig();
     if (missingServerKeys(config).length > 0) return null;
-    return createSupabaseStore(config);
+    return createV2Store(config);
   } catch {
     return null;
   }

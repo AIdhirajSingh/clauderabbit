@@ -1,7 +1,6 @@
 import { ImageResponse } from "next/og";
-import { createClient } from "@/lib/supabase/server";
 import { buildReportView } from "@/lib/report-view";
-import { fetchLatestReport } from "@/lib/report-fetch";
+import { latestReport } from "@/lib/server/report-source";
 import { band } from "@/lib/score";
 
 /**
@@ -40,8 +39,7 @@ export default async function ReportOpengraphImage({ params }: RouteParams) {
 
   let view: ReturnType<typeof buildReportView> | null = null;
   try {
-    const supabase = await createClient();
-    const report = await fetchLatestReport(supabase, owner, repo);
+    const report = await latestReport(owner, repo);
     view = report ? buildReportView(report) : null;
   } catch {
     view = null;

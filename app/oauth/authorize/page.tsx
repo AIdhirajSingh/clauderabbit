@@ -64,27 +64,34 @@ export default function OAuthAuthorizePage() {
       }
       const { data } = await supabase.auth.getSession();
       if (data.session) {
-        await authorize(parsed);
+        await authorize(parsed, data.session.access_token);
       } else {
         setStage("needs-login");
       }
     })();
 
-    async function authorize(p: AuthParams) {
+    async function authorize(p: AuthParams, accessToken: string) {
       setStage("authorizing");
-      const { data, error: rpcError } = await supabase.rpc("create_oauth_code", {
-        p_client_id: p.clientId,
-        p_redirect_uri: p.redirectUri,
-        p_code_challenge: p.codeChallenge,
-        p_resource: p.resource,
-      });
-      if (rpcError || !data?.[0]?.code) {
+      let code: string | null = null;
+      try {
+        // The server checks the session JWT, then writes the code to schema v2.
+        const res = await fetch("/api/oauth/code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ client_id: p.clientId, redirect_uri: p.redirectUri, code_challenge: p.codeChallenge, resource: p.resource }),
+        });
+        const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
+        code = res.ok && typeof body?.code === "string" ? body.code : null;
+      } catch {
+        code = null;
+      }
+      if (!code) {
         setStage("error");
         setError("Could not complete sign-in for this app. Close this tab and try again.");
         return;
       }
       const redirect = new URL(p.redirectUri);
-      redirect.searchParams.set("code", data[0].code);
+      redirect.searchParams.set("code", code);
       if (p.state) redirect.searchParams.set("state", p.state);
       window.location.href = redirect.toString();
     }

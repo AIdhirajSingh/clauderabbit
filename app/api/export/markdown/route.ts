@@ -3,17 +3,16 @@
  * of a report (Task 2, report-export features).
  *
  * Reads the SAME latest-report data the public `/[owner]/[repo]` page and the
- * SPA report screen render from (`fetchLatestReport`), then renders it through
+ * SPA report screen render from (`latestReport`), then renders it through
  * the pure `reportToMarkdown` (`lib/export-markdown.ts`) so the download always
  * reflects the real report a user is looking at — never a placeholder or a
  * separately-maintained template.
  *
- * No secrets: this route reads through the same public anon Supabase client the
- * SSR report page already uses (reports are public; RLS exposes them to anon).
+ * The read is `latestReport`: the 2.0 report from schema v2 as cr_v2_server,
+ * else the 1.0 public report through the anon client. Reports are public.
  */
 
-import { createClient } from "@/lib/supabase/server";
-import { fetchLatestReport } from "@/lib/report-fetch";
+import { latestReport } from "@/lib/server/report-source";
 import { reportToMarkdown } from "@/lib/export-markdown";
 
 export const runtime = "nodejs";
@@ -52,14 +51,7 @@ export async function GET(req: Request): Promise<Response> {
     return json({ error: "invalid owner or repo" }, 400);
   }
 
-  let supabase;
-  try {
-    supabase = await createClient();
-  } catch {
-    return json({ error: "report storage is not configured" }, 500);
-  }
-
-  const report = await fetchLatestReport(supabase, owner, repo);
+  const report = await latestReport(owner, repo);
   if (!report) {
     return json({ error: `no report found for ${owner}/${repo}` }, 404);
   }

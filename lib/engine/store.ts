@@ -4,14 +4,15 @@
  * The orchestrator talks to storage only through `ScanStore`: the SHA cache,
  * the per-(subject, SHA) running-run dedup, the event log that a database
  * trigger broadcasts on Realtime topic `scan:<run_id>`, the report row the
- * existing pages read, and the daily spend floor. The Supabase implementation
- * (tables `scan_runs`, `scan_events`, `reports`, `scan_budget`, RPC
- * `scan_budget_charge`, migrations 20261016000001 to 20261016000003) is
- * `SupabaseStore` below; tests use an in-memory implementation under tests/support.
+ * report pages read, and the daily spend floor. The production implementation
+ * is `V2Store` below: schema v2 only (tables `v2.scan_runs`, `v2.scan_events`,
+ * `v2.reports`, `v2.owners`, `v2.scan_budget`, function `v2.scan_budget_charge`,
+ * migrations 20261016000000 to 20261016000003), reached as the role
+ * `cr_v2_server`. Tests run it on PGlite and use an in-memory store under tests/support.
  */
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { EngineConfig } from "./config";
+import { postgresExecutor, sqlState, validateDatabaseUrl, type SqlExecutor } from "./db";
 import type { OwnerCache, OwnerInfo } from "./reputation";
 import { bandFor } from "./score";
 import { EngineError, SCAN_EVENT_TYPES, type ErrorCode, type ReportPayload, type ScanEvent, type ScanEventType, type ScoreDelta, type Verdict } from "./types";
@@ -81,7 +82,7 @@ export interface ScanStore {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Supabase implementation
+// Schema v2 implementation (cr_v2_server)
 // ---------------------------------------------------------------------------------------------------
 
 /** Owner rows older than this are refreshed from GitHub. */
@@ -107,7 +108,7 @@ export interface LogRow {
   lines: string[];
 }
 
-/** The `reports` row the engine writes (DESIGN.md section 7.3). */
+/** The `v2.reports` row the engine writes (DESIGN.md section 7.3). */
 export interface ReportsUpsertRow {
   owner_login: string;
   repo_name: string;
@@ -159,7 +160,7 @@ function findingToRisky(f: FindingLike): RiskyRow | null {
 }
 
 /**
- * Map an engine report record onto the reports row the existing pages read.
+ * Map an engine report record onto the v2.reports row the report pages read.
  * Behaviour, code and reputation evidence stay in separate `kind`s.
  */
 export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
@@ -215,7 +216,7 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
 
 /** The reports columns findCached reads back. */
 export interface StoredReportRow {
-  id: number;
+  id: number | string;
   commit_sha: string;
   score: number;
   verdict: string;
@@ -282,13 +283,18 @@ export function eventToRow(e: ScanEvent): EventRow {
   return { run_id: e.run_id, seq: e.seq, t_ms: Math.max(0, Math.round(e.t_ms)), type: e.type, data: e.data };
 }
 
-interface DbError {
-  code?: string;
-  message: string;
+function fail(what: string, err: unknown): never {
+  const message = err instanceof Error ? err.message : String(err);
+  throw new EngineError("internal", `${what}: ${message.slice(0, 300)}`);
 }
 
-function fail(what: string, err: DbError): never {
-  throw new EngineError("internal", `${what}: ${err.message}`);
+async function run<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof EngineError) throw err;
+    fail(what, err);
+  }
 }
 
 export interface DoneRun {
@@ -297,29 +303,52 @@ export interface DoneRun {
   commitSha: string;
 }
 
+export interface DoneRunRow {
+  id: string;
+  subject: string;
+  model_id: string | null;
+  template: string | null;
+  timings: unknown;
+  report_id: string;
+}
+
+export interface RunRow {
+  id: string;
+  subject: string;
+  commit_sha: string;
+  status: string;
+  error_code: string | null;
+}
+
+/** ISO-8601 UTC text for a timestamptz column, identical on every driver. */
+const iso = (col: string) => `to_char(${col} at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
 /**
- * ScanStore on Supabase. Server-only: it is built from the secret key, which
- * never reaches a client. Reads the replay surfaces need are methods here too.
+ * ScanStore on schema v2, as the cr_v2_server role. Server-only. Reads the
+ * replay surfaces need are methods here too.
  */
-export class SupabaseStore implements ScanStore {
-  readonly db: SupabaseClient;
+export class V2Store implements ScanStore {
+  readonly db: SqlExecutor;
   private readonly now: () => number;
 
-  constructor(db: SupabaseClient, now: () => number = Date.now) {
+  constructor(db: SqlExecutor, now: () => number = Date.now) {
     this.db = db;
     this.now = now;
   }
 
   readonly ownerCache: OwnerCache = {
     get: async (login) => {
-      const { data, error } = await this.db
-        .from("owners")
-        .select("github_login, created_at_github, public_repos, reputation_json, fetched_at")
-        .eq("github_login", login)
-        .maybeSingle();
-      if (error) fail("owners read", error);
+      const rows = await run("owners read", () =>
+        this.db.query<{ github_login: string; created_at_github: string | null; public_repos: number | null; reputation_json: unknown; fetched_ms: number }>(
+          `select github_login, ${iso("created_at_github")} as created_at_github, public_repos, reputation_json,
+                  (extract(epoch from fetched_at) * 1000)::float8 as fetched_ms
+             from v2.owners where github_login = $1`,
+          [login],
+        ),
+      );
+      const data = rows[0];
       if (!data) return null;
-      const fetched = Date.parse(String(data.fetched_at));
+      const fetched = Number(data.fetched_ms);
       if (!Number.isFinite(fetched) || this.now() - fetched > OWNER_TTL_MS) return null;
       const rep = (data.reputation_json ?? {}) as Record<string, unknown>;
       return {
@@ -332,47 +361,50 @@ export class SupabaseStore implements ScanStore {
     put: async (info) => {
       const created = info.createdAt ? Date.parse(info.createdAt) : NaN;
       const ageDays = Number.isFinite(created) ? (this.now() - created) / 86_400_000 : 0;
-      const { error } = await this.db.from("owners").upsert(
-        {
-          github_login: info.login,
-          created_at_github: info.createdAt,
-          public_repos: info.publicRepos,
-          established: ageDays > 365 && info.publicRepos >= 3,
-          reputation_json: { type: info.type, source: "github-users-api" },
-          fetched_at: new Date(this.now()).toISOString(),
-        },
-        { onConflict: "github_login" },
+      await run("owners write", () =>
+        this.db.query(
+          `insert into v2.owners (github_login, created_at_github, public_repos, established, reputation_json, fetched_at)
+           values ($1, $2::timestamptz, $3::int, $4::boolean, $5::jsonb, $6::timestamptz)
+           on conflict (github_login) do update
+              set created_at_github = excluded.created_at_github,
+                  public_repos      = excluded.public_repos,
+                  established       = excluded.established,
+                  reputation_json   = excluded.reputation_json,
+                  fetched_at        = excluded.fetched_at`,
+          [
+            info.login,
+            Number.isFinite(created) ? new Date(created).toISOString() : null,
+            Math.max(0, Math.round(info.publicRepos)),
+            ageDays > 365 && info.publicRepos >= 3,
+            JSON.stringify({ type: info.type, source: "github-users-api" }),
+            new Date(this.now()).toISOString(),
+          ],
+        ),
       );
-      if (error) fail("owners write", error);
     },
   };
 
-  async findLatestDoneRun(subject: string, commitSha: string): Promise<{ id: string; subject: string; model_id: string | null; template: string | null; timings: unknown; report_id: number } | null> {
-    const { data, error } = await this.db
-      .from("scan_runs")
-      .select("id, subject, model_id, template, timings, report_id")
-      .eq("subject", subject)
-      .eq("commit_sha", commitSha)
-      .eq("status", "done")
-      .not("report_id", "is", null)
-      .order("finished_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error) fail("scan_runs read", error);
-    return (data as { id: string; subject: string; model_id: string | null; template: string | null; timings: unknown; report_id: number } | null) ?? null;
+  async findLatestDoneRun(subject: string, commitSha: string): Promise<DoneRunRow | null> {
+    const rows = await run("scan_runs read", () =>
+      this.db.query<DoneRunRow>(
+        `select id::text as id, subject, model_id, template, timings, report_id::text as report_id
+           from v2.scan_runs
+          where subject = $1 and commit_sha = $2 and status = 'done' and report_id is not null
+          order by finished_at desc nulls last, started_at desc
+          limit 1`,
+        [subject, commitSha],
+      ),
+    );
+    return rows[0] ?? null;
   }
 
   /** Stored events of a run ordered by seq. */
   async loadEvents(runId: string): Promise<ScanEvent[]> {
-    const { data, error } = await this.db
-      .from("scan_events")
-      .select("run_id, seq, t_ms, type, data")
-      .eq("run_id", runId)
-      .order("seq", { ascending: true })
-      .limit(MAX_REPLAY_EVENTS);
-    if (error) fail("scan_events read", error);
+    const rows = await run("scan_events read", () =>
+      this.db.query<EventRow>(`select run_id::text as run_id, seq, t_ms, type, data from v2.scan_events where run_id = $1::uuid order by seq asc limit ${MAX_REPLAY_EVENTS}`, [runId]),
+    );
     const out: ScanEvent[] = [];
-    for (const row of (data ?? []) as EventRow[]) {
+    for (const row of rows) {
       const e = eventFromRow(row);
       if (e) out.push(e);
     }
@@ -380,53 +412,48 @@ export class SupabaseStore implements ScanStore {
   }
 
   /** The run row for replay by id. */
-  async loadRun(runId: string): Promise<{ id: string; subject: string; commit_sha: string; status: string; error_code: string | null } | null> {
-    const { data, error } = await this.db.from("scan_runs").select("id, subject, commit_sha, status, error_code").eq("id", runId).maybeSingle();
-    if (error) fail("scan_runs read", error);
-    return (data as { id: string; subject: string; commit_sha: string; status: string; error_code: string | null } | null) ?? null;
+  async loadRun(runId: string): Promise<RunRow | null> {
+    const rows = await run("scan_runs read", () =>
+      this.db.query<RunRow>("select id::text as id, subject, commit_sha, status, error_code from v2.scan_runs where id = $1::uuid", [runId]),
+    );
+    return rows[0] ?? null;
   }
 
   async findCached(subject: string, commitSha: string): Promise<CachedRun | null> {
-    const run = await this.findLatestDoneRun(subject, commitSha);
-    if (!run) return null;
-    const { data, error } = await this.db
-      .from("reports")
-      .select("id, commit_sha, score, verdict, summary, stats_json, packages_json, forensics_json, run_id, score_breakdown, not_verified")
-      .eq("id", run.report_id)
-      .maybeSingle();
-    if (error) fail("reports read", error);
-    if (!data) return null;
-    const row = data as StoredReportRow;
+    const runRow = await this.findLatestDoneRun(subject, commitSha);
+    if (!runRow) return null;
+    const rows = await run("reports read", () =>
+      this.db.query<StoredReportRow>(
+        `select id::text as id, commit_sha, score, verdict, summary, stats_json, packages_json, forensics_json,
+                run_id::text as run_id, score_breakdown, not_verified
+           from v2.reports where id = $1::bigint`,
+        [runRow.report_id],
+      ),
+    );
+    const row = rows[0];
+    if (!row) return null;
     // A regenerate can overwrite the shared reports row; serve only the row this run wrote.
-    if (row.run_id !== run.id) return null;
-    return { runId: run.id, report: payloadFromRows(row, run), events: await this.loadEvents(run.id) };
+    if (row.run_id !== runRow.id) return null;
+    return { runId: runRow.id, report: payloadFromRows(row, runRow), events: await this.loadEvents(runRow.id) };
   }
 
   async claimRun(req: ClaimRequest): Promise<ClaimResult> {
-    const expired = await this.db.rpc("expire_stale_runs");
-    if (expired.error) fail("expire_stale_runs", expired.error);
+    await run("expire_stale_runs", () => this.db.query("select v2.expire_stale_runs() as n"));
     for (let attempt = 0; attempt < 2; attempt++) {
-      const { error } = await this.db.from("scan_runs").insert({
-        id: req.runId,
-        target_kind: req.targetKind,
-        subject: req.subject,
-        commit_sha: req.commitSha,
-        status: "running",
-        model_id: req.modelId,
-        template: req.template,
-      });
-      if (!error) return { status: "claimed", runId: req.runId };
-      if (error.code !== "23505") fail("scan_runs insert", error);
-      const { data, error: readErr } = await this.db
-        .from("scan_runs")
-        .select("id")
-        .eq("subject", req.subject)
-        .eq("commit_sha", req.commitSha)
-        .eq("status", "running")
-        .limit(1)
-        .maybeSingle();
-      if (readErr) fail("scan_runs read", readErr);
-      if (data) return { status: "running", runId: String((data as { id: string }).id) };
+      try {
+        await this.db.query(
+          `insert into v2.scan_runs (id, target_kind, subject, commit_sha, status, model_id, template)
+           values ($1::uuid, $2, $3, $4, 'running', $5, $6)`,
+          [req.runId, req.targetKind, req.subject, req.commitSha, req.modelId, req.template],
+        );
+        return { status: "claimed", runId: req.runId };
+      } catch (err) {
+        if (sqlState(err) !== "23505") fail("scan_runs insert", err);
+      }
+      const rows = await run("scan_runs read", () =>
+        this.db.query<{ id: string }>("select id::text as id from v2.scan_runs where subject = $1 and commit_sha = $2 and status = 'running' limit 1", [req.subject, req.commitSha]),
+      );
+      if (rows[0]) return { status: "running", runId: rows[0].id };
       // The other run finished between the insert and the read; claim again.
     }
     throw new EngineError("internal", "scan_runs claim did not settle after a retry");
@@ -434,50 +461,91 @@ export class SupabaseStore implements ScanStore {
 
   async appendEvents(events: ScanEvent[]): Promise<void> {
     for (let i = 0; i < events.length; i += EVENT_INSERT_CHUNK) {
-      const { error } = await this.db.from("scan_events").insert(events.slice(i, i + EVENT_INSERT_CHUNK).map(eventToRow));
-      if (error) fail("scan_events insert", error);
+      const chunk = JSON.stringify(events.slice(i, i + EVENT_INSERT_CHUNK).map(eventToRow));
+      await run("scan_events insert", () =>
+        this.db.query(
+          `insert into v2.scan_events (run_id, seq, t_ms, type, data)
+           select x.run_id, x.seq, x.t_ms, x.type, x.data
+             from jsonb_to_recordset($1::jsonb) as x(run_id uuid, seq integer, t_ms integer, type text, data jsonb)
+            order by x.seq`,
+          [chunk],
+        ),
+      );
     }
   }
 
   async saveReport(record: ReportRecord): Promise<void> {
-    const row = reportsRowFor(record);
-    const { data, error } = await this.db.from("reports").upsert(row, { onConflict: "owner_login,repo_name,commit_sha" }).select("id").single();
-    if (error) fail("reports upsert", error);
-    const link = await this.db.from("scan_runs").update({ report_id: (data as { id: number }).id }).eq("id", record.runId);
-    if (link.error) fail("scan_runs link", link.error);
+    const r = reportsRowFor(record);
+    const rows = await run("reports upsert", () =>
+      this.db.query<{ id: string }>(
+        `with saved as (
+           insert into v2.reports (owner_login, repo_name, commit_sha, score, verdict, summary, scan_path, deep, cached,
+                                   stats_json, packages_json, risky_json, logs_json, forensics_json, run_id, score_breakdown, not_verified)
+           values ($1, $2, $3, $4::int, $5, $6, 'run', true, false,
+                   $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12::uuid, $13::jsonb, $14::jsonb)
+           on conflict (owner_login, repo_name, commit_sha) do update
+              set score = excluded.score, verdict = excluded.verdict, summary = excluded.summary,
+                  stats_json = excluded.stats_json, packages_json = excluded.packages_json, risky_json = excluded.risky_json,
+                  logs_json = excluded.logs_json, forensics_json = excluded.forensics_json, run_id = excluded.run_id,
+                  score_breakdown = excluded.score_breakdown, not_verified = excluded.not_verified, cached = false
+           returning id
+         )
+         update v2.scan_runs set report_id = (select id from saved) where id = $12::uuid
+         returning report_id::text as id`,
+        [
+          r.owner_login,
+          r.repo_name,
+          r.commit_sha,
+          r.score,
+          r.verdict,
+          r.summary,
+          JSON.stringify(r.stats_json),
+          JSON.stringify(r.packages_json),
+          JSON.stringify(r.risky_json),
+          JSON.stringify(r.logs_json),
+          JSON.stringify(r.forensics_json),
+          r.run_id,
+          JSON.stringify(r.score_breakdown),
+          JSON.stringify(r.not_verified),
+        ],
+      ),
+    );
+    if (!rows[0]?.id) throw new EngineError("internal", `scan_runs link: run ${record.runId} not found`);
   }
 
   async finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number> }): Promise<void> {
-    const { error } = await this.db
-      .from("scan_runs")
-      .update({ status: result.status, error_code: result.errorCode ?? null, finished_at: new Date(this.now()).toISOString(), timings: result.timings })
-      .eq("id", runId);
-    if (error) fail("scan_runs finish", error);
+    await run("scan_runs finish", () =>
+      this.db.query("update v2.scan_runs set status = $2, error_code = $3, finished_at = $4::timestamptz, timings = $5::jsonb where id = $1::uuid", [
+        runId,
+        result.status,
+        result.errorCode ?? null,
+        new Date(this.now()).toISOString(),
+        JSON.stringify(result.timings),
+      ]),
+    );
   }
 
   async chargeBudget(charge: BudgetCharge): Promise<boolean> {
-    const { data, error } = await this.db.rpc("scan_budget_charge", {
-      p_sandbox_seconds: Math.max(0, Math.round(charge.sandboxSeconds)),
-      p_tokens: Math.max(0, Math.round(charge.tokens)),
-      p_cap_seconds: charge.capSeconds,
-      p_cap_tokens: charge.capTokens,
-    });
-    if (error) fail("scan_budget_charge", error);
-    return data === true;
+    const rows = await run("scan_budget_charge", () =>
+      this.db.query<{ ok: boolean }>("select v2.scan_budget_charge($1::int, $2::int, $3::int, $4::int) as ok", [
+        Math.max(0, Math.round(charge.sandboxSeconds)),
+        Math.max(0, Math.round(charge.tokens)),
+        charge.capSeconds,
+        charge.capTokens,
+      ]),
+    );
+    return rows[0]?.ok === true;
   }
 }
 
-/** Service client from the server secret. Throws with env var NAMES only. */
-export function serviceClient(config: EngineConfig, fetchImpl?: typeof fetch): SupabaseClient {
-  if (!config.supabaseUrl || !config.supabaseSecretKey) {
-    throw new EngineError("internal", "server is missing required configuration: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY");
-  }
-  return createClient(config.supabaseUrl, config.supabaseSecretKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    ...(fetchImpl ? { global: { fetch: fetchImpl } } : {}),
-  });
+/** The cr_v2_server connection from server config. Throws with env var NAMES only. */
+export function v2Executor(config: EngineConfig): SqlExecutor {
+  if (!config.databaseUrl) throw new EngineError("internal", "server is missing required configuration: CR_V2_DATABASE_URL");
+  const bad = validateDatabaseUrl(config.databaseUrl);
+  if (bad) throw new EngineError("internal", bad);
+  return postgresExecutor(config.databaseUrl);
 }
 
-export function createSupabaseStore(config: EngineConfig, fetchImpl?: typeof fetch): SupabaseStore {
-  return new SupabaseStore(serviceClient(config, fetchImpl));
+export function createV2Store(config: EngineConfig): V2Store {
+  return new V2Store(v2Executor(config));
 }

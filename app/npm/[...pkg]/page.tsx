@@ -21,9 +21,8 @@
 import { cache } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
 import { buildReportView, logColor } from "@/lib/report-view";
-import { fetchLatestReport } from "@/lib/report-fetch";
+import { latestReport } from "@/lib/server/report-source";
 import { safeJsonLd } from "@/lib/json-ld";
 import { ReportBody } from "@/components/spa/components/ReportBody";
 import { AdSlot } from "@/components/ads/AdSlot";
@@ -56,20 +55,14 @@ function packageName(segments: string[] | undefined): string {
 /**
  * Latest report for the npm package, wrapped in React's `cache` so
  * `generateMetadata` and the page component share a single DB round-trip per
- * request. The fetch + reshape is the SAME `fetchLatestReport` the GitHub route
- * uses (no SSR-vs-client drift) — only the owner is pinned to "npm". Returns null
+ * request. The read is the SAME `latestReport` the GitHub route uses (v2 first,
+ * then the 1.0 public report); only the owner is pinned to "npm". Returns null
  * on miss/error.
  */
 const getLatestReport = cache(async function getLatestReport(
   pkg: string,
 ): Promise<Report | null> {
-  let supabase;
-  try {
-    supabase = await createClient();
-  } catch {
-    return null;
-  }
-  return fetchLatestReport(supabase, NPM_OWNER, pkg);
+  return latestReport(NPM_OWNER, pkg);
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {

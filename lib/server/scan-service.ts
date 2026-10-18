@@ -4,13 +4,14 @@
  * (`/mcp`, in-process) and, through `/api/scan`, the CLI and stdio MCP.
  *
  * One pipeline: parse the target, identify the caller, apply the burst floor,
- * run `runScan` on the production deps with the Supabase store, follow a run
- * that another request already started, and attach an ad to every final line.
- * Server-only; the secret key never leaves this module's process.
+ * run `runScan` on the production deps with the v2 store (schema v2, role
+ * cr_v2_server), follow a run that another request already started, and attach
+ * an ad to every final line. Server-only; the database URL never leaves this
+ * module's process.
  */
 
 import { adFor, type AdTarget } from "../engine/ads";
-import { identify, bearerToken, type Identity } from "../engine/auth";
+import { identify, identityBackend, bearerToken, type Identity } from "../engine/auth";
 import { DEFAULT_SITE_URL, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
 import { runScan } from "../engine/orchestrator";
@@ -18,7 +19,7 @@ import { checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } f
 import { parseGithubTarget } from "../engine/resolve/github";
 import { isValidNpmName, parseNpmTarget } from "../engine/resolve/npm";
 import { validateOperatorTarball } from "../engine/resolve/tarball";
-import type { SupabaseStore } from "../engine/store";
+import type { V2Store } from "../engine/store";
 import type { Ad, ErrorCode, ReportPayload, ScanCaller, ScanEvent, ScanTarget, Surface } from "../engine/types";
 
 /** Request body cap for POST /api/scan. */
@@ -127,16 +128,16 @@ export function serverConfig(): EngineConfig {
 
 export interface CallerContext {
   config: EngineConfig;
-  store: SupabaseStore;
+  store: V2Store;
   identity: Identity | null;
   caller: ScanCaller;
 }
 
 /** Build the caller from request headers. Identity failures are null identity, never a throw. */
-export async function callerFrom(headers: HeaderSource, surface: Surface, deviceId: string | null, config: EngineConfig, store: SupabaseStore): Promise<CallerContext> {
+export async function callerFrom(headers: HeaderSource, surface: Surface, deviceId: string | null, config: EngineConfig, store: V2Store): Promise<CallerContext> {
   let identity: Identity | null = null;
   try {
-    identity = await identify(store.db, bearerToken(headers.get("authorization")));
+    identity = await identify(identityBackend(store.db, config), bearerToken(headers.get("authorization")));
   } catch {
     identity = null;
   }
@@ -185,7 +186,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Follow a run another request owns: stream its stored events as they land and
  * return its report when it finishes. Bounded by the scan deadline plus slack.
  */
-export async function followRun(store: SupabaseStore, runId: string, opts: { deadlineMs: number; now: () => number; onEvent?: (e: ScanEvent) => void; signal?: AbortSignal }): Promise<{ report: ReportPayload } | { error: ErrorCode; message: string }> {
+export async function followRun(store: V2Store, runId: string, opts: { deadlineMs: number; now: () => number; onEvent?: (e: ScanEvent) => void; signal?: AbortSignal }): Promise<{ report: ReportPayload } | { error: ErrorCode; message: string }> {
   const until = opts.now() + opts.deadlineMs;
   let lastSeq = -1;
   while (opts.now() < until && !opts.signal?.aborted) {

@@ -150,7 +150,8 @@ and `npm run build`. A CI workflow with the same gates plus gitleaks ships in
 The client holds **only** public values: `NEXT_PUBLIC_SUPABASE_URL`,
 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_SITE_URL` and the optional AdSense IDs. Every
 credential is a Vercel server environment variable: `OPENAI_API_KEY`, `E2B_API_KEY`,
-`SUPABASE_SECRET_KEY`, and the optional `GITHUB_TOKEN` and `CR_OPERATOR_KEY`. Full table:
+`CR_V2_DATABASE_URL` (the least-privilege `cr_v2_server` login, schema `v2` only), and the optional
+`GITHUB_TOKEN` and `CR_OPERATOR_KEY`. Full table:
 `docs/INFRASTRUCTURE.md` section 6.
 
 ## Deploy to Vercel

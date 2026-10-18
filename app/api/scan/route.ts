@@ -13,7 +13,7 @@
 
 import { eventLine, ndjsonLine } from "@/lib/engine/events";
 import { EngineError, type Ad, type ScanEvent } from "@/lib/engine/types";
-import { createSupabaseStore } from "@/lib/engine/store";
+import { createV2Store } from "@/lib/engine/store";
 import {
   MAX_BODY_BYTES,
   adForRequest,
@@ -66,7 +66,7 @@ export async function POST(req: Request): Promise<Response> {
   const missing = missingServerKeys(config);
   if (missing.length > 0) return preStreamError("internal", `server is missing required configuration: ${missing.join(", ")}`, ad);
 
-  const store = createSupabaseStore(config);
+  const store = createV2Store(config);
   const ctx = await callerFrom(req.headers, surface, parsed.deviceId, config, store);
 
   // CLI and stdio MCP require a signed-in ClaudeRabbit account; the web never does.

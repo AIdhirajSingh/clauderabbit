@@ -14,7 +14,7 @@ smoke scans, labeled set, promotion) is in `docs/runs/2.0-backend.md`.
 2. Set the public values for Preview and Production: `NEXT_PUBLIC_SUPABASE_URL`,
    `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_SITE_URL`, and optionally `NEXT_PUBLIC_ADSENSE_CLIENT_ID`,
    `NEXT_PUBLIC_ADSENSE_SLOT_ID`, `NEXT_PUBLIC_ADSENSE_TEST`.
-3. Set the server values: `OPENAI_API_KEY`, `E2B_API_KEY`, `SUPABASE_SECRET_KEY`, `CR_E2B_TEMPLATE`, and
+3. Set the server values: `OPENAI_API_KEY`, `E2B_API_KEY`, `CR_V2_DATABASE_URL`, `CR_E2B_TEMPLATE`, and
    optionally `GITHUB_TOKEN`, `CR_OPERATOR_KEY`, `CR_MODEL_ID`, `CR_MODEL_REASONING_EFFORT`,
    `CR_DAILY_SANDBOX_SECONDS_CAP`, `CR_DAILY_MODEL_TOKENS_CAP`.
 4. `/api/scan` and `/mcp` declare `maxDuration = 120`, inside the Hobby limit of 300 s.

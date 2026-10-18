@@ -96,6 +96,36 @@ export async function fetchLatestReportRest(
   }
 }
 
+/**
+ * Latest report for (owner, repo) through the app's own `/api/report` route,
+ * the SPA path. 2.0 reports live in schema v2, which only the server can read;
+ * the route answers with the v2 report or, failing that, the 1.0 public one.
+ * Hard timeout; any miss, error or timeout resolves to null. Never throws.
+ */
+export async function fetchLatestReportApi(
+  owner: string,
+  repo: string,
+  timeoutMs = 10_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Report | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(
+      `/api/report?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`,
+      { signal: ctrl.signal, headers: { Accept: "application/json" } },
+    );
+    if (!res.ok) return null;
+    const body = (await res.json()) as { report?: unknown } | null;
+    const report = body?.report;
+    return report && typeof report === "object" ? (report as Report) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** One published report's routable slug + last-modified, for the sitemap. */
 export interface ReportSlug {
   owner: string;
