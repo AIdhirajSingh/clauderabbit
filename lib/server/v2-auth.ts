@@ -76,7 +76,7 @@ export async function redeemOAuthCode(db: SqlExecutor, code: string): Promise<Re
 export async function registerOAuthClient(db: SqlExecutor, redirectUris: string[]): Promise<string | null> {
   if (redirectUris.length === 0 || redirectUris.length > 10) return null;
   try {
-    const rows = await db.query<{ client_id: string }>("select client_id from v2.register_oauth_client(array(select jsonb_array_elements_text($1::jsonb)))", [JSON.stringify(redirectUris)]);
+    const rows = await db.query<{ client_id: string }>("select client_id from v2.register_oauth_client(array(select jsonb_array_elements_text($1::text::jsonb)))", [JSON.stringify(redirectUris)]);
     return rows[0]?.client_id ?? null;
   } catch (err) {
     if (err instanceof Error && /redirect_uri/.test(err.message)) return null;

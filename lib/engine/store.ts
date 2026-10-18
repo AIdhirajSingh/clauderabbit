@@ -372,7 +372,7 @@ export class V2Store implements ScanStore {
       await run("owners write", () =>
         this.db.query(
           `insert into v2.owners (github_login, created_at_github, public_repos, established, reputation_json, fetched_at)
-           values ($1, $2::timestamptz, $3::int, $4::boolean, $5::jsonb, $6::timestamptz)
+           values ($1, $2::timestamptz, $3::int, $4::boolean, $5::text::jsonb, $6::timestamptz)
            on conflict (github_login) do update
               set created_at_github = excluded.created_at_github,
                   public_repos      = excluded.public_repos,
@@ -474,7 +474,7 @@ export class V2Store implements ScanStore {
         this.db.query(
           `insert into v2.scan_events (run_id, seq, t_ms, type, data)
            select x.run_id, x.seq, x.t_ms, x.type, x.data
-             from jsonb_to_recordset($1::jsonb) as x(run_id uuid, seq integer, t_ms integer, type text, data jsonb)
+             from jsonb_to_recordset($1::text::jsonb) as x(run_id uuid, seq integer, t_ms integer, type text, data jsonb)
             order by x.seq`,
           [chunk],
         ),
@@ -490,7 +490,7 @@ export class V2Store implements ScanStore {
            insert into v2.reports (owner_login, repo_name, commit_sha, score, verdict, summary, scan_path, deep, cached,
                                    stats_json, packages_json, risky_json, logs_json, forensics_json, run_id, score_breakdown, not_verified)
            values ($1, $2, $3, $4::int, $5, $6, 'run', true, false,
-                   $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12::uuid, $13::jsonb, $14::jsonb)
+                   $7::text::jsonb, $8::text::jsonb, $9::text::jsonb, $10::text::jsonb, $11::text::jsonb, $12::uuid, $13::text::jsonb, $14::text::jsonb)
            on conflict (owner_login, repo_name, commit_sha) do update
               set score = excluded.score, verdict = excluded.verdict, summary = excluded.summary,
                   stats_json = excluded.stats_json, packages_json = excluded.packages_json, risky_json = excluded.risky_json,
@@ -523,7 +523,7 @@ export class V2Store implements ScanStore {
 
   async finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number>; cost?: CostLedger }): Promise<void> {
     await run("scan_runs finish", () =>
-      this.db.query("update v2.scan_runs set status = $2, error_code = $3, finished_at = $4::timestamptz, timings = $5::jsonb, cost = $6::jsonb where id = $1::uuid", [
+      this.db.query("update v2.scan_runs set status = $2, error_code = $3, finished_at = $4::timestamptz, timings = $5::text::jsonb, cost = $6::text::jsonb where id = $1::uuid", [
         runId,
         result.status,
         result.errorCode ?? null,

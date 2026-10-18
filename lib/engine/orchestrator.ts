@@ -247,6 +247,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       const all = preclaim.splice(0, preclaim.length).concat(batch);
       if (all.length > 0) await deps.store.appendEvents(all);
     },
+    // A lost event batch breaks replay and the Realtime broadcast; say so in the runtime log.
+    onPersistError: (err) => console.error("scan_events persist failed:", errMessage(err).slice(0, 300)),
   });
   const timings: Record<string, number> = {};
   const stageStart = new Map<StageName, number>();

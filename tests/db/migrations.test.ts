@@ -98,13 +98,14 @@ after(async () => {
   await db.close();
 });
 
-test("the 2.0 set is five v2 migrations with reverses; the destructive pair stays post-cutover", () => {
+test("the 2.0 set is six v2 migrations with reverses; the destructive pair stays post-cutover", () => {
   assert.deepEqual(newUp, [
     "20261016000000_v2_schema_role.sql",
     "20261016000001_v2_scan_runs_events.sql",
     "20261016000002_v2_auth_rate_limit.sql",
     "20261016000003_v2_scan_budget.sql",
     "20261018000001_v2_scan_runs_cost.sql",
+    "20261018000002_v2_token_tables_deny_policy.sql",
   ]);
   for (const f of newUp) assert.ok(readFileSync(downFor(f), "utf8").length > 0, f);
   assert.deepEqual(postUp, ["20261016000004_drop_deep_queue.sql", "20261016000005_drop_dead_quota.sql"]);
@@ -135,8 +136,18 @@ test("every v2 table has RLS on and a policy only for the server role; the role 
   const t = await db.query<{ relname: string; rls: boolean }>("select c.relname, c.relrowsecurity as rls from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'v2' and c.relkind = 'r' order by 1");
   assert.deepEqual(t.rows.map((r) => r.relname), ["cli_tokens", "oauth_clients", "oauth_codes", "owners", "reports", "scan_budget", "scan_events", "scan_rate_limit", "scan_runs"]);
   for (const r of t.rows) assert.equal(r.rls, true, r.relname);
-  const pol = await db.query<{ roles: string }>("select distinct roles::text as roles from pg_policies where schemaname = 'v2'");
+  // Permissive policies grant to the server role only; the token tables carry a
+  // restrictive always-false policy instead, so no v2 table is "RLS on, no policy".
+  const pol = await db.query<{ roles: string }>("select distinct roles::text as roles from pg_policies where schemaname = 'v2' and permissive = 'PERMISSIVE'");
   assert.deepEqual(pol.rows.map((r) => r.roles), [`{${ROLE}}`]);
+  const deny = await db.query<{ tablename: string; roles: string; qual: string; with_check: string }>("select tablename, roles::text as roles, qual, with_check from pg_policies where schemaname = 'v2' and permissive = 'RESTRICTIVE' order by 1");
+  assert.deepEqual(deny.rows.map((r) => [r.tablename, r.roles, r.qual, r.with_check]), [
+    ["cli_tokens", "{public}", "false", "false"],
+    ["oauth_clients", "{public}", "false", "false"],
+    ["oauth_codes", "{public}", "false", "false"],
+  ]);
+  const bare = await db.query<{ relname: string }>("select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'v2' and c.relkind = 'r' and not exists (select 1 from pg_policies p where p.schemaname = 'v2' and p.tablename = c.relname)");
+  assert.deepEqual(bare.rows, [], "every v2 table has a policy");
   const role = await db.query<Record<string, boolean>>("select rolcanlogin, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit, rolreplication from pg_roles where rolname = $1", [ROLE]);
   assert.deepEqual(role.rows[0], { rolcanlogin: true, rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false, rolinherit: false, rolreplication: false });
   const pub = await db.query<{ n: number }>("select count(*)::int as n from information_schema.role_table_grants where grantee = $1 and table_schema <> 'v2'", [ROLE]);
