@@ -53,6 +53,8 @@ export type ScanResponse =
 export interface ScanApiConfig {
   siteUrl: string;
   scanTimeoutMs: number;
+  /** Vercel deployment-protection bypass for a protected Preview; sent only as a header, never logged. */
+  protectionBypass?: string;
 }
 
 /** The plain-text form of an ad for terminals and MCP text content. */
@@ -124,6 +126,7 @@ export async function postScan(
           Accept: "application/x-ndjson",
           Authorization: `Bearer ${token}`,
           "x-clauderabbit-client": client,
+          ...(config.protectionBypass ? { "x-vercel-protection-bypass": config.protectionBypass } : {}),
         },
         body: JSON.stringify(requestBody(target)),
         signal: controller.signal,

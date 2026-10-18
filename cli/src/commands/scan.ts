@@ -10,7 +10,7 @@
 
 import chalk from "chalk";
 import { ensureLoggedIn } from "../lib/auth.js";
-import { loadConfig } from "../lib/env.js";
+import { loadConfig, normaliseSiteUrl, type ClaudeRabbitConfig } from "../lib/env.js";
 import { resolveTarget } from "../lib/resolve.js";
 import { formatResponse, postScan, stageLine, toStructured, type ScanTarget } from "../lib/scan-api.js";
 
@@ -20,6 +20,13 @@ export interface ScanCliOptions {
   color: boolean;
   /** When set, stage progress is not printed. */
   quiet: boolean;
+  /** `--api <url>`: the site to scan against for this run (overrides CLAUDE_RABBIT_SITE_URL). */
+  api?: string;
+}
+
+/** Apply `--api <url>` over the environment's site; the rest of the config is unchanged. */
+export function configFor(base: ClaudeRabbitConfig, api?: string): ClaudeRabbitConfig {
+  return api === undefined ? base : { ...base, siteUrl: normaliseSiteUrl(api, "--api") };
 }
 
 export interface ScanOutcome {
@@ -30,12 +37,17 @@ export interface ScanOutcome {
 const BAND_COLOR = { green: chalk.green, blue: chalk.blue, yellow: chalk.yellow, red: chalk.red } as const;
 
 export async function runScanCommand(rawTarget: string, opts: ScanCliOptions): Promise<ScanOutcome> {
-  const config = loadConfig();
   const fail = (message: string): ScanOutcome => {
     if (opts.json) process.stdout.write(`${JSON.stringify({ ok: false, error: message, target: rawTarget }, null, 2)}\n`);
     else process.stderr.write(`Error: ${message}\n`);
     return { exitCode: 1 };
   };
+  let config;
+  try {
+    config = configFor(loadConfig(), opts.api);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
 
   let token: string;
   try {

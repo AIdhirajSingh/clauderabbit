@@ -80,6 +80,18 @@ test("a 401 carries signInUrl and the ad through to the output", async () => {
   assert.match(text, /\[Sponsored\]/);
 });
 
+test("protectionBypass is sent only as x-vercel-protection-bypass, and only when set", async () => {
+  const seen: Array<Record<string, string>> = [];
+  const fakeFetch = (async (_url: string, init: RequestInit) => {
+    seen.push(init.headers as Record<string, string>);
+    return new Response(JSON.stringify({ type: "error", code: "unauthorized", message: "sign in first" }), { status: 401 });
+  }) as unknown as typeof fetch;
+  await postScan({ siteUrl: "https://preview.example", scanTimeoutMs: 5000, protectionBypass: "b".repeat(32) }, { ecosystem: "npm", package: "x" }, "cr_cli_x", "cli", undefined, fakeFetch);
+  await postScan({ siteUrl: "https://preview.example", scanTimeoutMs: 5000 }, { ecosystem: "npm", package: "x" }, "cr_cli_x", "cli", undefined, fakeFetch);
+  assert.equal(seen[0]["x-vercel-protection-bypass"], "b".repeat(32));
+  assert.equal("x-vercel-protection-bypass" in seen[1], false);
+});
+
 test("a stream that ends without a final line is an error, not a report", async () => {
   const fakeFetch = (async () => new Response(streamOf('{"type":"event","event":{"type":"stage","seq":0,"t_ms":0,"data":{"name":"resolve","status":"start"}}}\n', 10), { status: 200 })) as unknown as typeof fetch;
   const r = await postScan({ siteUrl: "https://clauderabbit.in", scanTimeoutMs: 5000 }, { ecosystem: "npm", package: "x" }, "t", "cli", undefined, fakeFetch);

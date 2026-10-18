@@ -57,7 +57,7 @@ interface ParsedFlags {
 function parseArgs(argv: string[]): ParsedFlags {
   const flags: Record<string, string | boolean> = {};
   const positionals: string[] = [];
-  const VALUE_FLAGS = new Set(["--ref", "--token"]);
+  const VALUE_FLAGS = new Set(["--ref", "--token", "--api"]);
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -94,7 +94,7 @@ USAGE
   clauderabbit <command> [options]
 
 COMMANDS
-  scan <target> [--json] [--ref <ref>] [--quiet]
+  scan <target> [--json] [--ref <ref>] [--quiet] [--api <url>]
       Scan <target> (owner/repo, a GitHub URL, owner/repo@ref, or an npm
       package) and print the verdict, score, evidence (behaviour, code and
       reputation kept apart), what was not verified, the report URL and a
@@ -105,6 +105,8 @@ COMMANDS
       dist-tag. A report for the same commit or artifact returns from cache.
       --json   Emit the machine-readable object.
       --quiet  Skip the per-stage progress lines.
+      --api <url>  Scan against this site instead of CLAUDE_RABBIT_SITE_URL
+               (for example a Preview deployment).
 
   mcp install
       Wire the ClaudeRabbit MCP server into Claude Desktop's
@@ -125,6 +127,8 @@ COMMANDS
 ENVIRONMENT
   CLAUDE_RABBIT_SITE_URL         API and report site (default https://clauderabbit.in)
   CLAUDE_RABBIT_SCAN_TIMEOUT_MS  client wait for one scan (default 150000)
+  CLAUDE_RABBIT_PROTECTION_BYPASS  Vercel protection-bypass secret for a
+                                 protected Preview (sent as a header only)
 `;
 
 async function main(argv: string[]): Promise<number> {
@@ -152,6 +156,7 @@ async function main(argv: string[]): Promise<number> {
       const outcome = await runScanCommand(target, {
         json: flags.json === true,
         ...(typeof flags.ref === "string" ? { ref: flags.ref } : {}),
+        ...(typeof flags.api === "string" ? { api: flags.api } : {}),
         color,
         quiet: flags.quiet === true,
       });

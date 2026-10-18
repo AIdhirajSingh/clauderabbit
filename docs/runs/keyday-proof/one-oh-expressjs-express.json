@@ -1,0 +1,88 @@
+{
+  "surface": "1.0 edge function scan (what https://clauderabbit.in calls)",
+  "url": "https://mjvlczaytkhvsolnhhkz.supabase.co/functions/v1/scan",
+  "http_status": 200,
+  "content_type": "application/json",
+  "wall_ms": 2748,
+  "started_at": "2026-10-18T11:27:36.770Z",
+  "body": {
+    "id": "expressjs/express",
+    "owner": "expressjs",
+    "name": "express",
+    "score": 100,
+    "verdict": "Trusted",
+    "cached": true,
+    "deep": false,
+    "summary": "Scored 100/100 (Trusted). No code signals were flagged on the static read. Express is a foundational, industry-standard Node.js web framework with a long-standing reputation and a highly transparent codebase. Our static analysis found no malicious patterns, obfuscation, or unauthorized network activity. This report is based on a static review of the provided files; full runtime behavior was not executed in a sandbox on this pass.",
+    "ownerHistory": {
+      "handle": "expressjs",
+      "name": "expressjs",
+      "age": "13 yr",
+      "established": true,
+      "repos": 50,
+      "note": ""
+    },
+    "reputation": {
+      "stars": "69.6k",
+      "forks": "25.3k",
+      "sentiment": "Extremely positive and widely used",
+      "sentScore": 100
+    },
+    "stats": {
+      "loc": "10026 KB",
+      "stars": "69579",
+      "created": "13 yr ago",
+      "packages": 0
+    },
+    "packages": [],
+    "risky": [],
+    "logs": [
+      {
+        "ch": "Clone",
+        "kind": "ok",
+        "lines": [
+          "Successfully cloned repository expressjs/express at commit 0dee2c52c7c873498f8ed7d8ee4ddd0a04d3ada8"
+        ]
+      },
+      {
+        "ch": "Static scan",
+        "kind": "ok",
+        "lines": [
+          "Scanned 15 files for malicious patterns, install hooks, and obfuscation.",
+          "No flagged regions detected."
+        ]
+      },
+      {
+        "ch": "Reputation",
+        "kind": "ok",
+        "lines": [
+          "Owner 'expressjs' is a verified, long-standing organization.",
+          "High star count and community adoption confirm project legitimacy."
+        ]
+      },
+      {
+        "ch": "Read",
+        "kind": "ok",
+        "lines": [
+          "README intent matches standard web framework usage.",
+          "No undisclosed behavior identified."
+        ]
+      },
+      {
+        "ch": "Score",
+        "kind": "ok",
+        "lines": [
+          "Score computed by formula: 100/100 (deterministic, code-driven)",
+          "+8 [reputation] established_owner: Owner account is established (older than a year with multiple public repos).",
+          "+6 [reputation] many_stars: Strong community signal (69,579 stars).",
+          "+4 [reputation] good_sentiment: Positive community sentiment (100/100)."
+        ]
+      }
+    ],
+    "commit_sha": "0dee2c52c7c873498f8ed7d8ee4ddd0a04d3ada8",
+    "scan_path": "cache",
+    "confidence": 1,
+    "escalationReason": "cleared on the original static read",
+    "scoreBreakdown": []
+  }
+}
