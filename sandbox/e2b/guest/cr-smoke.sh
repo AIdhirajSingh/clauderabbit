@@ -47,8 +47,15 @@ umask 077
 printf '%s\n' "$SECRET" >/root/.cr/canary-patterns.txt
 umask 022
 
-/opt/cr/bin/cr-detonate.sh
 OUT=/root/out
+if ! /opt/cr/bin/cr-detonate.sh; then
+  echo "cr-smoke: cr-detonate.sh failed; evidence follows"
+  echo "--- checks.jsonl"; cat "$OUT/checks.jsonl" 2>/dev/null || true
+  echo "--- proof.txt"; cat "$OUT/proof.txt" 2>/dev/null || true
+  echo "--- forge.log"; tail -c 4000 "$OUT/forge.log" 2>/dev/null || true
+  echo "--- capture"; head -c 3000 "$OUT/capture.probe.jsonl" "$OUT/capture.jsonl" 2>/dev/null || true
+  fail "cr-detonate.sh exited non-zero"
+fi
 
 # The containment proof cr-detonate.sh ran with the forge and the fence up.
 echo "cr-smoke: ---- containment proof (inside the VM, before any repo code) ----"
