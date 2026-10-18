@@ -35,6 +35,7 @@ function fakeHost(opts: { supported?: boolean } = {}) {
     enableServices: () => void calls.push("enableServices"),
     display: () => void calls.push("display"),
     destroySlots: () => (calls.push("destroySlots"), true),
+    setConfig: (c: { safeFrame?: { forceSafeFrame?: boolean } }) => void calls.push(`setConfig forceSafeFrame=${c.safeFrame?.forceSafeFrame}`),
   };
   const host: RewardedHost = {
     googletag: tag,
@@ -65,7 +66,7 @@ test("rewarded: loads gpt.js once, defines the REWARDED out-of-page slot with Go
   assert.equal(h.appended[0]!.src, GPT_SRC);
   assert.equal(h.appended[0]!.async, true);
   assert.equal(h.appended[0]!.nonce, "bm9uY2Utb2YtdGhlLXBhZ2U=", "gpt.js carries the page nonce so GPT can pass it to the scripts it inserts");
-  assert.deepEqual(h.calls, [`define ${GAM_SAMPLE_REWARDED_UNIT} 4`, "enableServices", "display"]);
+  assert.deepEqual(h.calls, ["setConfig forceSafeFrame=true", `define ${GAM_SAMPLE_REWARDED_UNIT} 4`, "enableServices", "display"], "creative in a cross-origin SafeFrame, outside the page CSP");
   h.fire("rewardedSlotReady", { makeRewardedVisible: () => void shown++ });
   assert.equal(shown, 1);
   h.fire("rewardedSlotGranted", { payload: { amount: 1, type: "coins" } });

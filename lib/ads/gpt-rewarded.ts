@@ -56,6 +56,7 @@ export interface GoogleTag {
   enableServices?(): void;
   display?(slot: GptSlot): void;
   destroySlots?(slots: GptSlot[]): boolean;
+  setConfig?(config: { safeFrame?: { forceSafeFrame?: boolean } }): void;
 }
 
 export interface RewardedHost {
@@ -164,6 +165,11 @@ export function startScanRewardedAd(opts: { host?: RewardedHost; log?: RewardedL
     const tag = host.googletag;
     tag.cmd.push(() => {
       try {
+        // Render the creative in a cross-origin SafeFrame. A friendly (same-origin,
+        // about:blank) iframe inherits this page's strict CSP, and the rewarded
+        // creative writes its scripts there without the nonce, so they were refused
+        // (seen on the preview, key day step 8). A SafeFrame is its own origin.
+        tag.setConfig?.({ safeFrame: { forceSafeFrame: true } });
         const formats = tag.enums?.OutOfPageFormat;
         const slot = formats && tag.defineOutOfPageSlot ? tag.defineOutOfPageSlot(unit, formats.REWARDED) : null;
         if (!slot || !tag.pubads) {
