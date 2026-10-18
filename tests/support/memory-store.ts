@@ -5,6 +5,7 @@
  * production code.
  */
 
+import type { CostLedger } from "../../lib/engine/cost.ts";
 import type { OwnerCache, OwnerInfo } from "../../lib/engine/reputation.ts";
 import type { BudgetCharge, CachedRun, ClaimRequest, ClaimResult, ReportRecord, ScanStore } from "../../lib/engine/store.ts";
 import type { ErrorCode, ScanEvent } from "../../lib/engine/types.ts";
@@ -14,6 +15,7 @@ interface RunRow extends ClaimRequest {
   errorCode?: ErrorCode;
   finishedAt?: number;
   timings?: Record<string, number>;
+  cost?: CostLedger;
 }
 
 export class MemoryStore implements ScanStore {
@@ -58,12 +60,13 @@ export class MemoryStore implements ScanStore {
     this.reports.set(record.runId, record);
   }
 
-  async finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number> }): Promise<void> {
+  async finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number>; cost?: CostLedger }): Promise<void> {
     const r = this.runs.get(runId);
     if (!r) throw new Error(`unknown run ${runId}`);
     r.status = result.status;
     r.finishedAt = Date.now();
     r.timings = result.timings;
+    if (result.cost) r.cost = result.cost;
     if (result.errorCode) r.errorCode = result.errorCode;
   }
 

@@ -13,12 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adFor, adText } from "../../lib/engine/ads.ts";
 import { loadEngineConfig } from "../../lib/engine/config.ts";
-import { findBanned } from "../../lib/engine/model/writer.ts";
+import { DEFAULT_FX } from "../../lib/engine/cost.ts";
+import { findBanned, LUNA_PROMPT_CACHE_KEY, WRITER_SYSTEM } from "../../lib/engine/model/writer.ts";
 import { runScan, type EngineDeps } from "../../lib/engine/orchestrator.ts";
 import { SCAN_EVENT_TYPES, type ForgedCallData, type ScanEvent, type ScanRequest } from "../../lib/engine/types.ts";
 import { fakeFetch, json, bytes } from "../support/fake-fetch.ts";
 import { MemoryStore } from "../support/memory-store.ts";
 import { MockSandboxProvider } from "../support/mock-sandbox.ts";
+import { StandInJev } from "../support/stand-in-jev.ts";
 import { StandInModel } from "../support/stand-in-model.ts";
 import { makeTgz } from "../support/tar.ts";
 
@@ -79,7 +81,7 @@ function request(name: string): ScanRequest {
 }
 
 function deps(store: MemoryStore, sandbox: MockSandboxProvider, fetchImpl: typeof fetch): EngineDeps {
-  return { model: new StandInModel(), sandbox, store, fetch: fetchImpl, now: () => Date.now(), config: loadEngineConfig({}) };
+  return { jev: new StandInJev(), luna: new StandInModel(), sandbox, store, fetch: fetchImpl, now: () => Date.now(), config: loadEngineConfig({}) };
 }
 
 function assertOrdered(events: ScanEvent[]) {
@@ -141,6 +143,38 @@ test("keyless e2e: the phone-home fixture is caught by the forge, scored Malicio
     noBareSafe(`${report.headline} ${report.summary}`);
     assert.equal(report.writer, "model");
     assert.equal(report.model_id, "test-stand-in");
+    assert.equal(report.jev_model_id, "typesafe-ai/jev");
+
+    // Jev ran every check; its install answer on beacon.js reached the score through code.
+    const jev = d.jev as StandInJev;
+    const luna = d.luna as StandInModel;
+    assert.deepEqual([...new Set(jev.requests.map((r) => r.task))].sort(), ["check.docs", "check.flagged", "check.install"]);
+    const staticDelta = report.breakdown.find((b) => b.code === "reachable_static_findings");
+    assert.ok(staticDelta?.evidence?.some((e) => /Jev install check: malicious at beacon\.js/.test(e)), JSON.stringify(staticDelta));
+
+    // Luna: exactly one call for this fresh scan, static instructions first, facts last, one cache key.
+    assert.equal(luna.requests.length, 1, "one Luna call per fresh scan");
+    assert.equal(luna.requests[0]!.task, "report");
+    assert.equal(luna.requests[0]!.system, WRITER_SYSTEM);
+    assert.equal(luna.requests[0]!.promptCacheKey, LUNA_PROMPT_CACHE_KEY);
+    assert.match(luna.requests[0]!.input, /"score": \d+/);
+
+    // Cost ledger: Jev and Luna tokens, sandbox seconds, USD and INR.
+    const cost = report.cost!;
+    assert.ok(cost, "fresh report carries the cost ledger");
+    assert.equal(cost.jev.calls, jev.requests.length);
+    assert.equal(cost.jev.input_tokens, 900 * jev.requests.length);
+    assert.equal(cost.luna.calls, 1);
+    assert.equal(cost.luna.cached_input_tokens, 1920);
+    assert.ok(cost.sandbox.seconds > 0);
+    assert.ok(cost.jev.usd !== null && cost.jev.usd > 0);
+    assert.ok(cost.sandbox.usd > 0);
+    // The stand-in Luna model has no published price, so the ledger refuses to total (cost.test.ts covers priced totals).
+    assert.equal(cost.luna.usd, null);
+    assert.equal(cost.total_usd, null);
+    assert.equal(cost.total_inr, null);
+    assert.equal(cost.fx.usd_inr, DEFAULT_FX.usd_inr);
+    assert.deepEqual(store.runs.get(outcome.runId)!.cost, cost, "the run row holds the same ledger");
 
     // One ordered stream covering all seven event types, persisted for replay.
     assertOrdered(events);
@@ -173,6 +207,8 @@ test("keyless e2e: the phone-home fixture is caught by the forge, scored Malicio
     assert.equal(again.runId, outcome.runId);
     assert.equal(again.report.score, report.score);
     assert.equal(sandbox.sessions.length, 2);
+    assert.equal(luna.requests.length, 1, "a cache hit makes no Luna call");
+    assert.equal(jev.requests.length, cost.jev.calls, "a cache hit makes no Jev call");
     assert.equal(replay.length, events.length);
     assert.ok(replay.every((e) => e.replayed === true && e.run_id === outcome.runId));
   } finally {

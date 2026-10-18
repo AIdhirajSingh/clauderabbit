@@ -6,7 +6,12 @@
  * `missingKeys` reports only the NAMES of absent required keys.
  */
 
+import { DEFAULT_FX, type FxRate } from "./cost";
+
+/** Luna: the one report call per fresh scan (OpenAI Responses API, OPENAI_API_KEY). */
 export const DEFAULT_MODEL_ID = "gpt-6-luna";
+/** Jev: every model-judged check (AI Gateway decision model, Vercel OIDC). */
+export const DEFAULT_JEV_MODEL_ID = "typesafe-ai/jev";
 export const DEFAULT_E2B_TEMPLATE = "clauderabbit-detonate";
 export const DEFAULT_SITE_URL = "https://clauderabbit.in";
 
@@ -30,7 +35,7 @@ export interface EngineDeadlines {
   analysisMs: number;
   osvMs: number;
   reachMs: number;
-  readerMs: number;
+  checkMs: number;
   installMs: number;
   entryMs: number;
   detonateTotalMs: number;
@@ -47,7 +52,12 @@ export interface AdsenseConfig {
 }
 
 export interface EngineConfig {
+  /** Luna's model id (CR_MODEL_ID). */
   modelId: string;
+  /** Jev's gateway model id (CR_JEV_MODEL_ID). */
+  jevModelId: string;
+  /** USD to INR rate for the cost ledger (CR_USD_INR overrides the pinned rate). */
+  fx: FxRate;
   reasoningEffort: ReasoningEffort;
   e2bTemplate: string;
   openaiApiKey: string | null;
@@ -98,7 +108,7 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
   analysisMs: 15_000,
   osvMs: 5_000,
   reachMs: 1_000,
-  readerMs: 12_000,
+  checkMs: 12_000,
   installMs: 20_000,
   entryMs: 4_000,
   detonateTotalMs: 75_000,
@@ -154,6 +164,13 @@ function reasoningEffort(env: Env): ReasoningEffort {
   throw new Error("CR_MODEL_REASONING_EFFORT must be one of none, low, medium, high");
 }
 
+function fxRate(env: Env): FxRate {
+  const v = str(env, "CR_USD_INR");
+  if (v === null) return { ...DEFAULT_FX };
+  if (!/^\d+(?:\.\d+)?$/.test(v) || Number(v) <= 0) throw new Error("CR_USD_INR must be a positive decimal number");
+  return { usd_inr: Number(v), source: "CR_USD_INR environment variable", as_of: "configured" };
+}
+
 function siteUrl(env: Env): string {
   const v = str(env, "NEXT_PUBLIC_SITE_URL") ?? DEFAULT_SITE_URL;
   let u: URL;
@@ -172,6 +189,8 @@ export function loadEngineConfig(env: Env): EngineConfig {
   const operator = str(env, "CR_OPERATOR_KEY");
   return {
     modelId: str(env, "CR_MODEL_ID") ?? DEFAULT_MODEL_ID,
+    jevModelId: str(env, "CR_JEV_MODEL_ID") ?? DEFAULT_JEV_MODEL_ID,
+    fx: fxRate(env),
     reasoningEffort: reasoningEffort(env),
     e2bTemplate: str(env, "CR_E2B_TEMPLATE") ?? DEFAULT_E2B_TEMPLATE,
     openaiApiKey: str(env, "OPENAI_API_KEY"),

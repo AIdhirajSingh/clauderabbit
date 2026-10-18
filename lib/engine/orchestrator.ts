@@ -4,8 +4,10 @@
  *   resolve -> SHA cache (hit: replay the stored events, done) -> claim the run
  *   (a second request for the same SHA attaches) -> fetch + verify + untar in
  *   memory -> reachability graph -> in parallel: analysis sandbox scanners, OSV,
- *   reputation, Luna readers, detonation in a fresh E2B VM -> OSV on what was
- *   installed -> deterministic score -> Luna writes the report -> persist.
+ *   reputation, Jev checks (AI Gateway, concurrent), detonation in a fresh E2B
+ *   VM -> OSV on what was installed -> deterministic score from the sandbox
+ *   facts and the Jev answers -> Luna's one call writes the report -> persist
+ *   with the cost ledger.
  *
  * Every step emits ordered events on one bus (live to the caller, batched into
  * scan_events for Realtime and replay). A failed stage lowers coverage, which
@@ -19,8 +21,10 @@ import { ArchiveError, parseTarball, type ParsedArchive } from "./archive";
 import type { EngineConfig } from "./config";
 import { createRunEventBus, type RunEventBus } from "./events";
 import { makeCanaries, type Canaries } from "./forensics/capture";
-import type { ModelAdapter, ModelUsage } from "./model/adapter";
-import { buildDocsSlice, buildFlaggedSlice, buildInstallSlice, runDocsReader, runFlaggedReader, runInstallReader } from "./model/readers";
+import { CostMeter, type CostLedger } from "./cost";
+import type { ModelAdapter } from "./model/adapter";
+import { buildDocsSlice, buildFlaggedSlice, buildInstallSlice, runDocsCheck, runFlaggedCheck, runInstallCheck, statedPurpose, type CheckAnswerRecord } from "./model/checks";
+import type { JevAdapter } from "./model/jev";
 import { writeReport } from "./model/writer";
 import { buildReachGraph, type ReachGraph } from "./reach/graph";
 import { computeReputation, fetchGithubOwner, fetchWeeklyDownloads, type ReputationSignals } from "./reputation";
@@ -36,22 +40,25 @@ import { runHeuristics, type HeuristicResult } from "./static/heuristics";
 import type { ScanStore, TargetKind } from "./store";
 import {
   EngineError,
+  type CheckFinding,
   type DependencyRef,
   type ErrorCode,
   type MaliciousDependency,
-  type ReaderFinding,
   type ReportPayload,
   type ScanEvent,
   type ScanOutcome,
   type ScanRequest,
   type StageName,
   type StaticFinding,
+  type TaggedCheckFinding,
   type TaggedFinding,
-  type TaggedReaderFinding,
 } from "./types";
 
 export interface EngineDeps {
-  model: ModelAdapter;
+  /** Jev: every model-judged check (AI Gateway, OIDC). */
+  jev: JevAdapter;
+  /** Luna: the one report call per fresh scan. */
+  luna: ModelAdapter;
   sandbox: SandboxProvider;
   store: ScanStore;
   fetch: typeof fetch;
@@ -67,7 +74,7 @@ export interface RunScanOptions {
   /**
    * Live event listener. There is deliberately no abort signal: a scan always
    * runs to its own deadline (scanMs) so a client disconnect can never cut OSV,
-   * the readers or the writer short and leave a degraded run behind.
+   * the Jev checks or the Luna report short and leave a degraded run behind.
    */
   onEvent?: (e: ScanEvent) => void;
 }
@@ -141,12 +148,6 @@ function gate(onEvent?: (e: ScanEvent) => void) {
   };
 }
 
-function addUsage(total: ModelUsage, u: ModelUsage | undefined) {
-  if (!u) return;
-  total.inputTokens += u.inputTokens;
-  total.outputTokens += u.outputTokens;
-}
-
 async function resolveTarget(req: ScanRequest, deps: EngineDeps, signal: AbortSignal): Promise<Resolved> {
   const t = req.target;
   const timeoutMs = deps.config.deadlines.resolveMs;
@@ -207,7 +208,7 @@ function tag(findings: StaticFinding[], graph: ReachGraph): TaggedFinding[] {
   return findings.map((f) => ({ ...f, reach: graph.classify(f.file) }));
 }
 
-function tagReaders(findings: ReaderFinding[], graph: ReachGraph): TaggedReaderFinding[] {
+function tagChecks(findings: CheckFinding[], graph: ReachGraph): TaggedCheckFinding[] {
   return findings.map((f) => ({ ...f, reach: graph.classify(f.file) }));
 }
 
@@ -323,7 +324,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   }
 
   try {
-    const claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.model.modelId, template: deps.sandbox.template });
+    const claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template });
     if (claim.status === "running") {
       g.drop();
       discard = true;
@@ -365,7 +366,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const heur: HeuristicResult = runHeuristics(archive.files);
   emitStage("reach", "done", `${graph.install.size} install, ${graph.import.size} import${graph.unbounded ? ", unbounded" : ""}`);
 
-  const usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
+  const meter = new CostMeter({ jevModel: deps.jev.modelId, lunaModel: deps.luna.modelId, fx: cfg.fx });
   const failedStages: string[] = [];
   const target = resolved.display;
   const sandboxMs: number[] = [];
@@ -423,43 +424,48 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     return rep;
   })();
 
-  emitStage("readers", "start");
-  const readerSignal = () => deadline(cfg.deadlines.readerMs, outer);
-  let readersOk = true;
-  const installReaderP = runInstallReader(deps.model, target, buildInstallSlice(archive.files, graph), readerSignal())
+  // Jev checks: independent, so the install and docs checks start now and the
+  // flagged check starts as soon as the scanner findings exist. Each failure
+  // lowers coverage (score capped, not_verified line, no SHA cache); none is
+  // retried with another credential.
+  emitStage("checks", "start");
+  const checkSignal = () => deadline(cfg.deadlines.checkMs, outer);
+  let checksOk = true;
+  const capabilitiesTagged = heur.capabilities.map((c) => ({ ...c, reach: graph.classify(c.file) }));
+  const installCheckP = runInstallCheck(deps.jev, target, buildInstallSlice(archive.files, graph), graph.inlineInstallCommands.length > 0, checkSignal())
     .then((r) => {
-      addUsage(usage, r.usage);
-      bus.transcript("reader.install", "model", r.output.summary);
+      meter.recordJev("check.install", r.usage);
+      bus.transcript("jev.install", "model", r.summary);
       return r;
     })
     .catch((err: unknown) => {
-      readersOk = false;
-      check("reader_install", false, errMessage(err));
+      checksOk = false;
+      check("jev_install", false, errMessage(err));
       return null;
     });
-  const docsReaderP = runDocsReader(deps.model, target, buildDocsSlice(archive.files, graph, heur.capabilities), readerSignal())
+  const docsCheckP = runDocsCheck(deps.jev, target, buildDocsSlice(archive.files, graph, heur.capabilities), archive.files, capabilitiesTagged, checkSignal())
     .then((r) => {
-      addUsage(usage, r.usage);
-      bus.transcript("reader.docs", "model", r.output.summary);
+      meter.recordJev("check.docs", r.usage);
+      bus.transcript("jev.docs", "model", r.summary);
       return r;
     })
     .catch((err: unknown) => {
-      readersOk = false;
-      check("reader_docs", false, errMessage(err));
+      checksOk = false;
+      check("jev_docs", false, errMessage(err));
       return null;
     });
-  const flaggedReaderP = analysisP.then(async (analysis) => {
+  const flaggedCheckP = analysisP.then(async (analysis) => {
     const all = tag([...heur.findings, ...(analysis?.findings ?? [])], graph);
     const slice = buildFlaggedSlice(all, archive.files);
-    if (slice.files.size === 0) return { findings: [] as ReaderFinding[], summary: "" };
+    if (slice.blocks.length === 0) return { findings: [] as CheckFinding[], answers: [] as CheckAnswerRecord[] };
     try {
-      const r = await runFlaggedReader(deps.model, target, slice, readerSignal());
-      addUsage(usage, r.usage);
-      bus.transcript("reader.flagged", "model", r.output.summary);
-      return { findings: r.findings, summary: r.output.summary };
+      const r = await runFlaggedCheck(deps.jev, target, slice, checkSignal());
+      meter.recordJev("check.flagged", r.usage);
+      bus.transcript("jev.flagged", "model", r.summary);
+      return { findings: r.findings, answers: r.answers };
     } catch (err) {
-      readersOk = false;
-      check("reader_flagged", false, errMessage(err));
+      checksOk = false;
+      check("jev_flagged", false, errMessage(err));
       return null;
     }
   });
@@ -496,8 +502,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     }
   })();
 
-  const [analysis, osv, rep, installReader, docsReader, flagged, det] = await Promise.all([analysisP, osvP, repP, installReaderP, docsReaderP, flaggedReaderP, detonateP]);
-  emitStage("readers", readersOk ? "done" : "error");
+  const [analysis, osv, rep, installCheck, docsCheck, flagged, det] = await Promise.all([analysisP, osvP, repP, installCheckP, docsCheckP, flaggedCheckP, detonateP]);
+  emitStage("checks", checksOk ? "done" : "error");
 
   if (det instanceof SandboxCreateError) {
     return fail(new EngineError("capacity", "no sandbox capacity to run this scan; retry shortly"), "detonate");
@@ -548,7 +554,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   // ---- score ---------------------------------------------------------------------------------------
   emitStage("score", "start");
   const staticFindings = tag([...heur.findings, ...(analysis?.findings ?? [])], graph);
-  const readerFindings = tagReaders([...(installReader?.findings ?? []), ...(flagged?.findings ?? []), ...(docsReader?.findings ?? [])], graph);
+  const checkFindings = tagChecks([...(installCheck?.findings ?? []), ...(flagged?.findings ?? []), ...(docsCheck?.findings ?? [])], graph);
+  const checkAnswers: CheckAnswerRecord[] = [...(installCheck?.answers ?? []), ...(flagged?.answers ?? []), ...(docsCheck?.answers ?? [])];
   const behaviour = deriveBehaviour({
     forgedCalls: detonation?.forgedCalls ?? [],
     files: detonation?.files ?? [],
@@ -556,7 +563,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     canaryInFiles: detonation?.canaryInFiles ?? [],
     datagramEgress: detonation?.datagramEgress ?? [],
   });
-  const docsClaims: DocsClaims | null = docsReader?.claims ?? null;
+  const docsClaims: DocsClaims | null = docsCheck?.claims ?? null;
   if (analysis === null) failedStages.push("The static scanner sandbox did not complete.");
   const result: ScoreResult = computeScore({
     behaviour,
@@ -564,12 +571,12 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     entry: detonation?.entry ?? "skipped",
     archiveTruncated: archive.truncated,
     forensics: detonation?.forensics ?? { coverage: "lost", gaps: [] },
-    coverage: { scanners: analysis?.complete ?? false, osv: osvOk, readers: readersOk },
+    coverage: { scanners: analysis?.complete ?? false, osv: osvOk, checks: checksOk },
     malicious,
     staticFindings,
-    readerFindings,
+    checkFindings,
     docs: docsClaims,
-    capabilities: heur.capabilities.map((c) => ({ ...c, reach: graph.classify(c.file) })),
+    capabilities: capabilitiesTagged,
     reputation: rep,
     failedStages,
   });
@@ -578,21 +585,21 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   // ---- report ----------------------------------------------------------------------------------------
   emitStage("report", "start");
   const written = await writeReport(
-    deps.model,
+    deps.luna,
     {
       target,
       score: result.score,
       verdict: result.verdict,
       breakdown: result.breakdown,
       notVerified: result.notVerified,
-      readerNotes: [installReader?.output.summary ?? "", flagged?.summary ?? "", docsReader?.output.summary ?? ""],
+      checkAnswers,
       sandbox: sandboxObservation(detonation),
-      statedPurpose: docsReader?.output.stated_purpose ?? null,
+      statedPurpose: statedPurpose(archive.files),
     },
     deadline(cfg.deadlines.writerMs, outer),
   );
-  addUsage(usage, written.usage);
-  bus.transcript("writer", "model", `${written.headline}\n${written.summary}`);
+  if (written.calls > 0) meter.recordLuna("report", written.usage);
+  bus.transcript("luna.report", "model", `${written.headline}\n${written.summary}`);
   if (written.writer === "deterministic") check("writer_fallback", false, [...written.errors, ...written.rejections.map((r) => r.join("; "))].join(" | ").slice(0, 400) || "model output rejected");
   emitStage("report", "done", written.writer);
 
@@ -616,10 +623,12 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   else if (detonation.forensics.coverage !== "complete") failedCoverage.push(`forensics_${detonation.forensics.coverage}`);
   if (!(analysis?.complete ?? false)) failedCoverage.push("scanners");
   if (!osvOk) failedCoverage.push("osv");
-  if (!readersOk) failedCoverage.push("readers");
+  if (!checksOk) failedCoverage.push("checks");
   if (written.writer !== "model") failedCoverage.push("writer");
   const coverage: RunCoverage = { complete: failedCoverage.length === 0, failed: failedCoverage };
   timings.total = Math.round(deps.now() - startedAt);
+  const sandboxSeconds = sandboxMs.reduce((s, x) => s + x, 0) / 1000;
+  const cost: CostLedger = meter.ledger(sandboxSeconds);
   const report: ReportPayload = {
     run_id: runId,
     target,
@@ -659,10 +668,12 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       malicious,
       advisories: [...(osv?.advisories ?? []), ...(osv2?.advisories ?? [])].slice(0, 200),
     },
-    model_id: deps.model.modelId,
+    model_id: deps.luna.modelId,
+    jev_model_id: deps.jev.modelId,
     template: deps.sandbox.template,
     timings,
     writer: written.writer,
+    cost,
   };
 
   // ---- persist ---------------------------------------------------------------------------------------
@@ -677,7 +688,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       commitSha,
       report,
       packages: report.packages,
-      risky: [...staticFindings.filter((f) => f.reach !== "unreachable").slice(0, 100), ...readerFindings.slice(0, 36)],
+      risky: [...staticFindings.filter((f) => f.reach !== "unreachable").slice(0, 100), ...checkFindings.slice(0, 36)],
       logs: Object.entries(timings).map(([name, ms]) => ({ name, ms })),
       stats: { files: archive.files.size, forged_calls: detonation?.forgedCalls.length ?? 0, processes: detonation?.processes.length ?? 0 },
     });
@@ -686,14 +697,13 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     emitStage("persist", "error", errMessage(err));
   }
   try {
-    const seconds = Math.ceil(sandboxMs.reduce((s, x) => s + x, 0) / 1000);
-    await deps.store.chargeBudget({ sandboxSeconds: seconds, tokens: usage.inputTokens + usage.outputTokens, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
+    await deps.store.chargeBudget({ sandboxSeconds: Math.ceil(sandboxSeconds), tokens: meter.totalTokens(), capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
   } catch (err) {
     check("budget_charge", false, errMessage(err));
   }
   await bus.close();
   try {
-    await deps.store.finishRun(runId, { status: "done", timings });
+    await deps.store.finishRun(runId, { status: "done", timings, cost });
   } catch (err) {
     // The report row is already written; a stale running row expires (expire_stale_runs).
     void err;

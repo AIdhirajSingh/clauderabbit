@@ -1,5 +1,5 @@
 /**
- * Test-only ModelAdapter that answers from a script of canned values (or
+ * Test-only Luna ModelAdapter that answers from a script of canned values (or
  * errors) and records each request. Every canned value is validated with the
  * request's own zod schema, exactly as the production adapter does, so a test
  * cannot feed the engine a value the real path would reject.
@@ -26,6 +26,6 @@ export class ScriptedModel implements ModelAdapter {
     if (step instanceof Error) throw step;
     const checked = req.schema.safeParse(step);
     if (!checked.success) throw new ModelError("invalid_output", checked.error.message);
-    return { value: checked.data, usage: { inputTokens: 100, outputTokens: 20 }, rawText: JSON.stringify(step) };
+    return { value: checked.data, usage: { inputTokens: 2100, outputTokens: 120, cachedInputTokens: 1920, cacheWriteTokens: 0 }, rawText: JSON.stringify(step) };
   }
 }

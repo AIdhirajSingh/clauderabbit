@@ -17,7 +17,7 @@ import {
   type ScoreInput,
 } from "../../lib/engine/score.ts";
 import type { ReputationSignals } from "../../lib/engine/reputation.ts";
-import type { ForgedCallData, TaggedFinding, TaggedReaderFinding } from "../../lib/engine/types.ts";
+import type { FileEventData, ForgedCallData, ProcessEventData, TaggedCheckFinding, TaggedFinding } from "../../lib/engine/types.ts";
 
 const NO_REP: ReputationSignals = {
   ownerAgeDays: null,
@@ -38,10 +38,10 @@ function input(over: Partial<ScoreInput> = {}): ScoreInput {
     entry: "completed",
     archiveTruncated: false,
     forensics: { coverage: "complete", gaps: [] },
-    coverage: { scanners: true, osv: true, readers: true },
+    coverage: { scanners: true, osv: true, checks: true },
     malicious: [],
     staticFindings: [],
-    readerFindings: [],
+    checkFindings: [],
     docs: null,
     capabilities: [],
     reputation: NO_REP,
@@ -60,14 +60,16 @@ const sf = (over: Partial<TaggedFinding>): TaggedFinding => ({
   reach: "import",
   ...over,
 });
-const rf = (over: Partial<TaggedReaderFinding>): TaggedReaderFinding => ({
-  reader: "flagged",
+const cf = (over: Partial<TaggedCheckFinding>): TaggedCheckFinding => ({
+  check: "flagged",
+  question: "window_0",
   file: "lib/a.js",
   line: 9,
   severity: "high",
   verdict: "malicious",
+  probability: 0.93,
   title: "t",
-  rationale: "r",
+  evidence: ["lib/a.js:1-24 p=0.93"],
   reach: "import",
   ...over,
 });
@@ -99,11 +101,12 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "unreachable high finding changes nothing", in: { staticFindings: [sf({ reach: "unreachable", file: "test/a.js" })], reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "same file:line from two scanners counts once at the worst weight", in: { staticFindings: [sf({ source: "semgrep" }), sf({ source: "yara", severity: "medium" })] }, score: 73, verdict: "Caution" },
   { name: "static floor at -40", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 45, verdict: "High risk" },
-  { name: "reader malicious high", in: { readerFindings: [rf({})] }, score: 77, verdict: "Caution" },
-  { name: "reader suspicious medium", in: { readerFindings: [rf({ severity: "medium", verdict: "suspicious" })] }, score: 81, verdict: "Low risk" },
-  { name: "reader benign finding is worth 0", in: { readerFindings: [rf({ verdict: "benign" })] }, score: 85, verdict: "Low risk" },
-  { name: "reader finding in unreachable file is worth 0", in: { readerFindings: [rf({ reach: "unreachable" })] }, score: 85, verdict: "Low risk" },
-  { name: "reader and static on the same line dedup to the worst", in: { staticFindings: [sf({ line: 9 })], readerFindings: [rf({})] }, score: 73, verdict: "Caution" },
+  { name: "Jev malicious high", in: { checkFindings: [cf({})] }, score: 77, verdict: "Caution" },
+  { name: "Jev suspicious medium", in: { checkFindings: [cf({ severity: "medium", verdict: "suspicious" })] }, score: 81, verdict: "Low risk" },
+  { name: "Jev benign answer is worth 0", in: { checkFindings: [cf({ verdict: "benign", severity: "low" })] }, score: 85, verdict: "Low risk" },
+  { name: "Jev unclear answer is worth 0 points but blocks 90", in: { checkFindings: [cf({ verdict: "unclear", severity: "low" })], reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
+  { name: "Jev answer on an unreachable file is worth 0", in: { checkFindings: [cf({ reach: "unreachable" })] }, score: 85, verdict: "Low risk" },
+  { name: "Jev and static on the same line dedup to the worst", in: { staticFindings: [sf({ line: 9 })], checkFindings: [cf({})] }, score: 73, verdict: "Caution" },
   {
     name: "docs no-network contradicted by behaviour",
     in: { docs: { declaresNoNetwork: true, declaresPure: false, quote: "makes no network requests" }, behaviour: beh({ nonDistributionHosts: ["c2.example"] }) },
@@ -144,9 +147,9 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "partial forensics caps at 74", in: { forensics: { coverage: "partial", gaps: ["capture.jsonl was cut at 8 MB."] }, reputation: STRONG_REP }, score: 74, verdict: "Caution" },
   { name: "entry skipped caps at 89", in: { entry: "skipped", reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "entry failed caps at 89", in: { entry: "failed", reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
-  { name: "scanner coverage missing blocks 90", in: { coverage: { scanners: false, osv: true, readers: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
-  { name: "OSV coverage missing blocks 90", in: { coverage: { scanners: true, osv: false, readers: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
-  { name: "reader coverage missing blocks 90", in: { coverage: { scanners: true, osv: true, readers: false }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
+  { name: "scanner coverage missing blocks 90", in: { coverage: { scanners: false, osv: true, checks: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
+  { name: "OSV coverage missing blocks 90", in: { coverage: { scanners: true, osv: false, checks: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
+  { name: "Jev check coverage missing blocks 90", in: { coverage: { scanners: true, osv: true, checks: false }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "negative reputation blocks 90", in: { reputation: { ...STRONG_REP, maintainerChangedWithin30d: true, npmFirstPublishDays: 2, ownerAgeDays: 10, ownerEstablished: false, weeklyDownloads: 0 } }, score: 77, verdict: "Caution" },
 ];
 
@@ -173,12 +176,12 @@ test("score: behaviour outweighs static (max static loss is smaller than one can
 });
 
 test("score: failed phases and coverage gaps are listed in not_verified", () => {
-  const r = computeScore(input({ install: "timeout", coverage: { scanners: false, osv: false, readers: false }, failedStages: ["Stage osv passed its deadline."], reputation: { ...NO_REP, unavailable: ["npm download counts"] } }));
+  const r = computeScore(input({ install: "timeout", coverage: { scanners: false, osv: false, checks: false }, failedStages: ["Stage osv passed its deadline."], reputation: { ...NO_REP, unavailable: ["npm download counts"] } }));
   const text = r.notVerified.join("\n");
   assert.match(text, /Install phase did not complete \(timeout\)/);
   assert.match(text, /Static scanners/);
   assert.match(text, /OSV malicious-package lookup/);
-  assert.match(text, /Model readers/);
+  assert.match(text, /Jev checks did not complete/);
   assert.match(text, /npm download counts/);
   assert.match(text, /Stage osv passed its deadline/);
 });
@@ -278,4 +281,69 @@ test("score: a lost detonation never outscores an observed attack and never read
   const partial = computeScore(input({ forensics: { coverage: "partial", gaps: ["trace.install was cut at 8 MB."] } }));
   assert.ok(partial.score <= CAP_FORENSICS_PARTIAL);
   assert.ok(partial.notVerified.includes("trace.install was cut at 8 MB."));
+});
+
+// ---- sandbox facts plus Jev answers to the number, end to end in code ------------------------------
+
+const FIXTURE_FORGED: ForgedCallData[] = [
+  { phase: "install", proto: "dns", host: "c2.cr-fixture.invalid", port: 53, req_bytes: 40, forged_kind: "dns", canary_hits: [] },
+  {
+    phase: "install",
+    proto: "https",
+    host: "c2.cr-fixture.invalid",
+    port: 443,
+    method: "POST",
+    path: "/collect",
+    sni: "c2.cr-fixture.invalid",
+    req_bytes: 512,
+    forged_kind: "json",
+    tls: "intercepted",
+    canary_hits: ["AWS_SECRET_ACCESS_KEY"],
+  },
+  { phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method: "GET", path: "/left-pad", req_bytes: 200, forged_kind: "mirror", tls: "intercepted", canary_hits: [] },
+];
+const FIXTURE_FILES: FileEventData[] = [{ phase: "install", op: "read_decoy", path: "/home/cr/.aws/credentials", pid: 412 }];
+const FIXTURE_PROCS: ProcessEventData[] = [
+  { phase: "install", pid: 400, ppid: 1, argv: ["sh", "-c", "node beacon.js"] },
+  { phase: "install", pid: 412, ppid: 400, argv: ["node", "beacon.js"] },
+];
+
+test("facts to verdict: a forged call to a fake host carrying a planted credential plus a decoy read is flagged Malicious with a low score", () => {
+  const behaviour = deriveBehaviour({ forgedCalls: FIXTURE_FORGED, files: FIXTURE_FILES, processes: FIXTURE_PROCS, canaryInFiles: [], datagramEgress: [] });
+  assert.deepEqual(behaviour.nonDistributionHosts, ["c2.cr-fixture.invalid"], "the registry mirror call is not behaviour");
+  assert.equal(behaviour.canaryHits.length, 1);
+  assert.deepEqual(behaviour.decoyReads, ["/home/cr/.aws/credentials"]);
+  const jev = [cf({ check: "install", question: "file_1", file: "beacon.js", line: null, reach: "install", evidence: ["beacon.js (install surface) p=0.97", "install signal credential access p=0.95"] })];
+  // Strong reputation must not lift it: reputation is its own bounded group.
+  const r = computeScore(input({ behaviour, checkFindings: jev, reputation: STRONG_REP }));
+  assert.equal(r.verdict, "Malicious");
+  assert.ok(r.score <= 15, `score ${r.score}`);
+  assert.equal(r.band, "red");
+  const codes = r.breakdown.map((d) => d.code);
+  for (const c of ["canary_exfiltration", "decoy_credential_read", "non_distribution_contact", "reachable_static_findings", "behaviour_floor"]) assert.ok(codes.includes(c), c);
+  assert.ok(r.breakdown.find((d) => d.code === "reachable_static_findings")!.evidence!.some((e) => /Jev install check: malicious at beacon\.js/.test(e)));
+  assert.ok(r.breakdown.filter((d) => d.group === "reputation").every((d) => d.points >= 0), "reputation stays in its own group");
+  assert.ok(r.notVerified.length >= BASE_NOT_VERIFIED.length);
+  // Same facts, same answers, same number: no model in the loop.
+  assert.deepEqual(computeScore(input({ behaviour, checkFindings: jev, reputation: STRONG_REP })), r);
+});
+
+test("facts to verdict: clean facts and benign Jev answers give a high score with a non-empty not-verified list, never Safe", () => {
+  const behaviour = deriveBehaviour({ forgedCalls: [FIXTURE_FORGED[2]!], files: [], processes: [{ phase: "install", pid: 400, ppid: 1, argv: ["node", "-e", "1"] }], canaryInFiles: [], datagramEgress: [] });
+  assert.deepEqual(behaviour, NO_BEHAVIOUR);
+  const r = computeScore(input({ behaviour, checkFindings: [], reputation: STRONG_REP }));
+  assert.ok(r.score >= 90, `score ${r.score}`);
+  assert.equal(r.verdict, "No threats observed");
+  assert.notEqual(r.verdict as string, "Safe");
+  assert.ok(r.notVerified.length > 0);
+  for (const b of BASE_NOT_VERIFIED) assert.ok(r.notVerified.includes(b));
+  // Without Jev coverage the same clean facts stay under 90 and say why.
+  const noJev = computeScore(input({ behaviour, coverage: { scanners: true, osv: true, checks: false }, reputation: STRONG_REP }));
+  assert.equal(noJev.score, CAP_NOT_PROVEN);
+  assert.ok(noJev.notVerified.some((n) => /Jev checks did not complete/.test(n)));
+});
+
+test("an unclear Jev answer is listed under not_verified with its location", () => {
+  const r = computeScore(input({ checkFindings: [cf({ verdict: "unclear", severity: "low", file: "lib/x.js", line: 4 })] }));
+  assert.ok(r.notVerified.some((n) => n.includes("Jev could not decide on 1 reachable location(s): lib/x.js:4 (flagged check)")), JSON.stringify(r.notVerified));
 });

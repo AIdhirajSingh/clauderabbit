@@ -12,6 +12,7 @@
  */
 
 import type { EngineConfig } from "./config";
+import { ledgerFrom, type CostLedger } from "./cost";
 import { postgresExecutor, sqlState, validateDatabaseUrl, type SqlExecutor } from "./db";
 import type { OwnerCache, OwnerInfo } from "./reputation";
 import { bandFor } from "./score";
@@ -73,7 +74,7 @@ export interface ScanStore {
   appendEvents(events: ScanEvent[]): Promise<void>;
   /** Upsert the report row and link it to the run. */
   saveReport(record: ReportRecord): Promise<void>;
-  finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number> }): Promise<void>;
+  finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number>; cost?: CostLedger }): Promise<void>;
   /**
    * Add usage to today's budget. Returns false when the day is already over a
    * cap (the charge is not applied); a zero charge is a pure check.
@@ -136,8 +137,8 @@ interface FindingLike {
   rule?: unknown;
   file?: unknown;
   line?: unknown;
-  rationale?: unknown;
-  reader?: unknown;
+  check?: unknown;
+  evidence?: unknown;
   source?: unknown;
 }
 
@@ -148,10 +149,11 @@ function uiSeverity(v: unknown): UiSeverity {
 function findingToRisky(f: FindingLike): RiskyRow | null {
   if (!f || typeof f !== "object") return null;
   const where = typeof f.file === "string" && f.file ? ` (${f.file}${typeof f.line === "number" ? `:${f.line}` : ""})` : "";
-  if (typeof f.reader === "string") {
-    const title = typeof f.title === "string" ? f.title : "Reader finding";
-    const detail = typeof f.rationale === "string" ? f.rationale : "";
-    return { title: title.slice(0, 200), severity: uiSeverity(f.severity), kind: "code", detail: `${detail}${where}`.slice(0, 1000) };
+  if (typeof f.check === "string") {
+    // A Jev check answer: a judgement of code that was read, shown as code evidence with its pointers.
+    const title = typeof f.title === "string" ? f.title : `Jev ${f.check} check`;
+    const pointers = Array.isArray(f.evidence) ? f.evidence.filter((e): e is string => typeof e === "string").join("; ") : "";
+    return { title: title.slice(0, 200), severity: uiSeverity(f.severity), kind: "code", detail: `${pointers}${where}`.slice(0, 1000) };
   }
   const rule = typeof f.rule === "string" ? f.rule : "static rule";
   const source = typeof f.source === "string" ? f.source : "static";
@@ -202,7 +204,9 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
       writer: r.writer,
       band: r.band,
       model_id: r.model_id,
+      jev_model_id: r.jev_model_id ?? null,
       template: r.template,
+      cost: r.cost ?? null,
     },
     packages_json: record.packages ?? null,
     risky_json: risky.slice(0, 200),
@@ -236,11 +240,12 @@ function strArray(v: unknown): string[] {
 }
 
 /** Rebuild the ReportPayload of a completed run from its reports row and run row. */
-export function payloadFromRows(row: StoredReportRow, run: { id: string; subject: string; model_id: string | null; template: string | null; timings: unknown }): ReportPayload {
+export function payloadFromRows(row: StoredReportRow, run: { id: string; subject: string; model_id: string | null; template: string | null; timings: unknown; cost?: unknown }): ReportPayload {
   const stats = row.stats_json ?? {};
   const ev = (stats.evidence ?? {}) as Record<string, unknown>;
   const verdict = VERDICTS.includes(row.verdict as Verdict) ? (row.verdict as Verdict) : null;
   if (!verdict) throw new EngineError("internal", `stored report ${row.id} has a verdict outside the 2.0 set`);
+  const ledger = ledgerFrom(run.cost) ?? ledgerFrom(stats.cost);
   const timings: Record<string, number> = {};
   if (run.timings && typeof run.timings === "object") {
     for (const [k, v] of Object.entries(run.timings as Record<string, unknown>)) if (typeof v === "number") timings[k] = v;
@@ -263,6 +268,8 @@ export function payloadFromRows(row: StoredReportRow, run: { id: string; subject
     template: run.template ?? (typeof stats.template === "string" ? stats.template : ""),
     timings,
     writer: stats.writer === "model" ? "model" : "deterministic",
+    ...(typeof stats.jev_model_id === "string" ? { jev_model_id: stats.jev_model_id } : {}),
+    ...(ledger ? { cost: ledger } : {}),
   };
 }
 
@@ -309,6 +316,7 @@ export interface DoneRunRow {
   model_id: string | null;
   template: string | null;
   timings: unknown;
+  cost: unknown;
   report_id: string;
 }
 
@@ -387,7 +395,7 @@ export class V2Store implements ScanStore {
   async findLatestDoneRun(subject: string, commitSha: string): Promise<DoneRunRow | null> {
     const rows = await run("scan_runs read", () =>
       this.db.query<DoneRunRow>(
-        `select id::text as id, subject, model_id, template, timings, report_id::text as report_id
+        `select id::text as id, subject, model_id, template, timings, cost, report_id::text as report_id
            from v2.scan_runs
           where subject = $1 and commit_sha = $2 and status = 'done' and report_id is not null
           order by finished_at desc nulls last, started_at desc
@@ -513,14 +521,15 @@ export class V2Store implements ScanStore {
     if (!rows[0]?.id) throw new EngineError("internal", `scan_runs link: run ${record.runId} not found`);
   }
 
-  async finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number> }): Promise<void> {
+  async finishRun(runId: string, result: { status: "done" | "error"; errorCode?: ErrorCode; timings: Record<string, number>; cost?: CostLedger }): Promise<void> {
     await run("scan_runs finish", () =>
-      this.db.query("update v2.scan_runs set status = $2, error_code = $3, finished_at = $4::timestamptz, timings = $5::jsonb where id = $1::uuid", [
+      this.db.query("update v2.scan_runs set status = $2, error_code = $3, finished_at = $4::timestamptz, timings = $5::jsonb, cost = $6::jsonb where id = $1::uuid", [
         runId,
         result.status,
         result.errorCode ?? null,
         new Date(this.now()).toISOString(),
         JSON.stringify(result.timings),
+        result.cost ? JSON.stringify(result.cost) : null,
       ]),
     );
   }

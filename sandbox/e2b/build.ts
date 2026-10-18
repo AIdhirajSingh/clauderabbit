@@ -9,6 +9,7 @@
  */
 
 import { Template, defaultBuildLogger } from "e2b";
+import { SANDBOX_CPU_COUNT, SANDBOX_MEMORY_MB } from "../../lib/engine/sandbox/resources.ts";
 import { TEMPLATE_NAME_DEFAULT, buildTemplate } from "./template.ts";
 
 async function main(): Promise<void> {
@@ -18,8 +19,8 @@ async function main(): Promise<void> {
   }
   const name = process.env.CR_E2B_TEMPLATE?.trim() || TEMPLATE_NAME_DEFAULT;
   const info = await Template.build(buildTemplate(), name, {
-    cpuCount: 2,
-    memoryMB: 4096,
+    cpuCount: SANDBOX_CPU_COUNT,
+    memoryMB: SANDBOX_MEMORY_MB,
     onBuildLogs: defaultBuildLogger(),
   });
   console.log(`template_id=${info.templateId} build_id=${info.buildId} name=${info.name}`);

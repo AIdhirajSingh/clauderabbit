@@ -77,7 +77,8 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 - **SDK:** `e2b@2.56.0`.
 - **Template:** defined in `sandbox/e2b/template.ts` (Ubuntu 24.04, Node 24 with checked sha256, uv, mitmproxy,
   Semgrep, GuardDog, yara-x, nftables, strace, libfaketime; user `cr` uid 1001 with no sudo). Built with
-  `E2B_API_KEY=... npm run template:build` (runs `sandbox/e2b/build.ts`, `cpuCount: 2`, `memoryMB: 4096`), which
+  `E2B_API_KEY=... npm run template:build` (runs `sandbox/e2b/build.ts`, `cpuCount: 2`, `memoryMB: 4096` from
+  `lib/engine/sandbox/resources.ts`, the same constants the cost ledger prices), which
   prints `template_id=... build_id=... name=...`. The default name is `clauderabbit-detonate`; set
   `CR_E2B_TEMPLATE` in Vercel to the built name.
 - **Per scan:** `Sandbox.create(template, { timeoutMs: 90000, ... })`, so E2B reaps a VM even if the function
@@ -88,15 +89,30 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 
 ---
 
-## 5. Model
+## 5. Models: Jev checks, Luna writes
 
-- **Model id:** `gpt-6-luna` (default in `lib/engine/config.ts`, override `CR_MODEL_ID`), reasoning effort
-  `CR_MODEL_REASONING_EFFORT` (default `low`). SDK `openai@7.34.0`, Responses API with strict `json_schema`.
-- **Calls per fresh scan:** three readers (install surface, flagged code, README versus code) and one report
-  writer. The writer output is validated (`lib/engine/model/writer.ts`): it can never produce a bare "Safe" and
-  must agree with the verdict computed in code.
-- **The number is never the model's:** `lib/engine/score.ts` computes the score and verdict.
-- **Pricing (developers.openai.com, DESIGN.md section 12):** $0.10 per 1M input tokens, $0.50 per 1M output.
+- **Jev (every model-judged check):** decision model `typesafe-ai/jev` on Vercel AI Gateway (default in
+  `lib/engine/config.ts`, override `CR_JEV_MODEL_ID`), called with `experimental_decide` from `ai@7.0.128`
+  (`@ai-sdk/gateway@4.0.104`, `@vercel/oidc@3.2.0`, both exact pins) in `lib/engine/model/jev.ts`. Auth is Vercel
+  OIDC only: the `x-vercel-oidc-token` request header on Vercel (project `oidcTokenConfig.enabled: true`) or
+  `VERCEL_OIDC_TOKEN` from `vercel env pull` locally, sent as the bearer with `ai-gateway-auth-method: oidc`.
+  No `AI_GATEWAY_API_KEY` is used; with no token the check fails closed. Calls per fresh scan: install check,
+  docs check, flagged check (when static findings exist), run concurrently. Gateway list price on 2026-10-18
+  (`GET https://ai-gateway.vercel.sh/v1/models`): input $0.042 per 1M tokens, output $0; type `evaluation`,
+  32,000-token state limit. The gateway needs a credit card on the Vercel team before it serves a call.
+- **Luna (the report, exactly one call per fresh scan, zero on a cache hit):** `gpt-6-luna` (default in
+  `lib/engine/config.ts`, override `CR_MODEL_ID`), reasoning effort `CR_MODEL_REASONING_EFFORT` (default `low`).
+  SDK `openai@7.34.0`, Responses API with strict `json_schema`, static instructions first and per-scan facts last
+  with `prompt_cache_key` `clauderabbit-luna-report-v1`; `cached_tokens` and `cache_write_tokens` are recorded.
+  The output is validated (`lib/engine/model/writer.ts`): it can never produce a bare "Safe" and must agree with
+  the verdict computed in code. A rejected or failed call is not retried; the deterministic report is published.
+- **The number is never a model's:** `lib/engine/score.ts` computes the score and verdict from sandbox facts,
+  static hits, OSV intel, Jev answers mapped to findings in code, and reputation in its own group.
+- **Pricing (developers.openai.com/api/docs/pricing, Standard, short context, 2026-10-18):** input $0.10, cached
+  input $0.01, cache writes $0.125, output $0.50 per 1M tokens.
+- **Cost ledger:** `lib/engine/cost.ts`; every fresh report carries `cost` (also on the NDJSON `result` line and
+  in `v2.scan_runs.cost`): Jev and Luna tokens with these prices, E2B seconds at the template size, total in USD
+  and INR (pinned 94.96 INR per USD, ECB reference via api.frankfurter.app for 2026-10-16; `CR_USD_INR` overrides).
 
 ---
 
@@ -106,7 +122,10 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 |---|---|---|---|
 | `OPENAI_API_KEY` | Vercel server | key day | OpenAI Responses API |
 | `E2B_API_KEY` | Vercel server + template build shell | key day | E2B sandboxes and template build |
-| `CR_MODEL_ID` | Vercel server | no (default `gpt-6-luna`) | model id override |
+| `CR_MODEL_ID` | Vercel server | no (default `gpt-6-luna`) | Luna model id override |
+| `CR_JEV_MODEL_ID` | Vercel server | no (default `typesafe-ai/jev`) | Jev gateway model id override |
+| `VERCEL_OIDC_TOKEN` | Vercel runtime (injected) / local `vercel env pull` | Jev | AI Gateway auth; never a stored secret |
+| `CR_USD_INR` | Vercel server | no (default 94.96) | USD to INR rate for the cost ledger |
 | `CR_MODEL_REASONING_EFFORT` | Vercel server | no (default `low`) | `none`, `low`, `medium`, `high` |
 | `CR_E2B_TEMPLATE` | Vercel server | no (default `clauderabbit-detonate`) | template name |
 | `NEXT_PUBLIC_SUPABASE_URL` | client + server | yes | Supabase URL |

@@ -1,7 +1,10 @@
 /**
  * The deterministic score (DESIGN.md section 5). This file is the only place the
- * number is decided. Model output never sets it; readers contribute bounded,
- * reachability-filtered findings that land in the static group like any other.
+ * number is decided. No model emits it: the inputs are sandbox facts (forged
+ * calls and canary hits, decoy credential reads, persistence writes, process
+ * and strace facts, dropped datagrams), static scanner hits, OSV intel, Jev's
+ * typed check answers (mapped to bounded, reachability-filtered findings in
+ * model/checks.ts) and reputation, which is kept in its own group.
  *
  *   score = clamp(85 + B + I + max(S, -40) + D + R, 0, 100), then caps.
  *
@@ -19,8 +22,8 @@ import type {
   MaliciousDependency,
   ProcessEventData,
   ScoreDelta,
+  TaggedCheckFinding,
   TaggedFinding,
-  TaggedReaderFinding,
   Verdict,
 } from "./types";
 import type { Capability } from "./static/heuristics";
@@ -58,9 +61,9 @@ export const W_MALICIOUS_DEP = -60;
 /** Static scanner or heuristic finding in a reachable file. */
 export const W_STATIC_HIGH = -12;
 export const W_STATIC_MEDIUM = -5;
-/** Reader finding judged malicious or suspicious in a reachable file. */
-export const W_READER_HIGH = -8;
-export const W_READER_MEDIUM = -4;
+/** Jev check answer of malicious or suspicious on a reachable file (severity set in code, model/checks.ts). */
+export const W_CHECK_HIGH = -8;
+export const W_CHECK_MEDIUM = -4;
 export const FLOOR_STATIC = -40;
 
 /** README/description declares no network or pure, and behaviour contradicts it. */
@@ -248,10 +251,11 @@ export interface ScoreInput {
   archiveTruncated: boolean;
   /** Forensic coverage of the detonation, and the reasons for any gap (each becomes a not_verified line). */
   forensics: { coverage: ForensicCoverage; gaps: string[] };
-  coverage: { scanners: boolean; osv: boolean; readers: boolean };
+  coverage: { scanners: boolean; osv: boolean; checks: boolean };
   malicious: MaliciousDependency[];
   staticFindings: TaggedFinding[];
-  readerFindings: TaggedReaderFinding[];
+  /** Jev check answers that were not benign (malicious, suspicious, unclear). */
+  checkFindings: TaggedCheckFinding[];
   docs: DocsClaims | null;
   capabilities: Array<{ file: string; capability: Capability; reach: "install" | "import" | "unreachable" }>;
   reputation: ReputationSignals;
@@ -344,18 +348,20 @@ function staticPoints(f: TaggedFinding): number {
   return f.severity === "high" ? W_STATIC_HIGH : f.severity === "medium" ? W_STATIC_MEDIUM : 0;
 }
 
-function readerPoints(f: TaggedReaderFinding): number {
-  if (f.verdict === "benign") return 0;
-  return f.severity === "high" ? W_READER_HIGH : f.severity === "medium" ? W_READER_MEDIUM : 0;
+function checkPoints(f: TaggedCheckFinding): number {
+  if (f.verdict !== "malicious" && f.verdict !== "suspicious") return 0;
+  return f.severity === "high" ? W_CHECK_HIGH : f.severity === "medium" ? W_CHECK_MEDIUM : 0;
 }
 
 interface StaticTally {
   total: number;
   deltas: ScoreDelta[];
   reachableHigh: boolean;
+  /** Reachable locations Jev could not decide on. */
+  unclear: string[];
 }
 
-function staticTally(staticFindings: TaggedFinding[], readers: TaggedReaderFinding[]): StaticTally {
+function staticTally(staticFindings: TaggedFinding[], checks: TaggedCheckFinding[]): StaticTally {
   const best = new Map<string, { points: number; label: string; high: boolean }>();
   const consider = (key: string, points: number, label: string, high: boolean) => {
     const prev = best.get(key);
@@ -369,12 +375,17 @@ function staticTally(staticFindings: TaggedFinding[], readers: TaggedReaderFindi
     const key = `${f.file}:${f.line ?? `rule:${f.rule}`}`;
     consider(key, p, `${f.source} ${f.rule} at ${f.file}${f.line ? `:${f.line}` : ""} (${f.reach})`, f.severity === "high");
   }
-  for (const f of readers) {
+  const unclear: string[] = [];
+  for (const f of checks) {
     if (f.reach === "unreachable") continue;
-    const p = readerPoints(f);
+    if (f.verdict === "unclear") {
+      unclear.push(`${f.file}${f.line ? `:${f.line}` : ""} (${f.check} check)`);
+      continue;
+    }
+    const p = checkPoints(f);
     if (p === 0) continue;
-    const key = `${f.file}:${f.line ?? `reader:${f.title}`}`;
-    consider(key, p, `${f.reader} reader: ${f.title} at ${f.file}${f.line ? `:${f.line}` : ""} (${f.reach})`, f.severity === "high");
+    const key = `${f.file}:${f.line ?? `check:${f.check}:${f.question}`}`;
+    consider(key, p, `Jev ${f.check} check: ${f.verdict} at ${f.file}${f.line ? `:${f.line}` : ""} (${f.reach}${f.probability !== null ? `, p=${f.probability.toFixed(2)}` : ""})`, f.severity === "high");
   }
   const entries = [...best.values()];
   const raw = entries.reduce((s, e) => s + e.points, 0);
@@ -389,7 +400,7 @@ function staticTally(staticFindings: TaggedFinding[], readers: TaggedReaderFindi
       evidence: entries.map((e) => `${e.points}: ${e.label}`).slice(0, 25),
     });
   }
-  return { total, deltas, reachableHigh: entries.some((e) => e.high) };
+  return { total, deltas, reachableHigh: entries.some((e) => e.high), unclear: [...new Set(unclear)].sort() };
 }
 
 function docsDelta(input: ScoreInput): ScoreDelta | null {
@@ -454,7 +465,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   const bDeltas = behaviourDeltas(input.behaviour);
   const B = Math.max(CAP_BEHAVIOUR, bDeltas.reduce((s, d) => s + d.points, 0));
   const I = input.malicious.length > 0 ? W_MALICIOUS_DEP : 0;
-  const st = staticTally(input.staticFindings, input.readerFindings);
+  const st = staticTally(input.staticFindings, input.checkFindings);
   const S = st.total;
   const dDelta = docsDelta(input);
   const D = dDelta ? dDelta.points : 0;
@@ -517,7 +528,8 @@ export function computeScore(input: ScoreInput): ScoreResult {
   if (input.entry !== "completed") notVerified.push(phaseText("Entry", input.entry));
   if (!input.coverage.scanners) notVerified.push("Static scanners (Semgrep, YARA, GuardDog) did not complete.");
   if (!input.coverage.osv) notVerified.push("OSV malicious-package lookup did not complete.");
-  if (!input.coverage.readers) notVerified.push("Model readers did not complete.");
+  if (!input.coverage.checks) notVerified.push("Jev checks did not complete, so no model judged the install surface, the flagged code or the documentation.");
+  if (st.unclear.length > 0) notVerified.push(`Jev could not decide on ${st.unclear.length} reachable location(s): ${st.unclear.slice(0, 5).join(", ")}.`);
   for (const u of input.reputation.unavailable) notVerified.push(`Reputation signal unavailable: ${u}.`);
   for (const s of input.failedStages) notVerified.push(s);
 
@@ -529,12 +541,13 @@ export function computeScore(input: ScoreInput): ScoreResult {
     B === 0 &&
     I === 0 &&
     !st.reachableHigh &&
+    st.unclear.length === 0 &&
     R >= 0 &&
     input.coverage.scanners &&
     input.coverage.osv &&
-    input.coverage.readers;
+    input.coverage.checks;
   if (!proven) {
-    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs completed install and entry, no behaviour or intel hits, no reachable high finding, non-negative reputation and full coverage.");
+    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs completed install and entry, no behaviour or intel hits, no reachable high finding, no undecided Jev check, non-negative reputation and full coverage.");
   }
 
   const unique = [...new Set(notVerified)];

@@ -19,6 +19,8 @@
     "@sparticuz/chromium": "^149.0.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.108.2",
+    "@vercel/oidc": "3.2.0",
+    "ai": "7.0.128",
     "e2b": "2.56.0",
     "next": "^16.2.9",
     "openai": "7.34.0",

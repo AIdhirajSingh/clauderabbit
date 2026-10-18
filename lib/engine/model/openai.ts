@@ -1,12 +1,15 @@
 /**
- * OpenAIAdapter: the production ModelAdapter (DESIGN.md section 4).
+ * OpenAIAdapter: Luna, the production report writer (DESIGN.md section 4).
  *
- * One call shape for every task: Responses API `responses.parse` with a strict
- * json_schema text format built by `zodTextFormat`, `store: false`, the
- * configured reasoning effort, and the scan's AbortSignal. The model id comes
- * from config (`CR_MODEL_ID`, default `gpt-6-luna`), never from call sites.
- * The parsed value is validated again with the caller's zod schema, so a value
- * that reaches the engine always matches the schema.
+ * One call shape: Responses API `responses.parse` with a strict json_schema
+ * text format built by `zodTextFormat`, `store: false`, the configured
+ * reasoning effort and the scan's AbortSignal. Prompt caching: the long static
+ * instructions go first (system message), the per-scan facts last (user
+ * message), and `prompt_cache_key` routes every report call to the same cache,
+ * so the instructions and the schema are a stable cached prefix. The usage
+ * carries `cached_tokens` and `cache_write_tokens` for the cost ledger. The
+ * model id comes from config (`CR_MODEL_ID`, default `gpt-6-luna`), never from
+ * call sites. The parsed value is validated again with the caller's zod schema.
  */
 
 import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError, AuthenticationError, PermissionDeniedError, RateLimitError } from "openai";
@@ -56,6 +59,7 @@ export class OpenAIAdapter implements ModelAdapter {
           text: { format: zodTextFormat(req.schema, req.schemaName) },
           reasoning: { effort: this.#effort },
           max_output_tokens: req.maxOutputTokens,
+          prompt_cache_key: req.promptCacheKey,
           store: false,
         },
         { signal: req.signal },
@@ -83,6 +87,8 @@ export class OpenAIAdapter implements ModelAdapter {
       usage: {
         inputTokens: response.usage?.input_tokens ?? 0,
         outputTokens: response.usage?.output_tokens ?? 0,
+        cachedInputTokens: response.usage?.input_tokens_details?.cached_tokens ?? 0,
+        cacheWriteTokens: response.usage?.input_tokens_details?.cache_write_tokens ?? 0,
       },
       rawText,
     };

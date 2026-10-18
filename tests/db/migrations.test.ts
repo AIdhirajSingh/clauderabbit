@@ -34,13 +34,14 @@ const DOWN_DIR = path.join(ROOT, "supabase", "migrations-down");
 const POST_DIR = path.join(ROOT, "supabase", "migrations-post-cutover");
 const postUp = readdirSync(POST_DIR).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")).sort();
 const postDown = (f: string) => path.join(POST_DIR, f.replace(/\.sql$/, ".down.sql"));
-const NEW_PREFIX = "20261016";
+/** The first 2.0 migration's date prefix; every later file is part of the 2.0 set. */
+const FIRST_2_0 = "20261016";
 const ROLE = "cr_v2_server";
 
 
 const upFiles = readdirSync(UP_DIR).filter((f) => f.endsWith(".sql")).sort();
-const preUp = upFiles.filter((f) => !f.startsWith(NEW_PREFIX));
-const newUp = upFiles.filter((f) => f.startsWith(NEW_PREFIX));
+const preUp = upFiles.filter((f) => f < FIRST_2_0);
+const newUp = upFiles.filter((f) => f >= FIRST_2_0);
 const downFor = (f: string) => path.join(DOWN_DIR, f.replace(/\.sql$/, ".down.sql"));
 
 let db: PGlite;
@@ -97,8 +98,14 @@ after(async () => {
   await db.close();
 });
 
-test("the 2.0 set is four v2 migrations with reverses; the destructive pair stays post-cutover", () => {
-  assert.deepEqual(newUp, ["20261016000000_v2_schema_role.sql", "20261016000001_v2_scan_runs_events.sql", "20261016000002_v2_auth_rate_limit.sql", "20261016000003_v2_scan_budget.sql"]);
+test("the 2.0 set is five v2 migrations with reverses; the destructive pair stays post-cutover", () => {
+  assert.deepEqual(newUp, [
+    "20261016000000_v2_schema_role.sql",
+    "20261016000001_v2_scan_runs_events.sql",
+    "20261016000002_v2_auth_rate_limit.sql",
+    "20261016000003_v2_scan_budget.sql",
+    "20261018000001_v2_scan_runs_cost.sql",
+  ]);
   for (const f of newUp) assert.ok(readFileSync(downFor(f), "utf8").length > 0, f);
   assert.deepEqual(postUp, ["20261016000004_drop_deep_queue.sql", "20261016000005_drop_dead_quota.sql"]);
 });

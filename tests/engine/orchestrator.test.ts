@@ -7,6 +7,7 @@ import type { SandboxCreateOptions, SandboxProvider, SandboxSession } from "../.
 import type { ScanEvent, ScanRequest } from "../../lib/engine/types.ts";
 import { bytes, fakeFetch, json, type FakeRoute } from "../support/fake-fetch.ts";
 import { MemoryStore } from "../support/memory-store.ts";
+import { StandInJev } from "../support/stand-in-jev.ts";
 import { StandInModel } from "../support/stand-in-model.ts";
 import { makeTgz } from "../support/tar.ts";
 
@@ -43,7 +44,7 @@ const req: ScanRequest = { target: { kind: "npm", name: "orch-fixture" }, caller
 
 function deps(store: MemoryStore, sandbox: SandboxProvider): EngineDeps {
   let n = 0;
-  return { model: new StandInModel(), sandbox, store, fetch: ff.fetch, now: () => Date.now(), config: loadEngineConfig({}), newRunId: () => `00000000-0000-4000-8000-00000000000${++n}` };
+  return { jev: new StandInJev(), luna: new StandInModel(), sandbox, store, fetch: ff.fetch, now: () => Date.now(), config: loadEngineConfig({}), newRunId: () => `00000000-0000-4000-8000-00000000000${++n}` };
 }
 
 test("no sandbox capacity: the scan errors with capacity, records the run as error, never scores without running", async () => {
@@ -101,7 +102,7 @@ test("a run with incomplete coverage is stored but never served as the SHA cache
   try {
     const store = new MemoryStore();
     let n = 0;
-    const d: EngineDeps = { model: new StandInModel(), sandbox: new MockSandboxProvider(tmp), store, fetch: osvDown.fetch, now: () => Date.now(), config: loadEngineConfig({}), newRunId: () => `00000000-0000-4000-8000-0000000000a${++n}` };
+    const d: EngineDeps = { jev: new StandInJev(), luna: new StandInModel(), sandbox: new MockSandboxProvider(tmp), store, fetch: osvDown.fetch, now: () => Date.now(), config: loadEngineConfig({}), newRunId: () => `00000000-0000-4000-8000-0000000000a${++n}` };
     const first = await runScan(req, d);
     assert.equal(first.kind, "fresh");
     if (first.kind !== "fresh") return;

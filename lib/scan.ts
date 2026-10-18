@@ -572,7 +572,7 @@ const STAGE_LABEL: Record<StageName, string> = {
   reach: "Reachability",
   static: "Static scanners",
   osv: "OSV lookup",
-  readers: "Model readers",
+  checks: "Jev checks",
   detonate: "Sandbox run",
   score: "Score",
   report: "Report",

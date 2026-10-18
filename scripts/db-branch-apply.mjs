@@ -16,7 +16,7 @@
  *
  * Refuses the production project ref (mjvlczaytkhvsolnhhkz) and any ref listed
  * in CR_PRODUCTION_REFS (comma separated). `--files <prefix>` selects which up
- * files to apply (default the 2.0 set, prefix 20261016); `--step base` applies
+ * files to apply (default `2.0`: every file from 20261016 on); `--step base` applies
  * every pre-2.0 migration in order, for a branch that starts empty.
  */
 
@@ -59,6 +59,9 @@ function run(ref, file) {
   process.stdout.write(`ok   ${label} exit 0\n`);
 }
 
+/** File-name prefix of the first 2.0 migration; every later file is part of the 2.0 set. */
+const FIRST_2_0 = "20261016";
+
 function query(ref, sql) {
   const r = spawnSync("supabase", ["db", "query", "--project-ref", ref, "--output-format", "json", sql], { encoding: "utf8" });
   if (r.status !== 0) {
@@ -71,7 +74,8 @@ function query(ref, sql) {
 function main(argv) {
   const ref = arg("ref", argv);
   const step = arg("step", argv) ?? "up";
-  const prefix = arg("files", argv) ?? "20261016";
+  // "2.0" (default) is every migration from the first 2.0 file on; any other value is a file-name prefix.
+  const prefix = arg("files", argv) ?? "2.0";
   const refusal = refusedRef(ref);
   if (refusal) {
     process.stderr.write(`${refusal}\n`);
@@ -86,14 +90,14 @@ function main(argv) {
   const UP_DIR = dirs.up;
   const DOWN_DIR = dirs.down;
   const all = readdirSync(UP_DIR).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")).sort();
-  const ups = all.filter((f) => f.startsWith(prefix));
+  const ups = all.filter((f) => (prefix === "2.0" ? f >= FIRST_2_0 : f.startsWith(prefix)));
   const up = () => ups.forEach((f) => run(ref, path.join(UP_DIR, f)));
   const down = () => [...ups].reverse().forEach((f) => run(ref, path.join(DOWN_DIR, f.replace(/\.sql$/, ".down.sql"))));
   const verify = () =>
     process.stdout.write(
       query(ref, "select table_name from information_schema.tables where table_schema='public' and table_name in ('scan_runs','scan_events','scan_budget','deep_scan_queue','deep_dispatch_lock','scan_usage') order by 1") + "\n",
     );
-  if (step === "base") all.filter((f) => f < prefix).forEach((f) => run(ref, path.join(UP_DIR, f)));
+  if (step === "base") all.filter((f) => f < (prefix === "2.0" ? FIRST_2_0 : prefix)).forEach((f) => run(ref, path.join(UP_DIR, f)));
   else if (step === "up") up();
   else if (step === "down") down();
   else if (step === "roundtrip") {

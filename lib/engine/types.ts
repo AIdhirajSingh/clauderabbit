@@ -5,6 +5,8 @@
  * schema, the score inputs and the report payload stay one definition.
  */
 
+import type { CostLedger } from "./cost";
+
 /** What a scan targets. `tarball` is the operator-only target (CR_OPERATOR_KEY). */
 export type ScanTarget =
   | { kind: "github"; owner: string; repo: string; ref?: string }
@@ -56,7 +58,7 @@ export type StageName =
   | "reach"
   | "static"
   | "osv"
-  | "readers"
+  | "checks"
   | "detonate"
   | "score"
   | "report"
@@ -68,10 +70,10 @@ export type TranscriptSource =
   | "semgrep"
   | "guarddog"
   | "yara"
-  | "reader.install"
-  | "reader.flagged"
-  | "reader.docs"
-  | "writer";
+  | "jev.install"
+  | "jev.flagged"
+  | "jev.docs"
+  | "luna.report";
 
 export interface StageEventData {
   name: StageName;
@@ -163,18 +165,30 @@ export interface TaggedFinding extends StaticFinding {
   reach: "install" | "import" | "unreachable";
 }
 
-/** A finding produced by a Luna reader (bounded, schema-validated). */
-export interface ReaderFinding {
-  reader: "install" | "flagged" | "docs";
+/** Jev's answer to one per-signal check (lib/engine/model/checks.ts). */
+export type CheckVerdict = "malicious" | "suspicious" | "benign" | "unclear";
+
+/**
+ * One Jev check answer, mapped to a finding in code. `severity` is derived from
+ * the verdict and the boolean signals, never chosen by the model. `evidence`
+ * points at what Jev judged: the file, the line window and the static rule that
+ * opened it, and each boolean signal with its probability.
+ */
+export interface CheckFinding {
+  check: "install" | "flagged" | "docs";
+  /** The question id the answer belongs to. */
+  question: string;
   file: string;
   line: number | null;
   severity: Severity;
-  verdict: "malicious" | "suspicious" | "benign";
+  verdict: CheckVerdict;
+  /** Jev's probability for the chosen verdict, when it returned a distribution. */
+  probability: number | null;
   title: string;
-  rationale: string;
+  evidence: string[];
 }
 
-export interface TaggedReaderFinding extends ReaderFinding {
+export interface TaggedCheckFinding extends CheckFinding {
   reach: "install" | "import" | "unreachable";
 }
 
@@ -244,10 +258,15 @@ export interface ReportPayload {
   not_verified: string[];
   forensics: unknown;
   packages: unknown;
+  /** Luna, the report writer's model id. */
   model_id: string;
+  /** Jev, the checker's model id (AI Gateway). Absent on reports written before Jev. */
+  jev_model_id?: string;
   template: string;
   timings: Record<string, number>;
   writer: "model" | "deterministic";
+  /** Cost ledger of the run that produced this report (lib/engine/cost.ts). Absent on reports written before the ledger. */
+  cost?: CostLedger;
 }
 
 export type ScanOutcome =

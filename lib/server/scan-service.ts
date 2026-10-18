@@ -11,6 +11,7 @@
  */
 
 import { adFor, type AdTarget } from "../engine/ads";
+import { cacheHitLedger, type CostLedger } from "../engine/cost";
 import { identify, identityBackend, bearerToken, type Identity } from "../engine/auth";
 import { DEFAULT_SITE_URL, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
@@ -28,7 +29,7 @@ export const MAX_BODY_BYTES = 4096;
 export const FOLLOW_POLL_MS = 400;
 
 export type FinalLine =
-  | { type: "result"; outcome: "cached" | "fresh"; run_id: string; report: ReportPayload; report_url: string; ad: Ad }
+  | { type: "result"; outcome: "cached" | "fresh"; run_id: string; report: ReportPayload; report_url: string; ad: Ad; cost: CostLedger | null }
   | { type: "error"; code: ErrorCode; message: string; run_id: string | null; ad: Ad; signInUrl?: string; retryAfter?: number };
 
 export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null } | { ok: false; message: string };
@@ -220,10 +221,13 @@ export async function executeScan(ctx: CallerContext, target: ScanTarget, regene
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad };
   if (outcome.kind === "attached") {
     const followed = await followRun(store, outcome.runId, { deadlineMs: config.deadlines.scanMs + 15_000, now: deps.now, onEvent: opts.onEvent, signal: opts.signal });
-    if ("report" in followed) return { type: "result", outcome: "fresh", run_id: outcome.runId, report: followed.report, report_url: reportUrl, ad };
+    // The joined run's cost belongs to the request that started it; this request spent nothing.
+    if ("report" in followed) return { type: "result", outcome: "fresh", run_id: outcome.runId, report: followed.report, report_url: reportUrl, ad, cost: cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx }) };
     return { type: "error", code: followed.error, message: followed.message, run_id: outcome.runId, ad };
   }
-  return { type: "result", outcome: outcome.kind, run_id: outcome.runId, report: outcome.report, report_url: reportUrl, ad };
+  // Fresh: this request's ledger. Cached: no model call and no sandbox ran, so a zero ledger.
+  const cost = outcome.kind === "fresh" ? (outcome.report.cost ?? null) : cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx });
+  return { type: "result", outcome: outcome.kind, run_id: outcome.runId, report: outcome.report, report_url: reportUrl, ad, cost };
 }
 
 /** HTTP status for a pre-stream error code. */

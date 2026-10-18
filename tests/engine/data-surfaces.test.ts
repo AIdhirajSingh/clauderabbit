@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bearerToken, identify, identityBackend } from "../../lib/engine/auth.ts";
+import { CostMeter } from "../../lib/engine/cost.ts";
 import { bucketFor, checkRateLimit, clientIp, GLOBAL_ANON_BUCKET_KEY } from "../../lib/engine/ratelimit.ts";
 import { eventFromRow, eventToRow, OWNER_TTL_MS, payloadFromRows, reportsRowFor, V2Store, type ReportRecord, type StoredReportRow } from "../../lib/engine/store.ts";
 import { openV2Database } from "../support/pglite-v2.ts";
@@ -50,7 +51,7 @@ const RECORD: ReportRecord = {
   packages: PAYLOAD.packages,
   risky: [
     { source: "semgrep", rule: "child-process-exec", severity: "high", file: "beacon.js", line: 3, message: "exec of a remote string", reach: "install" },
-    { reader: "install", file: "package.json", line: null, severity: "medium", verdict: "suspicious", title: "postinstall runs a network beacon", rationale: "beacon.js posts env vars", reach: "install" },
+    { check: "install", question: "file_0", file: "package.json", line: null, severity: "medium", verdict: "suspicious", probability: 0.71, title: "Jev judged install-time code in package.json suspicious", evidence: ["package.json (install surface) p=0.71"], reach: "install" },
   ],
   logs: [{ name: "detonate", ms: 4100 }],
   stats: { files: 4, forged_calls: 1, processes: 3 },
@@ -116,12 +117,21 @@ test("V2Store on schema v2 as cr_v2_server: claim, dedup, events, report, cache,
     // A regenerate overwrites the shared row: the old run is no longer served from it.
     const run2 = "44444444-4444-4444-8444-444444444444";
     assert.deepEqual(await store.claimRun({ ...claim, runId: run2 }), { status: "claimed", runId: run2 });
-    await store.saveReport({ ...RECORD, runId: run2, report: { ...PAYLOAD, run_id: run2, score: 40, verdict: "High risk", band: "yellow" } });
+    const meter = new CostMeter({ jevModel: "typesafe-ai/jev", lunaModel: "gpt-6-luna" });
+    meter.recordJev("check.install", { inputTokens: 3000, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 });
+    meter.recordLuna("report", { inputTokens: 2400, outputTokens: 280, cachedInputTokens: 2048, cacheWriteTokens: 0 });
+    const ledger = meter.ledger(58.2);
+    await store.saveReport({ ...RECORD, runId: run2, report: { ...PAYLOAD, run_id: run2, score: 40, verdict: "High risk", band: "yellow", jev_model_id: "typesafe-ai/jev", cost: ledger } });
     now += 60_000;
-    await store.finishRun(run2, { status: "done", timings: {} });
+    await store.finishRun(run2, { status: "done", timings: {}, cost: ledger });
     const again = await store.findCached("acme/lib", PAYLOAD.commit_sha);
     assert.equal(again?.runId, run2);
     assert.equal(again?.report.verdict, "High risk");
+    assert.deepEqual(again?.report.cost, ledger, "the ledger round-trips through v2.scan_runs.cost");
+    assert.equal(again?.report.jev_model_id, "typesafe-ai/jev");
+    const costRow = await v2.pg.query<{ cost: { total_usd: number; luna: { cached_input_tokens: number } } }>("select cost from v2.scan_runs where id = $1::uuid", [run2]);
+    assert.equal(costRow.rows[0]!.cost.total_usd, ledger.total_usd);
+    assert.equal(costRow.rows[0]!.cost.luna.cached_input_tokens, 2048);
     assert.equal((await v2.pg.query<{ n: number }>("select count(*)::int as n from v2.reports")).rows[0]!.n, 1);
 
     assert.equal(await store.chargeBudget({ sandboxSeconds: 9.4, tokens: 100, capSeconds: 20000, capTokens: 20000000 }), true);
@@ -248,7 +258,7 @@ test("OAuth PKCE S256 check", () => {
 
 test("remote MCP text: verdict, score, evidence groups, not verified, URL, ad; never a bare Safe", () => {
   const ad: Ad = { kind: "house", placement: "scan_result", id: "house-badge-v1", label: "Sponsored", headline: "Show this scan on acme/lib", body: "Add the badge.", url: "https://clauderabbit.in/badge/acme/lib" };
-  const text = finalLineText({ type: "result", outcome: "fresh", run_id: PAYLOAD.run_id, report: PAYLOAD, report_url: "https://clauderabbit.in/acme/lib", ad });
+  const text = finalLineText({ type: "result", outcome: "fresh", run_id: PAYLOAD.run_id, report: PAYLOAD, report_url: "https://clauderabbit.in/acme/lib", ad, cost: null });
   assert.match(text, /Verdict: Malicious \(score 12\/100\)/);
   assert.match(text, /Observed when the code ran \(behaviour\):\n- POST/);
   assert.match(text, /Reputation signals \(separate from code and behaviour\):/);

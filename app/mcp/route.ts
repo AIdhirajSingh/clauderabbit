@@ -54,7 +54,7 @@ function buildServer(req: Request, store: V2Store): McpServer {
     {
       title: "Scan a GitHub repo or npm package with ClaudeRabbit",
       description:
-        "Runs the package or repository in a throwaway sandbox (install hooks and entry point, all network calls answered by a forge) alongside static scanners, OSV malicious-package lookups and model readers, then returns a deterministic 0-100 score, a verdict, the evidence split into behaviour, code and reputation, and what was not verified. Pass `owner` + `repo` for GitHub or `package` (optionally `version`) for npm; npm scans use the integrity-verified registry tarball that `npm install` fetches. A report for the same commit or artifact returns from cache. Never returns a bare \"Safe\".",
+        "Runs the package or repository in a throwaway sandbox (install hooks and entry point, all network calls answered by a forge) alongside static scanners, OSV malicious-package lookups and Jev model checks, then returns a deterministic 0-100 score, a verdict, the evidence split into behaviour, code and reputation, and what was not verified. Pass `owner` + `repo` for GitHub or `package` (optionally `version`) for npm; npm scans use the integrity-verified registry tarball that `npm install` fetches. A report for the same commit or artifact returns from cache. Never returns a bare \"Safe\".",
       inputSchema: scanInputShape,
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },

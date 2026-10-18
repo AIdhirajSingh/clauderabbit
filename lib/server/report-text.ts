@@ -26,7 +26,7 @@ export function finalLineText(final: FinalLine): string {
     for (const i of items.slice(0, 12)) lines.push(`- ${i}`);
   };
   section("Observed when the code ran (behaviour)", r.evidence.behaviour);
-  section("Found in the code (static and model readers)", r.evidence.code);
+  section("Found in the code (static scanners and Jev checks)", r.evidence.code);
   section("Reputation signals (separate from code and behaviour)", r.evidence.reputation);
   section("Not verified", r.not_verified);
   lines.push("", `Full report: ${final.report_url}`);
