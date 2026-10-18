@@ -51,6 +51,19 @@ export const GOOGLE_ADS_FONT_SOURCES = ["https://fonts.gstatic.com"];
 export const GOOGLE_ADS_MEDIA_SOURCES = ["blob:", "https://*.gvt1.com", "https://*.googlevideo.com", "https://*.doubleclick.net", "https://*.googlesyndication.com"];
 const SUPABASE_CONNECT = ["https://*.supabase.co", "https://*.supabase.in", "wss://*.supabase.co", "wss://*.supabase.in"];
 
+/**
+ * Vercel injects its toolbar (vercel.live/_next-live/feedback/feedback.js) into
+ * Preview deployments only; the hosts below are the ones Vercel documents for it
+ * (vercel.com/docs/vercel-toolbar/managing-toolbar, "Using a Content Security Policy").
+ * They are added only when VERCEL_ENV is "preview", never on production.
+ */
+export const VERCEL_TOOLBAR = {
+  frame: ["https://vercel.live"],
+  connect: ["https://vercel.live", "wss://ws-us3.pusher.com"],
+  style: ["https://vercel.live"],
+  font: ["https://vercel.live", "https://assets.vercel.com"],
+};
+
 /** For JSON / text endpoints: nothing loads, nothing frames them. */
 export const API_CONTENT_SECURITY_POLICY = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
@@ -65,7 +78,8 @@ export function makeNonce(): string {
 
 const NONCE_RE = /^[A-Za-z0-9+/_-]{16,64}={0,2}$/;
 
-export function pageContentSecurityPolicy(nonce: string, opts: { dev?: boolean } = {}): string {
+export function pageContentSecurityPolicy(nonce: string, opts: { dev?: boolean; vercelToolbar?: boolean } = {}): string {
+  const tb = opts.vercelToolbar ? VERCEL_TOOLBAR : { frame: [], connect: [], style: [], font: [] };
   if (!NONCE_RE.test(nonce)) throw new Error("invalid CSP nonce");
   const script = [`'nonce-${nonce}'`, "'strict-dynamic'", "https:", "'unsafe-inline'", ...(opts.dev ? ["'unsafe-eval'"] : [])];
   return [
@@ -75,11 +89,11 @@ export function pageContentSecurityPolicy(nonce: string, opts: { dev?: boolean }
     "form-action 'self'",
     "frame-ancestors 'none'",
     `script-src ${script.join(" ")}`,
-    `style-src 'self' 'unsafe-inline' ${GOOGLE_ADS_STYLE_SOURCES.join(" ")}`,
-    `font-src 'self' data: ${GOOGLE_ADS_FONT_SOURCES.join(" ")}`,
+    `style-src 'self' 'unsafe-inline' ${[...GOOGLE_ADS_STYLE_SOURCES, ...tb.style].join(" ")}`,
+    `font-src 'self' data: ${[...GOOGLE_ADS_FONT_SOURCES, ...tb.font].join(" ")}`,
     "img-src 'self' data: blob: https:",
     `media-src 'self' ${GOOGLE_ADS_MEDIA_SOURCES.join(" ")}`,
-    `frame-src 'self' ${GOOGLE_ADS_FRAME_SOURCES.join(" ")}`,
-    `connect-src 'self' ${[...SUPABASE_CONNECT, ...GOOGLE_ADS_CONNECT_SOURCES].join(" ")}`,
+    `frame-src 'self' ${[...GOOGLE_ADS_FRAME_SOURCES, ...tb.frame].join(" ")}`,
+    `connect-src 'self' ${[...SUPABASE_CONNECT, ...GOOGLE_ADS_CONNECT_SOURCES, ...tb.connect].join(" ")}`,
   ].join("; ");
 }

@@ -60,7 +60,25 @@ export interface GoogleTag {
 
 export interface RewardedHost {
   googletag?: GoogleTag;
-  document: Pick<Document, "getElementById" | "createElement" | "head">;
+  document: Pick<Document, "getElementById" | "createElement" | "head"> & Partial<Pick<Document, "querySelector">>;
+}
+
+/**
+ * The page's CSP nonce (proxy.ts puts a fresh one on every page; Next.js stamps it
+ * on its scripts). Browsers hide the nonce attribute's value but keep the `nonce`
+ * property readable. GPT copies the nonce of its own <script> onto the scripts it
+ * inserts (the rewarded overlay's video player and SafeFrame loader), so gpt.js
+ * must carry it: under 'strict-dynamic' those parser-style insertions are refused
+ * otherwise (seen on the preview, key day step 8).
+ */
+export function pageNonce(doc: Partial<Pick<Document, "querySelector">> | undefined): string | null {
+  try {
+    const el = doc?.querySelector?.<HTMLScriptElement>("script[nonce]");
+    const n = el?.nonce || el?.getAttribute("nonce") || "";
+    return n.length > 0 ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 export type RewardedLog = (event: RewardedAdEvent, detail?: Record<string, unknown>) => void;
@@ -131,6 +149,8 @@ export function startScanRewardedAd(opts: { host?: RewardedHost; log?: RewardedL
       s.async = true;
       s.src = GPT_SRC;
       s.crossOrigin = "anonymous";
+      const nonce = pageNonce(host.document);
+      if (nonce) s.nonce = nonce;
       s.onerror = () => {
         scriptFailed = true;
         active = false;

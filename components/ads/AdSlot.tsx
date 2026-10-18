@@ -11,6 +11,7 @@
 import Script from "next/script";
 import { useEffect, useRef } from "react";
 import type { Ad } from "@/lib/engine/types";
+import { pageNonce } from "@/lib/ads/gpt-rewarded";
 
 declare global {
   interface Window {
@@ -44,6 +45,7 @@ export function AdSlot({ ad }: { ad: Ad }) {
           async
           strategy="afterInteractive"
           crossOrigin="anonymous"
+          nonce={typeof document === "undefined" ? undefined : (pageNonce(document) ?? undefined)}
           src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${encodeURIComponent(ad.client)}`}
         />
         <ins

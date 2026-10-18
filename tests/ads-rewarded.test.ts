@@ -41,6 +41,7 @@ function fakeHost(opts: { supported?: boolean } = {}) {
     document: {
       getElementById: (id: string) => (appended.some((a) => a.id === id) ? ({} as HTMLElement) : null),
       createElement: () => ({}) as HTMLScriptElement,
+      querySelector: ((sel: string) => (sel === "script[nonce]" ? ({ nonce: "bm9uY2Utb2YtdGhlLXBhZ2U=" } as HTMLScriptElement) : null)) as Document["querySelector"],
       head: { appendChild: (n: Record<string, unknown>) => (appended.push(n), n) } as unknown as HTMLHeadElement,
     } as RewardedHost["document"],
   };
@@ -63,6 +64,7 @@ test("rewarded: loads gpt.js once, defines the REWARDED out-of-page slot with Go
   assert.equal(h.appended.length, 1);
   assert.equal(h.appended[0]!.src, GPT_SRC);
   assert.equal(h.appended[0]!.async, true);
+  assert.equal(h.appended[0]!.nonce, "bm9uY2Utb2YtdGhlLXBhZ2U=", "gpt.js carries the page nonce so GPT can pass it to the scripts it inserts");
   assert.deepEqual(h.calls, [`define ${GAM_SAMPLE_REWARDED_UNIT} 4`, "enableServices", "display"]);
   h.fire("rewardedSlotReady", { makeRewardedVisible: () => void shown++ });
   assert.equal(shown, 1);

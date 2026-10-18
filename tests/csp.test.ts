@@ -106,6 +106,17 @@ test("page policy admits the ad frames, beacons, overlay fonts and video, and no
   assert.ok(allows(directive(csp, "img-src"), "https://avatars.githubusercontent.com/u/1"));
 });
 
+test("the Vercel toolbar hosts appear only on Preview", () => {
+  const prod = pageContentSecurityPolicy(makeNonce());
+  assert.ok(!prod.includes("vercel.live"), "production policy names no toolbar host");
+  const preview = pageContentSecurityPolicy(makeNonce(), { vercelToolbar: true });
+  assert.ok(allows(directive(preview, "frame-src"), "https://vercel.live/_next-live/feedback/x"));
+  assert.ok(allows(directive(preview, "connect-src"), "https://vercel.live/api"));
+  assert.deepEqual(directive(preview, "script-src"), directive(prod, "script-src").map((s) => (s.startsWith("'nonce-") ? directive(preview, "script-src")[0]! : s)), "script-src never widens");
+  const proxySrc = readFileSync(join(ROOT, "proxy.ts"), "utf8");
+  assert.match(proxySrc, /vercelToolbar: process\.env\.VERCEL_ENV === "preview"/);
+});
+
 test("page policy keeps Supabase https and wss and no other websocket", () => {
   const connect = directive(pageContentSecurityPolicy(makeNonce()), "connect-src");
   for (const o of ["wss://*.supabase.co", "https://*.supabase.co", "wss://*.supabase.in"]) assert.ok(connect.includes(o), o);
