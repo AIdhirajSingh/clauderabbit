@@ -72,12 +72,11 @@ cat /etc/cr/ca.pem >>/etc/ssl/certs/ca-certificates.crt
 chmod 0644 /etc/cr/npmrc-empty
 
 # ---- 2. inner fence (nftables meta skuid; the E2B kernel lacks xt_owner) -------
+# Drop rules carry inline counters tagged by comment: the E2B kernel has no named
+# counter objects (nft_objref), so `counter name ...` rules fail to load.
 nft -f - <<NFT
 flush ruleset
 table inet cr {
-  counter cr_udp_drop {}
-  counter cr_icmp_drop {}
-  counter cr_other_drop {}
   chain out_nat {
     type nat hook output priority -100;
     meta skuid $CR_UID udp dport 53 redirect to :5353
@@ -90,10 +89,10 @@ table inet cr {
     meta skuid $CR_UID ip daddr 127.0.0.0/8 accept
     meta skuid $CR_UID tcp dport 8080 accept
     meta skuid $CR_UID udp dport 5353 accept
-    meta skuid $CR_UID meta l4proto udp counter name cr_udp_drop drop
-    meta skuid $CR_UID meta l4proto { icmp, ipv6-icmp } counter name cr_icmp_drop drop
+    meta skuid $CR_UID meta l4proto udp counter drop comment "cr_udp_drop"
+    meta skuid $CR_UID meta l4proto { icmp, ipv6-icmp } counter drop comment "cr_icmp_drop"
     meta skuid $CR_UID meta nfproto ipv6 reject
-    meta skuid $CR_UID meta l4proto != tcp counter name cr_other_drop drop
+    meta skuid $CR_UID meta l4proto != tcp counter drop comment "cr_other_drop"
   }
 }
 NFT
@@ -397,7 +396,7 @@ done
 # Egress the fence dropped (UDP other than DNS, ICMP, other non-TCP), per protocol.
 DROPS='{}'
 for c in udp icmp other; do
-  n=$(nft -j list counter inet cr "cr_${c}_drop" 2>/dev/null | jq '[.nftables[] | .counter? | select(. != null) | .packets] | add // 0' 2>/dev/null || echo 0)
+  n=$(/opt/cr/bin/cr-drops.sh "cr_${c}_drop")
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   DROPS=$(jq -c --arg k "$c" --argjson v "$n" '. + {($k): $v}' <<<"$DROPS")
 done

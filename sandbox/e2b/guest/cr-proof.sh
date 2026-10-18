@@ -22,9 +22,7 @@ say() { printf '%s\n' "$*" >&3; }
 section() { printf '\n== %s ==\n' "$*" >&3; }
 pass() { printf 'PASS %s\n' "$*" >&3; }
 fail() { printf 'FAIL %s\n' "$*" >&3; FAILED=1; }
-drop_count() {
-  nft -j list counter inet cr "$1" 2>/dev/null | jq '[.nftables[] | .counter? | select(. != null) | .packets] | add // 0' 2>/dev/null || echo 0
-}
+drop_count() { /opt/cr/bin/cr-drops.sh "$1"; }
 
 section "resources"
 say "nproc: $(nproc)"
@@ -51,7 +49,7 @@ section "nft list ruleset"
 nft list ruleset >&3
 RULESET=$(nft list ruleset)
 if grep -Eq 'meta skuid 1001 .*tcp redirect to :8080' <<<"$RULESET" \
-  && grep -Eq 'meta skuid 1001 .*udp .*cr_udp_drop"? drop' <<<"$RULESET"; then
+  && grep -Eq 'meta skuid 1001 .*udp .*counter packets [0-9]+ bytes [0-9]+ drop comment "cr_udp_drop"' <<<"$RULESET"; then
   pass "skuid 1001 TCP redirect and UDP drop rules loaded"
 else
   fail "skuid 1001 rules missing from the ruleset"
@@ -132,8 +130,8 @@ fi
 section "root (outside the inner fence) to 1.1.1.1:443 (outer E2B egress policy; informational)"
 curl -sS --max-time 4 -o /dev/null -w 'http_code=%{http_code}\n' https://1.1.1.1/ >&3 2>&1 || say "root egress to 1.1.1.1 failed (exit $?)"
 
-section "fence counters"
-nft list counters >&3 2>&1
+section "fence drop counters (packets per tagged rule)"
+for c in cr_udp_drop cr_icmp_drop cr_other_drop; do say "$c=$(drop_count "$c")"; done
 
 section "result"
 if [ "$FAILED" = 0 ]; then say "cr-proof: PASS"; else say "cr-proof: FAIL"; fi

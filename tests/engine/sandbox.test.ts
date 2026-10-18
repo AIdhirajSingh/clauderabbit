@@ -184,8 +184,8 @@ test("guest harness keeps the safety invariants", () => {
   assert.match(sh, /meta skuid \$CR_UID ip daddr != 127\.0\.0\.0\/8 meta l4proto tcp redirect to :8080/);
   assert.match(sh, /meta skuid \$CR_UID tcp dport \{ 49983, 8081 \} reject with tcp reset/, "envd and 8081 refused for uid 1001 on every address family");
   assert.match(sh, /meta skuid \$CR_UID meta nfproto ipv6 reject/, "uid 1001 has no IPv6 path past the accepted loopback forge ports");
-  assert.match(sh, /meta skuid \$CR_UID meta l4proto udp counter name cr_udp_drop drop/, "dropped UDP is counted, not silent");
-  assert.match(sh, /meta skuid \$CR_UID meta l4proto != tcp counter name cr_other_drop drop/);
+  assert.match(sh, /meta skuid \$CR_UID meta l4proto udp counter drop comment "cr_udp_drop"/, "dropped UDP is counted, not silent");
+  assert.match(sh, /meta skuid \$CR_UID meta l4proto != tcp counter drop comment "cr_other_drop"/);
   assert.match(sh, /for ENVD_ADDR in 127\.0\.0\.1 ::1; do/, "the containment probe checks envd over IPv4 and IPv6");
   assert.match(sh, /TRACE_SET=.*sendto,sendmsg,sendmmsg/);
   assert.match(sh, /-print0 2>\/dev\/null >"\$RUN\/written\.0"/, "written files are NUL-separated");

@@ -69,7 +69,7 @@ for addr in 127.0.0.1 ::1; do
   if timeout 1 runuser -u cr -- bash -c "exec 3<>/dev/tcp/$addr/49983" 2>/dev/null; then fail "uid 1001 reached envd on $addr after the run"; fi
 done
 if timeout 2 runuser -u cr -- bash -c 'exec 3<>/dev/udp/192.0.2.1/9999; printf x >&3' 2>/dev/null; then :; fi
-jq -e '.udp >= 1' "$OUT/egress_drops.json" >/dev/null 2>&1 || nft list counter inet cr cr_udp_drop | grep -q 'packets [1-9]' || fail "the fence did not count a dropped UDP send"
+jq -e '.udp >= 1' "$OUT/egress_drops.json" >/dev/null 2>&1 || [ "$(/opt/cr/bin/cr-drops.sh cr_udp_drop)" -ge 1 ] || fail "the fence did not count a dropped UDP send"
 echo "cr-smoke: PASS $(jq -c '{install:.install, entry:.entry, clock:.clock}' "$OUT/result.json")"
 
 # Restore a clean template: no fence, no CA, no smoke artifacts, empty cr home.

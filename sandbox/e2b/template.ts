@@ -124,6 +124,7 @@ export function buildTemplate() {
       .copy("guest/cr-yara.py", "/opt/cr/bin/cr-yara.py", { mode: 0o755 })
       .copy("guest/cr-smoke.sh", "/opt/cr/bin/cr-smoke.sh", { mode: 0o755 })
       .copy("guest/cr-proof.sh", "/opt/cr/bin/cr-proof.sh", { mode: 0o755 })
+      .copy("guest/cr-drops.sh", "/opt/cr/bin/cr-drops.sh", { mode: 0o755 })
       .copy("guest/cr-mirror-warm.py", "/opt/cr/bin/cr-mirror-warm.py", { mode: 0o755 })
       .copy("guest/forge_core.py", "/opt/cr/forge/forge_core.py", { mode: 0o644 })
       .copy("guest/forge_addon.py", "/opt/cr/forge/forge_addon.py", { mode: 0o644 })
