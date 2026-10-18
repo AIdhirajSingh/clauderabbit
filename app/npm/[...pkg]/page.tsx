@@ -13,7 +13,7 @@
  * report page use.
  *
  * Caching, rails, and rendering are identical to the GitHub report page:
- * `revalidate = 600` (static + ISR), the verdict is run through `enforceVerdict`
+ * per-request render with the report data cached (lib/server/report-cache.ts), the verdict is run through `enforceVerdict`
  * inside `buildReportView` so a bare "Safe" can never render, and reputation vs.
  * code/behavior panels stay structurally separate inside `ReportBody`.
  */
@@ -22,7 +22,7 @@ import { cache } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { buildReportView, logColor } from "@/lib/report-view";
-import { latestReport } from "@/lib/server/report-source";
+import { cachedLatestReport } from "@/lib/server/report-cache";
 import { safeJsonLd } from "@/lib/json-ld";
 import { ReportBody } from "@/components/spa/components/ReportBody";
 import { AdSlot } from "@/components/ads/AdSlot";
@@ -30,8 +30,8 @@ import { webAdFor } from "@/lib/ads-web";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import type { Report } from "@/lib/types";
 
-/** Report pages are cacheable; revalidate the static render every 10 minutes. */
-export const revalidate = 600;
+// Rendered per request (the CSP nonce, see proxy.ts); the report data itself is
+// cached for 10 minutes and expired by a fresh scan (lib/server/report-cache.ts).
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
@@ -55,14 +55,14 @@ function packageName(segments: string[] | undefined): string {
 /**
  * Latest report for the npm package, wrapped in React's `cache` so
  * `generateMetadata` and the page component share a single DB round-trip per
- * request. The read is the SAME `latestReport` the GitHub route uses (v2 first,
+ * request. The read is the SAME cached `cachedLatestReport` the GitHub route uses (v2 first,
  * then the 1.0 public report); only the owner is pinned to "npm". Returns null
  * on miss/error.
  */
 const getLatestReport = cache(async function getLatestReport(
   pkg: string,
 ): Promise<Report | null> {
-  return latestReport(NPM_OWNER, pkg);
+  return cachedLatestReport(NPM_OWNER, pkg);
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {

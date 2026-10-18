@@ -106,6 +106,8 @@ export class MockSession implements SandboxSession {
   readonly id: string;
   readonly opts: SandboxCreateOptions;
   readonly files = new Map<string, Uint8Array>();
+  /** Every command run, in order. */
+  readonly commands: string[] = [];
   readonly dir: string;
   killed = false;
   record: MockRunRecord;
@@ -139,6 +141,7 @@ export class MockSession implements SandboxSession {
 
   async run(cmd: string, opts: RunOptions): Promise<CommandResult> {
     this.#alive();
+    this.commands.push(cmd);
     if (this.opts.purpose === "detonate" && cmd.includes("/opt/cr/bin/cr-detonate.sh")) return this.#detonate(opts);
     if (this.opts.purpose === "analyze" && cmd.includes("/opt/cr/bin/cr-analyze.sh")) return this.#analyze();
     return { exitCode: 127, stdout: "", stderr: `mock sandbox: unsupported command ${cmd}` };
@@ -164,6 +167,16 @@ export class MockSession implements SandboxSession {
 
   async #detonate(opts: RunOptions): Promise<CommandResult> {
     const log = (s: string) => opts.onStdout?.(`cr: ${s}\n`);
+    // Like cr-detonate.sh: started at boot, it waits for the go file, written after every input.
+    const waitUntil = Date.now() + Math.min(opts.timeoutMs, 60_000);
+    while (!this.files.has("/root/in/go")) {
+      if (this.killed) return { exitCode: 137, stdout: "", stderr: "killed while waiting for inputs" };
+      if (Date.now() > waitUntil) return { exitCode: 5, stdout: "", stderr: "inputs did not arrive" };
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    for (const f of ["/root/in/target.tgz", "/root/in/run.json", "/root/.cr/canary.env", "/root/.cr/canary-patterns.txt"]) {
+      if (!this.files.has(f)) return { exitCode: 2, stdout: "", stderr: `missing input ${f}` };
+    }
     const run = JSON.parse(dec.decode(this.files.get("/root/in/run.json")!)) as {
       mode: "npm-package" | "repo";
       name: string | null;

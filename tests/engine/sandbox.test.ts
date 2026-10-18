@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseTarball } from "../../lib/engine/archive.ts";
 import { makeCanaries } from "../../lib/engine/forensics/capture.ts";
 import { runAnalysis } from "../../lib/engine/sandbox/analyze.ts";
-import { detonate, EXIT_NOT_CONTAINED, SALVAGE_ARCHIVE } from "../../lib/engine/sandbox/detonate.ts";
+import { detonate, EXIT_NOT_CONTAINED, GO_FILE, SALVAGE_ARCHIVE } from "../../lib/engine/sandbox/detonate.ts";
 import { e2bCreateOptions } from "../../lib/engine/sandbox/e2b.ts";
 import { packFiles } from "../../lib/engine/sandbox/pack.ts";
 import { SandboxCreateError, withSandbox, type CommandResult, type SandboxCreateOptions, type SandboxProvider, type SandboxSession } from "../../lib/engine/sandbox/provider.ts";
@@ -140,8 +140,12 @@ test("detonate writes per-run inputs as root, parses the bundle, and kills the V
     { name: "out/canary_files.txt", data: "/home/cr/.cache/stolen.txt\n" },
     { name: "out/install.out", data: "added 2 packages" },
   ]);
-  const s = new StubSession((cmd, self) => {
-    assert.match(cmd, /chmod 0600 \/root\/\.cr\/canary\.env .*bash \/opt\/cr\/bin\/cr-detonate\.sh$/);
+  const s = new StubSession(async (cmd, self) => {
+    assert.equal(cmd, "bash /opt/cr/bin/cr-detonate.sh");
+    // Started at boot, before any input exists; it waits for the go file like the real harness.
+    assert.equal(self.files.size, 0, "the harness starts before the function writes any input");
+    while (!self.files.has(GO_FILE)) await new Promise((r) => setTimeout(r, 1));
+    for (const f of ["/root/in/target.tgz", "/root/in/run.json", "/root/.cr/canary.env", "/root/.cr/canary-patterns.txt"]) assert.ok(self.files.has(f), `${f} written before go`);
     self.files.set("/root/out.tgz", bundle);
     return { exitCode: 0, stdout: "cr: done", stderr: "" };
   });

@@ -64,29 +64,92 @@ export class SandboxCreateError extends Error {
 }
 
 /**
+ * What to do with a session's kill. `onKilled` reports whether the kill call
+ * succeeded. With `trackKill`, the kill is still issued at once (in `finally`),
+ * but its promise is handed to the caller instead of being awaited, so the VM's
+ * teardown round trip stays off the scan's critical path; the caller awaits
+ * every tracked kill before it closes the run.
+ */
+export interface KillHooks {
+  onKilled?: (ok: boolean, detail: string) => void;
+  trackKill?: (kill: Promise<void>) => void;
+}
+
+/** Destroy one session and report it. Never throws. */
+export function killSession(session: SandboxSession, purpose: SandboxPurpose, hooks: KillHooks = {}): Promise<void> {
+  let killP: Promise<void>;
+  try {
+    killP = session.kill();
+  } catch (err) {
+    killP = Promise.reject(err);
+  }
+  const p = killP.then(
+    () => hooks.onKilled?.(true, `${purpose} sandbox ${session.id} destroyed`),
+    (err: unknown) => hooks.onKilled?.(false, `${purpose} sandbox ${session.id} kill failed: ${(err as Error)?.message ?? String(err)}`),
+  );
+  hooks.trackKill?.(p);
+  return p;
+}
+
+/**
+ * A VM booted ahead of its work: `create()` starts at once, so the boot overlaps
+ * whatever the scan does before the VM is needed. Still one fresh VM for one
+ * purpose in one scan: `release()` kills it (idempotent), whether or not it was
+ * ever used, and the engine calls it in `finally` and on every early exit.
+ */
+export interface BootedSandbox {
+  readonly purpose: SandboxPurpose;
+  /** True when the kill's promise is handed to `trackKill` instead of being awaited by the user of the VM. */
+  readonly killTracked: boolean;
+  /** The session, or a SandboxCreateError when the provider could not start it. */
+  session(): Promise<SandboxSession>;
+  /** Kill the VM once; resolves when the kill finished (or at once when the VM never started). */
+  release(): Promise<void>;
+}
+
+export function bootSandbox(provider: SandboxProvider, opts: SandboxCreateOptions, hooks: KillHooks = {}): BootedSandbox {
+  const created: Promise<SandboxSession> = (async () => {
+    try {
+      return await provider.create(opts);
+    } catch (err) {
+      throw new SandboxCreateError(opts.purpose, err);
+    }
+  })();
+  // The failure is surfaced by session(); never as an unhandled rejection.
+  created.catch(() => undefined);
+  let released: Promise<void> | null = null;
+  return {
+    purpose: opts.purpose,
+    killTracked: Boolean(hooks.trackKill),
+    session: () => created,
+    release() {
+      if (!released) released = created.then((s) => killSession(s, opts.purpose, hooks), () => undefined);
+      return released;
+    },
+  };
+}
+
+/**
  * Create a session, run `fn`, and kill the session in `finally` no matter how
- * `fn` ends. `onKilled` reports whether the kill call succeeded.
+ * `fn` ends. The kill is awaited unless `hooks.trackKill` takes it over.
  */
 export async function withSandbox<T>(
   provider: SandboxProvider,
   opts: SandboxCreateOptions,
   fn: (s: SandboxSession) => Promise<T>,
-  onKilled?: (ok: boolean, detail: string) => void,
+  hooks?: ((ok: boolean, detail: string) => void) | KillHooks,
 ): Promise<T> {
-  let session: SandboxSession;
-  try {
-    session = await provider.create(opts);
-  } catch (err) {
-    throw new SandboxCreateError(opts.purpose, err);
-  }
+  const kh: KillHooks = typeof hooks === "function" ? { onKilled: hooks } : (hooks ?? {});
+  return runOnBooted(bootSandbox(provider, opts, kh), fn);
+}
+
+/** Run `fn` on a booted VM and release it in `finally`; the kill is awaited unless tracked. */
+export async function runOnBooted<T>(vm: BootedSandbox, fn: (s: SandboxSession) => Promise<T>): Promise<T> {
+  const session = await vm.session();
   try {
     return await fn(session);
   } finally {
-    try {
-      await session.kill();
-      onKilled?.(true, `${opts.purpose} sandbox ${session.id} destroyed`);
-    } catch (err) {
-      onKilled?.(false, `${opts.purpose} sandbox ${session.id} kill failed: ${(err as Error).message ?? String(err)}`);
-    }
+    const kill = vm.release();
+    if (!vm.killTracked) await kill;
   }
 }

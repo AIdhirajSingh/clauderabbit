@@ -12,7 +12,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SqlExecutor } from "@/lib/engine/db";
 import { v2Executor } from "@/lib/engine/store";
-import { fetchLatestReport } from "@/lib/report-fetch";
+import { fetchLatestReport, fetchLatestReportRestStrict } from "@/lib/report-fetch";
 import { fetchV2Report, fetchV2Score } from "@/lib/server/report-v2";
 import { serverConfig } from "@/lib/server/scan-service";
 import { createClient } from "@/lib/supabase/server";
@@ -48,6 +48,23 @@ export async function latestReport(owner: string, repo: string): Promise<Report 
   }
   const anon = await anonClient();
   return anon ? fetchLatestReport(anon, owner, repo) : null;
+}
+
+/**
+ * Latest report, for a cache: v2 first, then the 1.0 public report through an
+ * anonymous read that needs no request cookie. A read error THROWS (so it is
+ * never cached); null means neither table has a row.
+ */
+export async function latestReportStrict(owner: string, repo: string): Promise<Report | null> {
+  const db = v2DbOrNull();
+  if (db) {
+    const v2 = await fetchV2Report(db, owner, repo);
+    if (v2) return v2;
+  }
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return null;
+  return fetchLatestReportRestStrict(url, key, owner, repo);
 }
 
 /** Latest score for the badge: v2 first, then the 1.0 public report. */

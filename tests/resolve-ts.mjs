@@ -51,5 +51,8 @@ export async function resolve(specifier, context, nextResolve) {
       }
     }
   }
+  // `next/server`, `next/cache`: the package has no exports map, so Node's ESM loader needs the
+  // `.js` file the bundler finds on its own.
+  if (/^next\/[a-z-]+$/.test(specifier)) return nextResolve(`${specifier}.js`, context);
   return nextResolve(specifier, context);
 }

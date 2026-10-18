@@ -6,9 +6,10 @@
  * report reads publicly). It reuses the SAME presentational `ReportBody` the SPA
  * uses, so the layout conforms to design.md and stays identical across surfaces.
  *
- * Caching: `revalidate = 600` makes the page statically cacheable for 10 minutes
- * (design.md: shared chrome is cached, per-repo content is produced fresh) —
- * Next's static + ISR gives exactly that without bespoke caching.
+ * Caching: the page renders per request because the CSP nonce (proxy.ts) must be
+ * fresh on every response; the report data is cached for 10 minutes in Next's
+ * data cache and expired the moment a fresh scan saves its report
+ * (lib/server/report-cache.ts).
  *
  * Rails (CLAUDE.md): the verdict is run through `enforceVerdict` so a bare
  * "Safe" can never render; reputation and code/behavior panels stay separate
@@ -19,7 +20,7 @@ import { cache } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { buildReportView, logColor } from "@/lib/report-view";
-import { latestReport } from "@/lib/server/report-source";
+import { cachedLatestReport } from "@/lib/server/report-cache";
 import { safeJsonLd } from "@/lib/json-ld";
 import { ReportBody } from "@/components/spa/components/ReportBody";
 import { AdSlot } from "@/components/ads/AdSlot";
@@ -27,8 +28,8 @@ import { webAdFor } from "@/lib/ads-web";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import type { Report } from "@/lib/types";
 
-/** Report pages are cacheable; revalidate the static render every 10 minutes. */
-export const revalidate = 600;
+// Rendered per request (the CSP nonce, see proxy.ts); the report data itself is
+// cached for 10 minutes and expired by a fresh scan (lib/server/report-cache.ts).
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
@@ -39,7 +40,7 @@ interface RouteParams {
 /**
  * Latest report for (owner, repo), wrapped in React's `cache` so
  * `generateMetadata` and the page component share a single DB round-trip per
- * request. `latestReport` reads the 2.0 report from schema v2 first and falls
+ * request. `cachedLatestReport` (data cache, see lib/server/report-cache.ts) reads the 2.0 report from schema v2 first and falls
  * back to the 1.0 public report; both reshape through `reportRowToReport`, the
  * same path the SPA's /api/report read uses (no SSR-vs-client drift). Returns
  * null on miss/error.
@@ -48,7 +49,7 @@ const getLatestReport = cache(async function getLatestReport(
   owner: string,
   repo: string,
 ): Promise<Report | null> {
-  return latestReport(owner, repo);
+  return cachedLatestReport(owner, repo);
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {

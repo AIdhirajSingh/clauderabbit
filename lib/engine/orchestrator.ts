@@ -31,9 +31,9 @@ import { computeReputation, fetchGithubOwner, fetchWeeklyDownloads, type Reputat
 import { fetchGithubTarball, resolveGithub, verifyGithubArchive, type GithubResolution } from "./resolve/github";
 import { fetchNpmTarball, npmCommitKey, resolveNpm, type NpmResolution } from "./resolve/npm";
 import { fetchOperatorTarball } from "./resolve/tarball";
-import { runAnalysis, type AnalysisResult } from "./sandbox/analyze";
-import { detonate, type DetonationResult } from "./sandbox/detonate";
-import { SandboxCreateError, type SandboxProvider } from "./sandbox/provider";
+import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
+import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
+import { SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
 import { computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
 import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
 import { runHeuristics, type HeuristicResult } from "./static/heuristics";
@@ -77,6 +77,15 @@ export interface RunScanOptions {
    * the Jev checks or the Luna report short and leave a degraded run behind.
    */
   onEvent?: (e: ScanEvent) => void;
+  /**
+   * When set, the work after the report is built (persist, budget charge, event
+   * flush, run row) runs as this background task and `runScan` returns the
+   * report at once. The caller keeps the process alive until the task settles
+   * (Next's `after()`); the task never rejects. Without it the work is awaited.
+   */
+  background?: (task: Promise<void>) => void;
+  /** Called once the report row is saved, with the persisted owner and repo (cache invalidation). */
+  onPersisted?: (saved: { ownerLogin: string; repoName: string; kind: TargetKind }) => void;
 }
 
 /**
@@ -263,10 +272,40 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   };
   const check = (name: string, ok: boolean, detail?: string) => bus.emit({ type: "check", data: { name, ok, ...(detail ? { detail: detail.slice(0, 500) } : {}) } });
 
+  // Both VMs boot as soon as the run is claimed and under budget, so their boot
+  // (and the forge, fence and containment probe in the detonation VM) overlaps
+  // the fetch. Each VM is fresh for this scan and is killed when its work ends or
+  // on any early exit; every kill is awaited before the run closes.
+  let detVm: DetonationVm | null = null;
+  let anaVm: BootedSandbox | null = null;
+  const kills: Promise<void>[] = [];
+  const sandboxMs: number[] = [];
+  const bootVms = () => {
+    const bootedAt = deps.now();
+    // A VM's billed time runs from its boot to the end of its kill.
+    const trackKill = (p: Promise<void>) => {
+      kills.push(p.then(() => void sandboxMs.push(deps.now() - bootedAt)));
+    };
+    const onKilled = (ok: boolean, detail: string) => check("sandbox_killed", ok, detail);
+    detVm = bootDetonation(
+      deps.sandbox,
+      { runId, totalTimeoutMs: cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs },
+      { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
+    );
+    anaVm = bootAnalysis(deps.sandbox, { runId, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs }, { onKilled, trackKill });
+  };
+  const releaseVms = async () => {
+    const dv = detVm as DetonationVm | null;
+    const av = anaVm as BootedSandbox | null;
+    await Promise.allSettled([dv?.vm.release(), av?.release()]);
+    await Promise.allSettled(kills);
+  };
+
   const fail = async (err: unknown, stage: StageName | null): Promise<ScanOutcome> => {
     const code = codeOf(err);
     const message = errMessage(err).slice(0, 500);
     if (stage) emitStage(stage, "error", message);
+    await releaseVms();
     g.release();
     if (claimed) {
       try {
@@ -325,41 +364,44 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     }
   }
 
-  try {
-    const claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template });
-    if (claim.status === "running") {
-      g.drop();
-      discard = true;
-      await bus.close();
-      return { kind: "attached", runId: claim.runId };
-    }
-  } catch (err) {
-    return fail(new EngineError("internal", `could not record the run: ${errMessage(err)}`), null);
+  // The fetch does not depend on the claim or the budget, so it runs alongside them.
+  const fetchP: Promise<Fetched> | null = fetched ? null : fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
+  fetchP?.catch(() => undefined);
+  const [claimR, budgetR] = await Promise.allSettled([
+    deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template }),
+    deps.store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap }),
+  ]);
+  if (claimR.status === "rejected") return fail(new EngineError("internal", `could not record the run: ${errMessage(claimR.reason)}`), null);
+  if (claimR.value.status === "running") {
+    g.drop();
+    discard = true;
+    await bus.close();
+    return { kind: "attached", runId: claimR.value.runId };
   }
   claimed = true;
   g.release();
 
-  try {
-    const underCap = await deps.store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
-    if (!underCap) {
-      check("daily_budget", false, "today's sandbox or model budget is spent; cached reports still serve");
-      return fail(new EngineError("budget_exhausted", "the daily scan budget is spent; retry tomorrow or open a cached report"), null);
-    }
-  } catch (err) {
+  if (budgetR.status === "rejected") {
     // Fail closed: without a working budget ledger no fresh sandbox or model spend starts.
-    check("daily_budget", false, errMessage(err));
+    check("daily_budget", false, errMessage(budgetR.reason));
     return fail(new EngineError("capacity", "the scan budget ledger is unavailable; cached reports still serve, retry shortly"), null);
   }
+  if (!budgetR.value) {
+    check("daily_budget", false, "today's sandbox or model budget is spent; cached reports still serve");
+    return fail(new EngineError("budget_exhausted", "the daily scan budget is spent; retry tomorrow or open a cached report"), null);
+  }
+
+  bootVms();
 
   // ---- fetch, verify, reach ---------------------------------------------------------
-  if (!fetched) {
+  if (fetchP) {
     try {
-      fetched = await fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
+      fetched = await fetchP;
     } catch (err) {
       return fail(err, stageStart.has("verify") ? "verify" : "fetch");
     }
   }
-  const { archive, bytes } = fetched;
+  const { archive, bytes } = fetched!;
   if (archive.rejected.length > 0) check("archive_entries_rejected", false, `${archive.rejected.length} unsafe entries dropped (${[...new Set(archive.rejected.map((r) => r.reason))].join(", ")})`);
   if (archive.truncated) check("archive_truncated", false, `archive cut at the ${archive.truncatedReason} cap`);
 
@@ -371,27 +413,20 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const meter = new CostMeter({ jevModel: deps.jev.modelId, lunaModel: deps.luna.modelId, fx: cfg.fx });
   const failedStages: string[] = [];
   const target = resolved.display;
-  const sandboxMs: number[] = [];
 
   // ---- parallel fan-out -----------------------------------------------------------------
   emitStage("static", "start");
   const analysisP: Promise<AnalysisResult | null> = (async () => {
-    const t0 = deps.now();
     try {
-      const r = await runAnalysis(
-        deps.sandbox,
+      const r = await runAnalysisOn(
+        anaVm!,
         { runId, files: archive.files, ecosystems: graph.ecosystems.length > 0 ? graph.ecosystems : ["npm"], sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, commandTimeoutMs: cfg.deadlines.analysisMs },
-        {
-          onLine: (tool, stream, text) => bus.transcript(tool, stream, text),
-          onKilled: (ok, detail) => check("sandbox_killed", ok, detail),
-        },
+        { onLine: (tool, stream, text) => bus.transcript(tool, stream, text) },
       );
-      sandboxMs.push(deps.now() - t0);
       for (const e of r.errors.slice(0, 10)) check("scanner_error", false, e);
       emitStage("static", r.complete ? "done" : "error", `${r.findings.length} scanner finding(s)${r.complete ? "" : "; coverage incomplete"}`);
       return r;
     } catch (err) {
-      sandboxMs.push(deps.now() - t0);
       emitStage("static", "error", errMessage(err));
       return null;
     }
@@ -475,31 +510,20 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   emitStage("detonate", "start");
   const canaries: Canaries = makeCanaries(deps.random);
   const detonateP: Promise<DetonationResult | SandboxCreateError | Error> = (async () => {
-    const t0 = deps.now();
     try {
-      const d = await detonate(
-        deps.sandbox,
-        {
-          runId,
-          mode: resolved.kind === "npm" ? "npm-package" : "repo",
-          packageName: resolved.kind === "npm" ? resolved.npm!.name : null,
-          tarball: bytes,
-          canaries,
-          installTimeoutMs: cfg.deadlines.installMs,
-          entryTimeoutMs: cfg.deadlines.entryMs,
-          totalTimeoutMs: cfg.deadlines.detonateTotalMs,
-          sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs,
-          fakeRate: FAKE_CLOCK_RATE,
-        },
-        {
-          onLog: (stream, text) => bus.transcript("install", stream, text),
-          onKilled: (ok, detail) => check("sandbox_killed", ok, detail),
-        },
-      );
-      sandboxMs.push(deps.now() - t0);
-      return d;
+      return await runDetonation(detVm!, {
+        runId,
+        mode: resolved.kind === "npm" ? "npm-package" : "repo",
+        packageName: resolved.kind === "npm" ? resolved.npm!.name : null,
+        tarball: bytes,
+        canaries,
+        installTimeoutMs: cfg.deadlines.installMs,
+        entryTimeoutMs: cfg.deadlines.entryMs,
+        totalTimeoutMs: cfg.deadlines.detonateTotalMs,
+        sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs,
+        fakeRate: FAKE_CLOCK_RATE,
+      });
     } catch (err) {
-      sandboxMs.push(deps.now() - t0);
       return err instanceof Error ? err : new Error(String(err));
     }
   })();
@@ -628,6 +652,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   if (!checksOk) failedCoverage.push("checks");
   if (written.writer !== "model") failedCoverage.push("writer");
   const coverage: RunCoverage = { complete: failedCoverage.length === 0, failed: failedCoverage };
+  // Both kills were issued when each VM's work ended; they finished during the
+  // score and the report. Awaiting them here prices the real VM lifetimes.
+  await Promise.allSettled(kills);
   timings.total = Math.round(deps.now() - startedAt);
   const sandboxSeconds = sandboxMs.reduce((s, x) => s + x, 0) / 1000;
   const cost: CostLedger = meter.ledger(sandboxSeconds);
@@ -678,37 +705,55 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     cost,
   };
 
-  // ---- persist ---------------------------------------------------------------------------------------
-  emitStage("persist", "start");
-  try {
-    await deps.store.saveReport({
-      runId,
-      targetKind: resolved.kind,
-      subject: resolved.subject,
-      ownerLogin: resolved.ownerLogin,
-      repoName: resolved.repoName,
-      commitSha,
-      report,
-      packages: report.packages,
-      risky: [...staticFindings.filter((f) => f.reach !== "unreachable").slice(0, 100), ...checkFindings.slice(0, 36)],
-      logs: Object.entries(timings).map(([name, ms]) => ({ name, ms })),
-      stats: { files: archive.files.size, forged_calls: detonation?.forgedCalls.length ?? 0, processes: detonation?.processes.length ?? 0 },
-    });
-    emitStage("persist", "done");
-  } catch (err) {
-    emitStage("persist", "error", errMessage(err));
-  }
-  try {
-    await deps.store.chargeBudget({ sandboxSeconds: Math.ceil(sandboxSeconds), tokens: meter.totalTokens(), capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
-  } catch (err) {
-    check("budget_charge", false, errMessage(err));
-  }
-  await bus.close();
-  try {
-    await deps.store.finishRun(runId, { status: "done", timings, cost });
-  } catch (err) {
-    // The report row is already written; a stale running row expires (expire_stale_runs).
-    void err;
+  // ---- persist ----------------------------------------------------------------------------------------
+  const finish = async (): Promise<void> => {
+    emitStage("persist", "start");
+    const save = (async () => {
+      try {
+        await deps.store.saveReport({
+          runId,
+          targetKind: resolved.kind,
+          subject: resolved.subject,
+          ownerLogin: resolved.ownerLogin,
+          repoName: resolved.repoName,
+          commitSha,
+          report,
+          packages: report.packages,
+          risky: [...staticFindings.filter((f) => f.reach !== "unreachable").slice(0, 100), ...checkFindings.slice(0, 36)],
+          logs: Object.entries(timings).map(([name, ms]) => ({ name, ms })),
+          stats: { files: archive.files.size, forged_calls: detonation?.forgedCalls.length ?? 0, processes: detonation?.processes.length ?? 0 },
+        });
+        emitStage("persist", "done");
+        try {
+          opts.onPersisted?.({ ownerLogin: resolved.ownerLogin, repoName: resolved.repoName, kind: resolved.kind });
+        } catch (err) {
+          console.error("onPersisted failed:", errMessage(err).slice(0, 200));
+        }
+      } catch (err) {
+        emitStage("persist", "error", errMessage(err));
+      }
+    })();
+    const charge = (async () => {
+      try {
+        await deps.store.chargeBudget({ sandboxSeconds: Math.ceil(sandboxSeconds), tokens: meter.totalTokens(), capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
+      } catch (err) {
+        check("budget_charge", false, errMessage(err));
+      }
+    })();
+    await Promise.all([save, charge]);
+    await bus.close();
+    try {
+      await deps.store.finishRun(runId, { status: "done", timings, cost });
+    } catch (err) {
+      // The report row is already written; a stale running row expires (expire_stale_runs).
+      void err;
+    }
+  };
+  if (opts.background) {
+    // The caller already has the report; this keeps running until the rows are written.
+    opts.background(finish().catch((err: unknown) => console.error("scan finish failed:", errMessage(err).slice(0, 300))));
+  } else {
+    await finish();
   }
   return { kind: "fresh", runId, report };
 }

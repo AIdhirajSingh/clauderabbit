@@ -1,5 +1,5 @@
 import type { NextConfig } from "next";
-import { contentSecurityPolicy } from "./lib/csp";
+import { API_CONTENT_SECURITY_POLICY } from "./lib/csp";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -45,14 +45,17 @@ const nextConfig: NextConfig = {
       { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), browsing-topics=()" },
       { key: "X-DNS-Prefetch-Control", value: "on" },
     ];
-    // The CSP (lib/csp.ts) allows Supabase https/wss and the AdSense origins the web ad needs.
-    const csp = contentSecurityPolicy();
+    // Pages get their per-request nonce CSP from proxy.ts (lib/csp.ts). The routes the
+    // proxy does not match are JSON / protocol endpoints: they get a CSP that loads nothing.
+    // These sources mirror the proxy matcher's exclusions, so no response carries two policies.
+    const apiSources = ["/api/:path*", "/mcp", "/mcp/:path*", "/oauth/token", "/oauth/register", "/.well-known/:path*"];
     return [
       {
         // every route EXCEPT the embeddable badge (negative lookahead)
         source: "/((?!badge/).*)",
-        headers: [...base, { key: "X-Frame-Options", value: "DENY" }, { key: "Content-Security-Policy", value: csp }],
+        headers: [...base, { key: "X-Frame-Options", value: "DENY" }],
       },
+      ...apiSources.map((source) => ({ source, headers: [{ key: "Content-Security-Policy", value: API_CONTENT_SECURITY_POLICY }] })),
       {
         // The public trust badge + standalone HTML report exports are embedded on
         // third-party sites, so badge routes stay cacheable, CORS-open, and frameable.

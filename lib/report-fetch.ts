@@ -73,6 +73,26 @@ export async function fetchLatestReportRest(
   repo: string,
   timeoutMs = 10_000,
 ): Promise<Report | null> {
+  try {
+    return await fetchLatestReportRestStrict(supabaseUrl, anonKey, owner, repo, timeoutMs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same anonymous PostgREST read, but a failed read THROWS (HTTP error,
+ * network error, timeout) and only a genuine "no row" is null. For callers that
+ * cache the answer: a transient error must never be cached as "not scanned".
+ */
+export async function fetchLatestReportRestStrict(
+  supabaseUrl: string,
+  anonKey: string,
+  owner: string,
+  repo: string,
+  timeoutMs = 10_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Report | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -82,20 +102,19 @@ export async function fetchLatestReportRest(
       `&repo_name=eq.${encodeURIComponent(repo)}` +
       `&select=${encodeURIComponent(REPORT_SELECT)}` +
       `&order=created_at.desc&limit=1`;
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
       signal: ctrl.signal,
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error(`report read answered HTTP ${res.status}`);
     const rows = (await res.json()) as unknown;
-    if (!Array.isArray(rows) || rows.length === 0) return null;
+    if (!Array.isArray(rows)) throw new Error("report read answered a non-array body");
+    if (rows.length === 0) return null;
     const row = rows[0] as ReportRow & { owners?: unknown };
     const owners = Array.isArray(row.owners)
       ? (row.owners[0] ?? null)
       : (row.owners ?? null);
     return reportRowToReport({ ...row, owners } as ReportRow);
-  } catch {
-    return null;
   } finally {
     clearTimeout(timer);
   }

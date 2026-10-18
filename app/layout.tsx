@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import { headers } from "next/headers";
 import "./globals.css";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
@@ -87,9 +88,17 @@ const themeInitScript = `
 })();
 `;
 
-export default function RootLayout({
+/**
+ * Async because it reads the per-request CSP nonce that proxy.ts puts on the
+ * request (`x-nonce`, see lib/csp.ts). Reading a request header makes every page
+ * render per request, which a nonce requires: Next.js stamps the same nonce on
+ * its own scripts from the request's Content-Security-Policy header, and the
+ * theme init script below carries it explicitly.
+ */
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     <html
       lang="en"
@@ -106,7 +115,7 @@ export default function RootLayout({
           request. The font-family CSS variables set on <html> above are
           consumed by globals.css.
         */}
-        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>{children}</body>
     </html>

@@ -15,6 +15,7 @@ import { bearerToken, verifyCliToken } from "@/lib/engine/auth";
 import { EngineError, type ScanTarget } from "@/lib/engine/types";
 import { createV2Store, type V2Store } from "@/lib/engine/store";
 import { finalLineStructured, finalLineText } from "@/lib/server/report-text";
+import { invalidateReport } from "@/lib/server/report-cache";
 import { adForSurface, callerFrom, executeScan, missingServerKeys, rateLimitFor, serverConfig, type FinalLine } from "@/lib/server/scan-service";
 import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 
@@ -75,7 +76,7 @@ function buildServer(req: Request, store: V2Store): McpServer {
         final = { type: "error", code: "rate_limited", message: `too many scans from this account; retry in ${rl.retryAfter} s`, run_id: null, ad: adForSurface(config, "mcp-remote", target), retryAfter: rl.retryAfter };
       } else {
         try {
-          final = await executeScan(ctx, target, false, { signal: req.signal });
+          final = await executeScan(ctx, target, false, { signal: req.signal, onPersisted: ({ ownerLogin, repoName }) => invalidateReport(ownerLogin, repoName) });
         } catch (err) {
           final = { type: "error", code: err instanceof EngineError ? err.code : "internal", message: err instanceof Error ? err.message.slice(0, 500) : "scan failed", run_id: null, ad: adForSurface(config, "mcp-remote", target) };
         }

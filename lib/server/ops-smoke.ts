@@ -22,6 +22,7 @@ import { runAnalysis, type AnalysisResult } from "../engine/sandbox/analyze";
 import { E2BProvider } from "../engine/sandbox/e2b";
 import { withSandbox, type SandboxProvider } from "../engine/sandbox/provider";
 import { SANDBOX_CPU_COUNT, SANDBOX_MEMORY_MB } from "../engine/sandbox/resources";
+import { probeLuna, probeNetwork, runPipelineTiming, type PipelineEngine } from "./ops-pipeline";
 import { GUARDDOG_VERSION_CMD, SEMGREP_VERSION_CMD, YARA_VERSION_CMD } from "../engine/sandbox/scanner-versions";
 
 export const SMOKE_SCRIPT = "/opt/cr/bin/cr-smoke.sh";
@@ -39,6 +40,8 @@ export interface OpsSmokeDeps {
   now?: () => number;
   randomId?: () => string;
   fetch?: typeof fetch;
+  /** Jev, Luna and fetch for the pipeline part (tests); production uses productionDeps. */
+  engine?: (config: EngineConfig) => PipelineEngine;
 }
 
 export interface PublicPortProbe {
@@ -164,6 +167,44 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
   const fetchImpl = deps.fetch ?? fetch;
   const runId = `ops-smoke-${(deps.randomId ?? (() => crypto.randomUUID()))()}`;
   const provider = deps.provider ? deps.provider(config) : new E2BProvider({ apiKey: config.e2bApiKey!, template: config.e2bTemplate });
+  const url = new URL(req.url);
+  const parts = new Set((url.searchParams.get("parts") ?? "proof,pipeline,luna,net").split(",").map((p) => p.trim()));
+  const started = now();
+  const out: Record<string, unknown> = { run_id: runId, template: provider.template, size: { vcpu: SANDBOX_CPU_COUNT, memory_mb: SANDBOX_MEMORY_MB }, parts: [...parts] };
+  let ok = true;
+  if (parts.has("proof")) {
+    const proof = await runProof(provider, config, runId, now, fetchImpl);
+    ok &&= proof.ok;
+    Object.assign(out, proof.body);
+  }
+  if (parts.has("pipeline")) {
+    const pipeline = await runPipelineTiming(config, provider, now, deps.engine?.(config));
+    const forgedWithCanary = pipeline.forged_calls.filter((c) => c.canary_hits.length > 0);
+    const kills = pipeline.checks.filter((c) => c.name === "sandbox_killed");
+    const pipelineAssertions: Assertion[] = [
+      { name: "pipeline_fresh", ok: pipeline.ok, detail: pipeline.error ?? `${pipeline.verdict} ${pipeline.score}, writer ${pipeline.writer}` },
+      { name: "pipeline_canary_caught", ok: forgedWithCanary.some((c) => c.host === "c2.cr-fixture.invalid"), detail: JSON.stringify(forgedWithCanary).slice(0, 300) },
+      { name: "pipeline_decoy_read", ok: pipeline.decoy_reads.includes("/home/cr/.aws/credentials"), detail: pipeline.decoy_reads.join(", ") },
+      { name: "pipeline_verdict", ok: pipeline.verdict === "Malicious" || pipeline.verdict === "High risk", detail: String(pipeline.verdict) },
+      { name: "pipeline_not_verified", ok: pipeline.not_verified.length > 0, detail: `${pipeline.not_verified.length} line(s)` },
+      { name: "pipeline_both_vms_killed", ok: kills.length === 2 && kills.every((k) => k.ok), detail: kills.map((k) => k.detail).join(" | ") },
+      { name: "pipeline_contained", ok: pipeline.checks.some((c) => c.name === "egress_contained" && c.ok), detail: "egress_contained check from the harness" },
+    ];
+    ok &&= pipelineAssertions.every((a) => a.ok);
+    const { report, ...rest } = pipeline;
+    out.pipeline = { ...rest, assertions: pipelineAssertions, headline: report?.headline ?? null, summary: report?.summary ?? null };
+    if (parts.has("luna") && report && config.openaiApiKey) {
+      out.luna = await probeLuna(config, report, ["low", "none"], now);
+    }
+  }
+  if (parts.has("net")) out.net = await probeNetwork(config, now);
+  out.ok = ok;
+  out.total_ms = Math.round(now() - started);
+  return json(out, ok ? 200 : 500);
+}
+
+/** The containment proof: template smoke detonation (cr-smoke.sh) and the production analysis on our fixture, concurrently. */
+async function runProof(provider: SandboxProvider, config: EngineConfig, runId: string, now: () => number, fetchImpl: typeof fetch): Promise<{ ok: boolean; body: Record<string, unknown> }> {
   const t0 = now();
   const rel = () => Math.round(now() - t0);
   const killed: Assertion[] = [];
@@ -230,12 +271,9 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
   ];
   const ok = assertions.every((a) => a.ok) && killed.length === 2;
 
-  return json(
-    {
-      ok,
-      run_id: runId,
-      template: provider.template,
-      size: { vcpu: SANDBOX_CPU_COUNT, memory_mb: SANDBOX_MEMORY_MB },
+  return {
+    ok,
+    body: {
       assertions,
       resources,
       timings: { total_ms: rel(), detonation: det.span, analysis: ana.span, overlap_ms: overlap },
@@ -256,6 +294,5 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
           }
         : { error: ana.error },
     },
-    ok ? 200 : 500,
-  );
+  };
 }

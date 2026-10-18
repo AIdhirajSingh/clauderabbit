@@ -15,7 +15,7 @@ import { cacheHitLedger, type CostLedger } from "../engine/cost";
 import { identify, identityBackend, bearerToken, type Identity } from "../engine/auth";
 import { DEFAULT_SITE_URL, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
-import { runScan } from "../engine/orchestrator";
+import { runScan, type RunScanOptions } from "../engine/orchestrator";
 import { checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
 import { parseGithubTarget } from "../engine/resolve/github";
 import { isValidNpmName, parseNpmTarget } from "../engine/resolve/npm";
@@ -212,11 +212,16 @@ export async function followRun(store: V2Store, runId: string, opts: { deadlineM
 }
 
 /** Run one scan end to end on the production pipeline and produce the final line. */
-export async function executeScan(ctx: CallerContext, target: ScanTarget, regenerate: boolean, opts: { onEvent?: (e: ScanEvent) => void; signal?: AbortSignal }): Promise<FinalLine> {
+export async function executeScan(
+  ctx: CallerContext,
+  target: ScanTarget,
+  regenerate: boolean,
+  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal },
+): Promise<FinalLine> {
   const { config, store, caller } = ctx;
   const ad = adForSurface(config, caller.surface, target);
   const deps = productionDeps(config, store);
-  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator }, deps, { onEvent: opts.onEvent });
+  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted });
   const reportUrl = reportUrlFor(config.siteUrl, target);
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad };
   if (outcome.kind === "attached") {

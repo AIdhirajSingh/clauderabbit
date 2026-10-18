@@ -4,7 +4,14 @@
 # `finally`. Repo code runs only as uid 1001 (`cr`), behind the nftables inner
 # fence, with every outbound connection and DNS query redirected into the forge.
 #
+# Started by lib/engine/sandbox/detonate.ts as soon as the VM exists, before the
+# target is even fetched: steps 1 to 4 (per-VM CA, inner fence, forge, containment
+# probe) run while the function resolves and fetches. Then the harness waits for
+# /root/in/go, which the function writes only after every input below is in place.
+# Nothing from the target exists in the VM before the probe has passed.
+#
 # Input (written by lib/engine/sandbox/detonate.ts as root):
+#   /root/in/go                    written last; the harness waits for it (GO_WAIT_S)
 #   /root/in/target.tgz            verified tarball bytes (GitHub archive or npm tarball)
 #   /root/in/run.json              {"mode":"npm-package"|"repo","name":str|null,
 #                                   "install_timeout_s":N,"entry_timeout_s":N,"fake_rate":N}
@@ -30,6 +37,7 @@ UV_BIN=/opt/cr/tools/bin
 FAKETIME_LIB=/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1
 TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,connect,sendto,sendmsg,sendmmsg,chmod,fchmodat,chdir,clone,clone3,fork,vfork
 MAX_LOG=262144
+GO_WAIT_S=60
 
 log() { printf 'cr: %s\n' "$*"; }
 now_ms() { date +%s%3N; }
@@ -39,19 +47,11 @@ check() {
 }
 
 rm -rf "$OUT" "$RUN" /work
-mkdir -p "$OUT" "$RUN" /work
+mkdir -p "$OUT" "$RUN" /work "$CRDIR"
 chmod 0700 "$OUT" "$CRDIR"
 : >"$OUT/checks.jsonl"
 T0=$(now_ms)
-
-INSTALL_TIMEOUT=$(jq -r '.install_timeout_s // 20' "$IN/run.json")
-ENTRY_TIMEOUT=$(jq -r '.entry_timeout_s // 4' "$IN/run.json")
-FAKE_RATE=$(jq -r '.fake_rate // 30' "$IN/run.json")
-MODE=$(jq -r '.mode' "$IN/run.json")
-PKG_NAME=$(jq -r '.name // ""' "$IN/run.json")
-SAFE_NAME_RE='^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$'
-case "$MODE" in npm-package|repo) ;; *) log "bad mode"; exit 2 ;; esac
-[[ "$INSTALL_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$ENTRY_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$FAKE_RATE" =~ ^[0-9]+$ ]] || { log "bad run.json"; exit 2; }
+since() { echo $(( $(now_ms) - T0 )); }
 
 id -u "$CR_USER" | grep -qx "$CR_UID"
 
@@ -117,6 +117,7 @@ for _ in $(seq 1 50); do
 done
 ss -ltn 'sport = :8080' | grep -q LISTEN || { check forge_up false "port 8080 not listening"; exit 3; }
 check forge_up true "mitmdump pid $FORGE_PID"
+FORGE_MS=$(since)
 
 # ---- 4. containment probe (before any repo code) --------------------------------
 # The probes send their own User-Agent: the forge answers a curl User-Agent with a
@@ -131,7 +132,7 @@ for ENVD_ADDR in 127.0.0.1 ::1; do
 done
 # Containment proof, smoke detonation only (run.json is root-written before any
 # repo code exists; the orchestrator never sets "proof").
-if [ "$(jq -r '.proof // false' "$IN/run.json")" = true ]; then
+if [ -f "$IN/run.json" ] && [ "$(jq -r '.proof // false' "$IN/run.json")" = true ]; then
   if timeout 40 /opt/cr/bin/cr-proof.sh "$FORGE_PID" "$OUT/proof.txt"; then
     check containment_proof true "cr-proof.sh passed"
   else
@@ -149,6 +150,32 @@ else
   log "containment probe failed; no repo code will run"
   exit 4
 fi
+
+CONTAINED_MS=$(since)
+
+# ---- 4b. wait for the per-run inputs ----------------------------------------------
+# The function writes target.tgz, run.json and the canaries, then the go file.
+log "phase wait-inputs"
+for ((i = 0; i < GO_WAIT_S * 50; i++)); do
+  [ -f "$IN/go" ] && break
+  sleep 0.02
+done
+if [ ! -f "$IN/go" ]; then log "inputs did not arrive within ${GO_WAIT_S} s"; check inputs_arrived false "no go file after ${GO_WAIT_S} s"; exit 5; fi
+INPUTS_MS=$(since)
+for f in "$IN/target.tgz" "$IN/run.json" "$CRDIR/canary.env" "$CRDIR/canary-patterns.txt"; do
+  [ -f "$f" ] || { log "missing input $f"; check inputs_arrived false "missing $(basename "$f")"; exit 2; }
+done
+chmod 0700 "$CRDIR"
+chmod 0600 "$CRDIR/canary.env" "$CRDIR/canary-patterns.txt"
+
+INSTALL_TIMEOUT=$(jq -r '.install_timeout_s // 20' "$IN/run.json")
+ENTRY_TIMEOUT=$(jq -r '.entry_timeout_s // 4' "$IN/run.json")
+FAKE_RATE=$(jq -r '.fake_rate // 30' "$IN/run.json")
+MODE=$(jq -r '.mode' "$IN/run.json")
+PKG_NAME=$(jq -r '.name // ""' "$IN/run.json")
+SAFE_NAME_RE='^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$'
+case "$MODE" in npm-package|repo) ;; *) log "bad mode"; exit 2 ;; esac
+[[ "$INSTALL_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$ENTRY_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$FAKE_RATE" =~ ^[0-9]+$ ]] || { log "bad run.json"; exit 2; }
 
 # ---- 5. decoys and canaries ------------------------------------------------------
 declare -A CANARY
@@ -234,6 +261,7 @@ fi
 # ---- 7-8. install phase -------------------------------------------------------------
 touch "$RUN/start.marker"
 sleep 0.01
+INSTALL_START_MS=$(since)
 INSTALL_STATUS=skipped
 INSTALL_EXIT=null
 INSTALL_MS=0
@@ -357,6 +385,7 @@ elif [ "$INSTALL_STATUS" = completed ]; then
 fi
 pkill -KILL -u "$CR_UID" || true
 echo "collect $(date +%s.%N)" >"$OUT/phase"
+COLLECT_START_MS=$(since)
 
 # ---- 10. collect ---------------------------------------------------------------------------
 DEPS_KIND=none
@@ -435,11 +464,13 @@ jq -n \
   --arg mode "$MODE" --arg eco "$ECO" --arg deps "$DEPS_KIND" \
   --arg is "$INSTALL_STATUS" --argjson ie "$INSTALL_EXIT" --argjson ims "$INSTALL_MS" --arg icmd "$INSTALL_CMD" \
   --arg es "$ENTRY_STATUS" --argjson ee "$ENTRY_EXIT" --argjson ems "$ENTRY_MS" \
-  --argjson cr "$CLOCK_REAL" --argjson cf "$CLOCK_FAKE" --argjson total "$(( $(now_ms) - T0 ))" \
+  --argjson cr "$CLOCK_REAL" --argjson cf "$CLOCK_FAKE" --argjson total "$(since)" \
+  --argjson pf "$FORGE_MS" --argjson pc "$CONTAINED_MS" --argjson pi "$INPUTS_MS" --argjson pis "$INSTALL_START_MS" --argjson pcs "$COLLECT_START_MS" \
   '{version:1, mode:$mode, ecosystem:$eco, deps_kind:$deps,
     install:{status:$is, exit_code:$ie, ms:$ims, command:$icmd},
     entry:{status:$es, exit_code:$ee, ms:$ems},
-    clock:{real_ms:$cr, fake_ms:$cf}, total_ms:$total}' >"$OUT/result.json"
+    clock:{real_ms:$cr, fake_ms:$cf}, total_ms:$total,
+    phases:{forge_ms:$pf, contained_ms:$pc, inputs_ms:$pi, install_start_ms:$pis, collect_start_ms:$pcs}}' >"$OUT/result.json"
 
 timeout 4 tar -czf /root/out.tmp.tgz -C /root out
 mv /root/out.tmp.tgz /root/out.tgz

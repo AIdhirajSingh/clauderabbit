@@ -1,10 +1,18 @@
 /**
  * Drive one detonation (DESIGN.md section 3): a fresh VM from the template,
- * the verified tarball and per-run canaries written as root, cr-detonate.sh
- * run as root (forge up, inner fence, containment probe, install and entry as
- * uid 1001 under strace and the fake clock), the forensic bundle read back, and
- * the VM killed in `finally`. Parsing happens here, in the function, never in
- * the VM.
+ * cr-detonate.sh run as root, the verified tarball and per-run canaries written
+ * as root, the forensic bundle read back, and the VM killed in `finally`.
+ * Parsing happens here, in the function, never in the VM.
+ *
+ * Two steps, so the slow part of the harness overlaps the rest of the scan:
+ * `bootDetonation` creates the VM and starts cr-detonate.sh at once. The harness
+ * builds the per-VM CA, loads the inner fence, starts the forge and runs the
+ * containment probe while the function is still resolving and fetching the
+ * target; then it waits for /root/in/go. `runDetonation` writes the tarball,
+ * run.json and the canaries, then the go file, and the harness continues with
+ * the decoys, extraction, install and entry as uid 1001 under strace and the
+ * fake clock. No repo byte reaches the VM before the probe has proven the forge
+ * and the fence, and the probe still gates every line of repo code.
  */
 
 import { parseTarball, textOf } from "../archive";
@@ -14,9 +22,13 @@ import type { ForensicCoverage, PhaseOutcome } from "../score";
 import { depsFromNpmLs, depsFromUvPipList } from "../static/osv";
 import type { CheckEventData, DependencyRef, FileEventData, ForgedCallData, ProcessEventData } from "../types";
 import { SALVAGE_BUDGET_MS } from "../config";
-import { withSandbox, type SandboxProvider } from "./provider";
+import { bootSandbox, runOnBooted, type BootedSandbox, type CommandResult, type KillHooks, type SandboxProvider } from "./provider";
 
 export const DETONATE_SCRIPT = "/opt/cr/bin/cr-detonate.sh";
+/** The harness command, started as root the moment the VM exists. */
+export const HARNESS_COMMAND = `bash ${DETONATE_SCRIPT}`;
+/** Written last, after every per-run input: the harness waits for it before any repo step. */
+export const GO_FILE = "/root/in/go";
 export const OUT_ARCHIVE = "/root/out.tgz";
 /** Exit code cr-detonate.sh uses when the containment probe fails (no repo code ran). */
 export const EXIT_NOT_CONTAINED = 4;
@@ -51,9 +63,8 @@ export interface DetonationInput {
   fakeRate: number;
 }
 
-export interface DetonationHooks {
+export interface DetonationHooks extends KillHooks {
   onLog?: (stream: "stdout" | "stderr", text: string) => void;
-  onKilled?: (ok: boolean, detail: string) => void;
 }
 
 export interface DetonationResult {
@@ -88,6 +99,8 @@ interface HarnessResult {
   entry?: { status?: string; exit_code?: number | null; ms?: number };
   clock?: { real_ms?: number; fake_ms?: number };
   total_ms?: number;
+  /** Milliseconds from harness start: forge up, probe done, inputs arrived, install start, collect start. */
+  phases?: { forge_ms?: number; contained_ms?: number; inputs_ms?: number; install_start_ms?: number; collect_start_ms?: number };
 }
 
 function outcome(v: string | undefined): PhaseOutcome {
@@ -146,6 +159,11 @@ export async function parseForensicBundle(
   if (typeof result.total_ms === "number") timings["detonate.harness"] = result.total_ms;
   if (typeof result.clock?.real_ms === "number") timings["detonate.clock_real"] = result.clock.real_ms;
   if (typeof result.clock?.fake_ms === "number") timings["detonate.clock_fake"] = result.clock.fake_ms;
+  const ph = result.phases ?? {};
+  const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  if (num(ph.contained_ms)) timings["detonate.prepare"] = ph.contained_ms;
+  if (num(ph.contained_ms) && num(ph.inputs_ms)) timings["detonate.wait"] = Math.max(0, ph.inputs_ms - ph.contained_ms);
+  if (num(ph.collect_start_ms) && num(result.total_ms)) timings["detonate.collect"] = Math.max(0, result.total_ms - ph.collect_start_ms);
   const eco = result.ecosystem === "npm" || result.ecosystem === "python" ? result.ecosystem : "none";
   const datagramEgress = [...new Set([...ti.datagrams, ...te.datagrams])].sort();
   let drops: { udp?: unknown; icmp?: unknown; other?: unknown } = {};
@@ -214,14 +232,61 @@ export async function parseForensicBundle(
   };
 }
 
+/** A detonation VM booted ahead of its inputs, with the harness already running. */
+export interface DetonationVm {
+  vm: BootedSandbox;
+  /** The harness command's outcome: its result, or a deadline / lost VM. */
+  harness: Promise<{ run: CommandResult; timedOut: boolean }>;
+  /** Wall clock (Date.now) when the boot started. */
+  bootedAt: number;
+}
+
+export interface DetonationBoot {
+  runId: string;
+  totalTimeoutMs: number;
+  sandboxTimeoutMs: number;
+}
+
+/**
+ * Create the detonation VM (outer fence: registries only) and start the harness
+ * at once. The harness command deadline counts from here, so it covers the
+ * wait for inputs too (the harness gives up on its own after GO_WAIT_S).
+ */
+export function bootDetonation(provider: SandboxProvider, boot: DetonationBoot, hooks: DetonationHooks = {}): DetonationVm {
+  const bootedAt = Date.now();
+  const vm = bootSandbox(provider, { purpose: "detonate", runId: boot.runId, timeoutMs: boot.sandboxTimeoutMs, network: "registry-only" }, hooks);
+  const harness = vm.session().then(async (s) => {
+    try {
+      const run = await s.run(HARNESS_COMMAND, {
+        timeoutMs: boot.totalTimeoutMs,
+        onStdout: (t) => hooks.onLog?.("stdout", t),
+        onStderr: (t) => hooks.onLog?.("stderr", t),
+      });
+      return { run, timedOut: false };
+    } catch (err) {
+      // The command deadline passed or the VM stopped answering. The forge and
+      // strace write /root/out live, so the salvage step packs what exists.
+      return { run: { exitCode: 124, stdout: "", stderr: (err as Error).message ?? String(err) }, timedOut: true };
+    }
+  });
+  harness.catch(() => undefined);
+  return { vm, harness, bootedAt };
+}
+
 export async function detonate(provider: SandboxProvider, input: DetonationInput, hooks: DetonationHooks = {}): Promise<DetonationResult> {
-  return withSandbox(
-    provider,
-    { purpose: "detonate", runId: input.runId, timeoutMs: input.sandboxTimeoutMs, network: "registry-only" },
-    async (s) => {
-      const t0 = Date.now();
-      await s.writeFile("/root/in/target.tgz", input.tarball);
-      await s.writeFile(
+  return runDetonation(bootDetonation(provider, input, hooks), input);
+}
+
+/**
+ * Hand the booted VM its inputs, wait for the harness, read the bundle back.
+ * The VM is released (killed) in `finally`.
+ */
+export async function runDetonation(dvm: DetonationVm, input: DetonationInput): Promise<DetonationResult> {
+  return runOnBooted(dvm.vm, async (s) => {
+    const t0 = Date.now();
+    await Promise.all([
+      s.writeFile("/root/in/target.tgz", input.tarball),
+      s.writeFile(
         "/root/in/run.json",
         JSON.stringify({
           mode: input.mode,
@@ -230,91 +295,79 @@ export async function detonate(provider: SandboxProvider, input: DetonationInput
           entry_timeout_s: Math.max(1, Math.round(input.entryTimeoutMs / 1000)),
           fake_rate: input.fakeRate,
         }),
-      );
-      await s.writeFile("/root/.cr/canary.env", canaryEnvFile(input.canaries));
-      await s.writeFile("/root/.cr/canary-patterns.txt", canaryPatternsFile(input.canaries));
-      const upload = Date.now() - t0;
-      let run: { exitCode: number; stdout: string; stderr: string };
-      let timedOut = false;
+      ),
+      s.writeFile("/root/.cr/canary.env", canaryEnvFile(input.canaries)),
+      s.writeFile("/root/.cr/canary-patterns.txt", canaryPatternsFile(input.canaries)),
+    ]);
+    // Only after every input is in place.
+    await s.writeFile(GO_FILE, "go\n");
+    const upload = Date.now() - t0;
+    const { run, timedOut } = await dvm.harness;
+    let bytes: Uint8Array | null = null;
+    try {
+      bytes = await s.readFile(OUT_ARCHIVE);
+    } catch {
+      bytes = null;
+    }
+    let salvaged = false;
+    if (!bytes) {
       try {
-        run = await s.run(`chmod 0700 /root/.cr && chmod 0600 /root/.cr/canary.env /root/.cr/canary-patterns.txt && bash ${DETONATE_SCRIPT}`, {
-          timeoutMs: input.totalTimeoutMs,
-          onStdout: (t) => hooks.onLog?.("stdout", t),
-          onStderr: (t) => hooks.onLog?.("stderr", t),
-        });
-      } catch (err) {
-        // The command deadline passed or the VM stopped answering. The forge and
-        // strace write /root/out live, so the salvage step below packs what exists.
-        timedOut = true;
-        run = { exitCode: 124, stdout: "", stderr: (err as Error).message ?? String(err) };
-      }
-      let bytes: Uint8Array | null = null;
-      try {
-        bytes = await s.readFile(OUT_ARCHIVE);
+        await s.run(SALVAGE_COMMAND, { timeoutMs: SALVAGE_MS });
+        bytes = await s.readFile(SALVAGE_ARCHIVE);
+        salvaged = true;
       } catch {
         bytes = null;
       }
-      let salvaged = false;
-      if (!bytes) {
-        try {
-          await s.run(SALVAGE_COMMAND, { timeoutMs: SALVAGE_MS });
-          bytes = await s.readFile(SALVAGE_ARCHIVE);
-          salvaged = true;
-        } catch {
-          bytes = null;
-        }
+    }
+    let base: Omit<DetonationResult, "sandboxId" | "harnessExit"> | null = null;
+    if (bytes) {
+      try {
+        base = await parseForensicBundle(bytes, input.canaries);
+      } catch {
+        base = null;
       }
-      let base: Omit<DetonationResult, "sandboxId" | "harnessExit"> | null = null;
-      if (bytes) {
-        try {
-          base = await parseForensicBundle(bytes, input.canaries);
-        } catch {
-          base = null;
-        }
-      }
-      const checks = base?.checks ?? [];
-      const why = timedOut
-        ? `harness passed the ${input.totalTimeoutMs} ms deadline`
-        : run.exitCode === EXIT_NOT_CONTAINED
-          ? "containment probe failed, so no repo code ran"
-          : `harness exited ${run.exitCode} without a forensic bundle`;
-      const complete = Boolean(base) && !salvaged;
-      if (!complete) {
-        checks.push({ name: "forensics_collected", ok: false, detail: salvaged ? `${why}; partial record salvaged from the live forensic files` : why });
-      }
-      if (run.exitCode === EXIT_NOT_CONTAINED && !checks.some((c) => c.name === "egress_contained")) {
-        checks.push({ name: "egress_contained", ok: false, detail: "containment probe failed; no repo code ran" });
-      }
-      // Without the harness's own bundle the phase outcomes come from how the run ended,
-      // and behaviour counts as not observed even when a salvaged record shows some of it.
-      const install: PhaseOutcome = complete ? base!.install : timedOut ? "timeout" : run.exitCode === EXIT_NOT_CONTAINED ? "skipped" : "failed";
-      const entry: PhaseOutcome = complete ? base!.entry : "skipped";
-      const forensics: DetonationResult["forensics"] = complete
-        ? base!.forensics
-        : { coverage: "lost", gaps: [`The sandbox run did not finish its forensic record (${why}).`, ...(base?.forensics.gaps ?? [])] };
-      const empty = { stdout: "", stderr: run.stderr.slice(-4000) };
-      return {
-        sandboxId: s.id,
-        harnessExit: run.exitCode,
-        install,
-        entry,
-        ecosystem: base?.ecosystem ?? "none",
-        installCommand: base?.installCommand ?? "",
-        forgedCalls: base?.forgedCalls ?? [],
-        files: base?.files ?? [],
-        processes: base?.processes ?? [],
-        canaryInFiles: base?.canaryInFiles ?? [],
-        datagramEgress: base?.datagramEgress ?? [],
-        checks,
-        installedDeps: base?.installedDeps ?? null,
-        transcripts: base?.transcripts ?? { install: empty, entry: { stdout: "", stderr: "" } },
-        timings: { ...(base?.timings ?? {}), "detonate.upload": upload, "detonate.total": Date.now() - t0 },
-        integrityMismatches: base?.integrityMismatches ?? [],
-        mirrorMetadata: base?.mirrorMetadata ?? [],
-        forensics,
-        stats: base?.stats ?? { captureRecords: 0, captureInvalid: 0, harnessRecords: 0, traceLines: 0, traceUnparsed: 0, dropped: 0, writtenFiles: 0, pthFiles: [] },
-      };
-    },
-    hooks.onKilled,
-  );
+    }
+    const checks = base?.checks ?? [];
+    const why = timedOut
+      ? `harness passed the ${input.totalTimeoutMs} ms deadline`
+      : run.exitCode === EXIT_NOT_CONTAINED
+        ? "containment probe failed, so no repo code ran"
+        : `harness exited ${run.exitCode} without a forensic bundle`;
+    const complete = Boolean(base) && !salvaged;
+    if (!complete) {
+      checks.push({ name: "forensics_collected", ok: false, detail: salvaged ? `${why}; partial record salvaged from the live forensic files` : why });
+    }
+    if (run.exitCode === EXIT_NOT_CONTAINED && !checks.some((c) => c.name === "egress_contained")) {
+      checks.push({ name: "egress_contained", ok: false, detail: "containment probe failed; no repo code ran" });
+    }
+    // Without the harness's own bundle the phase outcomes come from how the run ended,
+    // and behaviour counts as not observed even when a salvaged record shows some of it.
+    const install: PhaseOutcome = complete ? base!.install : timedOut ? "timeout" : run.exitCode === EXIT_NOT_CONTAINED ? "skipped" : "failed";
+    const entry: PhaseOutcome = complete ? base!.entry : "skipped";
+    const forensics: DetonationResult["forensics"] = complete
+      ? base!.forensics
+      : { coverage: "lost", gaps: [`The sandbox run did not finish its forensic record (${why}).`, ...(base?.forensics.gaps ?? [])] };
+    const empty = { stdout: "", stderr: run.stderr.slice(-4000) };
+    return {
+      sandboxId: s.id,
+      harnessExit: run.exitCode,
+      install,
+      entry,
+      ecosystem: base?.ecosystem ?? "none",
+      installCommand: base?.installCommand ?? "",
+      forgedCalls: base?.forgedCalls ?? [],
+      files: base?.files ?? [],
+      processes: base?.processes ?? [],
+      canaryInFiles: base?.canaryInFiles ?? [],
+      datagramEgress: base?.datagramEgress ?? [],
+      checks,
+      installedDeps: base?.installedDeps ?? null,
+      transcripts: base?.transcripts ?? { install: empty, entry: { stdout: "", stderr: "" } },
+      timings: { ...(base?.timings ?? {}), "detonate.upload": upload, "detonate.total": Date.now() - t0, "detonate.vm": Date.now() - dvm.bootedAt },
+      integrityMismatches: base?.integrityMismatches ?? [],
+      mirrorMetadata: base?.mirrorMetadata ?? [],
+      forensics,
+      stats: base?.stats ?? { captureRecords: 0, captureInvalid: 0, harnessRecords: 0, traceLines: 0, traceUnparsed: 0, dropped: 0, writtenFiles: 0, pthFiles: [] },
+    };
+  });
 }

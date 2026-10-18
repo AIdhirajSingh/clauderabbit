@@ -19,7 +19,7 @@ const PREVIEW = { VERCEL_ENV: "preview", CR_OPERATOR_KEY: KEY, E2B_API_KEY: "pla
 function post(key: string | null): Request {
   const headers = new Headers();
   if (key !== null) headers.set("x-cr-operator-key", key);
-  return new Request("https://preview.example/api/ops/smoke", { method: "POST", headers });
+  return new Request("https://preview.example/api/ops/smoke?parts=proof", { method: "POST", headers });
 }
 
 const SMOKE_OK = [
@@ -209,5 +209,33 @@ test("public port probe: a proxy refusal passes, an open port or no answer fails
     assert.deepEqual(seen, ["https://8080-vm-detonate.e2b.test/cr-ops-public-probe"]);
     assert.equal(body.assertions.find((a) => a.name === "public_port_closed")?.ok, closed);
     assert.equal(body.ok, closed);
+  }
+});
+
+test("pipeline part: the production orchestrator on our phone-home fixture catches the canary and the decoy read, persists nothing, kills both VMs", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { MockSandboxProvider } = await import("../support/mock-sandbox.ts");
+  const { StandInJev } = await import("../support/stand-in-jev.ts");
+  const { StandInModel } = await import("../support/stand-in-model.ts");
+  const tmp = mkdtempSync(join(tmpdir(), "cr-ops-pipeline-"));
+  try {
+    const mock = new MockSandboxProvider(tmp);
+    const offline = (async () => new Response("offline", { status: 599 })) as typeof fetch;
+    const req = new Request("https://preview.example/api/ops/smoke?parts=pipeline", { method: "POST", headers: { "x-cr-operator-key": KEY } });
+    const res = await handleOpsSmoke(req, PREVIEW, { provider: () => mock, engine: () => ({ jev: new StandInJev(), luna: new StandInModel(), fetch: offline }) });
+    const body = (await res.json()) as { ok: boolean; pipeline: { assertions: Array<{ name: string; ok: boolean; detail: string }>; result_ms: number; settled_ms: number; timings: Record<string, number>; verdict: string } };
+    assert.equal(res.status, 200, JSON.stringify(body.pipeline?.assertions));
+    assert.ok(body.pipeline.assertions.every((a) => a.ok), JSON.stringify(body.pipeline.assertions));
+    assert.match(body.pipeline.verdict, /Malicious|High risk/);
+    assert.ok(body.pipeline.result_ms <= body.pipeline.settled_ms);
+    assert.ok(typeof body.pipeline.timings["detonate.prepare"] === "number" || typeof body.pipeline.timings["detonate.install"] === "number");
+    assert.equal(mock.sessions.length, 2, "one detonation VM and one analysis VM");
+    assert.ok(mock.sessions.every((s) => s.killed), "both VMs killed");
+    const det = mock.sessions.find((s) => s.opts.purpose === "detonate")!;
+    assert.deepEqual(det.commands[0], "bash /opt/cr/bin/cr-detonate.sh");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });

@@ -11,9 +11,11 @@
  * errors, carries an ad. Ads never gate a scan or a result.
  */
 
+import { after } from "next/server";
 import { eventLine, ndjsonLine } from "@/lib/engine/events";
 import { EngineError, type Ad, type ScanEvent } from "@/lib/engine/types";
 import { createV2Store } from "@/lib/engine/store";
+import { invalidateReport } from "@/lib/server/report-cache";
 import {
   MAX_BODY_BYTES,
   adForRequest,
@@ -86,6 +88,19 @@ export async function POST(req: Request): Promise<Response> {
   const encoder = new TextEncoder();
   const frame = (line: string) => encoder.encode(sse ? `data: ${line.trimEnd()}\n\n` : line);
 
+  // The rows of a fresh scan are written after its result line: the result goes
+  // out the moment the report exists, and Next's after() (waitUntil on Vercel)
+  // keeps this invocation alive until the persist task settles.
+  const pending: Promise<void>[] = [];
+  let background: ((task: Promise<void>) => void) | undefined;
+  try {
+    after(() => Promise.allSettled(pending));
+    background = (task) => void pending.push(task);
+  } catch {
+    // No request scope (direct handler calls in tests): persist inline.
+    background = undefined;
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let open = true;
@@ -97,10 +112,17 @@ export async function POST(req: Request): Promise<Response> {
           open = false;
         }
       };
+      // First byte at once: the scan's own events are held until its run is claimed.
+      write(ndjsonLine({ type: "accepted", at: new Date().toISOString() }));
       const onEvent = (e: ScanEvent) => write(eventLine(e));
       let final: FinalLine;
       try {
-        final = await executeScan(ctx, parsed.target, regenerate, { onEvent, signal: req.signal });
+        final = await executeScan(ctx, parsed.target, regenerate, {
+          onEvent,
+          signal: req.signal,
+          background,
+          onPersisted: ({ ownerLogin, repoName }) => invalidateReport(ownerLogin, repoName),
+        });
       } catch (err) {
         const code = err instanceof EngineError ? err.code : "internal";
         final = { type: "error", code, message: err instanceof Error ? err.message.slice(0, 500) : "scan failed", run_id: null, ad };

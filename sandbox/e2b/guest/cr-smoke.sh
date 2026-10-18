@@ -46,6 +46,8 @@ umask 077
 } >/root/.cr/canary.env
 printf '%s\n' "$SECRET" >/root/.cr/canary-patterns.txt
 umask 022
+# Every input is in place before the harness starts, so the go file goes in now.
+: >/root/in/go
 
 OUT=/root/out
 if ! /opt/cr/bin/cr-detonate.sh; then
