@@ -38,6 +38,33 @@ export interface OpsSmokeDeps {
   provider?: (config: EngineConfig) => SandboxProvider;
   now?: () => number;
   randomId?: () => string;
+  fetch?: typeof fetch;
+}
+
+export interface PublicPortProbe {
+  url: string;
+  status: number | null;
+  body: string;
+  closed: boolean;
+}
+
+/**
+ * Request the detonation VM's forge port through E2B's public sandbox URL from
+ * outside the VM. With allowPublicTraffic false the E2B proxy refuses it before
+ * anything in the VM sees it. Only a 4xx or 5xx from the proxy counts as closed;
+ * a 2xx or 3xx (open to the world) or no response at all (nothing proven) fails.
+ */
+async function probePublicPort(s: unknown, fetchImpl: typeof fetch): Promise<PublicPortProbe | null> {
+  const withUrl = s as { publicUrl?: (port: number) => string };
+  if (typeof withUrl.publicUrl !== "function") return null;
+  const url = `${withUrl.publicUrl(8080)}/cr-ops-public-probe`;
+  try {
+    const r = await fetchImpl(url, { signal: AbortSignal.timeout(8_000), redirect: "manual" });
+    const body = (await r.text()).slice(0, 300);
+    return { url, status: r.status, body, closed: r.status >= 400 };
+  } catch (err) {
+    return { url, status: null, body: err instanceof Error ? err.message : String(err), closed: false };
+  }
 }
 
 export interface TimedSpan {
@@ -134,6 +161,7 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
   if (!deps.provider && !config.e2bApiKey) return json({ ok: false, error: "E2B_API_KEY is not set on this deployment" }, 503);
 
   const now = deps.now ?? (() => Date.now());
+  const fetchImpl = deps.fetch ?? fetch;
   const runId = `ops-smoke-${(deps.randomId ?? (() => crypto.randomUUID()))()}`;
   const provider = deps.provider ? deps.provider(config) : new E2BProvider({ apiKey: config.e2bApiKey!, template: config.e2bTemplate });
   const t0 = now();
@@ -150,10 +178,11 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
         async (s) => {
           span.boot_ms = rel() - span.start_ms;
           const facts = await s.run(FACTS_CMD, { timeoutMs: FACTS_TIMEOUT_MS });
+          const publicPort = await probePublicPort(s, fetchImpl);
           const s0 = rel();
           const smoke = await s.run(`bash ${SMOKE_SCRIPT}`, { timeoutMs: SMOKE_COMMAND_TIMEOUT_MS });
           span.smoke_ms = rel() - s0;
-          return { sandbox_id: s.id, facts, smoke };
+          return { sandbox_id: s.id, facts, smoke, public_port: publicPort };
         },
         onKilled,
       );
@@ -161,7 +190,7 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
       return { span, ...out, error: null as string | null };
     } catch (err) {
       span.end_ms = rel();
-      return { span, sandbox_id: null, facts: null, smoke: null, error: err instanceof Error ? err.message : String(err) };
+      return { span, sandbox_id: null, facts: null, smoke: null, public_port: null, error: err instanceof Error ? err.message : String(err) };
     }
   })();
 
@@ -193,6 +222,9 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
     { name: "smoke_pass", ok: /^cr-smoke: PASS /m.test(smokeOut), detail: "cr-smoke.sh printed PASS" },
     { name: "containment_proof", ok: /^cr-proof: PASS$/m.test(smokeOut), detail: "cr-proof.sh printed PASS" },
     { name: "analysis_complete", ok: ana.result?.complete === true, detail: ana.error ?? `tools ${JSON.stringify(ana.result?.tools ?? {})}` },
+    ...(det.public_port
+      ? [{ name: "public_port_closed", ok: det.public_port.closed, detail: `${det.public_port.url} -> ${det.public_port.status ?? "no response"} ${det.public_port.body.slice(0, 120)}` }]
+      : []),
     { name: "concurrent", ok: overlap > 0, detail: `detonation and analysis overlapped ${overlap} ms` },
     ...killed,
   ];
@@ -210,6 +242,7 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
       detonation: {
         sandbox_id: det.sandbox_id,
         error: det.error,
+        public_port: det.public_port,
         facts: det.facts ? { exit: det.facts.exitCode, stdout: clip(det.facts.stdout), stderr: clip(det.facts.stderr) } : null,
         smoke: det.smoke ? { exit: det.smoke.exitCode, stdout: clip(det.smoke.stdout), stderr: clip(det.smoke.stderr) } : null,
       },

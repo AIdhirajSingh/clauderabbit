@@ -42,8 +42,8 @@ class ScriptedProvider implements SandboxProvider {
   readonly overlaps: string[] = [];
   readonly killed: string[] = [];
   readonly commands: string[] = [];
-  readonly opts: { facts: string; smoke: CommandResult };
-  constructor(opts: { facts: string; smoke: CommandResult }) {
+  readonly opts: { facts: string; smoke: CommandResult; publicUrls?: boolean };
+  constructor(opts: { facts: string; smoke: CommandResult; publicUrls?: boolean }) {
     this.opts = opts;
   }
 
@@ -52,7 +52,7 @@ class ScriptedProvider implements SandboxProvider {
     this.live.add(o.purpose);
     const { live, overlaps, killed, commands, opts } = this;
     const files = new Map<string, Uint8Array>();
-    return {
+    const session: SandboxSession & { publicUrl?: (port: number) => string } = {
       id: `vm-${o.purpose}`,
       async writeFile() {},
       async readFile(path: string) {
@@ -80,6 +80,8 @@ class ScriptedProvider implements SandboxProvider {
         killed.push(o.purpose);
       },
     };
+    if (opts.publicUrls) session.publicUrl = (port: number) => `https://${port}-vm-${o.purpose}.e2b.test`;
+    return session;
   }
 }
 
@@ -187,4 +189,25 @@ test("vercel-build hook never builds outside Preview and never needs the key the
   assert.match(run({ VERCEL_ENV: "production", E2B_API_KEY: "placeholder-not-a-key" }), /skip: VERCEL_ENV=production/);
   assert.match(run({}), /skip: VERCEL_ENV=unset/);
   assert.match(run({ VERCEL_ENV: "preview" }), /skip: E2B_API_KEY is not set/);
+});
+
+test("public port probe: a proxy refusal passes, an open port or no answer fails", async () => {
+  const cases: Array<[() => Promise<Response>, boolean]> = [
+    [async () => new Response("forbidden", { status: 403 }), true],
+    [async () => new Response('{"ok":true}', { status: 200 }), false],
+    [async () => { throw new Error("getaddrinfo ENOTFOUND"); }, false],
+  ];
+  for (const [respond, closed] of cases) {
+    const seen: string[] = [];
+    const p = new ScriptedProvider({ facts: FACTS, smoke: { exitCode: 0, stdout: SMOKE_OK, stderr: "" }, publicUrls: true });
+    const fakeFetch = (async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return respond();
+    }) as typeof fetch;
+    const res = await handleOpsSmoke(post(KEY), PREVIEW, { provider: () => p, fetch: fakeFetch });
+    const body = (await res.json()) as { ok: boolean; assertions: Array<{ name: string; ok: boolean }> };
+    assert.deepEqual(seen, ["https://8080-vm-detonate.e2b.test/cr-ops-public-probe"]);
+    assert.equal(body.assertions.find((a) => a.name === "public_port_closed")?.ok, closed);
+    assert.equal(body.ok, closed);
+  }
 });

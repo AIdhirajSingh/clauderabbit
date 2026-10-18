@@ -23,13 +23,16 @@ export function e2bCreateOptions(opts: SandboxCreateOptions, apiKey: string) {
     timeoutMs: opts.timeoutMs,
     metadata: { runId: opts.runId, purpose: opts.purpose },
   };
+  // allowPublicTraffic false: the sandbox's port URLs (<port>-<id>.e2b.app) need E2B's
+  // traffic token, so nothing outside can reach the forge or any listener in the VM
+  // (E2B also re-exposes loopback listeners on the VM address through socat).
   if (opts.network === "none") {
-    return { ...base, allowInternetAccess: false };
+    return { ...base, allowInternetAccess: false, network: { allowPublicTraffic: false } };
   }
   return {
     ...base,
     allowInternetAccess: true,
-    network: { denyOut: ["0.0.0.0/0"], allowOut: [...REGISTRY_ALLOW_OUT] },
+    network: { denyOut: ["0.0.0.0/0"], allowOut: [...REGISTRY_ALLOW_OUT], allowPublicTraffic: false },
   };
 }
 
@@ -67,6 +70,11 @@ class E2BSession implements SandboxSession {
 
   async readFile(path: string): Promise<Uint8Array> {
     return this.#sbx.files.read(path, { user: "root", format: "bytes" });
+  }
+
+  /** The VM's public URL for a port (used by the operator smoke to prove it is closed). */
+  publicUrl(port: number): string {
+    return `https://${this.#sbx.getHost(port)}`;
   }
 
   async kill(): Promise<void> {

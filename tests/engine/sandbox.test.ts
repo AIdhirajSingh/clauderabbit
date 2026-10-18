@@ -61,11 +61,11 @@ test("e2b create options: detonation is registry-only, analysis has no internet"
     timeoutMs: 90_000,
     metadata: { runId: "r1", purpose: "detonate" },
     allowInternetAccess: true,
-    network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"] },
+    network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"], allowPublicTraffic: false },
   });
   const a = e2bCreateOptions({ purpose: "analyze", runId: "r1", timeoutMs: 90_000, network: "none" }, "k");
   assert.equal(a.allowInternetAccess, false);
-  assert.equal("network" in a, false);
+  assert.deepEqual(a.network, { allowPublicTraffic: false });
 });
 
 test("withSandbox kills in finally, also when the body throws; create failures are typed", async () => {
