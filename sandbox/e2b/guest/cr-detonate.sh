@@ -99,9 +99,13 @@ NFT
 nft list table inet cr >"$OUT/nft.txt"
 
 # ---- 3. forge -------------------------------------------------------------------
+# The DNS listener binds 127.0.0.1, the address REDIRECT gives locally generated
+# packets: a wildcard-bound UDP socket answers from the VM's own address, which
+# conntrack cannot map back to the resolver the client asked, so every reply was
+# dropped by the client (seen in the template build smoke).
 : >"$OUT/capture.jsonl"
 echo "probe $(date +%s.%N)" >"$OUT/phase"
-/opt/cr/tools/bin/mitmdump --mode transparent@8080 --mode dns@5353 \
+/opt/cr/tools/bin/mitmdump --mode transparent@8080 --mode dns@127.0.0.1:5353 \
   --set confdir="$CRDIR/mitm" --set connection_strategy=lazy --set upstream_cert=false \
   --set block_global=false --set termlog_verbosity=warn \
   -s /opt/cr/forge/forge_addon.py >"$OUT/forge.log" 2>&1 &
@@ -115,10 +119,12 @@ ss -ltn 'sport = :8080' | grep -q LISTEN || { check forge_up false "port 8080 no
 check forge_up true "mitmdump pid $FORGE_PID"
 
 # ---- 4. containment probe (before any repo code) --------------------------------
+# The probes send their own User-Agent: the forge answers a curl User-Agent with a
+# shell no-op and anything else with {"ok":true}.
 PROBE_BODY=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
-  curl -sS --max-time 2 http://example.invalid/cr-probe 2>&1 || true)
+  curl -sS --max-time 2 -A cr-containment-probe http://example.invalid/cr-probe 2>&1 || true)
 PROBE_TLS=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
-  curl -sS --max-time 2 https://probe.cr-fixture.invalid/cr-probe 2>&1 || true)
+  curl -sS --max-time 2 -A cr-containment-probe https://probe.cr-fixture.invalid/cr-probe 2>&1 || true)
 ENVD_REACHED=0
 for ENVD_ADDR in 127.0.0.1 ::1; do
   if timeout 1 runuser -u "$CR_USER" -- bash -c "exec 3<>/dev/tcp/$ENVD_ADDR/49983" 2>/dev/null; then ENVD_REACHED=1; fi

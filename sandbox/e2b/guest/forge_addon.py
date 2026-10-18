@@ -1,7 +1,7 @@
 """mitmproxy glue for the ClaudeRabbit forge (DESIGN.md section 3.3 step 3).
 
 Started by cr-detonate.sh as root:
-  mitmdump --mode transparent@8080 --mode dns@5353 --set confdir=/root/.cr/mitm \
+  mitmdump --mode transparent@8080 --mode dns@127.0.0.1:5353 --set confdir=/root/.cr/mitm \
     --set connection_strategy=lazy --set upstream_cert=false -s /opt/cr/forge/forge_addon.py
 
 All decisions live in forge_core.py. This file only converts mitmproxy flows to

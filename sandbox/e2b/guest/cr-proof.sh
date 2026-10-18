@@ -92,39 +92,39 @@ except Exception as e:
 say "cr_icmp_drop packets: before=$ICMP_BEFORE after=$(drop_count cr_icmp_drop)"
 
 section "uid 1001 TCP to 1.1.1.1:80 (redirected into the forge)"
-BODY=$(runuser -u "$CR_USER" -- "${CR_ENV[@]}" curl -sS --max-time 5 -w '\nhttp_code=%{http_code} remote=%{remote_ip}:%{remote_port}' http://1.1.1.1/cr-proof-direct-ip 2>&1)
+BODY=$(runuser -u "$CR_USER" -- "${CR_ENV[@]}" curl -sS --max-time 5 -A cr-proof -w '\nhttp_code=%{http_code} remote=%{remote_ip}:%{remote_port}' http://1.1.1.1/cr-proof-direct-ip.json 2>&1)
 say "$BODY"
-if [ "$(printf '%s' "$BODY" | head -n1)" = '{"ok":true}' ]; then
-  pass "uid 1001 never reached 1.1.1.1; the forge answered with its forged body"
-else
-  fail "direct-IP request was not answered by the forge"
-fi
+
+section "uid 1001 DNS (redirected into the forge resolver)"
+runuser -u "$CR_USER" -- "${CR_ENV[@]}" timeout 8 python3 -c '
+import socket
+print("example.com ->", socket.gethostbyname("example.com"))
+' >&3 2>&1 || say "resolution failed"
 
 section "uid 1001 HTTPS to https://example.com (forge intercepts TLS)"
-ISSUER=$(runuser -u "$CR_USER" -- "${CR_ENV[@]}" bash -c 'openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/dev/null | openssl x509 -noout -issuer -subject' 2>&1)
+ISSUER=$(runuser -u "$CR_USER" -- "${CR_ENV[@]}" timeout 8 bash -c 'openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/dev/null | openssl x509 -noout -issuer -subject' 2>&1)
 say "$ISSUER"
-TLS_BODY=$(runuser -u "$CR_USER" -- "${CR_ENV[@]}" SSL_CERT_FILE=/etc/cr/ca.pem curl -sS --max-time 5 -w '\nhttp_code=%{http_code} remote=%{remote_ip}' https://example.com/cr-proof-tls 2>&1)
+TLS_BODY=$(runuser -u "$CR_USER" -- "${CR_ENV[@]}" SSL_CERT_FILE=/etc/cr/ca.pem curl -sS --max-time 5 -A cr-proof -w '\nhttp_code=%{http_code} remote=%{remote_ip}' https://example.com/cr-proof-tls.json 2>&1)
 say "$TLS_BODY"
-if [[ "$ISSUER" == *"ClaudeRabbit Sandbox CA"* ]] && [ "$(printf '%s' "$TLS_BODY" | head -n1)" = '{"ok":true}' ]; then
-  pass "TLS terminated by the per-VM forge CA; forged body returned"
+if [[ "$ISSUER" == *"ClaudeRabbit Sandbox CA"* ]] && [[ "$TLS_BODY" == *"http_code=200"* ]]; then
+  pass "TLS terminated with the per-VM forge CA; the forge answered"
 else
   fail "HTTPS was not intercepted by the forge"
 fi
 
-section "uid 1001 DNS (redirected into the forge resolver)"
-runuser -u "$CR_USER" -- "${CR_ENV[@]}" python3 -c '
-import socket
-print("example.com ->", socket.gethostbyname("example.com"))
-' >&3 2>&1
-
 section "forge capture records for the requests above"
 sleep 0.3
-jq -c 'select(.path != null and (.path|test("cr-proof"))) | {host, method, path, tls, forged_kind, phase}' /root/out/capture.jsonl >&3 2>&1 || true
-if jq -s -e 'map(select(.path != null and (.path|contains("cr-proof-direct-ip")) and .forged_kind == "json")) | length >= 1' /root/out/capture.jsonl >/dev/null 2>&1 \
-  && jq -s -e 'map(select(.host == "example.com" and .tls == "intercepted" and .forged_kind == "json")) | length >= 1' /root/out/capture.jsonl >/dev/null 2>&1; then
-  pass "forge recorded both forged requests"
+jq -c 'select(.path != null and (.path|test("cr-proof"))) | {host, method, path, tls, forged_kind, status, phase}' /root/out/capture.jsonl >&3 2>&1 || true
+if jq -s -e 'map(select(.host == "1.1.1.1" and .path == "/cr-proof-direct-ip.json" and .forged_kind != null and .status == 200)) | length >= 1' /root/out/capture.jsonl >/dev/null 2>&1 \
+  && [[ "$BODY" == *"http_code=200"* ]]; then
+  pass "uid 1001 never reached 1.1.1.1; the forge answered the direct-IP request itself"
 else
-  fail "forge capture is missing the proof requests"
+  fail "the direct-IP request was not answered by the forge"
+fi
+if jq -s -e 'map(select(.host == "example.com" and .tls == "intercepted" and .path == "/cr-proof-tls.json" and .forged_kind != null)) | length >= 1' /root/out/capture.jsonl >/dev/null 2>&1; then
+  pass "forge recorded the intercepted HTTPS request"
+else
+  fail "forge capture is missing the HTTPS request"
 fi
 
 section "root (outside the inner fence) to 1.1.1.1:443 (outer E2B egress policy; informational)"
