@@ -32,8 +32,8 @@ const AD_HOSTS = [
   "https://fundingchoicesmessages.google.com",
   "https://ep1.adtrafficquality.google",
   "https://ep2.adtrafficquality.google",
-  "https://www.googletagservices.com",
-  "https://s0.2mdn.net",
+  "https://cm.g.doubleclick.net",
+  "https://35e88bb3103f27cb0cd09da6f8a3afda.safeframe.googlesyndication.com",
 ];
 
 test("CSP admits the GPT and AdSense loaders, their ad iframes and beacons, in Google's supported no-nonce form", () => {
@@ -51,6 +51,12 @@ test("CSP admits the GPT and AdSense loaders, their ad iframes and beacons, in G
     assert.ok(allows(connect, `${o}/x`), `connect ${o}`);
     assert.ok(allows(img, `${o}/x`), `img ${o}`);
   }
+  // The rewarded overlay's Roboto stylesheet and fonts, and its video creative (seen blocked on the preview).
+  assert.ok(allows(directive(csp, "style-src"), "https://fonts.googleapis.com/css?family=Roboto"), "overlay stylesheet");
+  assert.ok(allows(directive(csp, "font-src"), "https://fonts.gstatic.com/s/roboto/v1/x.woff2"), "overlay font");
+  const media = directive(csp, "media-src");
+  assert.ok(allows(media, "https://redirector.gvt1.com/videoplayback/file.mp4"), "video creative");
+  assert.ok(media.includes("blob:"), "MSE video");
   assert.ok(!allows(script, "http://securepubads.g.doubleclick.net/tag/js/gpt.js"), "cleartext gpt.js refused");
 });
 
