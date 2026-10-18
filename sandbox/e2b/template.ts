@@ -99,13 +99,18 @@ export function buildTemplate() {
         `echo "cr-scanner yara-x version: $(${YARA_VERSION_CMD})"`,
         `test "$(${YARA_VERSION_CMD})" = "${PINS.python.yaraX}"`,
       ])
-      // The repo user. No sudo, no login shell, uid 1001 (matched by `meta skuid 1001`).
+      // The repo user. No sudo, no login shell, uid 1001 (matched by `meta skuid 1001`; the
+      // fence keys on the uid only, so the group id is free). The E2B base image already
+      // has a group with gid 1001, so `cr` gets gid 1001 only when that gid is free.
       .runCmd([
-        "groupadd --gid 1001 cr",
-        "useradd --uid 1001 --gid 1001 --create-home --home-dir /home/cr --shell /usr/sbin/nologin cr",
+        "echo \"cr-user base: uid1001=[$(getent passwd 1001 || true)] gid1001=[$(getent group 1001 || true)]\"",
+        "if getent passwd 1001 >/dev/null; then echo 'uid 1001 is already taken in the base image' >&2; exit 1; fi",
+        "if getent group cr >/dev/null; then :; elif getent group 1001 >/dev/null; then groupadd cr; else groupadd --gid 1001 cr; fi",
+        "useradd --uid 1001 --gid cr --create-home --home-dir /home/cr --shell /usr/sbin/nologin cr",
         "passwd -l cr",
         "test \"$(id -u cr)\" = 1001",
-        "! command -v sudo >/dev/null || ! sudo -l -U cr 2>/dev/null | grep -q '(ALL'",
+        "( ! command -v sudo >/dev/null || ! sudo -l -U cr 2>/dev/null | grep -q '(ALL' )",
+        "echo \"cr-user created: $(id cr)\"",
       ])
       .copy("guest/cr-detonate.sh", "/opt/cr/bin/cr-detonate.sh", { mode: 0o755 })
       .copy("guest/cr-analyze.sh", "/opt/cr/bin/cr-analyze.sh", { mode: 0o755 })
@@ -123,7 +128,8 @@ export function buildTemplate() {
         "chown -R root:root /opt/cr && chmod -R go-w /opt/cr && chmod 0700 /opt/cr/mirror",
         // Record the installed versions for the report's template provenance.
         "dpkg-query -W -f='${Package}=${Version}\\n' " + APT_PACKAGES.join(" ") + " | jq -R -s 'split(\"\\n\") | map(select(length>0))' > /tmp/apt.json",
-        "jq -n --slurpfile apt /tmp/apt.json --arg node \"$(/opt/cr/node/bin/node --version)\" --arg npm \"$(/opt/cr/node/bin/npm --version)\" " +
+        "test -n \"$(PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/npm --version)\"",
+        "jq -n --slurpfile apt /tmp/apt.json --arg node \"$(/opt/cr/node/bin/node --version)\" --arg npm \"$(PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/npm --version)\" " +
           "--arg uv \"$(/opt/cr/tools/bin/uv --version)\" --arg mitm \"$(/opt/cr/tools/bin/mitmdump --version | head -n1)\" " +
           "--arg semgrep \"$(/opt/cr/tools/bin/semgrep --version)\" " +
           `--arg guarddog "$(${GUARDDOG_VERSION_CMD})" --arg yarax "$(${YARA_VERSION_CMD})" ` +
