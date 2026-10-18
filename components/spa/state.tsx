@@ -39,6 +39,7 @@ import {
 } from "@/lib/report-view";
 import { parseScanTarget, type ScanTarget } from "@/lib/parse-repo";
 import { runScan, type ScanArgs, type ScanStage } from "@/lib/scan";
+import { startScanRewardedAd } from "@/lib/ads/gpt-rewarded";
 import type { Ad } from "@/lib/engine/types";
 import { decideReportFetch, fetchLatestReportApi } from "@/lib/report-fetch";
 import {
@@ -1152,6 +1153,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
 
       if (procTimer.current) clearInterval(procTimer.current);
+
+      // Web only: Google Ad Manager's rewarded ad runs alongside the scan.
+      // Fire-and-forget; the scan below never waits on it, and a blocked,
+      // unfilled or dismissed ad changes nothing about the result.
+      startScanRewardedAd();
 
       // Each REAL streamed stage updates the timeline. Token-guarded so late
       // events from a superseded/retried scan can never paint over a newer one.

@@ -143,6 +143,7 @@ Untrusted bytes exist only in Vercel function memory and inside E2B VMs.
 | `NEXT_PUBLIC_ADSENSE_CLIENT_ID` | client + server | no | `ca-pub-...` |
 | `NEXT_PUBLIC_ADSENSE_SLOT_ID` | client + server | no | ad slot |
 | `NEXT_PUBLIC_ADSENSE_TEST` | client + server | no (default `on`) | `data-adtest` |
+| `NEXT_PUBLIC_GAM_REWARDED_AD_UNIT` | client | no (default Google's sample `/22639388115/rewarded_web_example`) | GPT rewarded unit shown during a web scan |
 | `CR_OPERATOR_KEY` | Vercel server | no (at least 32 chars) | regenerate and operator tarball target |
 | `CR_DAILY_SANDBOX_SECONDS_CAP` | Vercel server | no (default 20000) | daily spend floor |
 | `CR_DAILY_MODEL_TOKENS_CAP` | Vercel server | no (default 20000000) | daily spend floor |
@@ -168,6 +169,15 @@ Every scan response carries an `ad` (DESIGN.md section 8.3). The web renders Goo
 (`data-adtest="on"` unless `NEXT_PUBLIC_ADSENSE_TEST=off`) when both `NEXT_PUBLIC_ADSENSE_CLIENT_ID` and
 `NEXT_PUBLIC_ADSENSE_SLOT_ID` are set, and the house ad otherwise. CLI and MCP responses carry the house ad from
 `lib/engine/ads.ts`. Ads never gate a scan or a result.
+
+While a web scan runs, `lib/ads/gpt-rewarded.ts` loads Google Publisher Tag and requests a rewarded
+out-of-page slot (Google's public sample unit unless `NEXT_PUBLIC_GAM_REWARDED_AD_UNIT` is set), shows it
+on `rewardedSlotReady` and logs granted, closed and no-fill. It is fire-and-forget: the scan stream and the
+result never wait on it. No AdSense publisher id exists in the repo or here; the AdSense unit on report
+pages renders only once the owner sets `NEXT_PUBLIC_ADSENSE_CLIENT_ID` and `NEXT_PUBLIC_ADSENSE_SLOT_ID`.
+The CSP (`lib/csp.ts`) uses the `https:` scheme for script, frame and connect sources because Google's
+GPT and AdSense CSP guidance supports only a nonce plus `'strict-dynamic'` policy (with an `https:`
+fallback) and states that domain allowlists are unsupported.
 
 ---
 
