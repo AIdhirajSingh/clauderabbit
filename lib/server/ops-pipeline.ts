@@ -242,3 +242,38 @@ export async function probeNetwork(config: EngineConfig, now: () => number = () 
   }
   return { region: process.env.VERCEL_REGION ?? null, rounds: result };
 }
+
+/**
+ * Cold versus warm start of the tools a scan runs, in fresh VMs from the
+ * template (no network, no repo code; the commands scan our own rule files).
+ * VM A runs each tool twice (cold, then warm page cache); VM B first reads the
+ * tools' files into the page cache, then runs each once. The gap between "cold"
+ * and "after_prefetch" is what a prefetch at boot can save.
+ */
+export const COLDSTART_SCRIPT = [
+  "set -u",
+  "export PATH=/opt/cr/node/bin:/opt/cr/tools/bin:/usr/bin:/bin SEMGREP_SEND_METRICS=off SEMGREP_ENABLE_VERSION_CHECK=0",
+  "t() { s=$(date +%s%3N); \"$@\" >/dev/null 2>&1; echo $(( $(date +%s%3N) - s )); }",
+  "sg() { semgrep scan --config /opt/cr/rules/semgrep --json --metrics=off --disable-version-check --jobs 1 /opt/cr/forge; }",
+  "gd() { guarddog npm scan /opt/cr/forge --output-format=json; }",
+  "yx() { /opt/cr/venv/bin/python /opt/cr/bin/cr-yara.py /opt/cr/rules/yara /opt/cr/forge; }",
+  "mi() { mitmdump --version; }",
+  "np() { npm --version; }",
+  "pf() { find /opt/cr/tools/uv /opt/cr/node /opt/cr/venv /usr/lib/python3.12 -type f -print0 | xargs -0 cat >/dev/null; }",
+  "if [ \"${1:-}\" = prefetch ]; then echo \"prefetch_ms=$(t pf)\"; echo \"prefetch_mb=$(du -scm /opt/cr/tools/uv /opt/cr/node /opt/cr/venv /usr/lib/python3.12 | tail -n1 | cut -f1)\"; fi",
+  "for f in sg gd yx mi np; do echo \"${f}_1=$(t $f)\"; echo \"${f}_2=$(t $f)\"; done",
+].join("\n");
+
+export async function probeColdStart(provider: SandboxProvider, runId: string, now: () => number = () => Date.now()) {
+  const { withSandbox } = await import("../engine/sandbox/provider");
+  const one = (mode: "plain" | "prefetch") =>
+    withSandbox(provider, { purpose: "analyze", runId: `${runId}-cold-${mode}`, timeoutMs: 180_000, network: "none" }, async (s) => {
+      await s.writeFile("/root/coldstart.sh", COLDSTART_SCRIPT);
+      const t = now();
+      const r = await s.run(`bash /root/coldstart.sh ${mode === "prefetch" ? "prefetch" : ""}`, { timeoutMs: 170_000 });
+      const values: Record<string, number> = {};
+      for (const m of r.stdout.matchAll(/^([a-z_0-9]+)=(\d+)$/gm)) values[m[1]!] = Number(m[2]);
+      return { mode, exit: r.exitCode, wall_ms: Math.round(now() - t), values, stderr: r.stderr.slice(-300) };
+    });
+  return Promise.all([one("plain"), one("prefetch")]);
+}

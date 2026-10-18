@@ -321,6 +321,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   };
 
   // ---- resolve and cache --------------------------------------------------------
+  // The budget check is a pure read (a zero charge) and needs no target, so it runs
+  // alongside the resolve; its answer gates the VM boot below.
+  const budgetP = deps.store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap });
+  budgetP.catch(() => undefined);
   let resolved: Resolved;
   emitStage("resolve", "start");
   try {
@@ -364,19 +368,25 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     }
   }
 
-  // The fetch does not depend on the claim or the budget, so it runs alongside them.
+  // Cache miss: boot both VMs now (when the budget allows), then claim the run while the
+  // tarball downloads. No VM starts for a cache hit or over budget.
+  const [budgetR] = await Promise.allSettled([budgetP]);
+  const underBudget = budgetR.status === "fulfilled" && budgetR.value === true;
+  if (underBudget) bootVms();
   const fetchP: Promise<Fetched> | null = fetched ? null : fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
   fetchP?.catch(() => undefined);
-  const [claimR, budgetR] = await Promise.allSettled([
-    deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template }),
-    deps.store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: cfg.dailySandboxSecondsCap, capTokens: cfg.dailyModelTokensCap }),
-  ]);
-  if (claimR.status === "rejected") return fail(new EngineError("internal", `could not record the run: ${errMessage(claimR.reason)}`), null);
-  if (claimR.value.status === "running") {
+  let claim;
+  try {
+    claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template });
+  } catch (err) {
+    return fail(new EngineError("internal", `could not record the run: ${errMessage(err)}`), null);
+  }
+  if (claim.status === "running") {
+    await releaseVms();
     g.drop();
     discard = true;
     await bus.close();
-    return { kind: "attached", runId: claimR.value.runId };
+    return { kind: "attached", runId: claim.runId };
   }
   claimed = true;
   g.release();
@@ -386,12 +396,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     check("daily_budget", false, errMessage(budgetR.reason));
     return fail(new EngineError("capacity", "the scan budget ledger is unavailable; cached reports still serve, retry shortly"), null);
   }
-  if (!budgetR.value) {
+  if (!underBudget) {
     check("daily_budget", false, "today's sandbox or model budget is spent; cached reports still serve");
     return fail(new EngineError("budget_exhausted", "the daily scan budget is spent; retry tomorrow or open a cached report"), null);
   }
-
-  bootVms();
 
   // ---- fetch, verify, reach ---------------------------------------------------------
   if (fetchP) {

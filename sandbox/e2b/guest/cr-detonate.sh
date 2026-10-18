@@ -70,6 +70,7 @@ install -m 0644 "$CRDIR/ca/cert.pem" /etc/cr/ca.pem
 cat /etc/cr/ca.pem >>/etc/ssl/certs/ca-certificates.crt
 : >/etc/cr/npmrc-empty
 chmod 0644 /etc/cr/npmrc-empty
+CA_MS=$(since)
 
 # ---- 2. inner fence (nftables meta skuid; the E2B kernel lacks xt_owner) -------
 # Drop rules carry inline counters tagged by comment: the E2B kernel has no named
@@ -97,6 +98,7 @@ table inet cr {
 }
 NFT
 nft list table inet cr >"$OUT/nft.txt"
+FENCE_MS=$(since)
 
 # ---- 3. forge -------------------------------------------------------------------
 # The DNS listener binds 127.0.0.1, the address REDIRECT gives locally generated
@@ -113,7 +115,7 @@ FORGE_PID=$!
 for _ in $(seq 1 50); do
   if ss -ltn 'sport = :8080' | grep -q LISTEN && ss -lun 'sport = :5353' | grep -q 5353; then break; fi
   if ! kill -0 "$FORGE_PID" 2>/dev/null; then log "forge exited"; check forge_up false "mitmdump exited"; exit 3; fi
-  sleep 0.1
+  sleep 0.05
 done
 ss -ltn 'sport = :8080' | grep -q LISTEN || { check forge_up false "port 8080 not listening"; exit 3; }
 check forge_up true "mitmdump pid $FORGE_PID"
@@ -122,14 +124,30 @@ FORGE_MS=$(since)
 # ---- 4. containment probe (before any repo code) --------------------------------
 # The probes send their own User-Agent: the forge answers a curl User-Agent with a
 # shell no-op and anything else with {"ok":true}.
-PROBE_BODY=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
-  curl -sS --max-time 2 -A cr-containment-probe http://example.invalid/cr-probe 2>&1 || true)
-PROBE_TLS=$(runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
-  curl -sS --max-time 2 -A cr-containment-probe https://probe.cr-fixture.invalid/cr-probe 2>&1 || true)
-ENVD_REACHED=0
-for ENVD_ADDR in 127.0.0.1 ::1; do
-  if timeout 1 runuser -u "$CR_USER" -- bash -c "exec 3<>/dev/tcp/$ENVD_ADDR/49983" 2>/dev/null; then ENVD_REACHED=1; fi
-done
+# The three probes are independent, so they run at once; each writes its own result file.
+probe_http() {
+  runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
+    curl -sS --max-time 2 -A cr-containment-probe http://example.invalid/cr-probe >"$RUN/probe.http" 2>&1 || true
+}
+probe_tls() {
+  runuser -u "$CR_USER" -- env -i PATH=/usr/bin:/bin SSL_CERT_FILE=/etc/cr/ca.pem \
+    curl -sS --max-time 2 -A cr-containment-probe https://probe.cr-fixture.invalid/cr-probe >"$RUN/probe.tls" 2>&1 || true
+}
+probe_envd() {
+  local reached=0
+  for ENVD_ADDR in 127.0.0.1 ::1; do
+    if timeout 1 runuser -u "$CR_USER" -- bash -c "exec 3<>/dev/tcp/$ENVD_ADDR/49983" 2>/dev/null; then reached=1; fi
+  done
+  echo "$reached" >"$RUN/probe.envd"
+}
+probe_http & P_HTTP=$!
+probe_tls & P_TLS=$!
+probe_envd & P_ENVD=$!
+wait "$P_HTTP" "$P_TLS" "$P_ENVD" || true
+PROBE_BODY=$(cat "$RUN/probe.http" 2>/dev/null || true)
+PROBE_TLS=$(cat "$RUN/probe.tls" 2>/dev/null || true)
+ENVD_REACHED=$(cat "$RUN/probe.envd" 2>/dev/null || echo 1)
+PROBE_MS=$(since)
 # Containment proof, smoke detonation only (run.json is root-written before any
 # repo code exists; the orchestrator never sets "proof").
 if [ -f "$IN/run.json" ] && [ "$(jq -r '.proof // false' "$IN/run.json")" = true ]; then
@@ -139,7 +157,13 @@ if [ -f "$IN/run.json" ] && [ "$(jq -r '.proof // false' "$IN/run.json")" = true
     check containment_proof false "cr-proof.sh failed; see proof.txt"
   fi
 fi
-sleep 0.3
+# The forge appends a capture record per answered request; wait (at most 1 s) until both
+# probe records are on disk instead of a fixed sleep. A late probe-phase record is
+# harness traffic either way (lib/engine/forensics/capture.ts excludes the probe phase).
+for ((i = 0; i < 50; i++)); do
+  grep -qF 'example.invalid' "$OUT/capture.jsonl" 2>/dev/null && grep -qF 'probe.cr-fixture.invalid' "$OUT/capture.jsonl" 2>/dev/null && break
+  sleep 0.02
+done
 mv "$OUT/capture.jsonl" "$OUT/capture.probe.jsonl"
 : >"$OUT/capture.jsonl"
 PROBE_SEEN=$(jq -s '[.[] | select(.host=="example.invalid" and .forged_kind=="json")] | length' "$OUT/capture.probe.jsonl")
@@ -465,12 +489,12 @@ jq -n \
   --arg is "$INSTALL_STATUS" --argjson ie "$INSTALL_EXIT" --argjson ims "$INSTALL_MS" --arg icmd "$INSTALL_CMD" \
   --arg es "$ENTRY_STATUS" --argjson ee "$ENTRY_EXIT" --argjson ems "$ENTRY_MS" \
   --argjson cr "$CLOCK_REAL" --argjson cf "$CLOCK_FAKE" --argjson total "$(since)" \
-  --argjson pf "$FORGE_MS" --argjson pc "$CONTAINED_MS" --argjson pi "$INPUTS_MS" --argjson pis "$INSTALL_START_MS" --argjson pcs "$COLLECT_START_MS" \
+  --argjson pca "$CA_MS" --argjson pfe "$FENCE_MS" --argjson pf "$FORGE_MS" --argjson pp "$PROBE_MS" --argjson pc "$CONTAINED_MS" --argjson pi "$INPUTS_MS" --argjson pis "$INSTALL_START_MS" --argjson pcs "$COLLECT_START_MS" \
   '{version:1, mode:$mode, ecosystem:$eco, deps_kind:$deps,
     install:{status:$is, exit_code:$ie, ms:$ims, command:$icmd},
     entry:{status:$es, exit_code:$ee, ms:$ems},
     clock:{real_ms:$cr, fake_ms:$cf}, total_ms:$total,
-    phases:{forge_ms:$pf, contained_ms:$pc, inputs_ms:$pi, install_start_ms:$pis, collect_start_ms:$pcs}}' >"$OUT/result.json"
+    phases:{ca_ms:$pca, fence_ms:$pfe, forge_ms:$pf, probe_ms:$pp, contained_ms:$pc, inputs_ms:$pi, install_start_ms:$pis, collect_start_ms:$pcs}}' >"$OUT/result.json"
 
 timeout 4 tar -czf /root/out.tmp.tgz -C /root out
 mv /root/out.tmp.tgz /root/out.tgz

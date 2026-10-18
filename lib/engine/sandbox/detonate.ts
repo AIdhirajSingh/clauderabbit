@@ -100,7 +100,7 @@ interface HarnessResult {
   clock?: { real_ms?: number; fake_ms?: number };
   total_ms?: number;
   /** Milliseconds from harness start: forge up, probe done, inputs arrived, install start, collect start. */
-  phases?: { forge_ms?: number; contained_ms?: number; inputs_ms?: number; install_start_ms?: number; collect_start_ms?: number };
+  phases?: { ca_ms?: number; fence_ms?: number; forge_ms?: number; probe_ms?: number; contained_ms?: number; inputs_ms?: number; install_start_ms?: number; collect_start_ms?: number };
 }
 
 function outcome(v: string | undefined): PhaseOutcome {
@@ -162,6 +162,11 @@ export async function parseForensicBundle(
   const ph = result.phases ?? {};
   const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
   if (num(ph.contained_ms)) timings["detonate.prepare"] = ph.contained_ms;
+  // Prepare split: CA, fence, forge start, probes (each from the previous mark).
+  if (num(ph.ca_ms)) timings["detonate.prepare.ca"] = ph.ca_ms;
+  if (num(ph.ca_ms) && num(ph.fence_ms)) timings["detonate.prepare.fence"] = Math.max(0, ph.fence_ms - ph.ca_ms);
+  if (num(ph.fence_ms) && num(ph.forge_ms)) timings["detonate.prepare.forge"] = Math.max(0, ph.forge_ms - ph.fence_ms);
+  if (num(ph.forge_ms) && num(ph.probe_ms)) timings["detonate.prepare.probe"] = Math.max(0, ph.probe_ms - ph.forge_ms);
   if (num(ph.contained_ms) && num(ph.inputs_ms)) timings["detonate.wait"] = Math.max(0, ph.inputs_ms - ph.contained_ms);
   if (num(ph.collect_start_ms) && num(result.total_ms)) timings["detonate.collect"] = Math.max(0, result.total_ms - ph.collect_start_ms);
   const eco = result.ecosystem === "npm" || result.ecosystem === "python" ? result.ecosystem : "none";

@@ -66,7 +66,10 @@ export function postgresExecutor(url: string): SqlExecutor {
     const sql = postgres(url, {
       prepare: false,
       max: 3,
-      idle_timeout: 20,
+      // Opening a connection to the pooler costs about 1.7 s from iad1 (TCP, TLS and
+      // SCRAM at ~190 ms per round trip, measured by the operator smoke). A warm
+      // instance keeps its connections between scans instead of paying that again.
+      idle_timeout: 240,
       connect_timeout: 10,
       max_lifetime: 60 * 10,
       ssl: "require",

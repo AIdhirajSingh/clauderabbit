@@ -159,7 +159,10 @@ function positiveInt(env: Env, name: string, fallback: number): number {
 
 function reasoningEffort(env: Env): ReasoningEffort {
   const v = str(env, "CR_MODEL_REASONING_EFFORT");
-  if (v === null) return "low";
+  // "none": measured on the preview's operator smoke, Luna's report took 5.4 s at "low" and 2.7 s at
+  // "none" on the same facts, and both outputs passed validateWriterOutput (docs/runs/2.0-keyday.md step 8).
+  // The score never comes from Luna, and a rejected output falls back to the deterministic report.
+  if (v === null) return "none";
   if (v === "none" || v === "low" || v === "medium" || v === "high") return v;
   throw new Error("CR_MODEL_REASONING_EFFORT must be one of none, low, medium, high");
 }

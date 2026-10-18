@@ -22,7 +22,7 @@ import { runAnalysis, type AnalysisResult } from "../engine/sandbox/analyze";
 import { E2BProvider } from "../engine/sandbox/e2b";
 import { withSandbox, type SandboxProvider } from "../engine/sandbox/provider";
 import { SANDBOX_CPU_COUNT, SANDBOX_MEMORY_MB } from "../engine/sandbox/resources";
-import { probeLuna, probeNetwork, runPipelineTiming, type PipelineEngine } from "./ops-pipeline";
+import { probeColdStart, probeLuna, probeNetwork, runPipelineTiming, type PipelineEngine } from "./ops-pipeline";
 import { GUARDDOG_VERSION_CMD, SEMGREP_VERSION_CMD, YARA_VERSION_CMD } from "../engine/sandbox/scanner-versions";
 
 export const SMOKE_SCRIPT = "/opt/cr/bin/cr-smoke.sh";
@@ -198,6 +198,7 @@ export async function handleOpsSmoke(req: Request, env: Env, deps: OpsSmokeDeps 
     }
   }
   if (parts.has("net")) out.net = await probeNetwork(config, now);
+  if (parts.has("coldstart")) out.coldstart = await probeColdStart(provider, runId, now);
   out.ok = ok;
   out.total_ms = Math.round(now() - started);
   return json(out, ok ? 200 : 500);

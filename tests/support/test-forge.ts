@@ -69,6 +69,7 @@ export async function startTestForge(dir: string): Promise<TestForge> {
     });
   });
   const ports = JSON.parse(first) as { https: number; dns: number };
+  let stopped: Promise<void> | null = null;
   return {
     httpsPort: ports.https,
     dnsPort: ports.dns,
@@ -78,13 +79,21 @@ export async function startTestForge(dir: string): Promise<TestForge> {
     setPhase(phase) {
       writeFileSync(phasePath, `${phase} ${Date.now() / 1000}\n`);
     },
-    async stop() {
-      if (child.exitCode !== null) return;
-      const done = new Promise<void>((r) => child.once("exit", () => r()));
-      child.stdin.end();
-      const t = setTimeout(() => child.kill("SIGKILL"), 2000);
-      await done;
-      clearTimeout(t);
+    stop() {
+      // Idempotent: a second stop() must not wait for an "exit" that already fired. A child
+      // killed by SIGKILL has exitCode null and signalCode set, so checking exitCode alone
+      // left the mock harness's second stop() (in its finally) waiting forever under load.
+      if (!stopped) {
+        stopped = child.exitCode !== null || child.signalCode !== null
+          ? Promise.resolve()
+          : new Promise<void>((r) => {
+              child.once("exit", () => r());
+              child.stdin.end();
+              const t = setTimeout(() => child.kill("SIGKILL"), 2000);
+              child.once("exit", () => clearTimeout(t));
+            });
+      }
+      return stopped;
     },
   };
 }
