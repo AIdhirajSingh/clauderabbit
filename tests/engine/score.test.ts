@@ -143,8 +143,8 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "entry timeout never lowers the score", in: { entry: "timeout", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "install skipped caps at 74", in: { install: "skipped", entry: "skipped" }, score: 74, verdict: "Caution" },
   { name: "archive truncated caps at 74", in: { archiveTruncated: true }, score: 74, verdict: "Caution" },
-  { name: "lost forensics cap at 59 even with completed phases and strong reputation", in: { forensics: { coverage: "lost", gaps: [] }, reputation: STRONG_REP }, score: 59, verdict: "High risk" },
-  { name: "lost forensics after an overrun: timeout plus lost caps at 59", in: { install: "timeout", entry: "skipped", forensics: { coverage: "lost", gaps: [] } }, score: 59, verdict: "High risk" },
+  { name: "lost forensics: not observed-clean, and without behaviour not High risk either (Caution 60)", in: { forensics: { coverage: "lost", gaps: [] }, reputation: STRONG_REP }, score: 60, verdict: "Caution" },
+  { name: "lost forensics after an overrun: timeout plus lost caps at 59", in: { install: "timeout", entry: "skipped", forensics: { coverage: "lost", gaps: [] } }, score: 60, verdict: "Caution" },
   { name: "partial forensics caps at 74", in: { forensics: { coverage: "partial", gaps: ["capture.jsonl was cut at 8 MB."] }, reputation: STRONG_REP }, score: 74, verdict: "Caution" },
   { name: "entry skipped (no runnable entry point) is neutral", in: { entry: "skipped", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "entry failed (library entry) is neutral", in: { entry: "failed", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
@@ -323,7 +323,7 @@ test("deriveBehaviour maps forensics onto behaviour signals", () => {
     canaryInFiles: ["/tmp/stash.txt"],
   });
   assert.deepEqual(b.canaryHits, ["AWS_SECRET_ACCESS_KEY sent to c2.cr-fixture.invalid (http, install)", "canary copied into written file /tmp/stash.txt"]);
-  assert.deepEqual(b.nonDistributionHosts, ["c2.cr-fixture.invalid", "pinned.example", "registry.npmjs.org"]);
+  assert.deepEqual(b.nonDistributionHosts, ["c2.cr-fixture.invalid", "pinned.example"]);
   assert.deepEqual(b.distributionFetches, ["github.com"]);
   assert.deepEqual(b.tlsRefused, ["pinned.example"]);
   assert.equal(b.tunnelingDns.length, 1);
@@ -339,8 +339,8 @@ test("deriveBehaviour maps forensics onto behaviour signals", () => {
 test("score: a lost detonation never outscores an observed attack and never reads as observed-clean", () => {
   const lost = computeScore(input({ install: "timeout", entry: "skipped", forensics: { coverage: "lost", gaps: [] } }));
   const caught = computeScore(input({ behaviour: beh({ canaryHits: ["x"] }) }));
-  assert.ok(lost.score <= CAP_FORENSICS_LOST && lost.score <= CAP_NOT_PROVEN);
-  assert.ok(lost.score < 60, "a lost run lands in High risk or below");
+  assert.ok(lost.score <= CAP_NOT_PROVEN);
+  assert.equal(lost.verdict, "Caution", "a lost run is not observed-clean, and without behaviour it is not High risk either");
   assert.ok(caught.score < lost.score, "an observed exfiltration still scores below a lost run");
   assert.match(lost.notVerified.join("\n"), /did not produce a forensic record/);
   const partial = computeScore(input({ forensics: { coverage: "partial", gaps: ["trace.install was cut at 8 MB."] } }));
@@ -460,4 +460,29 @@ test("score: static hits with bad behaviour are not floored; a registry TLS refu
     datagramEgress: [],
   });
   assert.deepEqual(post.nonDistributionHosts, ["registry.npmjs.org"], "a write to the registry still counts");
+});
+
+test("score: package-manager traffic alone can never produce Malicious or High risk", () => {
+  const call = (method: string, path: string, extra: Partial<ForgedCallData> = {}): ForgedCallData => ({ phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method, path, req_bytes: 100, forged_kind: "json", tls: "intercepted", canary_hits: [], ...extra });
+  const tooling = deriveBehaviour({
+    forgedCalls: [
+      call("GET", "/-/npm/v1/attestations/@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.293"),
+      call("HEAD", "/@aws-sdk%2Ftypes"),
+      call("POST", "/-/npm/v1/security/advisories/bulk"),
+      { phase: "install", proto: "tcp", host: "registry.npmjs.org", port: 443, req_bytes: 0, forged_kind: "tls_refused", tls: "refused", canary_hits: [] },
+    ],
+    files: [],
+    processes: [{ phase: "install", pid: 1, ppid: 0, argv: ["bash", "-c", "pnpm install --prefer-frozen-lockfile"] }],
+    canaryInFiles: [],
+    datagramEgress: [],
+  });
+  assert.deepEqual(tooling, NO_BEHAVIOUR);
+  // Even with heavy static hits and a known-malicious dependency record, no behaviour means Caution at worst.
+  const r = computeScore(input({ behaviour: tooling, staticFindings: [1, 2, 3, 4, 5, 6, 7].map((line) => sf({ line })), malicious: [{ ecosystem: "npm", name: "evil", version: "1.0.0", ids: ["MAL-2099-1"] }] }));
+  assert.ok(r.verdict !== "Malicious" && r.verdict !== "High risk", r.verdict);
+  assert.ok(r.score >= 60, String(r.score));
+  // A credential in a registry request is still a canary hit, and a write elsewhere on the registry still counts.
+  const exfil = deriveBehaviour({ forgedCalls: [call("GET", "/x", { canary_hits: ["NPM_TOKEN"] }), call("PUT", "/evil")], files: [], processes: [], canaryInFiles: [], datagramEgress: [] });
+  assert.equal(exfil.canaryHits.length, 1);
+  assert.deepEqual(exfil.nonDistributionHosts, ["registry.npmjs.org"]);
 });

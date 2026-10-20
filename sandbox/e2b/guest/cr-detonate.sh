@@ -230,7 +230,7 @@ BASE_ENV=(
   NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
   npm_config_fetch_timeout=3600000 npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
   npm_config_update_notifier=false npm_config_cache="$H/.npm" CI=true
-  npm_config_maxsockets=64 npm_config_network_concurrency=64 npm_config_dangerously_allow_all_builds=true
+  npm_config_maxsockets=16 npm_config_network_concurrency=16 npm_config_dangerously_allow_all_builds=true
   COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack" COREPACK_ENABLE_STRICT=0
   npm_config_cafile=/etc/cr/ca.pem YARN_HTTPS_CA_FILE_PATH=/etc/cr/ca.pem YARN_ENABLE_TELEMETRY=0 YARN_ENABLE_GLOBAL_CACHE=0
   UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy

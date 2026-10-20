@@ -57,7 +57,9 @@ export const BASE = 85;
 // users get), so behaviour and OSV inputs change; every report scores again.
 // 11: static-only findings floor at Caution; README-consistent capability patterns not deducted;
 // a registry TLS refusal by the package manager is not a contact.
-export const SCORE_RULES = 12; // 12: a registry HEAD is not a contact
+// 12: a registry HEAD is not a contact. 13: all package-manager registry traffic is
+// registry traffic; Malicious and High risk need sandbox behaviour.
+export const SCORE_RULES = 13;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
@@ -138,6 +140,13 @@ export const REGISTRY_FORGED_KINDS = new Set(["mirror", "registry"]);
 export const REGISTRY_HOSTS = new Set(["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]);
 /** Distribution hosts for behaviour scoring (section 5.3). Anchored suffix match. */
 export const BEHAVIOUR_DISTRIBUTION_HOSTS = ["github.com", "objects.githubusercontent.com", "sourceforge.net", "nodejs.org"];
+
+/** A registry request shaped like the package manager's own work (reads and audit lookups). */
+export function isPackageManagerRequest(method: string | undefined, path: string | undefined): boolean {
+  const m = (method ?? "GET").toUpperCase();
+  if (m === "GET" || m === "HEAD") return true;
+  return m === "POST" && /^\/-\/npm\/v1\/security\//.test(path ?? "");
+}
 
 export function isBehaviourDistributionHost(host: string): boolean {
   const h = host.toLowerCase().replace(/\.$/, "");
@@ -240,9 +249,11 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
     // A package manager declining the per-VM CA for the registry itself is the tool, not
     // the repo: it reached no other host. Non-GET calls to a registry still count.
     if (c.tls === "refused" && REGISTRY_HOSTS.has(host)) continue;
-    // A HEAD to the registry (pnpm checks a package exists that way) is read-only and
-    // carries no payload; the forge answers it but it is not a contact.
-    if (c.method?.toUpperCase() === "HEAD" && REGISTRY_HOSTS.has(host)) continue;
+    // The package manager's own work on the official registry is registry traffic, never
+    // the repo contacting a host: reads (GET/HEAD: metadata, provenance attestations) and
+    // its audit lookups (POST /-/npm/v1/security/...). A credential in any of them is
+    // still a canary hit above. Any other write to a registry still counts.
+    if (REGISTRY_HOSTS.has(host) && isPackageManagerRequest(c.method, c.path)) continue;
     if (c.tls === "refused") tls.push(host);
     if (isBehaviourDistributionHost(host)) dist.push(host);
     else nonDist.push(host);
@@ -629,8 +640,10 @@ export function computeScore(input: ScoreInput): ScoreResult {
     input.coverage.checks;
   // Static pattern hits alone, with nothing bad observed when the code ran (no behaviour,
   // no intel), land at Caution at most: never High risk or Malicious.
-  if (B === 0 && I === 0 && score < STATIC_ONLY_FLOOR && input.forensics.coverage !== "lost") {
-    breakdown.push({ group: "cap", code: "static_only_floor", points: STATIC_ONLY_FLOOR - score, detail: `Only static pattern hits, nothing bad observed in the sandbox: the score stays in Caution (at least ${STATIC_ONLY_FLOOR}).` });
+  // Malicious and High risk need behaviour seen in the sandbox. Without it (static hits,
+  // a known-malicious dependency record, missing coverage) the score stays in Caution.
+  if (B === 0 && score < STATIC_ONLY_FLOOR) {
+    breakdown.push({ group: "cap", code: "no_behaviour_floor", points: STATIC_ONLY_FLOOR - score, detail: `Nothing bad was observed when the code ran: without sandbox behaviour the score stays in Caution (at least ${STATIC_ONLY_FLOOR}).` });
     score = STATIC_ONLY_FLOOR;
   }
   if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {

@@ -301,6 +301,14 @@ interface VmGraphJson {
   classes: Record<string, 1 | 2>;
 }
 
+/**
+ * Huge repos (the 2 vCPU tier) get an install window sized to them: openclaw's pnpm
+ * install did not finish in 60 s. The scan still ends inside maxDuration (300 s).
+ */
+const LARGE_INSTALL_MS = 140_000;
+const LARGE_DETONATE_MS = 265_000;
+const LARGE_SANDBOX_MS = 285_000;
+
 /** Scanner window in the one-VM path: small repos finish in 3 to 5 s; openclaw (57k files) did not finish in 45 s nor in 90 s, so the longer window only bought cost. */
 const VM_SCANNER_MS = 45_000;
 
@@ -441,7 +449,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     const onKilled = (ok: boolean, detail: string) => check("sandbox_killed", ok, detail);
     detVm = bootDetonation(
       deps.sandbox,
-      { runId, totalTimeoutMs: cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, size: vmSize },
+      { runId, totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: vmSize === "large" ? LARGE_SANDBOX_MS : cfg.deadlines.sandboxTimeoutMs, size: vmSize },
       { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
     );
     // One VM per GitHub scan on E2B: the scanners run in the detonation VM before any repo code.
@@ -697,10 +705,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         tarball: bytes,
         prefetched: Boolean(fetched!.vm),
         canaries,
-        installTimeoutMs: cfg.deadlines.installMs,
+        installTimeoutMs: vmSize === "large" ? LARGE_INSTALL_MS : cfg.deadlines.installMs,
         entryTimeoutMs: cfg.deadlines.entryMs,
-        totalTimeoutMs: cfg.deadlines.detonateTotalMs,
-        sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs,
+        totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs,
+        sandboxTimeoutMs: vmSize === "large" ? LARGE_SANDBOX_MS : cfg.deadlines.sandboxTimeoutMs,
         fakeRate: FAKE_CLOCK_RATE,
       });
     } catch (err) {
