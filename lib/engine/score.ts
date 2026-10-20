@@ -47,8 +47,10 @@ export const BASE = 85;
  * test datagram as a fence drop (-25); those runs score again.
  * 6: under an unbounded graph only files an installer or entry point in the VM can
  * execute are reachable (lib/engine/reach/graph.ts runnable()).
+ * 7: the fence baseline is taken right before the go file (rules 6 runs could
+ * carry a late-counted proof datagram as a drop).
  */
-export const SCORE_RULES = 6;
+export const SCORE_RULES = 7;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;

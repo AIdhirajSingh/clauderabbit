@@ -55,6 +55,11 @@ class RegistryShapeTests(unittest.TestCase):
 
     def test_off_shape_and_non_get_are_forged(self):
         self.assertIsNone(fc.registry_kind(POLICY, "registry.npmjs.org", "POST", "/-/npm/v1/security/advisories/bulk"))
+        # corepack's version manifest for the pnpm a repo pins
+        self.assertEqual(fc.registry_kind(POLICY, "registry.npmjs.org", "GET", "/pnpm/12.11.1"), "npm-version")
+        self.assertEqual(fc.registry_kind(POLICY, "registry.npmjs.org", "GET", "/@scope%2fpkg/1.0.0"), "npm-version")
+        self.assertIsNone(fc.registry_kind(POLICY, "evil.example", "GET", "/pnpm/12.11.1"), "only registry hosts")
+        self.assertEqual(fc.npm_digests_from_packument(b'{"name":"pnpm","version":"12.11.1","dist":{"tarball":"https://registry.npmjs.org/pnpm/-/pnpm-12.11.1.tgz","integrity":"sha512-x"}}'), {"https://registry.npmjs.org/pnpm/-/pnpm-12.11.1.tgz": "sha512-x"})
         self.assertIsNone(fc.registry_kind(POLICY, "registry.npmjs.org", "GET", "/-/v1/search"))
         self.assertIsNone(fc.registry_kind(POLICY, "registry.npmjs.org", "PUT", "/left-pad"))
         self.assertIsNone(fc.registry_kind(POLICY, "evil.example", "GET", "/left-pad"))

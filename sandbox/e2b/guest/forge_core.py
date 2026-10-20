@@ -48,6 +48,9 @@ PHASES = ("install", "entry", "probe", "collect")
 
 NPM_TARBALL_RE = re.compile(r"^/((?:@[^/]+/)?[^/@][^/]*)/-/([^/]+\.tgz)$")
 NPM_PACKUMENT_RE = re.compile(r"^/((?:@[^/%]+(?:/|%2[fF]))?[^/@%][^/]*)$")
+# A single version's manifest (GET /<name>/<version>), what corepack reads to fetch the
+# package manager a repo pins. Registry metadata, passed through like a packument.
+NPM_VERSION_RE = re.compile(r"^/((?:@[^/%]+(?:/|%2[fF]))?[^/@%][^/]*)/([0-9][0-9A-Za-z.+-]*)$")
 PYPI_SIMPLE_RE = re.compile(r"^/simple/([A-Za-z0-9._-]+)/?$")
 PYPI_JSON_RE = re.compile(r"^/pypi/([A-Za-z0-9._-]+)(?:/([^/]+))?/json/?$")
 PYPI_FILE_RE = re.compile(r"^/packages/[^?#]+/([^/?#]+)$")
@@ -117,6 +120,8 @@ def registry_kind(policy: dict, host: str, method: str, path: str) -> Optional[s
             return "npm-tarball"
         if NPM_PACKUMENT_RE.match(p) and not p.startswith("/-/"):
             return "npm-packument"
+        if NPM_VERSION_RE.match(p) and not p.startswith("/-/"):
+            return "npm-version"
         return None
     if h in regs.get("pypi_index", []):
         if PYPI_SIMPLE_RE.match(p):
@@ -198,6 +203,9 @@ def npm_digests_from_packument(body: bytes) -> dict:
         return {}
     out: dict = {}
     versions = doc.get("versions") if isinstance(doc, dict) else None
+    if not isinstance(versions, dict):
+        # A single version's manifest carries its own dist.
+        versions = {"_": doc} if isinstance(doc, dict) and isinstance(doc.get("dist"), dict) else None
     if not isinstance(versions, dict):
         return out
     for v in versions.values():
@@ -411,12 +419,12 @@ class Forge:
         kind = registry_kind(self.policy, req.host, req.method, req.path)
         if kind is None:
             return forged_reply(req)
-        if kind in ("npm-packument", "pypi-simple", "pypi-json"):
+        if kind in ("npm-packument", "npm-version", "pypi-simple", "pypi-json"):
             return self._metadata(req, kind)
         return self._blob(req, kind)
 
     def _remember(self, kind: str, url: str, content_type: str, body: bytes, from_mirror: bool = False) -> None:
-        found = npm_digests_from_packument(body) if kind == "npm-packument" else pypi_digests_from_index(body, url, content_type)
+        found = npm_digests_from_packument(body) if kind in ("npm-packument", "npm-version") else pypi_digests_from_index(body, url, content_type)
         with self._lock:
             self.digests.update(found)
             if from_mirror:

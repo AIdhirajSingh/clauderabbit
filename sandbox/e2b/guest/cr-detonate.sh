@@ -39,7 +39,7 @@ TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,rena
 MAX_LOG=262144
 # A GitHub repo is fetched, fence-proven and mapped inside this VM before the go
 # file (lib/engine/sandbox/vmfetch.ts); a large repo needs most of this window.
-GO_WAIT_S=100
+GO_WAIT_S=150
 
 log() { printf 'cr: %s\n' "$*"; }
 now_ms() { date +%s%3N; }

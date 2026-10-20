@@ -34,7 +34,7 @@ import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
 import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
 import { REGISTRY_ALLOW_OUT, SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
-import { fetchRepoInVm, mapAndScanInVm, proveFenceInVm, type VmMapStats } from "./sandbox/vmfetch";
+import { fetchRepoInVm, mapAndScanInVm, proveFenceInVm, writeDropBaseline, type VmMapStats } from "./sandbox/vmfetch";
 import { SCORE_RULES, computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
 import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
 import { runHeuristics, type HeuristicResult } from "./static/heuristics";
@@ -278,7 +278,7 @@ interface VmGraphJson {
 }
 
 /** Scanner window in the one-VM path: sized to the measured whole-repo run on 4 vCPU. */
-const VM_SCANNER_MS = 45_000;
+const VM_SCANNER_MS = 90_000;
 
 /** The slice the models read is bounded; every scored fact comes from the whole repo in the VM. */
 const VM_VIEW_LIMITS = { maxCompressedBytes: 64 * 1024 * 1024, maxExpandedBytes: 64 * 1024 * 1024, maxFiles: 50_000, maxPackumentBytes: 0, stripFirstComponent: true };
@@ -301,6 +301,7 @@ async function vmFetchAndMap(
   if (!fence.ok) throw new EngineError("internal", "the containment check failed after the repo fetch, so no repo code ran");
   const { view, stats, graph, heur, analysis, ms } = await mapAndScanInVm(ds, "/root/in/target.tgz", 60_000, scannerTimeoutMs, onLine);
   const archive = await parseTarball(view, VM_VIEW_LIMITS);
+  check("fence_baseline", true, `drop counters before the go file (harness traffic): ${await writeDropBaseline(ds)}`);
   emitStage(
     "verify",
     "done",
