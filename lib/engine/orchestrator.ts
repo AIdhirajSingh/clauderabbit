@@ -34,7 +34,7 @@ import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
 import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
 import { SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
-import { computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
+import { SCORE_RULES, computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
 import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
 import { runHeuristics, type HeuristicResult } from "./static/heuristics";
 import type { ScanStore, TargetKind } from "./store";
@@ -104,7 +104,9 @@ export interface RunCoverage {
   timed_out: string[];
 }
 
-export function cachedCoverageComplete(report: { forensics?: unknown } | null | undefined): boolean {
+export function cachedCoverageComplete(report: { forensics?: unknown; score_rules?: unknown } | null | undefined): boolean {
+  // A report scored under older rules is stale: the next request scores it again.
+  if (report?.score_rules !== SCORE_RULES) return false;
   const f = report?.forensics;
   if (typeof f !== "object" || f === null) return false;
   const c = (f as { coverage?: unknown }).coverage;
@@ -359,7 +361,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     try {
       const found = await deps.store.findCached(resolved.subject, commitSha);
       const hit = found && cachedCoverageComplete(found.report) ? found : null;
-      if (found && !hit) emitStage("cache", "done", "miss: the stored run for this sha has incomplete coverage, so it runs again");
+      if (found && !hit) emitStage("cache", "done", "miss: the stored run for this sha has incomplete coverage or older scoring rules, so it runs again");
       if (hit) {
         g.drop();
         discard = true;
@@ -716,6 +718,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     },
     model_id: deps.luna.modelId,
     jev_model_id: deps.jev.modelId,
+    score_rules: SCORE_RULES,
     template: deps.sandbox.template,
     timings,
     writer: written.writer,

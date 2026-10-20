@@ -33,6 +33,14 @@ import type { ReputationSignals } from "./reputation";
 
 export const BASE = 85;
 
+/**
+ * Version of the rules below. Bumped whenever a weight, a cap or a classifier
+ * changes, so a cached report scored under older rules is never served as a hit.
+ * 2: shells, distribution fetches and reputation never lower the score; every
+ * applied deduction cites evidence; a Jev "unclear" no longer blocks 90.
+ */
+export const SCORE_RULES = 2;
+
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
 /** A decoy credential file was opened by a repo process. */
@@ -49,9 +57,6 @@ export const W_TLS_REFUSED = -20;
 /** An install-phase exec of curl, wget, nc, bash -c, powershell or base64 -d, per distinct command. */
 export const W_INSTALL_EXEC = -15;
 export const CAP_INSTALL_EXEC = -30;
-/** A fetch to a distribution host (github.com and friends), per distinct host. */
-export const W_DIST_FETCH = -3;
-export const CAP_DIST_FETCH = -9;
 /** Floor for the whole behaviour group. */
 export const CAP_BEHAVIOUR = -85;
 
@@ -71,14 +76,17 @@ export const W_DOCS_BEHAVIOUR = -15;
 /** The same declaration contradicted only by a reachable static capability. */
 export const W_DOCS_STATIC = -6;
 
-export const W_OWNER_NEW = -5; // GitHub owner account younger than 60 days
-export const W_NPM_NEW = -4; // npm first publish younger than 30 days
-export const W_MAINTAINER_CHANGED = -3; // npm maintainer set changed within 30 days
+// Reputation can only raise the score. A young owner account, a new npm package or
+// a recent maintainer change is shown in the reputation group at 0 points: none of
+// them is a file, a line or a sandbox event, so none of them takes a point off.
+export const W_OWNER_NEW = 0; // GitHub owner account younger than 60 days
+export const W_NPM_NEW = 0; // npm first publish younger than 30 days
+export const W_MAINTAINER_CHANGED = 0; // npm maintainer set changed within 30 days
 export const W_OWNER_ESTABLISHED = 3; // owner older than a year with 3+ public repositories
 export const W_DOWNLOADS = 2; // more than 100k npm downloads per week
 export const W_STARS = 2; // GitHub repository target with STARS_THRESHOLD or more stars
 export const STARS_THRESHOLD = 1000;
-export const REPUTATION_MIN = -8;
+export const REPUTATION_MIN = 0;
 export const REPUTATION_MAX = 5;
 
 export const CAP_CANARY_OR_PERSISTENCE = 15;
@@ -145,11 +153,15 @@ function base(argv0: string): string {
   return argv0.slice(argv0.lastIndexOf("/") + 1);
 }
 
-/** curl|wget|nc|bash -c|powershell|base64 -d (npm runs scripts with `sh -c`, which is not counted). */
+/**
+ * curl|wget|nc|powershell|base64 -d during install. A shell (`sh -c`, `bash -c`,
+ * `zsh -c`) is never counted: npm runs every lifecycle script through one, the
+ * harness runs `npm install` through `bash -c`, and an install script that runs
+ * `npm install` or `node build.js` is ordinary install behaviour.
+ */
 export function isSuspiciousInstallExec(argv: string[]): boolean {
   const b = base(argv[0] ?? "");
   if (SUSPICIOUS_BINARIES.has(b)) return true;
-  if ((b === "bash" || b === "zsh") && argv.includes("-c")) return true;
   if (b === "base64" && (argv.includes("-d") || argv.includes("--decode") || argv.includes("-D"))) return true;
   return false;
 }
@@ -332,15 +344,9 @@ function behaviourDeltas(b: BehaviourSignals): ScoreDelta[] {
       evidence: b.suspiciousInstallExecs,
     });
   }
-  if (b.distributionFetches.length > 0) {
-    out.push({
-      group: "behaviour",
-      code: "distribution_fetch",
-      points: capped(W_DIST_FETCH * b.distributionFetches.length, CAP_DIST_FETCH),
-      detail: "Fetched from a software distribution host.",
-      evidence: b.distributionFetches,
-    });
-  }
+  // A fetch from a distribution host (github.com and friends: prebuilt binaries,
+  // release assets) is ordinary install behaviour and costs nothing on its own. It
+  // still counts as network activity against a README that declares no network.
   return out;
 }
 
@@ -461,13 +467,19 @@ function phaseText(name: string, p: PhaseOutcome): string {
   return p === "skipped" ? `${name} phase was skipped, so its behaviour was not observed.` : `${name} phase did not complete (${p}), so later behaviour was not observed.`;
 }
 
+/** A deduction that cannot point at a file, a line or a sandbox event is not applied. */
+function evidenced(d: ScoreDelta): boolean {
+  return d.points >= 0 || (Array.isArray(d.evidence) && d.evidence.some((e) => typeof e === "string" && e.trim().length > 0));
+}
+
 export function computeScore(input: ScoreInput): ScoreResult {
-  const bDeltas = behaviourDeltas(input.behaviour);
+  const bDeltas = behaviourDeltas(input.behaviour).filter(evidenced);
   const B = Math.max(CAP_BEHAVIOUR, bDeltas.reduce((s, d) => s + d.points, 0));
   const I = input.malicious.length > 0 ? W_MALICIOUS_DEP : 0;
   const st = staticTally(input.staticFindings, input.checkFindings);
   const S = st.total;
-  const dDelta = docsDelta(input);
+  const dRaw = docsDelta(input);
+  const dDelta = dRaw && evidenced(dRaw) ? dRaw : null;
   const D = dDelta ? dDelta.points : 0;
   const rep = reputationDeltas(input.reputation);
   const R = rep.total;
@@ -545,13 +557,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
     B === 0 &&
     I === 0 &&
     !st.reachableHigh &&
-    st.unclear.length === 0 &&
     R >= 0 &&
     input.coverage.scanners &&
     input.coverage.osv &&
     input.coverage.checks;
   if (!proven) {
-    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs install and entry to run (a timeout counts as run), no behaviour or intel hits, no reachable high finding, no undecided Jev check, non-negative reputation and full coverage.");
+    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs install and entry to run (a timeout counts as run), no behaviour or intel hits, no reachable high finding and full coverage.");
   }
 
   const unique = [...new Set(notVerified)];

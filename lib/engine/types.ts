@@ -262,6 +262,8 @@ export interface ReportPayload {
   model_id: string;
   /** Jev, the checker's model id (AI Gateway). Absent on reports written before Jev. */
   jev_model_id?: string;
+  /** Version of the scoring rules (lib/engine/score.ts SCORE_RULES) that produced this score. */
+  score_rules?: number;
   template: string;
   timings: Record<string, number>;
   writer: "model" | "deterministic";
