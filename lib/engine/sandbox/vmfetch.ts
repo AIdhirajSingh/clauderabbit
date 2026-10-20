@@ -87,8 +87,12 @@ export async function proveFenceInVm(s: SandboxSession): Promise<{ ok: boolean; 
     `set -uo pipefail; pid=$(pgrep -o -f mitmdump || true); [ -n "$pid" ] || { echo "no forge process"; exit 2; }; ` +
       `timeout 40 /opt/cr/bin/cr-proof.sh "$pid" /root/proof-after-fetch.txt; p=$?; ` +
       `if curl -sS --max-time 4 -o /dev/null https://${CODELOAD_HOST}/ 2>/dev/null; then c=OPEN; else c=CLOSED; fi; ` +
-      `echo "proof_exit=$p codeload=$c pass=$(grep -c '^PASS' /root/proof-after-fetch.txt) fail=$(grep -c '^FAIL' /root/proof-after-fetch.txt)"; grep '^FAIL' /root/proof-after-fetch.txt | head -5; ` +
-      `[ "$p" = 0 ] && [ "$c" = CLOSED ]`,
+      // The proof's own test datagrams (uid 1001 UDP, ICMP) are counted by the fence's
+      // drop rules, which the harness later reads as repo behaviour: zero those counters
+      // (the rules themselves are untouched) and require every one to read 0 again.
+      `nft reset rules table inet cr chain out_filter >/dev/null; d=0; for k in udp icmp other; do n=$(/opt/cr/bin/cr-drops.sh "cr_\${k}_drop"); d=$((d + n)); done; ` +
+      `echo "proof_exit=$p codeload=$c pass=$(grep -c '^PASS' /root/proof-after-fetch.txt) fail=$(grep -c '^FAIL' /root/proof-after-fetch.txt) drop_counters_after_reset=$d"; grep '^FAIL' /root/proof-after-fetch.txt | head -5; ` +
+      `[ "$p" = 0 ] && [ "$c" = CLOSED ] && [ "$d" = 0 ]`,
     { timeoutMs: 50_000 },
   );
   return { ok: r.exitCode === 0, detail: (r.stdout + r.stderr).trim().slice(0, 600) };
