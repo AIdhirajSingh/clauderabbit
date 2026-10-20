@@ -561,7 +561,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   if (dependencyOnly) {
     if (score > CAP_DEPENDENCY_ONLY) {
       breakdown.push({
-        group: "intel",
+        group: "cap",
         code: "dependency_malicious_record",
         points: CAP_DEPENDENCY_ONLY - score,
         detail: `${dependencyLabel(input.malicious)} The repo's own code is clean, so the score is capped at ${CAP_DEPENDENCY_ONLY} (Caution).`,
