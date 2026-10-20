@@ -61,7 +61,7 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 15;
+export const SCORE_RULES = 16; // 16: platform-only dev packages are not run (stated)
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;

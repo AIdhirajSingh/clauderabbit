@@ -16,10 +16,29 @@ export interface InstallPlan {
   devTotal: number;
   /** Where the dev tree came from. */
   source: "lockfile-v2" | "lockfile-v1" | "resolved";
+  /** Dev packages with an install script whose os/cpu exclude the sandbox: not run here. */
+  platformSkipped: Array<{ spec: string; name: string; version: string; label: string }>;
 }
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
-type Abbrev = { versions?: Record<string, { dependencies?: Record<string, string>; hasInstallScript?: boolean }>; "dist-tags"?: Record<string, string> };
+type Meta = { dependencies?: Record<string, string>; hasInstallScript?: boolean; os?: string[]; cpu?: string[] };
+type Abbrev = { versions?: Record<string, Meta>; "dist-tags"?: Record<string, string> };
+
+/** False when a package's `os` or `cpu` excludes the Linux x64 sandbox (it would never install here). */
+export function runsOnSandbox(m: Meta | undefined): boolean {
+  const ok = (list: string[] | undefined, want: string) => {
+    if (!Array.isArray(list) || list.length === 0) return true;
+    if (list.includes(`!${want}`)) return false;
+    const allow = list.filter((x) => !x.startsWith("!"));
+    return allow.length === 0 || allow.includes(want);
+  };
+  return ok(m?.os, "linux") && ok(m?.cpu, "x64");
+}
+const OS_NAME: Record<string, string> = { darwin: "macOS", win32: "Windows", linux: "Linux", freebsd: "FreeBSD" };
+function platformLabel(m: Meta | undefined): string {
+  const os = (m?.os ?? []).filter((x) => !x.startsWith("!"));
+  return os.length > 0 ? `${os.map((o) => OS_NAME[o] ?? o).join("/")}-only` : `${(m?.cpu ?? []).join("/")}-only`;
+}
 
 const REGISTRY = "https://registry.npmjs.org";
 const NAME_RE = /^(@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/;
@@ -78,8 +97,10 @@ export async function planInstall(files: Map<string, Uint8Array>, fetchFn: Fetch
     if (lock.packages) {
       const dev = Object.entries(lock.packages).filter(([k, v]) => k !== "" && v.dev === true && typeof v.version === "string");
       const nameOf = (k: string, v: { name?: string }) => v.name ?? k.slice(k.lastIndexOf("node_modules/") + "node_modules/".length);
-      const devScripts = [...new Set(dev.filter(([, v]) => v.hasInstallScript === true).map(([k, v]) => `${nameOf(k, v)}@${v.version}`))].sort();
-      return { devScripts, devTotal: new Set(dev.map(([k, v]) => `${nameOf(k, v)}@${v.version}`)).size, source: "lockfile-v2" };
+      const withScript = [...new Map(dev.filter(([, v]) => v.hasInstallScript === true).map(([k, v]) => [`${nameOf(k, v)}@${v.version}`, v as Meta & { version: string }])).entries()];
+      const platformSkipped = withScript.filter(([, v]) => !runsOnSandbox(v)).map(([spec, v]) => ({ spec, name: spec.slice(0, spec.lastIndexOf("@")), version: v.version, label: platformLabel(v) }));
+      const devScripts = withScript.filter(([, v]) => runsOnSandbox(v)).map(([spec]) => spec).sort();
+      return { devScripts, devTotal: new Set(dev.map(([k, v]) => `${nameOf(k, v)}@${v.version}`)).size, source: "lockfile-v2", platformSkipped };
     }
     // v1: a nested dependencies tree with dev flags and no install-script flag: read it per version.
     const dev = new Map<string, { name: string; version: string }>();
@@ -92,12 +113,19 @@ export async function planInstall(files: Map<string, Uint8Array>, fetchFn: Fetch
     };
     walk(lock.dependencies);
     const list = [...dev.values()].slice(0, MAX_PACKAGES);
-    const flags = await pool(list, async (d) => (await get(d.name))?.versions?.[d.version]?.hasInstallScript === true);
-    return { devScripts: list.filter((_, i) => flags[i]).map((d) => `${d.name}@${d.version}`).sort(), devTotal: dev.size, source: "lockfile-v1" };
+    const metas = await pool(list, async (d) => (await get(d.name))?.versions?.[d.version]);
+    const scripted = list.map((d, i) => ({ d, m: metas[i] })).filter((x) => x.m?.hasInstallScript === true);
+    return {
+      devScripts: scripted.filter((x) => runsOnSandbox(x.m)).map((x) => `${x.d.name}@${x.d.version}`).sort(),
+      devTotal: dev.size,
+      source: "lockfile-v1",
+      platformSkipped: scripted.filter((x) => !runsOnSandbox(x.m)).map((x) => ({ spec: `${x.d.name}@${x.d.version}`, name: x.d.name, version: x.d.version, label: platformLabel(x.m) })),
+    };
   }
   if (text("pnpm-lock.yaml") || text("yarn.lock")) return null;
   // No lockfile: resolve the dev tree from package.json ranges, level by level, in parallel.
   const seen = new Map<string, boolean>();
+  const platformSkipped: InstallPlan["platformSkipped"] = [];
   let level: Array<[string, string]> = Object.entries(pkg.devDependencies ?? {});
   while (level.length > 0 && seen.size < MAX_PACKAGES) {
     const resolved = await pool(level, async ([name, range]) => {
@@ -110,10 +138,11 @@ export async function planInstall(files: Map<string, Uint8Array>, fetchFn: Fetch
     const next: Array<[string, string]> = [];
     for (const r of resolved) {
       if (!r || seen.has(`${r.name}@${r.v}`)) continue;
-      seen.set(`${r.name}@${r.v}`, r.meta.hasInstallScript === true);
+      seen.set(`${r.name}@${r.v}`, r.meta.hasInstallScript === true && runsOnSandbox(r.meta));
+      if (r.meta.hasInstallScript === true && !runsOnSandbox(r.meta)) platformSkipped.push({ spec: `${r.name}@${r.v}`, name: r.name, version: r.v, label: platformLabel(r.meta) });
       for (const [n, rg] of Object.entries(r.meta.dependencies ?? {})) next.push([n, rg]);
     }
     level = next.filter(([n, rg]) => ![...seen.keys()].some((k) => k.startsWith(`${n}@`) && semver.satisfies(k.slice(n.length + 1), rg)));
   }
-  return { devScripts: [...seen].filter(([, s]) => s).map(([k]) => k).sort(), devTotal: seen.size, source: "resolved" };
+  return { devScripts: [...seen].filter(([, s]) => s).map(([k]) => k).sort(), devTotal: seen.size, source: "resolved", platformSkipped };
 }

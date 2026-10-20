@@ -779,6 +779,11 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   }
 
   malicious = await scopeMalicious(malicious, archive.files, installed, (u, i) => deps.fetch(u, i));
+  // Platform-only dev packages the plan did not run: stated, and still checked against OSV.
+  for (const s of (await planP)?.platformSkipped ?? []) {
+    const flagged = malicious.some((m) => m.name === s.name && m.version === s.version);
+    failedStages.push(`${s.name} ${s.version}: ${s.label}, ${flagged ? "flagged from its malware record, " : ""}not run in this sandbox.`);
+  }
 
   // ---- score ---------------------------------------------------------------------------------------
   emitStage("score", "start");
