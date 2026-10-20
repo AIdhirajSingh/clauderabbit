@@ -459,6 +459,11 @@ DROPS='{}'
 for c in udp icmp other; do
   n=$(/opt/cr/bin/cr-drops.sh "cr_${c}_drop")
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  # Drops counted before the go file (the post-fetch containment check's own test
+  # datagrams, root-written by vmfetch.ts before any repo code ran) are not repo behaviour.
+  b=$(jq -r --arg k "$c" '.[$k] // 0' "$IN/drop-baseline.json" 2>/dev/null || echo 0)
+  [[ "$b" =~ ^[0-9]+$ ]] || b=0
+  n=$((n > b ? n - b : 0))
   DROPS=$(jq -c --arg k "$c" --argjson v "$n" '. + {($k): $v}' <<<"$DROPS")
 done
 printf '%s\n' "$DROPS" >"$OUT/egress_drops.json"

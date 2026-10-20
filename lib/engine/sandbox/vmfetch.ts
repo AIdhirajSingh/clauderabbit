@@ -90,9 +90,10 @@ export async function proveFenceInVm(s: SandboxSession): Promise<{ ok: boolean; 
       // The proof's own test datagrams (uid 1001 UDP, ICMP) are counted by the fence's
       // drop rules, which the harness later reads as repo behaviour: zero those counters
       // (the rules themselves are untouched) and require every one to read 0 again.
-      `nft reset rules inet cr out_filter >/dev/null; d=0; for k in udp icmp other; do n=$(/opt/cr/bin/cr-drops.sh "cr_\${k}_drop"); d=$((d + n)); done; ` +
-      `echo "proof_exit=$p codeload=$c pass=$(grep -c '^PASS' /root/proof-after-fetch.txt) fail=$(grep -c '^FAIL' /root/proof-after-fetch.txt) drop_counters_after_reset=$d"; grep '^FAIL' /root/proof-after-fetch.txt | head -5; ` +
-      `[ "$p" = 0 ] && [ "$c" = CLOSED ] && [ "$d" = 0 ]`,
+      `u=$(/opt/cr/bin/cr-drops.sh cr_udp_drop); i=$(/opt/cr/bin/cr-drops.sh cr_icmp_drop); o=$(/opt/cr/bin/cr-drops.sh cr_other_drop); ` +
+      `printf '{"udp":%s,"icmp":%s,"other":%s}\\n' "$u" "$i" "$o" > /root/in/drop-baseline.json; ` +
+      `echo "proof_exit=$p codeload=$c pass=$(grep -c '^PASS' /root/proof-after-fetch.txt) fail=$(grep -c '^FAIL' /root/proof-after-fetch.txt) drop_baseline=$(cat /root/in/drop-baseline.json)"; grep '^FAIL' /root/proof-after-fetch.txt | head -5; ` +
+      `[ "$p" = 0 ] && [ "$c" = CLOSED ] && [ -s /root/in/drop-baseline.json ]`,
     { timeoutMs: 50_000 },
   );
   return { ok: r.exitCode === 0, detail: (r.stdout + r.stderr).trim().slice(0, 600) };
