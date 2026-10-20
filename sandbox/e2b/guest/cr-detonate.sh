@@ -273,15 +273,38 @@ else
       elif [ -f /work/src/bun.lock ] || [ -f /work/src/bun.lockb ]; then PM=bun
       else PM=npm; fi
     fi
+    # Install surface: production dependencies with their scripts, the repo's own scripts,
+    # and of the dev dependencies only those whose lockfile entry has an install script.
+    # Every lockfile package is still checked against OSV (orchestrator), dev included.
     case "$PM" in
-      pnpm) INSTALL_CMD="pnpm install --prefer-frozen-lockfile"; check package_manager true "pnpm (declared)" ;;
+      pnpm)
+        INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile"
+        # pnpm-lock v6 to v8 mark build-script packages requiresBuild; v9 does not record it.
+        PDEV=$(grep -c '^  /' /work/src/pnpm-lock.yaml 2>/dev/null || echo 0)
+        if grep -q 'requiresBuild: true' /work/src/pnpm-lock.yaml 2>/dev/null; then
+          check dev_scope true "pnpm lockfile marks build scripts; production install, dev build-script packages run by pnpm rebuild"
+          INSTALL_CMD="$INSTALL_CMD && pnpm rebuild"
+        else
+          check dev_scope false "pnpm lockfile does not record which dev packages have install scripts (lockfile v9); production dependencies and the repo's own scripts ran, dev dependencies were not executed"
+        fi
+        check package_manager true "pnpm (declared)" ;;
       yarn) INSTALL_CMD="yarn install"; check package_manager true "yarn (declared)" ;;
       bun)
         # bun is not in the template: the npm install of the same manifest, marked.
         INSTALL_CMD="npm install --no-audit --no-fund"; check package_manager false "bun declared; bun is not in the sandbox, installed with npm" ;;
       *)
-        if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then INSTALL_CMD="npm ci --no-audit --no-fund"
-        else INSTALL_CMD="npm install --no-audit --no-fund"; fi
+        # No lockfile: resolve the tree once from the registry (through the forge), no scripts.
+        LOCK_STEP=""
+        if [ ! -f /work/src/package-lock.json ] && [ ! -f /work/src/npm-shrinkwrap.json ]; then
+          LOCK_STEP="npm install --package-lock-only --ignore-scripts --no-audit --no-fund && "
+        fi
+        # Production tree with every script, then only the dev packages that have an install script.
+        DEV_STEP='L=package-lock.json; [ -f npm-shrinkwrap.json ] && L=npm-shrinkwrap.json; '\
+'D=$(jq -r "[.packages // {} | to_entries[] | select(.key != \"\" and .value.dev == true)] | length" $L); '\
+'S=$(jq -r ".packages // {} | to_entries[] | select(.key != \"\" and .value.dev == true and .value.hasInstallScript == true) | ((.key | sub(\".*node_modules/\"; \"\")) + \"@\" + .value.version)" $L | sort -u); '\
+'N=$(printf "%s" "$S" | grep -c . || true); echo "cr-dev-scope $N $((D - N))"; '\
+'if [ -n "$S" ]; then npm install --no-save --no-package-lock --no-audit --no-fund $S; fi'
+        INSTALL_CMD="${LOCK_STEP}npm ci --omit=dev --no-audit --no-fund && $DEV_STEP"
         check package_manager true "npm" ;;
     esac
   elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then
@@ -316,6 +339,10 @@ if [ -n "$INSTALL_CMD" ]; then
       strace -f --seccomp-bpf -qq -ttt -s 256 -e trace="$TRACE_SET" -o "$OUT/trace.install" -u "$CR_USER" -- \
       env -i "${BASE_ENV[@]}" bash -c "$INSTALL_CMD" ) >"$OUT/install.out" 2>"$OUT/install.err"
   INSTALL_EXIT=$?
+  if DS=$(grep -m1 '^cr-dev-scope ' "$OUT/install.out" 2>/dev/null); then
+    read -r _ DEV_RUN DEV_SKIP <<<"$DS"
+    check dev_scope true "install scripts run ($DEV_RUN packages), other code not executed ($DEV_SKIP packages)"
+  fi
   set -e
   INSTALL_MS=$(( $(now_ms) - START ))
   case "$INSTALL_EXIT" in

@@ -59,7 +59,8 @@ export const BASE = 85;
 // a registry TLS refusal by the package manager is not a contact.
 // 12: a registry HEAD is not a contact. 13: all package-manager registry traffic is
 // registry traffic; Malicious and High risk need sandbox behaviour.
-export const SCORE_RULES = 13;
+// 14: install surface (production tree, dev packages with install scripts only).
+export const SCORE_RULES = 14;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;

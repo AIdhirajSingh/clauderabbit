@@ -305,7 +305,7 @@ interface VmGraphJson {
  * Huge repos (the 2 vCPU tier) get an install window sized to them: openclaw's pnpm
  * install did not finish in 60 s. The scan still ends inside maxDuration (300 s).
  */
-const LARGE_INSTALL_MS = 140_000;
+const LARGE_INSTALL_MS = 60_000;
 const LARGE_DETONATE_MS = 265_000;
 const LARGE_SANDBOX_MS = 285_000;
 
@@ -739,6 +739,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     if (det.forensics.coverage !== "complete") check("forensic_coverage", false, `${det.forensics.coverage}: ${det.forensics.gaps.join(" ").slice(0, 400)}`);
     for (const p of det.processes) bus.emit({ type: "process", data: p });
     if (det.stats.pthFiles.length > 0) check("pth_files_installed", true, det.stats.pthFiles.join(", ").slice(0, 400));
+    // What of the dev tree ran, stated plainly on the report.
+    const devScope = det.checks.find((c) => c.name === "dev_scope");
+    if (devScope) failedStages.push(`Dev dependencies: ${devScope.detail}.`);
     for (const u of det.unattributedDrops ?? []) {
       check("fence_drop_unattributed", true, u);
       failedStages.push(`The fence dropped datagrams that no traced process sent (${u}); they are not counted as repo behaviour.`);
