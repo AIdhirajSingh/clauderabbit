@@ -39,7 +39,8 @@ export const BASE = 85;
  * 2: shells, distribution fetches and reputation never lower the score; every
  * applied deduction cites evidence; a Jev "unclear" no longer blocks 90.
  * 3: an entry that fails or is skipped is neutral; a proven run with nothing
- * taken off reaches the top band on code evidence alone (reputation adds above).
+ * taken off reaches the top band on code evidence alone (reputation no longer
+ * decides it; at most it lifts an unproven clean run from 85 toward 90).
  */
 export const SCORE_RULES = 3;
 
@@ -569,7 +570,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
     input.coverage.checks;
   if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {
     // Fully observed and nothing taken off: the code evidence alone earns the top
-    // band. Reputation only adds above it, never decides it.
+    // band, whatever the reputation group says.
     breakdown.push({ group: "cap", code: "proven_clean", points: TOP_BAND - score, detail: `Install and entry ran with full coverage and no deduction, so the score is lifted to ${TOP_BAND}.` });
     score = TOP_BAND;
   }

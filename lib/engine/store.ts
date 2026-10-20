@@ -205,6 +205,7 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
       band: r.band,
       model_id: r.model_id,
       jev_model_id: r.jev_model_id ?? null,
+      score_rules: r.score_rules ?? null,
       template: r.template,
       cost: r.cost ?? null,
     },
@@ -269,6 +270,7 @@ export function payloadFromRows(row: StoredReportRow, run: { id: string; subject
     timings,
     writer: stats.writer === "model" ? "model" : "deterministic",
     ...(typeof stats.jev_model_id === "string" ? { jev_model_id: stats.jev_model_id } : {}),
+    ...(typeof stats.score_rules === "number" ? { score_rules: stats.score_rules } : {}),
     ...(ledger ? { cost: ledger } : {}),
   };
 }

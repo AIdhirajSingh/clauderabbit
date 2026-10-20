@@ -285,3 +285,15 @@ test("oauth code grant: redirect_uri required when it was registered, client_id 
   assert.equal(codeGrantError(row, { ...ok, verifier: "w".repeat(43) }, Date.now()), "invalid_grant");
   assert.equal(codeGrantError(row, ok, Date.now() + 120_000), "invalid_grant", "expired");
 });
+
+test("a report scored under the current rules survives the store and is still a cache hit", async () => {
+  const { SCORE_RULES } = await import("../../lib/engine/score.ts");
+  const { cachedCoverageComplete } = await import("../../lib/engine/orchestrator.ts");
+  const payload: ReportPayload = { ...PAYLOAD, score_rules: SCORE_RULES, forensics: { coverage: { complete: true, failed: [], timed_out: [] } } };
+  const row = reportsRowFor({ ...RECORD, report: payload });
+  const stored: StoredReportRow = { id: 8, commit_sha: row.commit_sha, score: row.score, verdict: row.verdict, summary: row.summary, stats_json: row.stats_json, packages_json: row.packages_json, forensics_json: row.forensics_json, run_id: row.run_id, score_breakdown: row.score_breakdown, not_verified: row.not_verified };
+  const back = payloadFromRows(stored, { id: PAYLOAD.run_id, subject: "acme/lib", model_id: "gpt-6-luna", template: "clauderabbit-detonate", timings: PAYLOAD.timings });
+  assert.equal(back.score_rules, SCORE_RULES);
+  assert.equal(cachedCoverageComplete(back), true, "read back from the database it must still serve as a hit");
+  assert.equal(cachedCoverageComplete({ ...back, score_rules: SCORE_RULES - 1 }), false, "older rules score again");
+});
