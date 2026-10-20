@@ -57,7 +57,7 @@ export const BASE = 85;
 // users get), so behaviour and OSV inputs change; every report scores again.
 // 11: static-only findings floor at Caution; README-consistent capability patterns not deducted;
 // a registry TLS refusal by the package manager is not a contact.
-export const SCORE_RULES = 11;
+export const SCORE_RULES = 12; // 12: a registry HEAD is not a contact
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
@@ -240,6 +240,9 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
     // A package manager declining the per-VM CA for the registry itself is the tool, not
     // the repo: it reached no other host. Non-GET calls to a registry still count.
     if (c.tls === "refused" && REGISTRY_HOSTS.has(host)) continue;
+    // A HEAD to the registry (pnpm checks a package exists that way) is read-only and
+    // carries no payload; the forge answers it but it is not a contact.
+    if (c.method?.toUpperCase() === "HEAD" && REGISTRY_HOSTS.has(host)) continue;
     if (c.tls === "refused") tls.push(host);
     if (isBehaviourDistributionHost(host)) dist.push(host);
     else nonDist.push(host);

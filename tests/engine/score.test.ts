@@ -444,4 +444,20 @@ test("score: static hits with bad behaviour are not floored; a registry TLS refu
     datagramEgress: [],
   });
   assert.deepEqual(refused, NO_BEHAVIOUR, "a package manager declining the per-VM CA for the registry is the tool, not the repo");
+  const head = deriveBehaviour({
+    forgedCalls: [{ phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method: "HEAD", path: "/@audio%2Fdecode-wma", req_bytes: 0, forged_kind: "json", tls: "intercepted", canary_hits: [] }],
+    files: [],
+    processes: [],
+    canaryInFiles: [],
+    datagramEgress: [],
+  });
+  assert.deepEqual(head, NO_BEHAVIOUR, "pnpm's HEAD existence check on the registry is not a contact");
+  const post = deriveBehaviour({
+    forgedCalls: [{ phase: "install", proto: "https", host: "registry.npmjs.org", port: 443, method: "PUT", path: "/evil", req_bytes: 900, forged_kind: "json", tls: "intercepted", canary_hits: [] }],
+    files: [],
+    processes: [],
+    canaryInFiles: [],
+    datagramEgress: [],
+  });
+  assert.deepEqual(post.nonDistributionHosts, ["registry.npmjs.org"], "a write to the registry still counts");
 });
