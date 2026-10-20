@@ -259,6 +259,8 @@ export interface DetonationBoot {
   runId: string;
   totalTimeoutMs: number;
   sandboxTimeoutMs: number;
+  /** VM size for this scan (small unless the repo is huge). */
+  size?: import("./resources").SandboxSize;
 }
 
 /**
@@ -268,7 +270,7 @@ export interface DetonationBoot {
  */
 export function bootDetonation(provider: SandboxProvider, boot: DetonationBoot, hooks: DetonationHooks = {}): DetonationVm {
   const bootedAt = Date.now();
-  const vm = bootSandbox(provider, { purpose: "detonate", runId: boot.runId, timeoutMs: boot.sandboxTimeoutMs, network: "registry-only" }, hooks);
+  const vm = bootSandbox(provider, { purpose: "detonate", runId: boot.runId, timeoutMs: boot.sandboxTimeoutMs, network: "registry-only", ...(boot.size ? { size: boot.size } : {}) }, hooks);
   const harness = vm.session().then(async (s) => {
     try {
       const run = await s.run(HARNESS_COMMAND, {

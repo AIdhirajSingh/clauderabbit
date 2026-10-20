@@ -28,7 +28,8 @@ import type { JevAdapter } from "./model/jev";
 import { writeReport } from "./model/writer";
 import { buildReachGraph, type ReachGraph } from "./reach/graph";
 import { computeReputation, fetchGithubOwner, fetchWeeklyDownloads, type ReputationSignals } from "./reputation";
-import { fetchGithubTarball, resolveGithub, verifyGithubArchive, type GithubResolution } from "./resolve/github";
+import { fetchGithubTarball, githubTreeSize, resolveGithub, verifyGithubArchive, type GithubResolution } from "./resolve/github";
+import { SANDBOX_SIZES, sizeForRepo, type SandboxSize } from "./sandbox/resources";
 import { fetchNpmTarball, npmCommitKey, resolveNpm, type NpmResolution } from "./resolve/npm";
 import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
@@ -406,6 +407,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   // A GitHub repo on a provider that can switch egress (E2B) is fetched, mapped and
   // scanned inside one VM (vmfetch.ts); other targets keep the two-VM path.
   const oneVm = () => resolved.kind === "github" && deps.sandbox.canSetEgress === true;
+  // VM size: 1 vCPU, or 2 for a huge repo (resources.ts), decided before boot.
+  let vmSize: SandboxSize = "small";
   const bootVms = () => {
     const bootedAt = deps.now();
     // A VM's billed time runs from its boot to the end of its kill.
@@ -415,7 +418,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     const onKilled = (ok: boolean, detail: string) => check("sandbox_killed", ok, detail);
     detVm = bootDetonation(
       deps.sandbox,
-      { runId, totalTimeoutMs: cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs },
+      { runId, totalTimeoutMs: cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, size: vmSize },
       { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
     );
     // One VM per GitHub scan on E2B: the scanners run in the detonation VM before any repo code.
@@ -497,7 +500,18 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
 
   // Cache miss: boot both VMs now (when the budget allows), then claim the run while the
   // tarball downloads. No VM starts for a cache hit or over budget.
-  const [budgetR] = await Promise.allSettled([budgetP]);
+  const [budgetR, treeR] = await Promise.allSettled([
+    budgetP,
+    resolved.kind === "github"
+      ? githubTreeSize(resolved.github!.owner, resolved.github!.repo, resolved.github!.sha, { fetch: deps.fetch, token: deps.config.githubToken, timeoutMs: 3_000, signal: outer })
+      : Promise.resolve(null),
+  ]);
+  if (treeR.status === "fulfilled" && treeR.value) {
+    vmSize = sizeForRepo(treeR.value.files, treeR.value.bytes, treeR.value.truncated);
+    check("vm_size", true, `${treeR.value.files} files, ${treeR.value.bytes} bytes${treeR.value.truncated ? " (tree truncated)" : ""}: ${SANDBOX_SIZES[vmSize].cpuCount} vCPU`);
+  } else if (treeR.status === "rejected") {
+    check("vm_size", false, `tree size unavailable (${errMessage(treeR.reason)}); 1 vCPU`);
+  }
   const underBudget = budgetR.status === "fulfilled" && budgetR.value === true;
   if (underBudget) bootVms();
   // A GitHub repo of any size is fetched and mapped inside the VMs when the provider
@@ -809,7 +823,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   await Promise.allSettled(kills);
   timings.total = Math.round(deps.now() - startedAt);
   const sandboxSeconds = sandboxMs.reduce((s, x) => s + x, 0) / 1000;
-  const cost: CostLedger = meter.ledger(sandboxSeconds);
+  const cost: CostLedger = meter.ledger(sandboxSeconds, SANDBOX_SIZES[vmSize].cpuCount);
   const report: ReportPayload = {
     run_id: runId,
     target,

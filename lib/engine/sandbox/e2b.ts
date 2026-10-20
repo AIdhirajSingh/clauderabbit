@@ -9,6 +9,7 @@
  */
 
 import { CommandExitError, Sandbox } from "e2b";
+import { SANDBOX_SIZES } from "./resources";
 import { REGISTRY_ALLOW_OUT, type CommandResult, type RunOptions, type SandboxCreateOptions, type SandboxProvider, type SandboxSession } from "./provider";
 
 export interface E2BProviderOptions {
@@ -103,7 +104,7 @@ export class E2BProvider implements SandboxProvider {
   }
 
   async create(opts: SandboxCreateOptions): Promise<SandboxSession> {
-    const sbx = await Sandbox.create(this.template, e2bCreateOptions(opts, this.#apiKey));
+    const sbx = await Sandbox.create(`${this.template}${SANDBOX_SIZES[opts.size ?? "small"].suffix}`, e2bCreateOptions(opts, this.#apiKey));
     return new E2BSession(sbx);
   }
 }

@@ -253,7 +253,8 @@ if [ "$MODE" = "npm-package" ]; then
   printf '{"name":"cr-run-app","version":"1.0.0","private":true}\n' | runuser -u "$CR_USER" -- tee /work/app/package.json >/dev/null
   ECO=npm
   WORKDIR=/work/app
-  INSTALL_CMD="npm install --no-audit --no-fund /work/pkg.tgz"
+  # A package scan installs what users of the package get: its production dependencies.
+  INSTALL_CMD="npm install --omit=dev --no-audit --no-fund /work/pkg.tgz"
 else
   install -d -o "$CR_USER" -g "$CR_USER" /work/src
   if ! timeout 90 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then

@@ -19,7 +19,7 @@
  */
 
 import { Template, defaultBuildLogger } from "e2b";
-import { SANDBOX_CPU_COUNT, SANDBOX_MEMORY_MB } from "../../lib/engine/sandbox/resources.ts";
+import { SANDBOX_SIZES } from "../../lib/engine/sandbox/resources.ts";
 import { templateContentTag } from "./content-tag.ts";
 import { TEMPLATE_NAME_DEFAULT, buildTemplate } from "./template.ts";
 
@@ -39,8 +39,7 @@ async function upToDate(name: string, tag: string): Promise<boolean> {
 
 async function main(): Promise<void> {
   const hook = process.argv.includes("--vercel-hook");
-  const name = process.env.CR_E2B_TEMPLATE?.trim() || TEMPLATE_NAME_DEFAULT;
-  const tag = templateContentTag();
+  const base = process.env.CR_E2B_TEMPLATE?.trim() || TEMPLATE_NAME_DEFAULT;
 
   if (hook) {
     const env = process.env.VERCEL_ENV;
@@ -57,23 +56,29 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  log(`template ${name}, content tag ${tag}, ${SANDBOX_CPU_COUNT} vCPU / ${SANDBOX_MEMORY_MB} MB`);
-  if (hook && (await upToDate(name, tag))) {
-    log(`up to date: ${name}:default is the ${tag} build; nothing to build`);
-    return;
-  }
-
-  const t0 = Date.now();
-  const info = await Template.build(buildTemplate(), name, {
-    tags: [tag],
-    cpuCount: SANDBOX_CPU_COUNT,
-    memoryMB: SANDBOX_MEMORY_MB,
-    onBuildLogs: defaultBuildLogger(),
-  });
-  // Point the bare name (tag `default`, what Sandbox.create resolves) at this build.
-  const assigned = await Template.assignTags(`${name}:${tag}`, "default");
-  log(`built in ${Math.round((Date.now() - t0) / 1000)} s; default -> ${assigned.buildId}`);
-  console.log(`template_id=${info.templateId} build_id=${info.buildId} name=${info.name} tag=${tag}`);
+  // One template per VM size (lib/engine/sandbox/resources.ts), built at the same time.
+  await Promise.all(
+    Object.values(SANDBOX_SIZES).map(async (size) => {
+      const name = `${base}${size.suffix}`;
+      const tag = templateContentTag(size.cpuCount, size.memoryMB);
+      log(`template ${name}, content tag ${tag}, ${size.cpuCount} vCPU / ${size.memoryMB} MB`);
+      if (hook && (await upToDate(name, tag))) {
+        log(`up to date: ${name}:default is the ${tag} build; nothing to build`);
+        return;
+      }
+      const t0 = Date.now();
+      const info = await Template.build(buildTemplate(), name, {
+        tags: [tag],
+        cpuCount: size.cpuCount,
+        memoryMB: size.memoryMB,
+        onBuildLogs: defaultBuildLogger(),
+      });
+      // Point the bare name (tag `default`, what Sandbox.create resolves) at this build.
+      const assigned = await Template.assignTags(`${name}:${tag}`, "default");
+      log(`${name} built in ${Math.round((Date.now() - t0) / 1000)} s; default -> ${assigned.buildId}`);
+      console.log(`template_id=${info.templateId} build_id=${info.buildId} name=${info.name} tag=${tag}`);
+    }),
+  );
 }
 
 main().catch((err: unknown) => {

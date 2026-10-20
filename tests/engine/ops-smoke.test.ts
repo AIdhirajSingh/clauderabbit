@@ -85,7 +85,7 @@ class ScriptedProvider implements SandboxProvider {
   }
 }
 
-const FACTS = "nproc=4\nMemTotal:        2014240 kB\nkernel=6.1.102\nsemgrep=1.181.0\nguarddog=3.2.0\nyara_x=1.21.0\n";
+const FACTS = "nproc=1\nMemTotal:        2014240 kB\nkernel=6.1.102\nsemgrep=1.181.0\nguarddog=3.2.0\nyara_x=1.21.0\n";
 
 test("route: Node runtime, 300 s budget, every other method is 404", async () => {
   assert.equal(runtime, "nodejs");
@@ -136,7 +136,7 @@ test("preview + key: detonation and analysis VMs start together, run the real sc
   assert.ok(p.overlaps.includes("analyze saw detonate") && p.overlaps.includes("detonate saw analyze"), p.overlaps.join(","));
   assert.deepEqual(p.killed.sort(), ["analyze", "detonate"]);
   assert.equal(p.live.size, 0);
-  assert.deepEqual(body.resources, { nproc: 4, mem_total_kb: 2014240 });
+  assert.deepEqual(body.resources, { nproc: 1, mem_total_kb: 2014240 });
   assert.ok(body.timings.overlap_ms > 0);
   assert.equal(body.analysis.complete, true);
   assert.deepEqual(body.analysis.findings.map((f) => f.rule), ["cr.js.env-to-network"]);
@@ -146,7 +146,7 @@ test("preview + key: detonation and analysis VMs start together, run the real sc
 test("a failed proof, a wrong VM size or a failed smoke turns the response into 500 with the evidence", async () => {
   const failing = [
     { facts: FACTS, smoke: { exitCode: 1, stdout: SMOKE_OK.replace("cr-proof: PASS", "cr-proof: FAIL"), stderr: "cr-smoke: FAIL containment proof failed" } },
-    { facts: FACTS.replace("nproc=4", "nproc=2"), smoke: { exitCode: 0, stdout: SMOKE_OK, stderr: "" } },
+    { facts: FACTS.replace("nproc=1", "nproc=2"), smoke: { exitCode: 0, stdout: SMOKE_OK, stderr: "" } },
     { facts: FACTS.replace("2014240", "4030000"), smoke: { exitCode: 0, stdout: SMOKE_OK, stderr: "" } },
   ];
   const expectFailed: string[] = ["containment_proof", "vcpu", "memory"];
@@ -162,7 +162,7 @@ test("a failed proof, a wrong VM size or a failed smoke turns the response into 
 });
 
 test("resource parsing and the 2048 MB MemTotal window", () => {
-  assert.deepEqual(parseResources(FACTS), { nproc: 4, mem_total_kb: 2014240 });
+  assert.deepEqual(parseResources(FACTS), { nproc: 1, mem_total_kb: 2014240 });
   assert.deepEqual(parseResources("garbage"), { nproc: null, mem_total_kb: null });
   assert.equal(memoryMatches(2014240), true);
   assert.equal(memoryMatches(2097152), true);

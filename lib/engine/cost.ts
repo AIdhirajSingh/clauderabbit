@@ -198,12 +198,12 @@ export class CostMeter {
     return this.#jev.input_tokens + this.#jev.output_tokens + this.#luna.input_tokens + this.#luna.output_tokens;
   }
 
-  ledger(sandboxSeconds: number): CostLedger {
-    const perSecond = sandboxUsdPerSecond();
+  ledger(sandboxSeconds: number, cpuCount = SANDBOX_CPU_COUNT): CostLedger {
+    const perSecond = sandboxUsdPerSecond(cpuCount);
     const seconds = Math.max(0, Math.round(sandboxSeconds * 1000) / 1000);
     const sandbox: SandboxLine = {
       seconds,
-      vcpu: SANDBOX_CPU_COUNT,
+      vcpu: cpuCount,
       memory_gib: SANDBOX_MEMORY_MB / 1024,
       usd_per_second: perSecond,
       usd: roundUsd(seconds * perSecond),

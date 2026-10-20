@@ -37,7 +37,7 @@ export function templateInputFiles(): string[] {
 }
 
 /** `c-<16 hex>`: sha256 over each input's repo-relative path and bytes, plus the VM size. */
-export function templateContentTag(): string {
+export function templateContentTag(cpuCount = SANDBOX_CPU_COUNT, memoryMB = SANDBOX_MEMORY_MB): string {
   const h = createHash("sha256");
   for (const f of templateInputFiles()) {
     h.update(relative(repoRoot, f));
@@ -45,6 +45,6 @@ export function templateContentTag(): string {
     h.update(readFileSync(f));
     h.update("\0");
   }
-  h.update(`cpu=${SANDBOX_CPU_COUNT} mem=${SANDBOX_MEMORY_MB}`);
+  h.update(`cpu=${cpuCount} mem=${memoryMB}`);
   return `c-${h.digest("hex").slice(0, 16)}`;
 }

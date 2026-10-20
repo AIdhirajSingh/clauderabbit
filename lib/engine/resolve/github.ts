@@ -168,6 +168,26 @@ export function codeloadUrl(owner: string, repo: string, sha: string): string {
   return `${CODELOAD}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tar.gz/${sha}`;
 }
 
+/**
+ * File count and total file bytes at one commit (git trees API, recursive), used to
+ * size the scan VM before it boots. `truncated` means GitHub cut a very large tree.
+ */
+export async function githubTreeSize(owner: string, repo: string, sha: string, ctx: GithubContext): Promise<{ files: number; bytes: number; truncated: boolean }> {
+  if (!SHA_RE.test(sha)) throw new EngineError("invalid_target", "commit SHA must be 40 lowercase hex characters");
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`;
+  const res = await fetchWithDeadline(ctx.fetch, url, { headers: apiHeaders(ctx.token) }, ctx.timeoutMs, ctx.signal);
+  if (!res.ok) await failFor(res, `tree for ${owner}/${repo}@${sha.slice(0, 12)}`);
+  const body = (await res.json()) as { tree?: Array<{ type?: string; size?: number }>; truncated?: boolean };
+  let files = 0;
+  let bytes = 0;
+  for (const e of body.tree ?? []) {
+    if (e.type !== "blob") continue;
+    files++;
+    if (typeof e.size === "number") bytes += e.size;
+  }
+  return { files, bytes, truncated: body.truncated === true };
+}
+
 /** Download the codeload tarball for one commit, capped. */
 export async function fetchGithubTarball(
   owner: string,

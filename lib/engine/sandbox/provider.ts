@@ -18,6 +18,8 @@ export interface SandboxCreateOptions {
   runId: string;
   timeoutMs: number;
   network: SandboxNetwork;
+  /** VM size (lib/engine/sandbox/resources.ts); small when omitted. */
+  size?: import("./resources").SandboxSize;
 }
 
 export interface CommandResult {

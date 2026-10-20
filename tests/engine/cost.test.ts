@@ -77,3 +77,14 @@ test("a cache hit reports a zero ledger; CR_USD_INR overrides the pinned rate", 
   assert.equal(loadEngineConfig({}).jevModelId, "typesafe-ai/jev");
   assert.equal(loadEngineConfig({ CR_JEV_MODEL_ID: "typesafe-ai/jev-1.14.0" }).jevModelId, "typesafe-ai/jev-1.14.0");
 });
+
+test("VM size: 1 vCPU by default, 2 vCPU for a huge repo, and the ledger prices the size that ran", async () => {
+  const { sizeForRepo, SANDBOX_SIZES } = await import("../../lib/engine/sandbox/resources.ts");
+  assert.equal(SANDBOX_SIZES.small.cpuCount, 1);
+  assert.equal(SANDBOX_SIZES.large.cpuCount, 2);
+  assert.equal(sizeForRepo(214, 710_996, false), "small", "expressjs/express 0dee2c5");
+  assert.equal(sizeForRepo(57_365, 668_309_190, false), "large", "openclaw/openclaw 104730b");
+  assert.equal(sizeForRepo(9_000, 60 * 1024 * 1024, false), "large", "over 50 MB");
+  assert.equal(sizeForRepo(100, 1_000, true), "large", "a truncated tree is huge");
+  assert.equal(sandboxUsdPerSecond(2), Math.round((2 * 0.000014 + 2 * 0.0000045) * 1e9) / 1e9);
+});
