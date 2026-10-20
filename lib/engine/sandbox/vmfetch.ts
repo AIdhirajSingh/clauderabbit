@@ -69,13 +69,15 @@ export async function fetchRepoInVm(
   try {
     r = await s.run(
       `set -euo pipefail; mkdir -p "$(dirname '${dest}')"; curl -fsS --proto '=https' --max-time ${Math.ceil(timeoutMs / 1000)} -o '${dest}' '${url}'; ` +
-        `c=$(gzip -dc '${dest}' | git get-tar-commit-id); [ "$c" = '${gh.sha}' ] || { echo "commit id $c" >&2; exit 3; }; stat -c %s '${dest}'`,
+        // git reads only the first block, so gzip may die of SIGPIPE on a large tarball:
+        // the pipeline status is not used, only the commit id it prints.
+        `c=$( { gzip -dc '${dest}' 2>/dev/null || true; } | git get-tar-commit-id || true); [ "$c" = '${gh.sha}' ] || { echo "commit id mismatch: '$c'" >&2; exit 3; }; stat -c %s '${dest}'`,
       { timeoutMs: timeoutMs + 5_000 },
     );
   } finally {
     await s.setEgress(restoreAllowOut);
   }
-  if (r.exitCode !== 0) throw new EngineError("upstream", `the VM could not fetch ${gh.owner}/${gh.repo}@${gh.sha.slice(0, 12)} from codeload: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+  if (r.exitCode !== 0) throw new EngineError("upstream", `the VM could not fetch ${gh.owner}/${gh.repo}@${gh.sha.slice(0, 12)} from codeload (exit ${r.exitCode}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
   return { bytes: Number(r.stdout.trim()) || 0, ms: Date.now() - t0 };
 }
 
