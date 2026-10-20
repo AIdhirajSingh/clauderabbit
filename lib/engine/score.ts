@@ -50,7 +50,9 @@ export const BASE = 85;
  * 7: the fence baseline is taken right before the go file (rules 6 runs could
  * carry a late-counted proof datagram as a drop).
  */
-export const SCORE_RULES = 7;
+// 8: rules 7 runs of pnpm workspaces carried the pinned pnpm's own refused TLS and
+// datagrams as repo behaviour (openclaw 104730b scored Malicious 0); those score again.
+export const SCORE_RULES = 8;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;

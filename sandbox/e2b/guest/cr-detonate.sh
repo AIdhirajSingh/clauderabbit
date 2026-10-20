@@ -266,14 +266,11 @@ else
       INSTALL_CMD="npm ci --no-audit --no-fund"
     else
       INSTALL_CMD="npm install --no-audit --no-fund"
-      if [ -f /work/src/pnpm-lock.yaml ]; then
-        # pnpm workspace: corepack fetches the pnpm the repo pins (packageManager, sha512
-        # checked) from the registry through the forge, fresh in this VM; every dependency
-        # build script is allowed so it runs exactly as on a developer machine.
-        INSTALL_CMD="pnpm install --prefer-frozen-lockfile"
-        check lockfile_native true "pnpm-lock.yaml installed with pnpm"
-      elif [ -f /work/src/yarn.lock ]; then
-        check lockfile_translated true "yarn lockfile installed with npm install"
+      # pnpm workspaces stay on npm for now: under the forge, the pnpm 12 that openclaw
+      # pins (corepack) refused the per-VM CA and sent datagrams of its own, which read
+      # as repo behaviour (docs/runs/2.0-keyday.md step 13). Marked as translated.
+      if [ -f /work/src/yarn.lock ] || [ -f /work/src/pnpm-lock.yaml ]; then
+        check lockfile_translated true "yarn or pnpm lockfile installed with npm install"
       fi
     fi
   elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then

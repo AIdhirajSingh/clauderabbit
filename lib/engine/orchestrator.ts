@@ -277,8 +277,8 @@ interface VmGraphJson {
   classes: Record<string, 1 | 2>;
 }
 
-/** Scanner window in the one-VM path: sized to the measured whole-repo run on 4 vCPU. */
-const VM_SCANNER_MS = 90_000;
+/** Scanner window in the one-VM path: small repos finish in 3 to 5 s; openclaw (57k files) did not finish in 45 s nor in 90 s, so the longer window only bought cost. */
+const VM_SCANNER_MS = 45_000;
 
 /** The slice the models read is bounded; every scored fact comes from the whole repo in the VM. */
 const VM_VIEW_LIMITS = { maxCompressedBytes: 64 * 1024 * 1024, maxExpandedBytes: 64 * 1024 * 1024, maxFiles: 50_000, maxPackumentBytes: 0, stripFirstComponent: true };
