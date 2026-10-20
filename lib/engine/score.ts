@@ -53,7 +53,9 @@ export const BASE = 85;
 // 8: rules 7 runs of pnpm workspaces carried the pinned pnpm's own refused TLS and
 // datagrams as repo behaviour (openclaw 104730b scored Malicious 0); those score again.
 // 9: a UDP drop counter rise that no traced process sent is stated, not deducted.
-export const SCORE_RULES = 9;
+// 10: npm package scans observe the package's production dependencies only (what its
+// users get), so behaviour and OSV inputs change; every report scores again.
+export const SCORE_RULES = 10;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
