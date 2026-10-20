@@ -9,6 +9,8 @@ import { isValidSlug } from "@/lib/report-fetch";
 import { latestReport } from "@/lib/server/report-source";
 
 export const runtime = "nodejs";
+// Next to the v2 database (Supabase ap-south-1): every scan, cache and token query is one short hop.
+export const preferredRegion = "bom1";
 export const dynamic = "force-dynamic";
 
 const SEGMENT_RE = /^[A-Za-z0-9._@-]{1,214}$/;

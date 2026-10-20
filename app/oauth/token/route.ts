@@ -15,6 +15,8 @@ import { serverConfig } from "@/lib/server/scan-service";
 import { issueCliToken, redeemOAuthCode } from "@/lib/server/v2-auth";
 
 export const runtime = "nodejs";
+// Next to the v2 database (Supabase ap-south-1): every scan, cache and token query is one short hop.
+export const preferredRegion = "bom1";
 export const dynamic = "force-dynamic";
 
 function oauthJson(body: unknown, status = 200): Response {

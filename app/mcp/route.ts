@@ -20,6 +20,8 @@ import { adForSurface, callerFrom, executeScan, missingServerKeys, rateLimitFor,
 import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 
 export const runtime = "nodejs";
+// Next to the v2 database (Supabase ap-south-1): every scan, cache and token query is one short hop.
+export const preferredRegion = "bom1";
 export const dynamic = "force-dynamic";
 // Same ceiling as /api/scan: every scan runs the code in a fresh E2B sandbox in this request.
 export const maxDuration = 180;
