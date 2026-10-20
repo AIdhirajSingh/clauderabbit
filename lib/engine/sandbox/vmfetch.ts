@@ -85,7 +85,10 @@ export async function fetchRepoInVm(
 /** The fence after the fetch: the template containment check passes and root cannot reach codeload. */
 export async function proveFenceInVm(s: SandboxSession): Promise<{ ok: boolean; detail: string }> {
   const r = await s.run(
-    `set -uo pipefail; pid=$(pgrep -o -f mitmdump || true); [ -n "$pid" ] || { echo "no forge process"; exit 2; }; ` +
+    // Wait until the harness finished bringing the forge up and ran its own probes (it
+    // renames capture.jsonl to capture.probe.jsonl right before waiting for inputs): on a
+    // 1 vCPU VM a small repo's fetch can finish first.
+    `set -uo pipefail; for _ in $(seq 1 150); do [ -f /root/out/capture.probe.jsonl ] && break; sleep 0.2; done; pid=$(pgrep -o -f mitmdump || true); [ -n "$pid" ] || { echo "no forge process"; exit 2; }; ` +
       `timeout 40 /opt/cr/bin/cr-proof.sh "$pid" /root/proof-after-fetch.txt; p=$?; ` +
       `if curl -sS --max-time 4 -o /dev/null https://${CODELOAD_HOST}/ 2>/dev/null; then c=OPEN; else c=CLOSED; fi; ` +
       // The proof's own test datagrams (uid 1001 UDP, ICMP) are counted by the fence's
