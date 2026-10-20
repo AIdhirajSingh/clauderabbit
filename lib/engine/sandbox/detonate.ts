@@ -57,6 +57,8 @@ export interface DetonationInput {
   tarball: Uint8Array;
   /** The whole repo was fetched into this VM by vmfetch.ts; `tarball` is not uploaded. */
   prefetched?: boolean;
+  /** The server's install plan (lib/engine/plan.ts): dev packages with an install script. */
+  plan?: import("../plan").InstallPlan | null;
   canaries: Canaries;
   installTimeoutMs: number;
   entryTimeoutMs: number;
@@ -311,6 +313,7 @@ export async function runDetonation(dvm: DetonationVm, input: DetonationInput): 
           install_timeout_s: Math.max(1, Math.round(input.installTimeoutMs / 1000)),
           entry_timeout_s: Math.max(1, Math.round(input.entryTimeoutMs / 1000)),
           fake_rate: input.fakeRate,
+          ...(input.plan ? { dev_scripts: input.plan.devScripts, dev_total: input.plan.devTotal, plan_source: input.plan.source } : {}),
         }),
       ),
       s.writeFile("/root/.cr/canary.env", canaryEnvFile(input.canaries)),

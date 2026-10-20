@@ -35,6 +35,7 @@ import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
 import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
 import { REGISTRY_ALLOW_OUT, SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
+import { planInstall } from "./plan";
 import { fetchRepoInVm, mapAndScanInVm, proveFenceInVm, writeDropBaseline, type VmMapStats } from "./sandbox/vmfetch";
 import { SCORE_RULES, computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
 import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
@@ -696,9 +697,14 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
 
   emitStage("detonate", "start");
   const canaries: Canaries = makeCanaries(deps.random);
+  // The install plan from registry metadata only (no package code), before the sandbox.
+  const planP = resolved.kind === "github" ? planInstall(archive.files, (u, i) => deps.fetch(u, i), outer).catch(() => null) : Promise.resolve(null);
   const detonateP: Promise<DetonationResult | SandboxCreateError | Error> = (async () => {
     try {
+      const plan = await planP;
+      if (plan) check("install_plan", true, `${plan.source}: ${plan.devScripts.length} of ${plan.devTotal} dev packages have an install script`);
       return await runDetonation(detVm!, {
+        plan,
         runId,
         mode: resolved.kind === "npm" ? "npm-package" : "repo",
         packageName: resolved.kind === "npm" ? resolved.npm!.name : null,

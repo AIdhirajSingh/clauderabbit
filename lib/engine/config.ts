@@ -112,7 +112,7 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
   installMs: 60_000,
   entryMs: 4_000,
   detonateTotalMs: 200_000,
-  writerMs: 10_000,
+  writerMs: 6_000, // Luna answers in 3 to 5 s; a stall past 6 s publishes the deterministic report
   persistMs: 3_000,
   scanMs: 280_000,
   sandboxTimeoutMs: 220_000,

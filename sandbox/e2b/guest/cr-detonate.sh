@@ -293,6 +293,22 @@ else
         # bun is not in the template: the npm install of the same manifest, marked.
         INSTALL_CMD="npm install --no-audit --no-fund"; check package_manager false "bun declared; bun is not in the sandbox, installed with npm" ;;
       *)
+        if [ "$(jq -r 'has("dev_total")' "$IN/run.json")" = true ]; then
+          # The server's plan: the production tree, then only the dev packages with an install script.
+          DEVS=$(jq -r '(.dev_scripts // [])[] | select(test("^(@[a-z0-9._~-]+/)?[a-z0-9._~-]+@[0-9A-Za-z.+-]+$"))' "$IN/run.json" | tr '\n' ' ')
+          DN=$(jq -r '(.dev_scripts // []) | length' "$IN/run.json"); DT=$(jq -r '.dev_total' "$IN/run.json")
+          if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then
+            BASE="npm ci --omit=dev --no-audit --no-fund"
+          else
+            # No lockfile: npm resolves only the production tree (devDependencies are planned above).
+            BASE="jq 'del(.devDependencies)' package.json > .cr-package.json && mv .cr-package.json package.json && npm install --no-package-lock --no-audit --no-fund"
+          fi
+          INSTALL_CMD="$BASE${DEVS:+ && npm install --no-save --no-package-lock --no-audit --no-fund $DEVS}"
+          check dev_scope true "install scripts run ($DN packages), other code not executed ($((DT - DN)) packages)"
+          check package_manager true "npm"
+          PLANNED=1
+        fi
+        if [ -z "${PLANNED:-}" ]; then
         # No lockfile: resolve the tree once from the registry (through the forge), no scripts.
         LOCK_STEP=""
         if [ ! -f /work/src/package-lock.json ] && [ ! -f /work/src/npm-shrinkwrap.json ]; then
@@ -305,7 +321,8 @@ else
 'N=$(printf "%s" "$S" | grep -c . || true); echo "cr-dev-scope $N $((D - N))"; '\
 'if [ -n "$S" ]; then npm install --no-save --no-package-lock --no-audit --no-fund $S; fi'
         INSTALL_CMD="${LOCK_STEP}npm ci --omit=dev --no-audit --no-fund && $DEV_STEP"
-        check package_manager true "npm" ;;
+        check package_manager true "npm"
+        fi ;;
     esac
   elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then
     ECO=python
