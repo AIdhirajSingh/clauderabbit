@@ -253,6 +253,29 @@ async function scopeMalicious(
   );
 }
 
+/** The reputation section: facts with their sources and prominent warnings, separate from the code score. */
+function reputationSection(rep: ReputationSignals, r: Resolved): { facts: Array<{ fact: string; source: string }>; warnings: string[] } {
+  const gh = r.kind === "github" ? `https://api.github.com/repos/${r.github!.owner}/${r.github!.repo}` : null;
+  const owner = `https://api.github.com/users/${r.ownerLogin}`;
+  const npm = r.kind === "npm" ? `https://registry.npmjs.org/${r.npm!.name}` : null;
+  const facts: Array<{ fact: string; source: string }> = [];
+  const warnings: string[] = [];
+  if (rep.ownerAgeDays !== null) facts.push({ fact: `Owner account age: ${rep.ownerAgeDays} days`, source: owner });
+  if (rep.ownerEstablished !== null) facts.push({ fact: rep.ownerEstablished ? "Owner established (over a year, 3+ public repositories)" : "Owner not established", source: owner });
+  if (rep.repoStars !== null && gh) facts.push({ fact: `Stars: ${rep.repoStars}`, source: gh });
+  if (rep.weeklyDownloads !== null && npm) facts.push({ fact: `Weekly npm downloads: ${rep.weeklyDownloads}`, source: `https://api.npmjs.org/downloads/point/last-week/${r.npm!.name}` });
+  if (rep.npmFirstPublishDays !== null && npm) facts.push({ fact: `First npm publish: ${rep.npmFirstPublishDays} days ago`, source: npm });
+  if (rep.maintainerChangedWithin30d !== null && npm) facts.push({ fact: rep.maintainerChangedWithin30d ? "Maintainer set changed within 30 days" : "No maintainer change within 30 days", source: npm });
+  for (const e of rep.evidence) facts.push({ fact: e, source: gh ?? npm ?? owner });
+  if (rep.ownerAgeDays !== null && rep.ownerAgeDays < 60) warnings.push(`Warning: the owner account is only ${rep.ownerAgeDays} days old.`);
+  if (rep.npmFirstPublishDays !== null && rep.npmFirstPublishDays < 30) warnings.push(`Warning: the package was first published ${rep.npmFirstPublishDays} days ago.`);
+  if (rep.maintainerChangedWithin30d === true) warnings.push("Warning: the package's maintainers changed within the last 30 days.");
+  if (rep.ownerEstablished === false) warnings.push("Warning: the owner has little public history.");
+  for (const u of rep.unavailable) warnings.push(`Not checked: ${u}.`);
+  if (warnings.length > 0) warnings.push("Reputation warnings are shown on their own and do not lower the code score.");
+  return { facts, warnings };
+}
+
 /** The reach graph the VM built over the whole repo, rebuilt from its JSON. */
 function graphFromVm(g: VmGraphJson): ReachGraph {
   return {
@@ -742,7 +765,15 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
 
   // ---- score ---------------------------------------------------------------------------------------
   emitStage("score", "start");
-  const staticFindings = tag([...heur.findings, ...(analysis?.findings ?? [])], graph);
+  // A capability pattern that matches what the project says it does (the Jev docs check
+  // judged documentation and measured capabilities consistent, p >= 0.8) is not a deduction.
+  const fit = (docsCheck?.answers ?? []).find((a) => a.question === "capability_fit");
+  const docsConsistent = fit?.answer === "consistent" && (fit.probability ?? 0) >= 0.8;
+  const CAPABILITY_RULE = /^heur\.(?:network|process|shell_fetch|fs)\./;
+  const allStatic = tag([...heur.findings, ...(analysis?.findings ?? [])], graph);
+  const documented = docsConsistent ? allStatic.filter((f) => CAPABILITY_RULE.test(f.rule)) : [];
+  const staticFindings = documented.length > 0 ? allStatic.filter((f) => !documented.includes(f)) : allStatic;
+  if (documented.length > 0) failedStages.push(`${documented.length} capability pattern hit(s) match the documented purpose (Jev docs check: consistent, p=${(fit!.probability ?? 0).toFixed(2)}) and are not deducted.`);
   const checkFindings = tagChecks([...(installCheck?.findings ?? []), ...(flagged?.findings ?? []), ...(docsCheck?.findings ?? [])], graph);
   const checkAnswers: CheckAnswerRecord[] = [...(installCheck?.answers ?? []), ...(flagged?.answers ?? []), ...(docsCheck?.answers ?? [])];
   const behaviour = deriveBehaviour({
@@ -835,6 +866,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     // A dependency danger with clean own code says so plainly, whatever the writer wrote.
     headline: result.label ? `${result.verdict}: ${result.label}` : written.headline,
     ...(result.label ? { label: result.label } : {}),
+    reputation_section: reputationSection(rep, resolved),
     evidence,
     breakdown: result.breakdown,
     not_verified: result.notVerified,

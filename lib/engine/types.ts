@@ -279,6 +279,8 @@ export interface ReportPayload {
   score_rules?: number;
   /** Plain label when the repo's own code is clean and the danger is in a dependency. */
   label?: string;
+  /** Reputation, kept apart from the code verdict: each fact with its source; warnings never lower the code score. */
+  reputation_section?: { facts: Array<{ fact: string; source: string }>; warnings: string[] };
   template: string;
   timings: Record<string, number>;
   writer: "model" | "deterministic";

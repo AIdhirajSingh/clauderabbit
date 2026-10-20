@@ -207,6 +207,7 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
       jev_model_id: r.jev_model_id ?? null,
       score_rules: r.score_rules ?? null,
       label: r.label ?? null,
+      reputation_section: r.reputation_section ?? null,
       template: r.template,
       cost: r.cost ?? null,
     },
@@ -273,6 +274,7 @@ export function payloadFromRows(row: StoredReportRow, run: { id: string; subject
     ...(typeof stats.jev_model_id === "string" ? { jev_model_id: stats.jev_model_id } : {}),
     ...(typeof stats.score_rules === "number" ? { score_rules: stats.score_rules } : {}),
     ...(typeof stats.label === "string" ? { label: stats.label } : {}),
+    ...(stats.reputation_section && typeof stats.reputation_section === "object" ? { reputation_section: stats.reputation_section as ReportPayload["reputation_section"] } : {}),
     ...(ledger ? { cost: ledger } : {}),
   };
 }

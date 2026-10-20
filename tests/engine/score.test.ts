@@ -100,7 +100,7 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "low static finding is worth 0", in: { staticFindings: [sf({ severity: "low" })] }, score: 90, verdict: "No threats observed" },
   { name: "unreachable high finding changes nothing", in: { staticFindings: [sf({ reach: "unreachable", file: "test/a.js" })], reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "same file:line from two scanners counts once at the worst weight", in: { staticFindings: [sf({ source: "semgrep" }), sf({ source: "yara", severity: "medium" })] }, score: 73, verdict: "Caution" },
-  { name: "static floor at -40", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 45, verdict: "High risk" },
+  { name: "static pattern hits alone land at Caution at most (floor 60)", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 60, verdict: "Caution" },
   { name: "Jev malicious high", in: { checkFindings: [cf({})] }, score: 77, verdict: "Caution" },
   { name: "Jev suspicious medium", in: { checkFindings: [cf({ severity: "medium", verdict: "suspicious" })] }, score: 81, verdict: "Low risk" },
   { name: "Jev benign answer is worth 0", in: { checkFindings: [cf({ verdict: "benign", severity: "low" })] }, score: 90, verdict: "No threats observed" },
@@ -430,4 +430,18 @@ test("score: a malicious dependency with bad own code still counts in full", () 
   const r = computeScore(input({ malicious: [dep], behaviour }));
   assert.equal(r.verdict, "Malicious");
   assert.equal(r.label, undefined);
+});
+
+test("score: static hits with bad behaviour are not floored; a registry TLS refusal is not a contact", () => {
+  const behaviour = deriveBehaviour({ forgedCalls: FIXTURE_FORGED, files: FIXTURE_FILES, processes: FIXTURE_PROCS, canaryInFiles: [], datagramEgress: [] });
+  const bad = computeScore(input({ behaviour, staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }));
+  assert.equal(bad.score, 0, "behaviour seen in the sandbox still counts in full");
+  const refused = deriveBehaviour({
+    forgedCalls: [{ phase: "install", proto: "tcp", host: "registry.npmjs.org", port: 443, req_bytes: 0, forged_kind: "tls_refused", tls: "refused", canary_hits: [] }],
+    files: [],
+    processes: [],
+    canaryInFiles: [],
+    datagramEgress: [],
+  });
+  assert.deepEqual(refused, NO_BEHAVIOUR, "a package manager declining the per-VM CA for the registry is the tool, not the repo");
 });

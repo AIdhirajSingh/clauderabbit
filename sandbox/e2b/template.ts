@@ -149,7 +149,7 @@ export function buildTemplate() {
       // No shared package cache: the forge's mirror starts empty in every scan VM and
       // every package comes from the registry, checked against its published digest.
       // pnpm comes from corepack (bundled with Node 24) per scan, pinned by the repo.
-      .runCmd("PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/corepack enable --install-directory /opt/cr/node/bin pnpm && test -x /opt/cr/node/bin/pnpm")
+      .runCmd("PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/corepack enable --install-directory /opt/cr/node/bin pnpm yarn && test -x /opt/cr/node/bin/pnpm && test -x /opt/cr/node/bin/yarn")
       // Full smoke detonation; the template build fails unless every assertion holds.
       .runCmd("/opt/cr/bin/cr-smoke.sh")
       // Start command: runs once before E2B snapshots the template, so every tool a

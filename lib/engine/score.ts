@@ -55,7 +55,9 @@ export const BASE = 85;
 // 9: a UDP drop counter rise that no traced process sent is stated, not deducted.
 // 10: npm package scans observe the package's production dependencies only (what its
 // users get), so behaviour and OSV inputs change; every report scores again.
-export const SCORE_RULES = 10;
+// 11: static-only findings floor at Caution; README-consistent capability patterns not deducted;
+// a registry TLS refusal by the package manager is not a contact.
+export const SCORE_RULES = 11;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
@@ -112,6 +114,8 @@ export const CAP_DEPENDENCY_ONLY = 74;
 export const CAP_INSTALL_INCOMPLETE = 74;
 export const CAP_ENTRY_INCOMPLETE = 89;
 export const CAP_NOT_PROVEN = 89;
+/** Lowest score of the Caution band: where static-only findings stop. */
+export const STATIC_ONLY_FLOOR = 60;
 /** Lowest score of the top band ("No threats observed"). */
 export const TOP_BAND = 90;
 /** The detonation produced no forensic record (lost bundle, overrun, crash, failed containment probe). */
@@ -233,6 +237,9 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
       continue;
     }
     if (REGISTRY_FORGED_KINDS.has(c.forged_kind) && REGISTRY_HOSTS.has(host)) continue;
+    // A package manager declining the per-VM CA for the registry itself is the tool, not
+    // the repo: it reached no other host. Non-GET calls to a registry still count.
+    if (c.tls === "refused" && REGISTRY_HOSTS.has(host)) continue;
     if (c.tls === "refused") tls.push(host);
     if (isBehaviourDistributionHost(host)) dist.push(host);
     else nonDist.push(host);
@@ -617,6 +624,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
     input.coverage.scanners &&
     input.coverage.osv &&
     input.coverage.checks;
+  // Static pattern hits alone, with nothing bad observed when the code ran (no behaviour,
+  // no intel), land at Caution at most: never High risk or Malicious.
+  if (B === 0 && I === 0 && score < STATIC_ONLY_FLOOR && input.forensics.coverage !== "lost") {
+    breakdown.push({ group: "cap", code: "static_only_floor", points: STATIC_ONLY_FLOOR - score, detail: `Only static pattern hits, nothing bad observed in the sandbox: the score stays in Caution (at least ${STATIC_ONLY_FLOOR}).` });
+    score = STATIC_ONLY_FLOOR;
+  }
   if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {
     // Fully observed and nothing taken off: the code evidence alone earns the top
     // band, whatever the reputation group says.

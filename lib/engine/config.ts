@@ -109,7 +109,7 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
   osvMs: 5_000,
   reachMs: 1_000,
   checkMs: 12_000,
-  installMs: 20_000,
+  installMs: 60_000,
   entryMs: 4_000,
   detonateTotalMs: 200_000,
   writerMs: 10_000,

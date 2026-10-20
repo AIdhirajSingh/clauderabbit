@@ -231,7 +231,8 @@ BASE_ENV=(
   npm_config_fetch_timeout=3600000 npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
   npm_config_update_notifier=false npm_config_cache="$H/.npm" CI=true
   npm_config_maxsockets=64 npm_config_network_concurrency=64 npm_config_dangerously_allow_all_builds=true
-  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack" COREPACK_ENABLE_STRICT=0
+  npm_config_cafile=/etc/cr/ca.pem YARN_HTTPS_CA_FILE_PATH=/etc/cr/ca.pem YARN_ENABLE_TELEMETRY=0 YARN_ENABLE_GLOBAL_CACHE=0
   UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy
   AWS_ACCESS_KEY_ID="${CANARY[AWS_ACCESS_KEY_ID]}" AWS_SECRET_ACCESS_KEY="${CANARY[AWS_SECRET_ACCESS_KEY]}"
   NPM_TOKEN="${CANARY[NPM_TOKEN]}" GITHUB_TOKEN="${CANARY[GITHUB_TOKEN]}" OPENAI_API_KEY="${CANARY[OPENAI_API_KEY]}"
@@ -263,17 +264,26 @@ else
   WORKDIR=/work/src
   if [ -f /work/src/package.json ]; then
     ECO=npm
-    if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then
-      INSTALL_CMD="npm ci --no-audit --no-fund"
-    else
-      INSTALL_CMD="npm install --no-audit --no-fund"
-      # pnpm workspaces stay on npm for now: under the forge, the pnpm 12 that openclaw
-      # pins (corepack) refused the per-VM CA and sent datagrams of its own, which read
-      # as repo behaviour (docs/runs/2.0-keyday.md step 13). Marked as translated.
-      if [ -f /work/src/yarn.lock ] || [ -f /work/src/pnpm-lock.yaml ]; then
-        check lockfile_translated true "yarn or pnpm lockfile installed with npm install"
-      fi
+    # The package manager the repo declares (packageManager, else its lockfile), run by
+    # corepack at the version the repo pins, through the same forge and fence.
+    PM=$(jq -r '(.packageManager // "") | split("@")[0]' /work/src/package.json 2>/dev/null || echo "")
+    if [ -z "$PM" ]; then
+      if [ -f /work/src/pnpm-lock.yaml ]; then PM=pnpm
+      elif [ -f /work/src/yarn.lock ]; then PM=yarn
+      elif [ -f /work/src/bun.lock ] || [ -f /work/src/bun.lockb ]; then PM=bun
+      else PM=npm; fi
     fi
+    case "$PM" in
+      pnpm) INSTALL_CMD="pnpm install --prefer-frozen-lockfile"; check package_manager true "pnpm (declared)" ;;
+      yarn) INSTALL_CMD="yarn install"; check package_manager true "yarn (declared)" ;;
+      bun)
+        # bun is not in the template: the npm install of the same manifest, marked.
+        INSTALL_CMD="npm install --no-audit --no-fund"; check package_manager false "bun declared; bun is not in the sandbox, installed with npm" ;;
+      *)
+        if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then INSTALL_CMD="npm ci --no-audit --no-fund"
+        else INSTALL_CMD="npm install --no-audit --no-fund"; fi
+        check package_manager true "npm" ;;
+    esac
   elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then
     ECO=python
     INSTALL_CMD="uv venv --quiet /work/.venv --python /usr/bin/python3"
