@@ -90,7 +90,7 @@ export async function proveFenceInVm(s: SandboxSession): Promise<{ ok: boolean; 
       // The proof's own test datagrams (uid 1001 UDP, ICMP) are counted by the fence's
       // drop rules, which the harness later reads as repo behaviour: zero those counters
       // (the rules themselves are untouched) and require every one to read 0 again.
-      `nft reset rules table inet cr chain out_filter >/dev/null; d=0; for k in udp icmp other; do n=$(/opt/cr/bin/cr-drops.sh "cr_\${k}_drop"); d=$((d + n)); done; ` +
+      `nft reset rules inet cr out_filter >/dev/null; d=0; for k in udp icmp other; do n=$(/opt/cr/bin/cr-drops.sh "cr_\${k}_drop"); d=$((d + n)); done; ` +
       `echo "proof_exit=$p codeload=$c pass=$(grep -c '^PASS' /root/proof-after-fetch.txt) fail=$(grep -c '^FAIL' /root/proof-after-fetch.txt) drop_counters_after_reset=$d"; grep '^FAIL' /root/proof-after-fetch.txt | head -5; ` +
       `[ "$p" = 0 ] && [ "$c" = CLOSED ] && [ "$d" = 0 ]`,
     { timeoutMs: 50_000 },
