@@ -11,8 +11,6 @@ import { serverConfig } from "@/lib/server/scan-service";
 import { issueCliToken, sessionUser } from "@/lib/server/v2-auth";
 
 export const runtime = "nodejs";
-// Next to the v2 database (Supabase ap-south-1): every scan, cache and token query is one short hop.
-export const preferredRegion = "bom1";
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "no-store", Pragma: "no-cache" };

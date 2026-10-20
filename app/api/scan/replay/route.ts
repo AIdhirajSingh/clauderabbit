@@ -7,8 +7,6 @@ import { createV2Store } from "@/lib/engine/store";
 import { adForRequest, realtimeChannel, replaySubject, serverConfig, surfaceFromHeader } from "@/lib/server/scan-service";
 
 export const runtime = "nodejs";
-// Next to the v2 database (Supabase ap-south-1): every scan, cache and token query is one short hop.
-export const preferredRegion = "bom1";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
