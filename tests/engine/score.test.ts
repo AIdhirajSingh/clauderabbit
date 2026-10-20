@@ -139,7 +139,8 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
     verdict: "Caution",
   },
   { name: "install failed caps at 74", in: { install: "failed" }, score: 74, verdict: "Caution" },
-  { name: "install timeout caps at 74 even with strong reputation", in: { install: "timeout", reputation: STRONG_REP }, score: 74, verdict: "Caution" },
+  { name: "install timeout never lowers the score", in: { install: "timeout", entry: "skipped", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
+  { name: "entry timeout never lowers the score", in: { entry: "timeout", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "install skipped caps at 74", in: { install: "skipped", entry: "skipped" }, score: 74, verdict: "Caution" },
   { name: "archive truncated caps at 74", in: { archiveTruncated: true }, score: 74, verdict: "Caution" },
   { name: "lost forensics cap at 59 even with completed phases and strong reputation", in: { forensics: { coverage: "lost", gaps: [] }, reputation: STRONG_REP }, score: 59, verdict: "High risk" },
@@ -152,6 +153,16 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "Jev check coverage missing blocks 90", in: { coverage: { scanners: true, osv: true, checks: false }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "negative reputation blocks 90", in: { reputation: { ...STRONG_REP, maintainerChangedWithin30d: true, npmFirstPublishDays: 2, ownerAgeDays: 10, ownerEstablished: false, weeklyDownloads: 0 } }, score: 77, verdict: "Caution" },
 ];
+
+test("score: an install timeout scores the same as a completed install and is stated as not verified", () => {
+  const done = computeScore(input({ reputation: STRONG_REP }));
+  const timedOut = computeScore(input({ install: "timeout", entry: "skipped", reputation: STRONG_REP }));
+  assert.equal(timedOut.score, done.score);
+  const text = timedOut.notVerified.join(" ");
+  assert.match(text, /Install phase did not complete \(timeout\)/);
+  assert.match(text, /Entry phase was skipped/);
+  assert.ok(!timedOut.breakdown.some((b) => b.code === "cap_install_incomplete" || b.code === "cap_entry_incomplete"));
+});
 
 for (const c of CASES) {
   test(`score: ${c.name}`, () => {

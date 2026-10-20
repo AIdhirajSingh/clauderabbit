@@ -337,6 +337,19 @@ test("writer validator: banned words, bare safe, em dash, band and score mismatc
   assert.deepEqual(findBanned("totally secure"), ["absolute security claim"]);
 });
 
+test("writer validator: another verdict counts only as its label, not the plain word", () => {
+  const ctx = { score: 74, verdict: "Caution" as const };
+  assert.deepEqual(
+    validateWriterOutput({ headline: "Caution: install did not finish in the window", summary: "Caution, 74/100. Jev found no malicious install code; the install ran out of time." }, ctx),
+    { ok: true },
+  );
+  const label = validateWriterOutput({ headline: "Caution", summary: "Parts of it look Malicious." }, ctx);
+  assert.equal(label.ok, false);
+  if (!label.ok) assert.match(label.reasons.join("; "), /band mismatch: mentions "Malicious"/);
+  const multi = validateWriterOutput({ headline: "Caution", summary: "Not High risk." }, ctx);
+  assert.equal(multi.ok, false);
+});
+
 function scored() {
   return computeScore({
     behaviour: { ...NO_BEHAVIOUR, canaryHits: ["AWS_SECRET_ACCESS_KEY sent to c2.cr-fixture.invalid (http, install)"], nonDistributionHosts: ["c2.cr-fixture.invalid"] },

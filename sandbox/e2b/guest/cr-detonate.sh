@@ -249,7 +249,7 @@ if [ "$MODE" = "npm-package" ]; then
   printf '{"name":"cr-run-app","version":"1.0.0","private":true}\n' | runuser -u "$CR_USER" -- tee /work/app/package.json >/dev/null
   ECO=npm
   WORKDIR=/work/app
-  INSTALL_CMD="npm install --no-audit --no-fund /work/pkg.tgz"
+  INSTALL_CMD="npm install --prefer-offline --no-audit --no-fund /work/pkg.tgz"
 else
   install -d -o "$CR_USER" -g "$CR_USER" /work/src
   if ! timeout 6 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then
@@ -259,9 +259,9 @@ else
   if [ -f /work/src/package.json ]; then
     ECO=npm
     if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then
-      INSTALL_CMD="npm ci --no-audit --no-fund"
+      INSTALL_CMD="npm ci --prefer-offline --no-audit --no-fund"
     else
-      INSTALL_CMD="npm install --no-audit --no-fund"
+      INSTALL_CMD="npm install --prefer-offline --no-audit --no-fund"
       if [ -f /work/src/yarn.lock ] || [ -f /work/src/pnpm-lock.yaml ]; then
         check lockfile_translated true "yarn or pnpm lockfile installed with npm install"
       fi

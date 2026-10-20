@@ -15,6 +15,7 @@ by forge_core itself.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import ipaddress
 import os
 import sys
@@ -27,6 +28,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forge_core  # noqa: E402
 
 POLICY_PATH = os.environ.get("CR_FORGE_POLICY", "/opt/cr/forge/policy.json")
+
+# Registry pass-through blocks on an upstream fetch. asyncio's default pool is
+# min(32, cpu + 4) threads, which is 5 on the 1 vCPU VM, so npm's parallel
+# packument and tarball requests queued five at a time. Forged replies do no I/O
+# and are unaffected by the pool size.
+HANDLE_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=32, thread_name_prefix="cr-forge")
+# Decisions that carry real registry bytes keep the client connection open so npm
+# reuses its TLS session to the forge; every forged reply still closes.
+KEEPALIVE_KINDS = ("registry", "mirror")
 
 
 class CrForge:
@@ -71,8 +81,9 @@ class CrForge:
             body=r.raw_content or b"",
             scheme=r.scheme,
         )
-        decision = await asyncio.to_thread(self.forge.handle, req)
-        flow.response = http.Response.make(decision.status, decision.body, {**decision.headers, "Connection": "close"})
+        decision = await asyncio.get_running_loop().run_in_executor(HANDLE_POOL, self.forge.handle, req)
+        connection = "keep-alive" if decision.forged_kind in KEEPALIVE_KINDS else "close"
+        flow.response = http.Response.make(decision.status, decision.body, {**decision.headers, "Connection": connection})
         https = r.scheme == "https"
         self._record(
             proto="https" if https else "http",

@@ -96,6 +96,12 @@ export interface RunScanOptions {
 export interface RunCoverage {
   complete: boolean;
   failed: string[];
+  /**
+   * Phases that ran out of time. A timeout is not a coverage failure: the run is
+   * cached and served as a hit, and this marks what did not finish (the report's
+   * not_verified lines say the same in words).
+   */
+  timed_out: string[];
 }
 
 export function cachedCoverageComplete(report: { forensics?: unknown } | null | undefined): boolean {
@@ -659,7 +665,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   if (!osvOk) failedCoverage.push("osv");
   if (!checksOk) failedCoverage.push("checks");
   if (written.writer !== "model") failedCoverage.push("writer");
-  const coverage: RunCoverage = { complete: failedCoverage.length === 0, failed: failedCoverage };
+  const timedOut: string[] = [];
+  if (detonation?.install === "timeout") timedOut.push("install");
+  if (detonation?.entry === "timeout") timedOut.push("entry");
+  const coverage: RunCoverage = { complete: failedCoverage.length === 0, failed: failedCoverage, timed_out: timedOut };
   // Both kills were issued when each VM's work ended; they finished during the
   // score and the report. Awaiting them here prices the real VM lifetimes.
   await Promise.allSettled(kills);

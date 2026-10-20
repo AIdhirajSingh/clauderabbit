@@ -91,8 +91,11 @@ export function validateWriterOutput(out: WriterOutput, ctx: WriterContext): { o
   for (const b of findBanned(both)) reasons.push(`banned: ${b}`);
   const lower = both.toLowerCase();
   if (!lower.includes(ctx.verdict.toLowerCase())) reasons.push(`verdict "${ctx.verdict}" missing`);
+  // Another verdict counts as a mismatch when it appears as its label (capitalised,
+  // whole words), not when the plain word does: "no malicious install code" in a
+  // Caution report is prose, "Malicious" is a second verdict.
   for (const v of ALL_VERDICTS) {
-    if (v !== ctx.verdict && lower.includes(v.toLowerCase())) reasons.push(`band mismatch: mentions "${v}"`);
+    if (v !== ctx.verdict && new RegExp(`\\b${v.replace(/ /g, "\\s+")}\\b`).test(both)) reasons.push(`band mismatch: mentions "${v}"`);
   }
   for (const m of both.matchAll(/\b(\d{1,3})\s*(?:\/\s*100|out of 100)\b/gi)) {
     if (Number(m[1]) !== ctx.score) reasons.push(`score mismatch: ${m[0]}`);

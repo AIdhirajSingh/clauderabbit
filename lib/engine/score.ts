@@ -517,12 +517,16 @@ export function computeScore(input: ScoreInput): ScoreResult {
   if (input.malicious.length > 0) {
     applyCap(CAP_MALICIOUS_DEP, "cap_malicious_dependency", `A known malicious dependency caps the score at ${CAP_MALICIOUS_DEP}.`);
   }
-  const installDone = input.install === "completed" && !input.archiveTruncated;
-  if (!installDone) {
+  // Running out of time is not a bad signal: a phase that timed out (and an entry
+  // skipped only because install timed out) never lowers the score. What did not
+  // run is still stated as not verified. A failed phase still caps.
+  const installRan = input.install === "completed" || input.install === "timeout";
+  const entryRan = input.entry === "completed" || input.entry === "timeout" || (input.install === "timeout" && input.entry === "skipped");
+  if (input.install !== "completed") notVerified.push(phaseText("Install", input.install));
+  if (!installRan || input.archiveTruncated) {
     applyCap(CAP_INSTALL_INCOMPLETE, "cap_install_incomplete", `Install did not complete, so the score is capped at ${CAP_INSTALL_INCOMPLETE}.`);
-    if (input.install !== "completed") notVerified.push(phaseText("Install", input.install));
     if (input.archiveTruncated) notVerified.push("Files past the archive size cap were not analysed.");
-  } else if (input.entry !== "completed") {
+  } else if (!entryRan) {
     applyCap(CAP_ENTRY_INCOMPLETE, "cap_entry_incomplete", `The entry point did not complete, so the score is capped at ${CAP_ENTRY_INCOMPLETE}.`);
   }
   if (input.entry !== "completed") notVerified.push(phaseText("Entry", input.entry));
@@ -534,8 +538,8 @@ export function computeScore(input: ScoreInput): ScoreResult {
   for (const s of input.failedStages) notVerified.push(s);
 
   const proven =
-    input.install === "completed" &&
-    input.entry === "completed" &&
+    installRan &&
+    entryRan &&
     input.forensics.coverage === "complete" &&
     !input.archiveTruncated &&
     B === 0 &&
@@ -547,7 +551,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
     input.coverage.osv &&
     input.coverage.checks;
   if (!proven) {
-    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs completed install and entry, no behaviour or intel hits, no reachable high finding, no undecided Jev check, non-negative reputation and full coverage.");
+    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs install and entry to run (a timeout counts as run), no behaviour or intel hits, no reachable high finding, no undecided Jev check, non-negative reputation and full coverage.");
   }
 
   const unique = [...new Set(notVerified)];

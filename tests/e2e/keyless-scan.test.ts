@@ -184,7 +184,7 @@ test("keyless e2e: the phone-home fixture is caught by the forge, scored Malicio
     const lastEvidence = Math.max(...events.map((e, i) => (e.type === "forged_call" || e.type === "file" ? i : -1)));
     assert.ok(firstProcess > lastEvidence, `process events start at ${firstProcess}, evidence ends at ${lastEvidence}`);
     const fxCov = (report.forensics as { coverage: { complete: boolean; failed: string[] } }).coverage;
-    assert.deepEqual(fxCov, { complete: true, failed: [] }, "a complete run is the one the SHA cache serves");
+    assert.deepEqual(fxCov, { complete: true, failed: [], timed_out: [] }, "a complete run is the one the SHA cache serves");
     for (const t of SCAN_EVENT_TYPES) assert.ok(events.some((e) => e.type === t), `missing event type ${t}`);
     const stored = store.events.get(outcome.runId)!;
     assert.equal(stored.length, events.length);
