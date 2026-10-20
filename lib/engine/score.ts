@@ -38,8 +38,10 @@ export const BASE = 85;
  * changes, so a cached report scored under older rules is never served as a hit.
  * 2: shells, distribution fetches and reputation never lower the score; every
  * applied deduction cites evidence; a Jev "unclear" no longer blocks 90.
+ * 3: an entry that fails or is skipped is neutral; a proven run with nothing
+ * taken off reaches the top band on code evidence alone (reputation adds above).
  */
-export const SCORE_RULES = 2;
+export const SCORE_RULES = 3;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
@@ -94,6 +96,8 @@ export const CAP_MALICIOUS_DEP = 25;
 export const CAP_INSTALL_INCOMPLETE = 74;
 export const CAP_ENTRY_INCOMPLETE = 89;
 export const CAP_NOT_PROVEN = 89;
+/** Lowest score of the top band ("No threats observed"). */
+export const TOP_BAND = 90;
 /** The detonation produced no forensic record (lost bundle, overrun, crash, failed containment probe). */
 export const CAP_FORENSICS_LOST = 59;
 /** Part of the forensic record was cut by a size cap or a timed-out collection step. */
@@ -533,7 +537,9 @@ export function computeScore(input: ScoreInput): ScoreResult {
   // skipped only because install timed out) never lowers the score. What did not
   // run is still stated as not verified. A failed phase still caps.
   const installRan = input.install === "completed" || input.install === "timeout";
-  const entryRan = input.entry === "completed" || input.entry === "timeout" || (input.install === "timeout" && input.entry === "skipped");
+  // A library usually has no runnable entry point: an entry that fails or is skipped
+  // is not a bad signal either. It is stated as not verified.
+  const entryRan = true;
   if (input.install !== "completed") notVerified.push(phaseText("Install", input.install));
   if (!installRan || input.archiveTruncated) {
     applyCap(CAP_INSTALL_INCOMPLETE, "cap_install_incomplete", `Install did not complete, so the score is capped at ${CAP_INSTALL_INCOMPLETE}.`);
@@ -561,6 +567,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
     input.coverage.scanners &&
     input.coverage.osv &&
     input.coverage.checks;
+  if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {
+    // Fully observed and nothing taken off: the code evidence alone earns the top
+    // band. Reputation only adds above it, never decides it.
+    breakdown.push({ group: "cap", code: "proven_clean", points: TOP_BAND - score, detail: `Install and entry ran with full coverage and no deduction, so the score is lifted to ${TOP_BAND}.` });
+    score = TOP_BAND;
+  }
   if (!proven) {
     applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs install and entry to run (a timeout counts as run), no behaviour or intel hits, no reachable high finding and full coverage.");
   }

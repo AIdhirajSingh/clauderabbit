@@ -451,7 +451,9 @@ export function docsFindings(
     records.push({ check: "docs", question: "capability_fit", subject: "documentation versus measured capabilities", answer: fit.choice, probability: fit.probability });
     const order = { install: 0, import: 1, unreachable: 2 } as const;
     const target = capabilities.filter((c) => c.reach !== "unreachable").sort((a, b) => order[a.reach] - order[b.reach] || a.file.localeCompare(b.file))[0];
-    if (fit.choice === "mismatch" && (fit.probability === null || fit.probability >= SIGNAL_MIN_P) && target) {
+    // A mismatch counts only against a sentence the README really says (the quoted
+    // declaration): Jev's sense of a library's "purpose" alone cites nothing.
+    if (fit.choice === "mismatch" && (fit.probability === null || fit.probability >= SIGNAL_MIN_P) && target && quote !== null) {
       findings.push({
         check: "docs",
         question: "capability_fit",
@@ -461,7 +463,7 @@ export function docsFindings(
         verdict: "suspicious",
         probability: fit.probability,
         title: `Jev found the ${target.capability} capability in ${target.file} outside the documented purpose`,
-        evidence: [`${target.capability} in ${target.file} (${target.reach})${fmtP(fit.probability)}`],
+        evidence: [`README: "${quote.slice(0, 200)}"`, `${target.capability} in ${target.file} (${target.reach})${fmtP(fit.probability)}`],
       });
     }
   }

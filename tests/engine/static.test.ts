@@ -207,3 +207,14 @@ test("scanners: cr-yara JSON", () => {
   assert.equal(relativeToRoot("./a.js"), "a.js");
   assert.equal(relativeToRoot("/elsewhere/a.js"), "/elsewhere/a.js");
 });
+
+test("heuristics: reading named env settings is ordinary; serialising the whole environment is flagged", () => {
+  const enc = new TextEncoder();
+  // debug-js/debug 666dbc5 src/node.js:124 reads its own DEBUG_* settings.
+  const ordinary = runHeuristics(new Map([["src/node.js", enc.encode("exports.inspectOpts = Object.keys(process.env).filter(key => {\n\treturn /^debug_/i.test(key);\n});\n")]]));
+  assert.ok(!ordinary.findings.some((f) => f.rule === "heur.cred.bulk_env"), "a prefix-filtered settings read is not credential access");
+  const dump = runHeuristics(new Map([["x.js", enc.encode("const body = JSON.stringify(process.env);\n")]]));
+  assert.ok(dump.findings.some((f) => f.rule === "heur.cred.bulk_env"));
+  const py = runHeuristics(new Map([["x.py", enc.encode("payload = dict(os.environ)\n")]]));
+  assert.ok(py.findings.some((f) => f.rule === "heur.cred.bulk_env"));
+});

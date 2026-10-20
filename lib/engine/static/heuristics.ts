@@ -61,7 +61,10 @@ const CREDENTIAL_PATHS: Rule[] = [
   { id: "heur.cred.shell_history", re: /~\/\.(?:zsh|bash)_history|\.(?:zsh|bash)_history\b/g, severity: "high", message: "shell history access" },
   { id: "heur.cred.cloud_config", re: /\.config\/gcloud|\.kube\/config|\.docker\/config\.json|\.config\/gh\/hosts\.yml|\.git-credentials/g, severity: "high", message: "cloud or VCS credential file access" },
   { id: "heur.cred.npmrc", re: /\.npmrc\b/g, severity: "medium", message: ".npmrc (registry auth token) access" },
-  { id: "heur.cred.bulk_env", re: /process\.env\b[\s\S]{0,40}(?:JSON\.stringify|Object\.keys|Object\.entries)|(?:JSON\.stringify|Object\.entries|Object\.keys)\s*\(\s*process\.env\s*\)|dict\s*\(\s*os\.environ\s*\)/g, severity: "medium", message: "bulk environment variable read" },
+  // Serialising the whole environment (the exfiltration shape). Listing env names to
+  // read a tool's own settings (`Object.keys(process.env).filter(/^debug_/)`) is
+  // ordinary and not matched; an env value actually leaving is the canary's job.
+  { id: "heur.cred.bulk_env", re: /JSON\.stringify\s*\(\s*process\.env\s*[,)]|dict\s*\(\s*os\.environ\s*\)/g, severity: "medium", message: "whole environment serialised" },
 ];
 
 const CAPABILITY_PATTERNS: Array<{ capability: Capability; re: RegExp }> = [

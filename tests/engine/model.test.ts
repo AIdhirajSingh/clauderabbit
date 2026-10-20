@@ -6,6 +6,7 @@ import {
   buildFlaggedSlice,
   buildInstallSlice,
   declarationQuotes,
+  docsFindings,
   docsText,
   fenceSafe,
   runDocsCheck,
@@ -432,4 +433,18 @@ test("writer: a run whose behaviour was not observed never reads as clean", asyn
   const r = await writeReport(model, { target: "npm:x", score: 59, verdict: "High risk", breakdown: [], notVerified: ["x"], checkAnswers: [], statedPurpose: null, sandbox: "not_observed" }, new AbortController().signal);
   assert.equal(r.writer, "deterministic");
   assert.match(r.summary, /behaviour was not observed/);
+});
+
+test("docs check: a capability-fit mismatch with no README claim to cite is not a finding", () => {
+  const caps = [{ file: "lodash.js", capability: "process" as const, reach: "import" as const }];
+  const answers = {
+    declares_no_network: { type: "boolean" as const, probability: 0.06 },
+    declares_pure: { type: "boolean" as const, probability: 0.08 },
+    capability_fit: { type: "choice" as const, choice: "mismatch", probabilities: { consistent: 0.03, mismatch: 0.95, unclear: 0.02 } },
+  };
+  const none = docsFindings(answers, { noNetwork: null, pure: null }, caps);
+  assert.deepEqual(none.findings, [], "lodash 2b5e6f7: no README sentence, no deduction");
+  const claimed = docsFindings({ ...answers, declares_pure: { type: "boolean", probability: 0.9 } }, { noNetwork: null, pure: "Pure functions, no side effects." }, caps);
+  assert.equal(claimed.findings.length, 1);
+  assert.ok(claimed.findings[0]!.evidence.some((e) => e.includes("Pure functions, no side effects.")));
 });
