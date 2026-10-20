@@ -55,6 +55,8 @@ export interface DetonationInput {
   mode: "npm-package" | "repo";
   packageName: string | null;
   tarball: Uint8Array;
+  /** The whole repo was fetched into this VM by vmfetch.ts; `tarball` is not uploaded. */
+  prefetched?: boolean;
   canaries: Canaries;
   installTimeoutMs: number;
   entryTimeoutMs: number;
@@ -290,7 +292,8 @@ export async function runDetonation(dvm: DetonationVm, input: DetonationInput): 
   return runOnBooted(dvm.vm, async (s) => {
     const t0 = Date.now();
     await Promise.all([
-      s.writeFile("/root/in/target.tgz", input.tarball),
+      // A VM-fetched repo is already at /root/in/target.tgz (whole repo, vmfetch.ts).
+      ...(input.prefetched ? [] : [s.writeFile("/root/in/target.tgz", input.tarball)]),
       s.writeFile(
         "/root/in/run.json",
         JSON.stringify({

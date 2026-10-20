@@ -94,7 +94,7 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "a distribution fetch (prebuilt binary, release asset) costs nothing on its own", in: { behaviour: beh({ distributionFetches: ["github.com"] }) }, score: 90, verdict: "No threats observed" },
   { name: "four distribution fetches still cost nothing", in: { behaviour: beh({ distributionFetches: ["a", "b", "c", "d"] }) }, score: 90, verdict: "No threats observed" },
   { name: "behaviour group floors at -85", in: { behaviour: beh({ decoyReads: ["a"], tunnelingDns: ["b"], tlsRefused: ["c"], nonDistributionHosts: ["d", "e"] }) }, score: 0, verdict: "Malicious" },
-  { name: "malicious dependency caps at 25", in: { malicious: [{ ecosystem: "npm", name: "evil", version: "1.0.0", ids: ["MAL-2025-1"] }], reputation: STRONG_REP }, score: 25, verdict: "Malicious" },
+  { name: "a malicious dependency with clean own code is a labelled dependency danger in Caution", in: { malicious: [{ ecosystem: "npm", name: "evil", version: "1.0.0", ids: ["MAL-2025-1"] }], reputation: STRONG_REP }, score: 74, verdict: "Caution" },
   { name: "one reachable high static finding", in: { staticFindings: [sf({})] }, score: 73, verdict: "Caution" },
   { name: "one reachable medium static finding", in: { staticFindings: [sf({ severity: "medium" })] }, score: 80, verdict: "Low risk" },
   { name: "low static finding is worth 0", in: { staticFindings: [sf({ severity: "low" })] }, score: 90, verdict: "No threats observed" },
@@ -411,4 +411,23 @@ test("facts to verdict: clean facts and benign Jev answers give a high score wit
 test("an unclear Jev answer is listed under not_verified with its location", () => {
   const r = computeScore(input({ checkFindings: [cf({ verdict: "unclear", severity: "low", file: "lib/x.js", line: 4 })] }));
   assert.ok(r.notVerified.some((n) => n.includes("Jev could not decide on 1 reachable location(s): lib/x.js:4 (flagged check)")), JSON.stringify(r.notVerified));
+});
+
+test("score: own code clean, danger only in a dependency: labelled, Caution, never Malicious", () => {
+  // lodash/lodash 2b5e6f7: package-lock.json pins fsevents 1.2.2 (OSV MAL-2023-462), dev, darwin-only, not installed on Linux.
+  const fsevents = { ecosystem: "npm" as const, name: "fsevents", version: "1.2.2", ids: ["MAL-2023-462"], scope: { installed: false, dev: true, optional: true, os: ["darwin"] } };
+  const r = computeScore(input({ malicious: [fsevents], reputation: STRONG_REP }));
+  assert.equal(r.verdict, "Caution");
+  assert.equal(r.score, 74);
+  assert.equal(r.label, "Own code: clean. Danger in a dependency: fsevents 1.2.2 (MAL-2023-462), macOS only, dev lockfile only (repo install, not package users), not installed in this run.");
+  const d = r.breakdown.find((x) => x.code === "dependency_malicious_record")!;
+  assert.ok(d.points < 0 && d.evidence!.includes("npm fsevents@1.2.2: MAL-2023-462"), "the finding stays prominent, with its advisory");
+});
+
+test("score: a malicious dependency with bad own code still counts in full", () => {
+  const dep = { ecosystem: "npm" as const, name: "evil", version: "1.0.0", ids: ["MAL-2099-1"], scope: { installed: true, dev: false, optional: false, os: [] } };
+  const behaviour = deriveBehaviour({ forgedCalls: FIXTURE_FORGED, files: FIXTURE_FILES, processes: FIXTURE_PROCS, canaryInFiles: [], datagramEgress: [] });
+  const r = computeScore(input({ malicious: [dep], behaviour }));
+  assert.equal(r.verdict, "Malicious");
+  assert.equal(r.label, undefined);
 });

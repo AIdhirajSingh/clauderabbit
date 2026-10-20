@@ -27,7 +27,10 @@ export function e2bCreateOptions(opts: SandboxCreateOptions, apiKey: string) {
   // traffic token, so nothing outside can reach the forge or any listener in the VM
   // (E2B also re-exposes loopback listeners on the VM address through socat).
   if (opts.network === "none") {
-    return { ...base, allowInternetAccess: false, network: { allowPublicTraffic: false } };
+    // Deny all egress through the egress rules (the same isolation as
+    // allowInternetAccess false), so updateNetwork can open codeload for the one
+    // repo fetch and close it again.
+    return { ...base, allowInternetAccess: true, network: { denyOut: ["0.0.0.0/0"], allowPublicTraffic: false } };
   }
   return {
     ...base,
@@ -71,6 +74,10 @@ class E2BSession implements SandboxSession {
   async readFile(path: string): Promise<Uint8Array> {
     return this.#sbx.files.read(path, { user: "root", format: "bytes" });
   }
+  async setEgress(allowOut: readonly string[]): Promise<void> {
+    await this.#sbx.updateNetwork({ denyOut: ["0.0.0.0/0"], allowOut: [...allowOut] });
+  }
+
 
   /** The VM's public URL for a port (used by the operator smoke to prove it is closed). */
   publicUrl(port: number): string {
@@ -86,6 +93,7 @@ class E2BSession implements SandboxSession {
 
 export class E2BProvider implements SandboxProvider {
   readonly template: string;
+  readonly canSetEgress = true;
   #apiKey: string;
 
   constructor(opts: E2BProviderOptions) {

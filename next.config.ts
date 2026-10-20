@@ -34,6 +34,9 @@ const nextConfig: NextConfig = {
   // ".../bin does not exist" at runtime). Force the trace to include it.
   outputFileTracingIncludes: {
     "/api/export/pdf": ["./node_modules/@sparticuz/chromium/**"],
+    // Uploaded into the detonation VM, which maps the whole repo (lib/engine/sandbox/vmfetch.ts).
+    "/api/scan": ["./lib/engine/sandbox/vm-map.mjs", "./lib/engine/reach/graph.ts", "./lib/engine/static/heuristics.ts", "./lib/engine/archive.ts"],
+    "/mcp": ["./lib/engine/sandbox/vm-map.mjs", "./lib/engine/reach/graph.ts", "./lib/engine/static/heuristics.ts", "./lib/engine/archive.ts"],
   },
   // Security headers (production-grade) + the embeddable trust badge.
   async headers() {

@@ -211,6 +211,19 @@ export interface MaliciousDependency {
   name: string;
   version: string;
   ids: string[];
+  /** Where the dependency was found and who it reaches (lockfile flags, registry os, this run's install). */
+  scope?: DependencyScope;
+}
+
+export interface DependencyScope {
+  /** The scan's own install pulled this exact version in. */
+  installed: boolean;
+  /** Marked dev-only in the repo's lockfile. */
+  dev: boolean;
+  /** Marked optional in the repo's lockfile. */
+  optional: boolean;
+  /** Operating systems the package declares (`os` in its npm manifest), empty when it declares none. */
+  os: string[];
 }
 
 export interface DependencyRef {
@@ -264,6 +277,8 @@ export interface ReportPayload {
   jev_model_id?: string;
   /** Version of the scoring rules (lib/engine/score.ts SCORE_RULES) that produced this score. */
   score_rules?: number;
+  /** Plain label when the repo's own code is clean and the danger is in a dependency. */
+  label?: string;
   template: string;
   timings: Record<string, number>;
   writer: "model" | "deterministic";

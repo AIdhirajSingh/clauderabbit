@@ -64,8 +64,10 @@ test("e2b create options: detonation is registry-only, analysis has no internet"
     network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"], allowPublicTraffic: false },
   });
   const a = e2bCreateOptions({ purpose: "analyze", runId: "r1", timeoutMs: 90_000, network: "none" }, "k");
-  assert.equal(a.allowInternetAccess, false);
-  assert.deepEqual(a.network, { allowPublicTraffic: false });
+  // No egress at all: every destination denied and nothing allowed, expressed as
+  // egress rules so the one codeload fetch can be opened and closed (vmfetch.ts).
+  assert.deepEqual(a.network, { denyOut: ["0.0.0.0/0"], allowPublicTraffic: false });
+  assert.ok(!("allowOut" in a.network));
 });
 
 test("withSandbox kills in finally, also when the body throws; create failures are typed", async () => {
@@ -241,4 +243,27 @@ test("detonate: harness truncation and mirror metadata mark coverage partial", a
   const d = await detonate(new StubProvider(new StubSession((_c, self) => (self.files.set("/root/out.tgz", bundle), { exitCode: 0, stdout: "", stderr: "" }))), { runId: "r", mode: "repo", packageName: null, tarball: new Uint8Array(1), canaries: makeCanaries(), installTimeoutMs: 20_000, entryTimeoutMs: 4_000, totalTimeoutMs: 70_000, sandboxTimeoutMs: 95_000, fakeRate: 30 });
   assert.equal(d.forensics.coverage, "partial");
   assert.match(d.forensics.gaps.join(" "), /cut at the size cap/);
+});
+
+test("vm fetch: codeload URL only for well-formed owner, repo and SHA", async () => {
+  const { codeloadUrlFor, CODELOAD_HOST } = await import("../../lib/engine/sandbox/vmfetch.ts");
+  assert.equal(CODELOAD_HOST, "codeload.github.com");
+  assert.equal(codeloadUrlFor("openclaw", "openclaw", "104730ba84765f16915cfe2150b368e6344a019d"), "https://codeload.github.com/openclaw/openclaw/tar.gz/104730ba84765f16915cfe2150b368e6344a019d");
+  assert.throws(() => codeloadUrlFor("a';rm -rf /;'", "b", "104730ba84765f16915cfe2150b368e6344a019d"));
+  assert.throws(() => codeloadUrlFor("a", "b", "HEAD"));
+});
+
+test("vm fetch: egress opens to codeload only for the fetch and is restored even when the fetch fails", async () => {
+  const { fetchRepoInVm } = await import("../../lib/engine/sandbox/vmfetch.ts");
+  const calls: string[][] = [];
+  const session = {
+    id: "s",
+    writeFile: async () => {},
+    readFile: async () => new Uint8Array(),
+    kill: async () => {},
+    setEgress: async (allow: readonly string[]) => void calls.push([...allow]),
+    run: async () => ({ exitCode: 22, stdout: "", stderr: "curl: (22) 404" }),
+  };
+  await assert.rejects(fetchRepoInVm(session, { owner: "o", repo: "r", sha: "a".repeat(40) }, ["registry.npmjs.org"], "/root/in/target.tgz", 1000), /could not fetch/);
+  assert.deepEqual(calls, [["registry.npmjs.org", "codeload.github.com"], ["registry.npmjs.org"]]);
 });

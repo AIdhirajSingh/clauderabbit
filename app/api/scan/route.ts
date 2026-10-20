@@ -34,7 +34,7 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra } });

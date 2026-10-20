@@ -41,8 +41,10 @@ export const BASE = 85;
  * 3: an entry that fails or is skipped is neutral; a proven run with nothing
  * taken off reaches the top band on code evidence alone (reputation no longer
  * decides it; at most it lifts an unproven clean run from 85 toward 90).
+ * 4: a known-malicious dependency with the repo's own code clean is labelled as a
+ * dependency danger and lands in the Caution band, never Malicious.
  */
-export const SCORE_RULES = 3;
+export const SCORE_RULES = 4;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
@@ -94,6 +96,8 @@ export const REPUTATION_MAX = 5;
 
 export const CAP_CANARY_OR_PERSISTENCE = 15;
 export const CAP_MALICIOUS_DEP = 25;
+/** Own code clean, danger only in a dependency: the Caution band (60 to 79), at its top. */
+export const CAP_DEPENDENCY_ONLY = 74;
 export const CAP_INSTALL_INCOMPLETE = 74;
 export const CAP_ENTRY_INCOMPLETE = 89;
 export const CAP_NOT_PROVEN = 89;
@@ -289,6 +293,24 @@ export interface ScoreResult {
   groups: { behaviour: number; intel: number; static: number; docs: number; reputation: number };
   breakdown: ScoreDelta[];
   notVerified: string[];
+  /** Set when the repo's own code is clean and a dependency carries a known malicious record. */
+  label?: string;
+}
+
+const OS_NAMES: Record<string, string> = { darwin: "macOS", linux: "Linux", win32: "Windows", freebsd: "FreeBSD" };
+
+/** "fsevents 1.2.2 (MAL-2023-462), macOS only, dev lockfile only, not installed in this run" */
+export function dependencyLabel(deps: MaliciousDependency[]): string {
+  const parts = deps.slice(0, 3).map((m) => {
+    const s = m.scope;
+    const who: string[] = [];
+    if (s && s.os.length > 0) who.push(`${s.os.map((o) => OS_NAMES[o] ?? o).join(", ")} only`);
+    if (s?.dev) who.push("dev lockfile only (repo install, not package users)");
+    if (s && !s.installed) who.push("not installed in this run");
+    return `${m.name} ${m.version} (${m.ids.join(", ")})${who.length ? `, ${who.join(", ")}` : ""}`;
+  });
+  const more = deps.length > 3 ? ` and ${deps.length - 3} more` : "";
+  return `Own code: clean. Danger in a dependency: ${parts.join("; ")}${more}.`;
 }
 
 export function verdictFor(score: number): Verdict {
@@ -480,7 +502,12 @@ function evidenced(d: ScoreDelta): boolean {
 export function computeScore(input: ScoreInput): ScoreResult {
   const bDeltas = behaviourDeltas(input.behaviour).filter(evidenced);
   const B = Math.max(CAP_BEHAVIOUR, bDeltas.reduce((s, d) => s + d.points, 0));
-  const I = input.malicious.length > 0 ? W_MALICIOUS_DEP : 0;
+  // The repo's own code is clean when nothing in behaviour, static or docs takes a
+  // point off. Then a known-malicious dependency is a dependency danger: labelled,
+  // capped into Caution, never called Malicious. With own-code signals it counts in full.
+  const ownCodeClean = behaviourDeltas(input.behaviour).filter(evidenced).length === 0 && staticTally(input.staticFindings, input.checkFindings).total === 0 && !docsDelta(input);
+  const dependencyOnly = input.malicious.length > 0 && ownCodeClean;
+  const I = input.malicious.length > 0 && !dependencyOnly ? W_MALICIOUS_DEP : 0;
   const st = staticTally(input.staticFindings, input.checkFindings);
   const S = st.total;
   const dRaw = docsDelta(input);
@@ -531,7 +558,18 @@ export function computeScore(input: ScoreInput): ScoreResult {
   if (input.behaviour.canaryHits.length > 0 || input.behaviour.persistenceWrites.length > 0) {
     applyCap(CAP_CANARY_OR_PERSISTENCE, "cap_canary_or_persistence", `Credential exfiltration or persistence caps the score at ${CAP_CANARY_OR_PERSISTENCE}.`);
   }
-  if (input.malicious.length > 0) {
+  if (dependencyOnly) {
+    if (score > CAP_DEPENDENCY_ONLY) {
+      breakdown.push({
+        group: "intel",
+        code: "dependency_malicious_record",
+        points: CAP_DEPENDENCY_ONLY - score,
+        detail: `${dependencyLabel(input.malicious)} The repo's own code is clean, so the score is capped at ${CAP_DEPENDENCY_ONLY} (Caution).`,
+        evidence: input.malicious.map((m) => `${m.ecosystem} ${m.name}@${m.version}: ${m.ids.join(", ")}`),
+      });
+      score = CAP_DEPENDENCY_ONLY;
+    }
+  } else if (input.malicious.length > 0) {
     applyCap(CAP_MALICIOUS_DEP, "cap_malicious_dependency", `A known malicious dependency caps the score at ${CAP_MALICIOUS_DEP}.`);
   }
   // Running out of time is not a bad signal: a phase that timed out (and an entry
@@ -579,6 +617,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   }
 
   const unique = [...new Set(notVerified)];
+  const label = dependencyOnly ? dependencyLabel(input.malicious) : undefined;
   return {
     score,
     raw,
@@ -587,5 +626,6 @@ export function computeScore(input: ScoreInput): ScoreResult {
     groups: { behaviour: B, intel: I, static: S, docs: D, reputation: R },
     breakdown,
     notVerified: unique,
+    ...(label ? { label } : {}),
   };
 }

@@ -22,7 +22,7 @@ import { resolveMcpScanTarget, scanInputShape } from "./scan-target";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // Same ceiling as /api/scan: every scan runs the code in a fresh E2B sandbox in this request.
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 function siteOrigin(req: Request): string {
   return process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || new URL(req.url).origin;

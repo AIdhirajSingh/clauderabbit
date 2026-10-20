@@ -18,6 +18,8 @@ export type AnalysisTool = "semgrep" | "guarddog-npm" | "guarddog-pypi" | "yara"
 export interface AnalysisInput {
   runId: string;
   files: Map<string, Uint8Array>;
+  /** The whole repo was fetched into this VM by vmfetch.ts; nothing is uploaded. */
+  prefetched?: boolean;
   ecosystems: Array<"npm" | "python">;
   sandboxTimeoutMs: number;
   commandTimeoutMs: number;
@@ -74,7 +76,8 @@ export async function runAnalysisOn(vm: BootedSandbox, input: AnalysisInput, hoo
   return runOnBooted(vm, async (s) => {
     const toolTimeoutS = Math.max(4, Math.floor(input.commandTimeoutMs / 1000) - 2);
     await Promise.all([
-      s.writeFile("/root/in/src.tgz", packFiles(input.files)),
+      // A VM-fetched repo is already at /root/in/src.tgz (whole repo, vmfetch.ts).
+      ...(input.prefetched ? [] : [s.writeFile("/root/in/src.tgz", packFiles(input.files))]),
       s.writeFile("/root/in/analyze.json", JSON.stringify({ ecosystems: input.ecosystems, tool_timeout_s: toolTimeoutS })),
     ]);
     const run = await s.run(`bash ${ANALYZE_SCRIPT}`, { timeoutMs: input.commandTimeoutMs });

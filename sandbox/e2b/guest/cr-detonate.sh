@@ -37,7 +37,9 @@ UV_BIN=/opt/cr/tools/bin
 FAKETIME_LIB=/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1
 TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,connect,sendto,sendmsg,sendmmsg,chmod,fchmodat,chdir,clone,clone3,fork,vfork
 MAX_LOG=262144
-GO_WAIT_S=60
+# A GitHub repo is fetched, fence-proven and mapped inside this VM before the go
+# file (lib/engine/sandbox/vmfetch.ts); a large repo needs most of this window.
+GO_WAIT_S=150
 
 log() { printf 'cr: %s\n' "$*"; }
 now_ms() { date +%s%3N; }
@@ -252,8 +254,8 @@ if [ "$MODE" = "npm-package" ]; then
   INSTALL_CMD="npm install --prefer-offline --no-audit --no-fund /work/pkg.tgz"
 else
   install -d -o "$CR_USER" -g "$CR_USER" /work/src
-  if ! timeout 6 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then
-    check extract_complete false "repo extraction did not finish inside 6 s"
+  if ! timeout 90 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then
+    check extract_complete false "repo extraction did not finish inside 90 s"
   fi
   WORKDIR=/work/src
   if [ -f /work/src/package.json ]; then

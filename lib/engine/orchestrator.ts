@@ -33,7 +33,8 @@ import { fetchNpmTarball, npmCommitKey, resolveNpm, type NpmResolution } from ".
 import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
 import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
-import { SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
+import { REGISTRY_ALLOW_OUT, SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
+import { fetchRepoInVm, mapRepoInVm, proveFenceInVm, repackForAnalysis, type VmMapStats } from "./sandbox/vmfetch";
 import { SCORE_RULES, computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
 import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
 import { runHeuristics, type HeuristicResult } from "./static/heuristics";
@@ -193,6 +194,116 @@ interface Fetched {
   bytes: Uint8Array;
   archive: ParsedArchive;
   commitSha: string;
+  /** Set when the whole repo was fetched and mapped inside the VMs (vmfetch.ts). */
+  vm?: { graph: ReachGraph; heur: HeuristicResult; stats: VmMapStats };
+}
+
+/**
+ * Who a known-malicious dependency reaches: its lockfile flags (dev, optional, os),
+ * the `os` its own npm manifest declares, and whether this run's install pulled it in.
+ */
+async function scopeMalicious(
+  mal: MaliciousDependency[],
+  files: Map<string, Uint8Array>,
+  installed: DependencyRef[],
+  fetchFn: (url: string, init?: RequestInit) => Promise<Response>,
+): Promise<MaliciousDependency[]> {
+  if (mal.length === 0) return mal;
+  const flags = new Map<string, { dev: boolean; optional: boolean; os: string[] }>();
+  const lockText = new TextDecoder().decode(files.get("package-lock.json") ?? files.get("npm-shrinkwrap.json") ?? new Uint8Array());
+  try {
+    const lock = JSON.parse(lockText || "{}") as { packages?: Record<string, Record<string, unknown>>; dependencies?: Record<string, Record<string, unknown>> };
+    for (const [key, v] of Object.entries(lock.packages ?? {})) {
+      const idx = key.lastIndexOf("node_modules/");
+      if (idx === -1 || typeof v.version !== "string") continue;
+      const name = typeof v.name === "string" ? v.name : key.slice(idx + "node_modules/".length);
+      flags.set(`${name}@${v.version}`, { dev: v.dev === true, optional: v.optional === true, os: Array.isArray(v.os) ? v.os.filter((x): x is string => typeof x === "string") : [] });
+    }
+    const walk = (deps: Record<string, Record<string, unknown>> | undefined) => {
+      for (const [name, v] of Object.entries(deps ?? {})) {
+        if (typeof v?.version === "string") flags.set(`${name}@${v.version}`, { dev: v.dev === true, optional: v.optional === true, os: [] });
+        walk(v?.dependencies as Record<string, Record<string, unknown>> | undefined);
+      }
+    };
+    walk(lock.dependencies);
+  } catch {
+    // No or unreadable lockfile: flags stay unknown (false), never guessed.
+  }
+  const inst = new Set(installed.map((d) => `${d.name}@${d.version}`));
+  return Promise.all(
+    mal.map(async (m) => {
+      const f = flags.get(`${m.name}@${m.version}`);
+      let os = f?.os ?? [];
+      if (os.length === 0 && m.ecosystem === "npm" && /^(@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/.test(m.name)) {
+        try {
+          const res = await fetchFn(`https://registry.npmjs.org/${m.name}/${encodeURIComponent(m.version)}`, { signal: AbortSignal.timeout(3_000) });
+          if (res.ok) {
+            const j = (await res.json()) as { os?: unknown };
+            if (Array.isArray(j.os)) os = j.os.filter((x): x is string => typeof x === "string" && !x.startsWith("!"));
+          }
+        } catch {
+          // Unknown platform stays unstated.
+        }
+      }
+      return { ...m, scope: { installed: inst.has(`${m.name}@${m.version}`), dev: f?.dev ?? false, optional: f?.optional ?? false, os } };
+    }),
+  );
+}
+
+/** The reach graph the VM built over the whole repo, rebuilt from its JSON. */
+function graphFromVm(g: VmGraphJson): ReachGraph {
+  return {
+    install: new Set(g.install),
+    import: new Set(g.import),
+    entries: g.entries,
+    inlineInstallCommands: g.inlineInstallCommands,
+    unbounded: g.unbounded,
+    unboundedFrom: g.unboundedFrom,
+    ecosystems: g.ecosystems,
+    classify: (path: string) => (g.classes[path] === 1 ? "install" : g.classes[path] === 2 ? "import" : "unreachable"),
+  };
+}
+
+interface VmGraphJson {
+  install: string[];
+  import: string[];
+  entries: ReachGraph["entries"];
+  inlineInstallCommands: ReachGraph["inlineInstallCommands"];
+  unbounded: boolean;
+  unboundedFrom: string[];
+  ecosystems: ReachGraph["ecosystems"];
+  classes: Record<string, 1 | 2>;
+}
+
+/** The slice the models read is bounded; every scored fact comes from the whole repo in the VM. */
+const VM_VIEW_LIMITS = { maxCompressedBytes: 64 * 1024 * 1024, maxExpandedBytes: 64 * 1024 * 1024, maxFiles: 50_000, maxPackumentBytes: 0, stripFirstComponent: true };
+async function vmFetchAndMap(
+  r: Resolved,
+  dvm: DetonationVm,
+  avm: BootedSandbox,
+  emitStage: (n: StageName, s: "start" | "done", d?: string) => void,
+  check: (name: string, ok: boolean, detail: string) => void,
+): Promise<Fetched> {
+  const gh = r.github!;
+  const [ds, as] = await Promise.all([dvm.vm.session(), avm.session()]);
+  emitStage("fetch", "start");
+  const [d, a] = await Promise.all([
+    fetchRepoInVm(ds, gh, REGISTRY_ALLOW_OUT, "/root/in/target.tgz", 60_000),
+    fetchRepoInVm(as, gh, [], "/root/in/full.tgz", 60_000),
+  ]);
+  emitStage("fetch", "done", `${d.bytes} bytes fetched inside both VMs from codeload.github.com in ${d.ms} / ${a.ms} ms; commit id verified; egress restored`);
+  emitStage("verify", "start");
+  const fence = await proveFenceInVm(ds);
+  check("fence_after_fetch", fence.ok, fence.detail);
+  if (!fence.ok) throw new EngineError("internal", "the containment check failed after the repo fetch, so no repo code ran");
+  const [{ view, stats, graph, heur }] = await Promise.all([mapRepoInVm(ds, "/root/in/target.tgz", 60_000), repackForAnalysis(as, "/root/in/full.tgz", 60_000)]);
+  const archive = await parseTarball(view, VM_VIEW_LIMITS);
+  emitStage(
+    "verify",
+    "done",
+    `whole repo mapped in the VM: ${stats.files} files (${stats.bytes} bytes), ${stats.reach.install} install / ${stats.reach.import} import reachable, ${stats.heuristic_findings} heuristic findings; models read ${archive.files.size} files (${stats.view_bytes} bytes)`,
+  );
+  return { bytes: new Uint8Array(0), archive, commitSha: gh.sha, vm: { graph: graphFromVm(graph as VmGraphJson), heur: heur as HeuristicResult, stats } };
 }
 
 async function fetchAndVerify(req: ScanRequest, r: Resolved, deps: EngineDeps, signal: AbortSignal, emitStage: (n: StageName, s: "start" | "done", d?: string) => void): Promise<Fetched> {
@@ -381,7 +492,14 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const [budgetR] = await Promise.allSettled([budgetP]);
   const underBudget = budgetR.status === "fulfilled" && budgetR.value === true;
   if (underBudget) bootVms();
-  const fetchP: Promise<Fetched> | null = fetched ? null : fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
+  // A GitHub repo of any size is fetched and mapped inside the VMs when the provider
+  // can switch egress (E2B); otherwise (test providers) the function fetches it.
+  const vmCapable = resolved.kind === "github" && detVm !== null && anaVm !== null && deps.sandbox.canSetEgress === true;
+  const fetchP: Promise<Fetched> | null = fetched
+    ? null
+    : vmCapable
+      ? vmFetchAndMap(resolved, detVm!, anaVm!, emitStage, check)
+      : fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
   fetchP?.catch(() => undefined);
   let claim;
   try {
@@ -422,8 +540,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   if (archive.truncated) check("archive_truncated", false, `archive cut at the ${archive.truncatedReason} cap`);
 
   emitStage("reach", "start");
-  const graph = buildReachGraph(archive.files);
-  const heur: HeuristicResult = runHeuristics(archive.files);
+  const graph = fetched!.vm ? fetched!.vm.graph : buildReachGraph(archive.files);
+  const heur: HeuristicResult = fetched!.vm ? fetched!.vm.heur : runHeuristics(archive.files);
   emitStage("reach", "done", `${graph.install.size} install, ${graph.import.size} import${graph.unbounded ? ", unbounded" : ""}`);
 
   const meter = new CostMeter({ jevModel: deps.jev.modelId, lunaModel: deps.luna.modelId, fx: cfg.fx });
@@ -436,7 +554,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     try {
       const r = await runAnalysisOn(
         anaVm!,
-        { runId, files: archive.files, ecosystems: graph.ecosystems.length > 0 ? graph.ecosystems : ["npm"], sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, commandTimeoutMs: cfg.deadlines.analysisMs },
+        { runId, files: archive.files, prefetched: Boolean(fetched!.vm), ecosystems: graph.ecosystems.length > 0 ? graph.ecosystems : ["npm"], sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, commandTimeoutMs: cfg.deadlines.analysisMs },
         { onLine: (tool, stream, text) => bus.transcript(tool, stream, text) },
       );
       for (const e of r.errors.slice(0, 10)) check("scanner_error", false, e);
@@ -532,6 +650,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         mode: resolved.kind === "npm" ? "npm-package" : "repo",
         packageName: resolved.kind === "npm" ? resolved.npm!.name : null,
         tarball: bytes,
+        prefetched: Boolean(fetched!.vm),
         canaries,
         installTimeoutMs: cfg.deadlines.installMs,
         entryTimeoutMs: cfg.deadlines.entryMs,
@@ -592,6 +711,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       check("osv_installed_tree", false, errMessage(err));
     }
   }
+
+  malicious = await scopeMalicious(malicious, archive.files, installed, (u, i) => deps.fetch(u, i));
 
   // ---- score ---------------------------------------------------------------------------------------
   emitStage("score", "start");
@@ -685,7 +806,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     verdict: result.verdict,
     band: result.band,
     summary: written.summary,
-    headline: written.headline,
+    // A dependency danger with clean own code says so plainly, whatever the writer wrote.
+    headline: result.label ? `${result.verdict}: ${result.label}` : written.headline,
+    ...(result.label ? { label: result.label } : {}),
     evidence,
     breakdown: result.breakdown,
     not_verified: result.notVerified,

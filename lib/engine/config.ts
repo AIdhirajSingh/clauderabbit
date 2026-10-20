@@ -92,7 +92,7 @@ export const DEFAULT_LIMITS: EngineLimits = {
  * counters 0.5 s, capture reordering 6 s, trace cuts 1 s, packing 4 s. Each step
  * carries its own `timeout` in the harness.
  */
-export const HARNESS_OVERHEAD_MS = 50_000;
+export const HARNESS_OVERHEAD_MS = 134_000; // extraction now up to 90 s for a whole large repo
 /** Budget for the salvage pack after an overrun (lib/engine/sandbox/detonate.ts SALVAGE_MS). */
 export const SALVAGE_BUDGET_MS = 8_000;
 
@@ -111,11 +111,11 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
   checkMs: 12_000,
   installMs: 20_000,
   entryMs: 4_000,
-  detonateTotalMs: 75_000,
+  detonateTotalMs: 200_000,
   writerMs: 10_000,
   persistMs: 3_000,
-  scanMs: 115_000,
-  sandboxTimeoutMs: 100_000,
+  scanMs: 280_000,
+  sandboxTimeoutMs: 220_000,
 };
 
 /**

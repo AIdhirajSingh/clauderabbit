@@ -54,6 +54,7 @@ class LazyLuna implements ModelAdapter {
 
 class LazySandbox implements SandboxProvider {
   readonly template: string;
+  readonly canSetEgress = true;
   readonly #get: () => Promise<SandboxProvider>;
   constructor(config: EngineConfig) {
     this.template = config.e2bTemplate;

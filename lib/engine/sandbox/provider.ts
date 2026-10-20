@@ -40,6 +40,12 @@ export interface SandboxSession {
   run(cmd: string, opts: RunOptions): Promise<CommandResult>;
   /** Read a file as root. */
   readFile(path: string): Promise<Uint8Array>;
+  /**
+   * Replace the VM's outer egress allow list (deny everything else). Used only to
+   * open codeload.github.com for the one root fetch of the repo tarball and to
+   * restore the list before any repo code runs (lib/engine/sandbox/vmfetch.ts).
+   */
+  setEgress?(allowOut: readonly string[]): Promise<void>;
   /** Destroy the VM. Idempotent. */
   kill(): Promise<void>;
 }
@@ -47,6 +53,8 @@ export interface SandboxSession {
 export interface SandboxProvider {
   /** Template identity recorded on the report (e.g. the E2B template name). */
   readonly template: string;
+  /** True when sessions implement setEgress (E2B): GitHub repos are then fetched inside the VMs. */
+  readonly canSetEgress?: boolean;
   create(opts: SandboxCreateOptions): Promise<SandboxSession>;
 }
 
