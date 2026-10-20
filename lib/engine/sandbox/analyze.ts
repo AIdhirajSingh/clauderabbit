@@ -73,21 +73,36 @@ export async function runAnalysis(provider: SandboxProvider, input: AnalysisInpu
 
 /** Run the scanners on a booted analysis VM; the VM is released (killed) in `finally`. */
 export async function runAnalysisOn(vm: BootedSandbox, input: AnalysisInput, hooks: Pick<AnalysisHooks, "onLine"> = {}): Promise<AnalysisResult> {
-  return runOnBooted(vm, async (s) => {
+  return runOnBooted(vm, (s) => analyzeOnSession(s, input, hooks));
+}
+
+/**
+ * The scanners on an open session, without killing it. In the one-VM scan
+ * (vmfetch.ts) they run in the detonation VM before any repo code, on the tree
+ * already extracted at `srcDir`, writing to `outDir`.
+ */
+export async function analyzeOnSession(
+  s: SandboxSession,
+  input: Pick<AnalysisInput, "ecosystems" | "commandTimeoutMs"> & Partial<Pick<AnalysisInput, "files" | "prefetched">> & { srcDir?: string; outDir?: string },
+  hooks: Pick<AnalysisHooks, "onLine"> = {},
+): Promise<AnalysisResult> {
+  {
+    const out = input.outDir ?? "/root/out";
     const toolTimeoutS = Math.max(4, Math.floor(input.commandTimeoutMs / 1000) - 2);
     await Promise.all([
-      // A VM-fetched repo is already at /root/in/src.tgz (whole repo, vmfetch.ts).
-      ...(input.prefetched ? [] : [s.writeFile("/root/in/src.tgz", packFiles(input.files))]),
+      // A VM-fetched repo is already in the VM (whole repo, vmfetch.ts).
+      ...(input.prefetched || input.srcDir || !input.files ? [] : [s.writeFile("/root/in/src.tgz", packFiles(input.files))]),
       s.writeFile("/root/in/analyze.json", JSON.stringify({ ecosystems: input.ecosystems, tool_timeout_s: toolTimeoutS })),
     ]);
-    const run = await s.run(`bash ${ANALYZE_SCRIPT}`, { timeoutMs: input.commandTimeoutMs });
+    const env = `${input.outDir ? `CR_ANALYZE_OUT='${input.outDir}' ` : ""}${input.srcDir ? `CR_ANALYZE_SRC='${input.srcDir}' ` : ""}`;
+    const run = await s.run(`${env}bash ${ANALYZE_SCRIPT}`, { timeoutMs: input.commandTimeoutMs });
     const errors: string[] = [];
     if (run.exitCode !== 0) errors.push(`cr-analyze.sh exited ${run.exitCode}: ${run.stderr.slice(-400)}`);
     // Every output file in one parallel round of reads (each read is a round trip to the VM).
     const wanted = expectedTools(input.ecosystems);
     const [statusText, outputs] = await Promise.all([
-      readText(s, "/root/out/status.json"),
-      Promise.all(wanted.map((tool) => Promise.all([readText(s, `/root/out/${tool}.json`), readText(s, `/root/out/${tool}.err`)]))),
+      readText(s, `${out}/status.json`),
+      Promise.all(wanted.map((tool) => Promise.all([readText(s, `${out}/${tool}.json`), readText(s, `${out}/${tool}.err`)]))),
     ]);
     let status: Record<string, { exit?: number; ms?: number }> = {};
     if (statusText) {
@@ -126,5 +141,5 @@ export async function runAnalysisOn(vm: BootedSandbox, input: AnalysisInput, hoo
       tools[tool] = { exit, ms, parsed };
     }
     return { findings, errors, complete, tools, sandboxId: s.id };
-  });
+  }
 }

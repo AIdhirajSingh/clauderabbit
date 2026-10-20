@@ -45,8 +45,10 @@ export const BASE = 85;
  * dependency danger and lands in the Caution band, never Malicious.
  * 5: reports from rules 4 runs carried the post-fetch containment check's own
  * test datagram as a fence drop (-25); those runs score again.
+ * 6: under an unbounded graph only files an installer or entry point in the VM can
+ * execute are reachable (lib/engine/reach/graph.ts runnable()).
  */
-export const SCORE_RULES = 5;
+export const SCORE_RULES = 6;
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;

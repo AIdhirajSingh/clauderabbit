@@ -49,6 +49,10 @@ const PY_ROOTS = ["", "src"];
 /** Root manifests the package manager itself processes during install. */
 const INSTALL_MANIFESTS = new Set(["package.json", "setup.py", "setup.cfg", "pyproject.toml", "binding.gyp"]);
 
+/** Files an installer or entry point in the scan VM can execute. */
+const RUNNABLE_RE = /\.(?:[cm]?[jt]s|[jt]sx|json|node|sh|bash|py|pyw|pth)$/i;
+const NATIVE_SRC_RE = /\.(?:c|cc|cpp|cxx|h|hh|hpp|gyp|gypi)$/i;
+
 const UNREACHABLE_DIR_RE =
   /(^|\/)(tests?|__tests__|specs?|docs?|examples?|benchmarks?|fixtures?|\.github|terraform|k8s)\//i;
 
@@ -465,6 +469,17 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
   if (noManifest) unboundedFrom.add("(no root manifest)");
   const unbounded = unboundedFrom.size > 0;
   const unboundedInstall = hookUnbounded || [...unboundedFrom].some((f) => install.has(f));
+  // In the unbounded case a file counts only if an installer or entry point in the VM can
+  // run it: JS/TS, shell, Python, a shebang script, a native addon, or C/C++ that node-gyp
+  // builds (binding.gyp). Swift, Rust, Kotlin, Go and the like have no toolchain there.
+  const gyp = has("binding.gyp");
+  const runnable = (path: string): boolean => {
+    if (RUNNABLE_RE.test(path)) return true;
+    if (gyp && NATIVE_SRC_RE.test(path)) return true;
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    if (!base.includes(".")) return (text(path) ?? "").startsWith("#!");
+    return false;
+  };
 
   return {
     install,
@@ -478,8 +493,8 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
       if (install.has(path) || INSTALL_MANIFESTS.has(path)) return "install";
       if (importSet.has(path)) return "import";
       // An install hook that runs files we cannot name: every file but documentation can run at install.
-      if (hookUnbounded && files.has(path) && !isDocPath(path)) return "install";
-      if (unbounded && files.has(path) && !isUnreachablePath(path)) return unboundedInstall ? "install" : "import";
+      if (hookUnbounded && files.has(path) && !isDocPath(path) && runnable(path)) return "install";
+      if (unbounded && files.has(path) && !isUnreachablePath(path) && runnable(path)) return unboundedInstall ? "install" : "import";
       return "unreachable";
     },
   };

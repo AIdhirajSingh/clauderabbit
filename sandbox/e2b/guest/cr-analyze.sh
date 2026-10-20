@@ -13,18 +13,25 @@
 set -euo pipefail
 
 IN=/root/in
-OUT=/root/out
-SRC=/work/src
+# In the detonation VM (one VM per scan) the scanners run before any repo code, on
+# the tree vmfetch.ts already extracted (CR_ANALYZE_SRC), writing to their own
+# directory (CR_ANALYZE_OUT) so the harness's /root/out and /work stay untouched.
+OUT=${CR_ANALYZE_OUT:-/root/out}
+SRC=${CR_ANALYZE_SRC:-/work/src}
 TOOLS=/opt/cr/tools/bin
 export PATH="$TOOLS:/opt/cr/venv/bin:/usr/local/bin:/usr/bin:/bin"
 export SEMGREP_SEND_METRICS=off
 export SEMGREP_ENABLE_VERSION_CHECK=0
 
-rm -rf "$OUT" "$SRC"
-mkdir -p "$OUT" "$SRC"
+rm -rf "$OUT"
+mkdir -p "$OUT"
 chmod 0700 "$OUT"
 
-tar --no-same-owner --no-same-permissions --no-overwrite-dir -xzf "$IN/src.tgz" -C "$SRC"
+if [ -z "${CR_ANALYZE_SRC:-}" ]; then
+  rm -rf "$SRC"
+  mkdir -p "$SRC"
+  tar --no-same-owner --no-same-permissions --no-overwrite-dir -xzf "$IN/src.tgz" -C "$SRC"
+fi
 # The repack holds regular files only; refuse anything else defensively.
 find "$SRC" ! -type f ! -type d -delete
 
@@ -49,7 +56,7 @@ run_tool() {
 
 : >"$OUT/status.jsonl"
 run_tool semgrep "$OUT/semgrep.json" semgrep scan --config /opt/cr/rules/semgrep --json --metrics=off \
-  --disable-version-check --no-git-ignore --timeout 8 --max-target-bytes 2000000 --jobs 1 "$SRC" &
+  --disable-version-check --no-git-ignore --timeout 8 --max-target-bytes 2000000 --jobs "$(nproc)" "$SRC" &
 if [ "$NPM" = "true" ]; then
   run_tool guarddog-npm "$OUT/guarddog-npm.json" guarddog npm scan "$SRC" --output-format=json &
 fi

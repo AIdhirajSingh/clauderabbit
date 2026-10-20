@@ -89,7 +89,7 @@ test("unknown npm package resolves to not_found before any run is recorded", asy
   assert.equal(store.runs.size, 0);
 });
 
-test("a run with incomplete coverage is stored but never served as the SHA cache hit", async () => {
+test("a run with incomplete coverage is cached and served with its coverage marked", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -111,8 +111,12 @@ test("a run with incomplete coverage is stored but never served as the SHA cache
     assert.ok(cov.failed.includes("osv"), cov.failed.join(","));
     const events: ScanEvent[] = [];
     const second = await runScan(req, d, { onEvent: (e) => events.push(e) });
-    assert.equal(second.kind, "fresh", "the degraded run is not the cache entry; the next request scans again");
-    assert.ok(events.some((e) => e.type === "stage" && e.data.name === "cache" && /incomplete coverage/.test(e.data.detail ?? "")));
+    assert.equal(second.kind, "cached", "the run is cached; its coverage says what did not run");
+    if (second.kind !== "cached") return;
+    const cov2 = (second.report.forensics as { coverage: { complete: boolean; failed: string[] } }).coverage;
+    assert.equal(cov2.complete, false);
+    assert.ok(cov2.failed.includes("osv"));
+    assert.ok(second.report.not_verified.some((l) => /OSV/.test(l)), "the gap is stated in words too");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

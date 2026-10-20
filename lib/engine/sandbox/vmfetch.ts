@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { EngineError } from "../types";
 import type { SandboxSession } from "./provider";
+import { analyzeOnSession, type AnalysisResult } from "./analyze";
 
 export const CODELOAD_HOST = "codeload.github.com";
 const NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -103,25 +104,50 @@ function toolSource(rel: string): string {
   return readFileSync(join(process.cwd(), rel), "utf8");
 }
 
-/** Upload the map tool, map the whole extracted repo, and return the view tarball, graph, heuristics and stats. */
-export async function mapRepoInVm(s: SandboxSession, tarball: string, timeoutMs: number): Promise<{ view: Uint8Array; stats: VmMapStats; graph: unknown; heur: unknown }> {
-  await Promise.all([
+/**
+ * One extraction of the whole repo, then the map (reach graph + heuristics) and the
+ * static scanners at the same time on that tree, all before any repo code runs.
+ * Returns the view the models read, the graph, the heuristics, the scanner result.
+ */
+export async function mapAndScanInVm(
+  s: SandboxSession,
+  tarball: string,
+  timeoutMs: number,
+  scannerTimeoutMs: number,
+  onLine?: (tool: "semgrep" | "guarddog" | "yara", stream: "stdout" | "stderr", text: string) => void,
+): Promise<{ view: Uint8Array; stats: VmMapStats; graph: unknown; heur: unknown; analysis: AnalysisResult; ms: { extract: number; map: number; scan: number } }> {
+  const t0 = Date.now();
+  const [, , , , ex] = await Promise.all([
     s.writeFile("/root/map-tool/vm-map.mjs", toolSource("lib/engine/sandbox/vm-map.mjs")),
     s.writeFile("/root/map-tool/graph.ts", toolSource("lib/engine/reach/graph.ts").replace('from "../archive"', 'from "./archive.ts"')),
     s.writeFile("/root/map-tool/heuristics.ts", toolSource("lib/engine/static/heuristics.ts").replace('from "../archive"', 'from "./archive.ts"')),
     s.writeFile("/root/map-tool/archive.ts", toolSource("lib/engine/archive.ts")),
+    s.run(
+      `set -euo pipefail; rm -rf /root/map /root/view.tgz /root/view.list; mkdir -p /root/map; ` +
+        `tar --no-same-owner --no-same-permissions --strip-components=1 -xzf '${tarball}' -C /root/map; ` +
+        `e=""; [ -f /root/map/package.json ] && e="npm"; { [ -f /root/map/pyproject.toml ] || [ -f /root/map/setup.py ] || [ -f /root/map/requirements.txt ]; } && e="$e python"; echo "$e"`,
+      { timeoutMs },
+    ),
   ]);
-  const r = await s.run(
-    `set -euo pipefail; rm -rf /root/map /root/view.tgz /root/view.list; mkdir -p /root/map; ` +
-      `tar --no-same-owner --no-same-permissions --strip-components=1 -xzf '${tarball}' -C /root/map; ` +
-      `cd /root/map-tool && /opt/cr/node/bin/node --max-old-space-size=1400 vm-map.mjs /root/map /root/view.list /root/map.json; ` +
-      `tar -C /root/map --null -T /root/view.list --transform 's,^,view/,' -czf /root/view.tgz; rm -rf /root/map`,
-    { timeoutMs },
-  );
+  if (ex.exitCode !== 0) throw new EngineError("internal", `extracting the repo in the VM failed: ${(ex.stderr || ex.stdout).trim().slice(0, 300)}`);
+  const ecosystems = ex.stdout.trim().split(/\s+/).filter((x): x is "npm" | "python" => x === "npm" || x === "python");
+  const tExtract = Date.now() - t0;
+  const tMap0 = Date.now();
+  const mapP = s
+    .run(
+      `set -euo pipefail; cd /root/map-tool && /opt/cr/node/bin/node --max-old-space-size=1400 vm-map.mjs /root/map /root/view.list /root/map.json; ` +
+        `tar -C /root/map --null -T /root/view.list --transform 's,^,view/,' -czf /root/view.tgz`,
+      { timeoutMs },
+    )
+    .then((r) => ({ r, ms: Date.now() - tMap0 }));
+  const tScan0 = Date.now();
+  const scanP = analyzeOnSession(s, { ecosystems: ecosystems.length > 0 ? ecosystems : ["npm"], commandTimeoutMs: scannerTimeoutMs, srcDir: "/root/map", outDir: "/root/aout" }, { onLine }).then((a) => ({ a, ms: Date.now() - tScan0 }));
+  const [{ r, ms: mapMs }, { a, ms: scanMs }] = await Promise.all([mapP, scanP]);
+  await s.run("rm -rf /root/map /root/aout", { timeoutMs: 30_000 });
   if (r.exitCode !== 0) throw new EngineError("internal", `mapping the repo in the VM failed: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
   const [view, json] = await Promise.all([s.readFile("/root/view.tgz"), s.readFile("/root/map.json")]);
   const out = JSON.parse(new TextDecoder().decode(json)) as { stats: VmMapStats; graph: unknown; heur: unknown };
-  return { view, stats: out.stats, graph: out.graph, heur: out.heur };
+  return { view, stats: out.stats, graph: out.graph, heur: out.heur, analysis: a, ms: { extract: tExtract, map: mapMs, scan: scanMs } };
 }
 
 /** The analysis VM's copy, repacked without the codeload top directory (cr-analyze.sh extracts src.tgz as is). */

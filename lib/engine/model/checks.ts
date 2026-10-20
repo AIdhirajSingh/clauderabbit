@@ -27,7 +27,10 @@ import type { DocsClaims } from "../score";
 import type { ModelUsage } from "./adapter";
 import { JEV_MAX_QUESTIONS, type JevAdapter, type JevAnswer, type JevQuestion, type JevTask } from "./jev";
 
-export const CHECK_SLICE_CHARS = 24_000;
+/** Install surface and flagged regions: what Jev reads, capped so a huge repo costs what a small one does. */
+export const CHECK_SLICE_CHARS = 12_000;
+/** The docs check reads the README and the capability lines only. */
+export const DOCS_SLICE_CHARS = 6_000;
 export const CHECK_FILE_CHARS = 6_000;
 /** Verdict questions per check; the boolean signals ride along in the same request. */
 export const CHECK_MAX_BLOCKS = 16;
@@ -171,13 +174,13 @@ export function buildDocsSlice(
   files: Map<string, Uint8Array>,
   graph: ReachGraph,
   capabilities: Array<{ file: string; capability: Capability }>,
-  budget = CHECK_SLICE_CHARS,
+  budget = DOCS_SLICE_CHARS,
 ): Slice {
   const b = new SliceBuilder(budget);
   const readme = [...files.keys()].find((p) => README_RE.test(p));
   if (readme) {
     const t = fileText(files, readme);
-    if (t !== null) b.add(readme, t.slice(0, 8000), readme);
+    if (t !== null) b.add(readme, t.slice(0, 4000), readme);
   }
   const pkg = fileText(files, "package.json");
   if (pkg !== null) {

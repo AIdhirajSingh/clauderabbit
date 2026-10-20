@@ -205,3 +205,23 @@ test("no root manifest after stripping: non-test files are reachable, never sile
   assert.equal(g.classify("lib/steal.js"), "import");
   assert.equal(g.classify("test/a.js"), "unreachable");
 });
+
+test("unbounded install hook: only files an installer or entry point in the VM can run are reachable", () => {
+  const enc = new TextEncoder();
+  // openclaw 104730b shape: a postinstall the graph cannot name, plus Swift, Rust and agent scripts.
+  const files = new Map<string, Uint8Array>([
+    ["package.json", enc.encode(JSON.stringify({ name: "x", scripts: { postinstall: "node $SCRIPT" } }))],
+    ["scripts/a.mjs", enc.encode("export {}\n")],
+    ["apps/macos/Sources/AppState+Preview.swift", enc.encode("let preview = true\n")],
+    ["apps/shared/src/tests.rs", enc.encode("fn main() {}\n")],
+    ["bin/run", enc.encode("#!/bin/sh\necho hi\n")],
+    ["assets/notes", enc.encode("plain text, no shebang\n")],
+  ]);
+  const g = buildReachGraph(files);
+  assert.equal(g.unbounded, true);
+  assert.equal(g.classify("scripts/a.mjs"), "install");
+  assert.equal(g.classify("bin/run"), "install", "a shebang script can run");
+  assert.equal(g.classify("apps/macos/Sources/AppState+Preview.swift"), "unreachable", "no Swift toolchain runs at install");
+  assert.equal(g.classify("apps/shared/src/tests.rs"), "unreachable", "no Rust toolchain runs at install");
+  assert.equal(g.classify("assets/notes"), "unreachable");
+});

@@ -39,7 +39,7 @@ TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,rena
 MAX_LOG=262144
 # A GitHub repo is fetched, fence-proven and mapped inside this VM before the go
 # file (lib/engine/sandbox/vmfetch.ts); a large repo needs most of this window.
-GO_WAIT_S=150
+GO_WAIT_S=100
 
 log() { printf 'cr: %s\n' "$*"; }
 now_ms() { date +%s%3N; }
@@ -230,6 +230,8 @@ BASE_ENV=(
   NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
   npm_config_fetch_timeout=3600000 npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
   npm_config_update_notifier=false npm_config_cache="$H/.npm" CI=true
+  npm_config_maxsockets=64 npm_config_network_concurrency=64 npm_config_dangerously_allow_all_builds=true
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack"
   UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy
   AWS_ACCESS_KEY_ID="${CANARY[AWS_ACCESS_KEY_ID]}" AWS_SECRET_ACCESS_KEY="${CANARY[AWS_SECRET_ACCESS_KEY]}"
   NPM_TOKEN="${CANARY[NPM_TOKEN]}" GITHUB_TOKEN="${CANARY[GITHUB_TOKEN]}" OPENAI_API_KEY="${CANARY[OPENAI_API_KEY]}"
@@ -251,7 +253,7 @@ if [ "$MODE" = "npm-package" ]; then
   printf '{"name":"cr-run-app","version":"1.0.0","private":true}\n' | runuser -u "$CR_USER" -- tee /work/app/package.json >/dev/null
   ECO=npm
   WORKDIR=/work/app
-  INSTALL_CMD="npm install --prefer-offline --no-audit --no-fund /work/pkg.tgz"
+  INSTALL_CMD="npm install --no-audit --no-fund /work/pkg.tgz"
 else
   install -d -o "$CR_USER" -g "$CR_USER" /work/src
   if ! timeout 90 runuser -u "$CR_USER" -- tar --no-same-permissions --no-same-owner --strip-components=1 -xzf /work/target.tgz -C /work/src; then
@@ -261,11 +263,17 @@ else
   if [ -f /work/src/package.json ]; then
     ECO=npm
     if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then
-      INSTALL_CMD="npm ci --prefer-offline --no-audit --no-fund"
+      INSTALL_CMD="npm ci --no-audit --no-fund"
     else
-      INSTALL_CMD="npm install --prefer-offline --no-audit --no-fund"
-      if [ -f /work/src/yarn.lock ] || [ -f /work/src/pnpm-lock.yaml ]; then
-        check lockfile_translated true "yarn or pnpm lockfile installed with npm install"
+      INSTALL_CMD="npm install --no-audit --no-fund"
+      if [ -f /work/src/pnpm-lock.yaml ]; then
+        # pnpm workspace: corepack fetches the pnpm the repo pins (packageManager, sha512
+        # checked) from the registry through the forge, fresh in this VM; every dependency
+        # build script is allowed so it runs exactly as on a developer machine.
+        INSTALL_CMD="pnpm install --prefer-frozen-lockfile"
+        check lockfile_native true "pnpm-lock.yaml installed with pnpm"
+      elif [ -f /work/src/yarn.lock ]; then
+        check lockfile_translated true "yarn lockfile installed with npm install"
       fi
     fi
   elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then

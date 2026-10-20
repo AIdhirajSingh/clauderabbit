@@ -45,18 +45,6 @@ export const APT_PACKAGES = [
   "xz-utils",
 ];
 
-/**
- * Widely used npm packages (runtime libraries and the common test, lint and build
- * tools) whose full dependency trees are pre-warmed into the repo user's npm cache.
- * A general popularity list, not tuned to any scan target.
- */
-export const NPM_WARM = [
-  "lodash", "chalk", "debug", "ms", "semver", "commander", "tslib", "react", "react-dom", "express", "axios", "uuid",
-  "yargs", "minimist", "dotenv", "ws", "glob", "typescript", "zod", "inherits", "safe-buffer", "body-parser",
-  "cookie-parser", "morgan", "cors", "ejs", "marked", "express-session", "jsonwebtoken", "bcryptjs", "moment",
-  "fs-extra", "rimraf", "mkdirp", "cross-env", "async", "bluebird", "underscore", "mocha", "chai", "sinon", "nyc",
-  "supertest", "jest", "eslint", "prettier", "ts-node", "nodemon", "@types/node", "vitest", "webpack", "esbuild",
-];
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -158,26 +146,12 @@ export function buildTemplate() {
           "'{apt:$apt[0], node:$node, npm:$npm, uv:$uv, mitmproxy:$mitm, semgrep:$semgrep, guarddog:$guarddog, yara_x:$yarax}' > /opt/cr/manifest.json",
         "rm -f /tmp/apt.json",
       ])
-      // Warm the mirror through the forge's own verification path.
-      .runCmd("/usr/bin/python3 /opt/cr/bin/cr-mirror-warm.py /opt/cr/mirror-seed.json")
+      // No shared package cache: the forge's mirror starts empty in every scan VM and
+      // every package comes from the registry, checked against its published digest.
+      // pnpm comes from corepack (bundled with Node 24) per scan, pinned by the repo.
+      .runCmd("PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/corepack enable --install-directory /opt/cr/node/bin pnpm && test -x /opt/cr/node/bin/pnpm")
       // Full smoke detonation; the template build fails unless every assertion holds.
       .runCmd("/opt/cr/bin/cr-smoke.sh")
-      // Pre-warm the repo user's npm cache with real registry bytes (after the smoke,
-      // which resets /home/cr). Scans run npm with --prefer-offline, so a package
-      // already here installs from cacache (sha512-addressed, checked by npm) with no
-      // registry round trip; anything else still goes through the forge's verified
-      // registry pass-through. --ignore-scripts: no package code runs at build time.
-      .runCmd([
-        "install -d -o cr -g cr -m 0700 /home/cr/.npm && rm -rf /tmp/cr-npm-warm && install -d -o cr -g cr /tmp/cr-npm-warm",
-        "cd /tmp/cr-npm-warm && runuser -u cr -- env -i HOME=/home/cr PATH=/opt/cr/node/bin:/usr/bin:/bin npm_config_cache=/home/cr/.npm " +
-          "npm_config_update_notifier=false /opt/cr/node/bin/npm init -y >/dev/null",
-        "cd /tmp/cr-npm-warm && runuser -u cr -- env -i HOME=/home/cr PATH=/opt/cr/node/bin:/usr/bin:/bin npm_config_cache=/home/cr/.npm " +
-          "npm_config_update_notifier=false /opt/cr/node/bin/npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund --prefer-online " +
-          NPM_WARM.join(" ") +
-          " >/tmp/cr-npm-warm.log 2>&1 || { tail -20 /tmp/cr-npm-warm.log; exit 1; }",
-        "echo \"cr-npm-warm: $(find /home/cr/.npm/_cacache/index-v5 -type f | wc -l) index entries, $(du -sm /home/cr/.npm | cut -f1) MB\"",
-        "rm -rf /tmp/cr-npm-warm /tmp/cr-npm-warm.log && chown -R cr:cr /home/cr/.npm",
-      ])
       // Start command: runs once before E2B snapshots the template, so every tool a
       // scan starts is already in the page cache of the snapshot (cold starts were
       // 1.5 s to 5.7 s per tool in a fresh VM). See guest/cr-warm.sh.

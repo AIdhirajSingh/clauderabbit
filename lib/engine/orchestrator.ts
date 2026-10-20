@@ -34,7 +34,7 @@ import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
 import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
 import { REGISTRY_ALLOW_OUT, SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
-import { fetchRepoInVm, mapRepoInVm, proveFenceInVm, repackForAnalysis, type VmMapStats } from "./sandbox/vmfetch";
+import { fetchRepoInVm, mapAndScanInVm, proveFenceInVm, type VmMapStats } from "./sandbox/vmfetch";
 import { SCORE_RULES, computeScore, deriveBehaviour, type DocsClaims, type ScoreResult } from "./score";
 import { depsFromArchive, queryOsv, type OsvResult } from "./static/osv";
 import { runHeuristics, type HeuristicResult } from "./static/heuristics";
@@ -108,10 +108,12 @@ export interface RunCoverage {
 export function cachedCoverageComplete(report: { forensics?: unknown; score_rules?: unknown } | null | undefined): boolean {
   // A report scored under older rules is stale: the next request scores it again.
   if (report?.score_rules !== SCORE_RULES) return false;
+  // Incomplete coverage is cached too: forensics.coverage.failed marks what did not run,
+  // and the report's not_verified lines say it in words.
   const f = report?.forensics;
   if (typeof f !== "object" || f === null) return false;
   const c = (f as { coverage?: unknown }).coverage;
-  return typeof c === "object" && c !== null && (c as { complete?: unknown }).complete === true;
+  return typeof c === "object" && c !== null && Array.isArray((c as { failed?: unknown }).failed);
 }
 
 /** libfaketime speed during install and entry (DESIGN.md section 3.3 step 8). */
@@ -195,7 +197,7 @@ interface Fetched {
   archive: ParsedArchive;
   commitSha: string;
   /** Set when the whole repo was fetched and mapped inside the VMs (vmfetch.ts). */
-  vm?: { graph: ReachGraph; heur: HeuristicResult; stats: VmMapStats };
+  vm?: { graph: ReachGraph; heur: HeuristicResult; stats: VmMapStats; analysis: AnalysisResult };
 }
 
 /**
@@ -275,35 +277,36 @@ interface VmGraphJson {
   classes: Record<string, 1 | 2>;
 }
 
+/** Scanner window in the one-VM path: sized to the measured whole-repo run on 4 vCPU. */
+const VM_SCANNER_MS = 45_000;
+
 /** The slice the models read is bounded; every scored fact comes from the whole repo in the VM. */
 const VM_VIEW_LIMITS = { maxCompressedBytes: 64 * 1024 * 1024, maxExpandedBytes: 64 * 1024 * 1024, maxFiles: 50_000, maxPackumentBytes: 0, stripFirstComponent: true };
 async function vmFetchAndMap(
   r: Resolved,
   dvm: DetonationVm,
-  avm: BootedSandbox,
   emitStage: (n: StageName, s: "start" | "done", d?: string) => void,
   check: (name: string, ok: boolean, detail: string) => void,
+  onLine: (tool: "semgrep" | "guarddog" | "yara", stream: "stdout" | "stderr", text: string) => void,
+  scannerTimeoutMs: number,
 ): Promise<Fetched> {
   const gh = r.github!;
-  const [ds, as] = await Promise.all([dvm.vm.session(), avm.session()]);
+  const ds = await dvm.vm.session();
   emitStage("fetch", "start");
-  const [d, a] = await Promise.all([
-    fetchRepoInVm(ds, gh, REGISTRY_ALLOW_OUT, "/root/in/target.tgz", 60_000),
-    fetchRepoInVm(as, gh, [], "/root/in/full.tgz", 60_000),
-  ]);
-  emitStage("fetch", "done", `${d.bytes} bytes fetched inside both VMs from codeload.github.com in ${d.ms} / ${a.ms} ms; commit id verified; egress restored`);
+  const d = await fetchRepoInVm(ds, gh, REGISTRY_ALLOW_OUT, "/root/in/target.tgz", 60_000);
+  emitStage("fetch", "done", `${d.bytes} bytes fetched inside the VM from codeload.github.com in ${d.ms} ms; commit id verified; egress restored`);
   emitStage("verify", "start");
   const fence = await proveFenceInVm(ds);
   check("fence_after_fetch", fence.ok, fence.detail);
   if (!fence.ok) throw new EngineError("internal", "the containment check failed after the repo fetch, so no repo code ran");
-  const [{ view, stats, graph, heur }] = await Promise.all([mapRepoInVm(ds, "/root/in/target.tgz", 60_000), repackForAnalysis(as, "/root/in/full.tgz", 60_000)]);
+  const { view, stats, graph, heur, analysis, ms } = await mapAndScanInVm(ds, "/root/in/target.tgz", 60_000, scannerTimeoutMs, onLine);
   const archive = await parseTarball(view, VM_VIEW_LIMITS);
   emitStage(
     "verify",
     "done",
-    `whole repo mapped in the VM: ${stats.files} files (${stats.bytes} bytes), ${stats.reach.install} install / ${stats.reach.import} import reachable, ${stats.heuristic_findings} heuristic findings; models read ${archive.files.size} files (${stats.view_bytes} bytes)`,
+    `whole repo mapped and scanned in the VM before any repo code (extract ${ms.extract} ms, map ${ms.map} ms, scanners ${ms.scan} ms): ${stats.files} files (${stats.bytes} bytes), ${stats.reach.install} install / ${stats.reach.import} import reachable, ${stats.heuristic_findings} heuristic findings; models read ${archive.files.size} files (${stats.view_bytes} bytes)`,
   );
-  return { bytes: new Uint8Array(0), archive, commitSha: gh.sha, vm: { graph: graphFromVm(graph as VmGraphJson), heur: heur as HeuristicResult, stats } };
+  return { bytes: new Uint8Array(0), archive, commitSha: gh.sha, vm: { graph: graphFromVm(graph as VmGraphJson), heur: heur as HeuristicResult, stats, analysis } };
 }
 
 async function fetchAndVerify(req: ScanRequest, r: Resolved, deps: EngineDeps, signal: AbortSignal, emitStage: (n: StageName, s: "start" | "done", d?: string) => void): Promise<Fetched> {
@@ -399,6 +402,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   let anaVm: BootedSandbox | null = null;
   const kills: Promise<void>[] = [];
   const sandboxMs: number[] = [];
+  // A GitHub repo on a provider that can switch egress (E2B) is fetched, mapped and
+  // scanned inside one VM (vmfetch.ts); other targets keep the two-VM path.
+  const oneVm = () => resolved.kind === "github" && deps.sandbox.canSetEgress === true;
   const bootVms = () => {
     const bootedAt = deps.now();
     // A VM's billed time runs from its boot to the end of its kill.
@@ -411,7 +417,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       { runId, totalTimeoutMs: cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs },
       { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
     );
-    anaVm = bootAnalysis(deps.sandbox, { runId, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs }, { onKilled, trackKill });
+    // One VM per GitHub scan on E2B: the scanners run in the detonation VM before any repo code.
+    if (!oneVm()) anaVm = bootAnalysis(deps.sandbox, { runId, sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs }, { onKilled, trackKill });
   };
   const releaseVms = async () => {
     const dv = detVm as DetonationVm | null;
@@ -494,11 +501,11 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   if (underBudget) bootVms();
   // A GitHub repo of any size is fetched and mapped inside the VMs when the provider
   // can switch egress (E2B); otherwise (test providers) the function fetches it.
-  const vmCapable = resolved.kind === "github" && detVm !== null && anaVm !== null && deps.sandbox.canSetEgress === true;
+  const vmCapable = oneVm() && detVm !== null;
   const fetchP: Promise<Fetched> | null = fetched
     ? null
     : vmCapable
-      ? vmFetchAndMap(resolved, detVm!, anaVm!, emitStage, check)
+      ? vmFetchAndMap(resolved, detVm!, emitStage, check, (tool, stream, text) => bus.transcript(tool, stream, text), VM_SCANNER_MS)
       : fetchAndVerify(req, resolved, deps, deadline(cfg.deadlines.fetchMs, outer), emitStage);
   fetchP?.catch(() => undefined);
   let claim;
@@ -552,7 +559,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   emitStage("static", "start");
   const analysisP: Promise<AnalysisResult | null> = (async () => {
     try {
-      const r = await runAnalysisOn(
+      const r = fetched!.vm ? fetched!.vm.analysis : await runAnalysisOn(
         anaVm!,
         { runId, files: archive.files, prefetched: Boolean(fetched!.vm), ecosystems: graph.ecosystems.length > 0 ? graph.ecosystems : ["npm"], sandboxTimeoutMs: cfg.deadlines.sandboxTimeoutMs, commandTimeoutMs: cfg.deadlines.analysisMs },
         { onLine: (tool, stream, text) => bus.transcript(tool, stream, text) },
