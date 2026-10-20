@@ -694,6 +694,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     if (det.forensics.coverage !== "complete") check("forensic_coverage", false, `${det.forensics.coverage}: ${det.forensics.gaps.join(" ").slice(0, 400)}`);
     for (const p of det.processes) bus.emit({ type: "process", data: p });
     if (det.stats.pthFiles.length > 0) check("pth_files_installed", true, det.stats.pthFiles.join(", ").slice(0, 400));
+    for (const u of det.unattributedDrops ?? []) {
+      check("fence_drop_unattributed", true, u);
+      failedStages.push(`The fence dropped datagrams that no traced process sent (${u}); they are not counted as repo behaviour.`);
+    }
     bus.transcript("install", "stdout", det.transcripts.install.stdout);
     bus.transcript("install", "stderr", det.transcripts.install.stderr);
     bus.transcript("entry", "stdout", det.transcripts.entry.stdout);

@@ -82,6 +82,8 @@ export interface DetonationResult {
   canaryInFiles: string[];
   /** Non-DNS UDP and ICMP egress attempts the fence dropped. */
   datagramEgress: string[];
+  /** UDP drops the fence counted that no traced process sent: stated, not attributed to the repo. */
+  unattributedDrops: string[];
   checks: CheckEventData[];
   installedDeps: DependencyRef[] | null;
   transcripts: { install: { stdout: string; stderr: string }; entry: { stdout: string; stderr: string } };
@@ -180,7 +182,11 @@ export async function parseForensicBundle(
     drops = {};
   }
   const count = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0);
-  if (count(drops.udp) > 0 && !datagramEgress.some((d) => d.startsWith("udp "))) datagramEgress.push(`udp: ${count(drops.udp)} packet(s) dropped by the fence`);
+  // A UDP drop counts as repo behaviour when the trace shows the repo process that sent
+  // it (it is then in datagramEgress with its destination). A counter rise that no traced
+  // process explains is stated as not verified instead of taking points off.
+  const unattributedDrops: string[] = [];
+  if (count(drops.udp) > 0 && !datagramEgress.some((d) => d.startsWith("udp "))) unattributedDrops.push(`udp: ${count(drops.udp)} packet(s) dropped by the fence`);
   if (count(drops.icmp) > 0) datagramEgress.push(`icmp: ${count(drops.icmp)} packet(s) dropped by the fence`);
   if (count(drops.other) > 0) datagramEgress.push(`non-tcp: ${count(drops.other)} packet(s) dropped by the fence`);
   const gaps: string[] = [];
@@ -216,6 +222,7 @@ export async function parseForensicBundle(
     processes: [...ti.processes, ...te.processes],
     canaryInFiles: lines(f("canary_files.txt")).slice(0, 100),
     datagramEgress,
+    unattributedDrops,
     checks,
     installedDeps,
     transcripts: {
@@ -368,6 +375,7 @@ export async function runDetonation(dvm: DetonationVm, input: DetonationInput): 
       processes: base?.processes ?? [],
       canaryInFiles: base?.canaryInFiles ?? [],
       datagramEgress: base?.datagramEgress ?? [],
+      unattributedDrops: base?.unattributedDrops ?? [],
       checks,
       installedDeps: base?.installedDeps ?? null,
       transcripts: base?.transcripts ?? { install: empty, entry: { stdout: "", stderr: "" } },
