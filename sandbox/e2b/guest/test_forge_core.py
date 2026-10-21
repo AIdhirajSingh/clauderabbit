@@ -172,19 +172,7 @@ class ForgeRegistryTests(unittest.TestCase):
         self.assertEqual((d.status, d.integrity, d.body), (200, "verified", WHEEL))
 
 
-class ForeignPlatformTests(unittest.TestCase):
-    def test_other_platform_binaries(self):
-        for name in ["@rollup/rollup-darwin-arm64", "@rollup/rollup-win32-x64-msvc", "@rollup/rollup-linux-s390x-gnu",
-                     "@rollup/rollup-linux-arm-musleabihf", "@rollup/rollup-linux-ppc64-musl", "@rollup/rollup-linux-x64-musl",
-                     "@esbuild/darwin-x64", "@esbuild/freebsd-arm64", "@esbuild/android-arm", "@img/sharp-linuxmusl-x64",
-                     "@next/swc-win32-ia32-msvc", "turbo-darwin-64", "lightningcss-darwin-arm64", "@biomejs/cli-win32-x64"]:
-            self.assertTrue(fc.foreign_platform_package(name), name)
-
-    def test_this_platform_and_plain_packages_pass(self):
-        for name in ["@rollup/rollup-linux-x64-gnu", "@esbuild/linux-x64", "@img/sharp-linux-x64", "turbo-linux-64",
-                     "darwin", "windows-release", "left-pad", "android-versions", "@types/node", "esbuild", "rollup", None]:
-            self.assertFalse(fc.foreign_platform_package(name), name)
-
+class NpmNameTests(unittest.TestCase):
     def test_name_from_version_path(self):
         self.assertEqual(fc.npm_name_from_path("/@rollup%2frollup-darwin-x64/4.0.0"), "@rollup/rollup-darwin-x64")
         self.assertEqual(fc.npm_name_from_path("/@rollup%2Frollup-darwin-x64"), "@rollup/rollup-darwin-x64")

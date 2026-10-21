@@ -16,8 +16,8 @@ registry and streams the response to the client as it arrives, with no fetch in
 a worker thread, no whole-body buffer and no forge-side hashing. The package
 manager checks every tarball against its lockfile or packument integrity itself.
 Each such request is still logged as registry traffic, with its time to response
-headers. Metadata for prebuilt binaries of another platform is answered 404
-without any upstream fetch (forge_core.foreign_platform_package).
+headers. Metadata for prebuilt binaries of other platforms is not answered 404:
+pnpm 12 fails the whole install on a 404 for optional metadata.
 """
 
 from __future__ import annotations
@@ -90,10 +90,6 @@ class CrForge:
             scheme=r.scheme,
         )
         kind = forge_core.registry_kind(self.policy, host, r.method, r.path)
-        if kind in ("npm-packument", "npm-version") and forge_core.foreign_platform_package(forge_core.npm_name_from_path(req.bare_path)):
-            flow.response = http.Response.make(404, b'{"error":"not found"}', {"Content-Type": "application/json", "Connection": "keep-alive"})
-            self._registry_record(flow, host, sni, req, 404, 0.0, note="other platform", passed=False)
-            return
         if kind is not None and r.scheme == "https" and int(r.port) == 443:
             # Pass through: connect to the registry by name and stream the reply.
             r.host = host
@@ -118,7 +114,7 @@ class CrForge:
             integrity=decision.integrity,
         )
 
-    def _registry_record(self, flow, host, sni, req, status, ms, note=None, passed=True) -> None:
+    def _registry_record(self, flow, host, sni, req, status, ms, note=None) -> None:
         rec = forge_core.capture_record(
             self.policy,
             t=time.time(),
@@ -136,7 +132,7 @@ class CrForge:
             status=status,
         )
         rec["ms"] = round(ms, 1)
-        rec["pass"] = passed
+        rec["pass"] = True
         if note:
             rec["note"] = note
         forge_core.append_capture(self.capture_path, rec)
