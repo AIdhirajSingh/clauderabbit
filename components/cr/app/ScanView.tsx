@@ -248,11 +248,12 @@ export function ScanView({ runId }: { runId: string }) {
   // arrived (minus that event's t_ms), so a fresh scan shows events as they come
   // and a scan whose events arrive at once plays at the recorded pace. A replay
   // starts when the stored events are loaded. The result opens after the last event.
+  // Ticked by a 100 ms interval, not requestAnimationFrame: a frame requested while
+  // the tab is in the background can be dropped, which froze the replay at its first
+  // frame; an interval always fires (throttled in the background, never lost).
   useEffect(() => {
     if (!paced || playDone) return;
-    let raf = 0;
-    let lastPaint = 0;
-    const step = () => {
+    const tick = (): boolean => {
       const t = performance.now();
       if (baseRef.current === null) {
         if (replay) {
@@ -263,22 +264,21 @@ export function ScanView({ runId }: { runId: string }) {
         }
         if (baseRef.current !== null) setPlayBase(baseRef.current);
       }
-      if (t - lastPaint > 100) {
-        lastPaint = t;
-        setPlayNow(t);
-      }
+      setPlayNow(t);
       const base = baseRef.current;
       const evs = eventsRef.current;
       const last = evs[evs.length - 1]?.t_ms ?? 0;
       const r = runRef.current;
       if (base !== null && r?.report && r.status === "done" && (t - base) * speed >= last + 800) {
         setPlayDone(true);
-        return;
+        return true;
       }
-      raf = requestAnimationFrame(step);
+      return false;
     };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    const id = setInterval(() => {
+      if (tick()) clearInterval(id);
+    }, 100);
+    return () => clearInterval(id);
   }, [paced, playDone, replay, runId, speed]);
 
   const playMs = paced && playBase !== null ? Math.max(0, (playNow - playBase) * speed) : null;
@@ -316,7 +316,7 @@ export function ScanView({ runId }: { runId: string }) {
 
   const log = useMemo(() => visible.map(eventLine).filter((l): l is LogLine => l !== null).slice(-14), [visible]);
   const lastT = visible[visible.length - 1]?.t_ms ?? 0;
-  const liveMs = playMs !== null ? playMs : run && running ? Math.max(lastT, clockNow - Date.parse(run.started_at)) : lastT;
+  const liveMs = playMs !== null ? playMs : paced ? 0 : run && running ? Math.max(lastT, clockNow - Date.parse(run.started_at)) : lastT;
   const report = run?.report ?? null;
   const totalMs = report ? (report.timings?.total_ms ?? report.timings?.total ?? (run?.finished_at && run.started_at ? Date.parse(run.finished_at) - Date.parse(run.started_at) : lastT)) : lastT;
 
