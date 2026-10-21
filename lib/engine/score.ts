@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 21; // 21: package-manager timeouts on the real clock; a failed root script is not a cut install; the install trace folds package-manager file lines
+export const SCORE_RULES = 22; // 22: a skipped or failed entry is not a partial scan; retry waits not scaled
+// 21: package-manager timeouts on the real clock; a failed root script is not a cut install; the install trace folds package-manager file lines
 // 20: no 404 for other-platform metadata (pnpm 12 fails the install on it)
 // 19: registry traffic streams through the forge, so installs that timed out now complete
 // 18: workspaces install only what runs; reach follows the install plan
@@ -681,10 +682,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
     breakdown.push({ group: "cap", code: "no_behaviour_floor", points: STATIC_ONLY_FLOOR - score, detail: `Nothing bad was observed when the code ran: without sandbox behaviour the score stays in Caution (at least ${STATIC_ONLY_FLOOR}).` });
     score = STATIC_ONLY_FLOOR;
   }
-  // A partial scan (install did not finish or the entry point did not run) scores only
-  // what was observed: with no behaviour, no intel and no code the model judged
-  // malicious or suspicious, static pattern hits alone never drop it below Low risk.
-  const partial = input.install !== "completed" || input.entry !== "completed";
+  // A partial scan (install did not finish, or the entry point was cut by its time
+  // limit) scores only what was observed: with no behaviour, no intel and no code the
+  // model judged malicious or suspicious, static pattern hits alone never drop it below
+  // Low risk. An entry that was skipped because the repo has none, or that ran and
+  // failed, is not a cut scan; it is stated as not verified.
+  const partial = input.install !== "completed" || input.entry === "timeout";
   const partialFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
   if (partial && B === 0 && I === 0 && st.checkHits === 0 && score < partialFloor) {
     breakdown.push({ group: "cap", code: "partial_scan_floor", points: partialFloor - score, detail: `Partial scan: nothing bad was seen while it ran, so pattern hits alone keep the score at ${partialFloor} or more.` });

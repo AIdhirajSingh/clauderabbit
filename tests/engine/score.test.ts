@@ -520,3 +520,10 @@ test("a partial scan with only pattern hits stays at Low risk and says it is par
   const seen = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits, behaviour: { ...NO_BEHAVIOUR, decoyReads: ["/home/cr/.aws/credentials"] } }));
   assert.ok(seen.score < 80);
 });
+
+test("a repo with no entry point is not a partial scan; an entry cut by its time limit is", () => {
+  assert.equal(computeScore(input({ install: "completed", entry: "skipped" })).partial, false);
+  assert.equal(computeScore(input({ install: "completed", entry: "failed" })).partial, false);
+  assert.equal(computeScore(input({ install: "completed", entry: "timeout" })).partial, true);
+  assert.ok(computeScore(input({ install: "completed", entry: "skipped" })).notVerified.some((l) => /Entry phase was skipped/.test(l)));
+});
