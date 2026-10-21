@@ -126,6 +126,25 @@ test("unbounded from an install file classifies unknown code as install", () => 
   assert.equal(g.classify("a.js"), "install");
 });
 
+test("test code is never install- or import-reachable by inference, in either unbounded case", () => {
+  const files = {
+    "a.js": "",
+    "test/keys.js": "const k = 'key-shaped-string';",
+    "packages/x/__tests__/t.js": "",
+    "packages/x/src/thing.test.ts": "",
+    "packages/x/__mocks__/m.js": "",
+    "fixtures/f.js": "",
+    "examples/e.js": "",
+    "e2e/run.js": "",
+  };
+  const nonLiteral = buildReachGraph(filesOf({ "package.json": JSON.stringify({ name: "u", scripts: { install: "node i.js" } }), "i.js": "require(['./a','./b'][Date.now() % 2])", ...files }));
+  const hook = buildReachGraph(filesOf({ "package.json": JSON.stringify({ name: "u", scripts: { postinstall: "make all" } }), "Makefile": "all:\n\tnode a.js\n", ...files }));
+  for (const g of [nonLiteral, hook]) {
+    assert.equal(g.classify("a.js"), "install");
+    for (const p of Object.keys(files).filter((f) => f !== "a.js")) assert.equal(g.classify(p), "unreachable", p);
+  }
+});
+
 test("python: setup.py, in-tree backend and .pth are install; packages and console scripts are import", () => {
   const g = buildReachGraph(
     filesOf({

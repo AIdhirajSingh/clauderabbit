@@ -54,11 +54,25 @@ const RUNNABLE_RE = /\.(?:[cm]?[jt]s|[jt]sx|json|node|sh|bash|py|pyw|pth)$/i;
 const NATIVE_SRC_RE = /\.(?:c|cc|cpp|cxx|h|hh|hpp|gyp|gypi)$/i;
 
 const UNREACHABLE_DIR_RE =
-  /(^|\/)(tests?|__tests__|specs?|docs?|examples?|benchmarks?|fixtures?|\.github|terraform|k8s)\//i;
+  /(^|\/)(tests?|__tests__|__mocks__|mocks?|specs?|e2e|docs?|examples?|benchmarks?|fixtures?|\.github|terraform|k8s)\//i;
+
+/** Test code: test, spec, fixture, mock and example trees and *.test.* / *.spec.* files. */
+const TEST_DIR_RE = /(^|\/)(tests?|__tests__|__mocks__|mocks?|specs?|e2e|examples?|fixtures?)\//i;
+const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]*\.py$|_test\.py$/i;
+
+/**
+ * Test code is never reachable from install or the entry point by inference. Only a
+ * file an install hook or the entry names directly (the explicit install/import
+ * sets) keeps its reach: an install script that runs `node test/setup.js` is real
+ * install-time code.
+ */
+export function isTestPath(path: string): boolean {
+  return TEST_DIR_RE.test(path) || TEST_FILE_RE.test(path);
+}
 
 /** Paths that never count as reachable in the unbounded case (section 5.2). */
 export function isUnreachablePath(path: string): boolean {
-  if (UNREACHABLE_DIR_RE.test(path)) return true;
+  if (UNREACHABLE_DIR_RE.test(path) || TEST_FILE_RE.test(path)) return true;
   const base = path.slice(path.lastIndexOf("/") + 1);
   if (/^Dockerfile/i.test(base)) return true;
   if (/\.(md|markdown|mdx|rst)$/i.test(base)) return true;
@@ -465,6 +479,16 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
   // No root manifest after stripping: nothing tells us what runs, so every non-test file counts as reachable.
   const noManifest = !pkg && !isPython && !has("package.json");
   const hookUnbounded = unresolvedHooks.length > 0;
+  // Text an unknown install hook can run at the root: the manifest and root build
+  // files. A test-path file named there (a Makefile running `node test/x.js`) is
+  // install-time code; any other test-path file is not reachable by inference.
+  const hookText = hookUnbounded
+    ? [...files.keys()]
+        .filter((f) => !f.includes("/") && (f === "package.json" || /^(GNU)?makefile$|\.mk$|^justfile$|\.sh$/i.test(f)))
+        .map((f) => text(f) ?? "")
+        .join("\n")
+    : "";
+  const namedByHook = (path: string) => hookText.includes(path);
   for (const h of unresolvedHooks) unboundedFrom.add(h);
   if (noManifest) unboundedFrom.add("(no root manifest)");
   const unbounded = unboundedFrom.size > 0;
@@ -493,7 +517,7 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
       if (install.has(path) || INSTALL_MANIFESTS.has(path)) return "install";
       if (importSet.has(path)) return "import";
       // An install hook that runs files we cannot name: every file but documentation can run at install.
-      if (hookUnbounded && files.has(path) && !isDocPath(path) && runnable(path)) return "install";
+      if (hookUnbounded && files.has(path) && !isDocPath(path) && (!isTestPath(path) || namedByHook(path)) && runnable(path)) return "install";
       if (unbounded && files.has(path) && !isUnreachablePath(path) && runnable(path)) return unboundedInstall ? "install" : "import";
       return "unreachable";
     },
