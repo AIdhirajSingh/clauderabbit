@@ -50,7 +50,6 @@ in `v2.scan_runs`.
 | Reputation, "shown separately" | `reputation_section.facts[]` (`fact`, with `source` as the tooltip) and `.warnings[]`; never part of the score |
 | Share | `/app/scan/<run_id>` |
 | Watch how it happened | `/app/scan/<run_id>?replay=1` replays `v2.scan_events` at 4× |
-| Export MP4 | `POST/GET /api/scan/<run_id>/export` (`v2.exports`, bucket `v2-exports`) |
 
 ## Account card
 

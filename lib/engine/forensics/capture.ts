@@ -193,6 +193,12 @@ const REGISTRY_HOST_SET = new Set(["registry.npmjs.org", "pypi.org", "files.pyth
  * kept past the display cap so a flood of benign calls can never push a
  * scored call out of the record.
  */
+/** True for plain registry traffic: a registry host served by the mirror or registry handler, or its DNS lookup. */
+export function isRegistryCall(c: ForgedCallData): boolean {
+  if (!REGISTRY_HOST_SET.has(c.host) || c.canary_hits.length > 0 || c.tls === "refused") return false;
+  return c.proto === "dns" || REGISTRY_KINDS.has(c.forged_kind);
+}
+
 export function isScoreRelevantCall(c: ForgedCallData): boolean {
   if (c.canary_hits.length > 0) return true;
   if (c.tls === "refused") return true;

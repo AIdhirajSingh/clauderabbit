@@ -106,53 +106,23 @@ export function VideoAd({ playKey }: { playKey: string }) {
       <div style={{ aspectRatio: "16 / 9", borderRadius: 22, background: "#0A0A0A", color: "#F5F5F5", position: "relative", overflow: "hidden", display: "grid", placeItems: "center" }}>
         <video ref={video} muted playsInline style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
         <div ref={box} style={{ position: "absolute", inset: 0 }} />
-        {state !== "playing" && (
+        {(state === "loading" || state === "done") && (
           <span style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, pointerEvents: "none" }}>
             <span style={{ width: 68, height: 68, borderRadius: "50%", background: "rgba(255,255,255,0.12)", display: "grid", placeItems: "center" }}>
               <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.5l9 5.5-9 5.5z" fill="#F5F5F5" /></svg>
             </span>
-            <span style={{ fontSize: 13, color: "#A8A8A8" }}>{state === "loading" ? "Loading the ad" : state === "done" ? "Thanks for watching" : "The ad did not load"}</span>
+            <span style={{ fontSize: 13, color: "#A8A8A8" }}>{state === "loading" ? "Loading the ad" : "Thanks for watching"}</span>
           </span>
+        )}
+        {state === "blocked" && (
+          // No ad loaded: the house card fills the slot.
+          <a href={ADS.houseCard.url} target="_blank" rel="noopener noreferrer sponsored" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "center", gap: 8, padding: "24px 28px", color: "#F5F5F5" }}>
+            <span style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.03em" }}>{ADS.houseCard.headline}</span>
+            <span style={{ fontSize: 15, lineHeight: 1.45, color: "#A8A8A8", maxWidth: 360 }}>{ADS.houseCard.body}</span>
+          </a>
         )}
         {left !== null && state === "playing" && <span style={{ position: "absolute", right: 16, top: 14, fontSize: 13, color: "#A8A8A8", fontVariantNumeric: "tabular-nums", pointerEvents: "none" }}>{left} s</span>}
         <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "rgba(255,255,255,0.16)", pointerEvents: "none" }}><div style={{ height: "100%", background: "#F5F5F5", width: `${pct}%` }} /></div>
-      </div>
-    </div>
-  );
-}
-
-/** The display slot under Reputation: AdSense's published test publisher with adtest on. */
-export function DisplayAd() {
-  const ins = useRef<HTMLModElement | null>(null);
-  const [unfilled, setUnfilled] = useState(false);
-  useEffect(() => {
-    const el = ins.current;
-    if (!el) return;
-    // Google marks a slot it could not fill with data-ad-status="unfilled"; show the house card instead of a blank box.
-    const mo = new MutationObserver(() => setUnfilled(el.getAttribute("data-ad-status") === "unfilled"));
-    mo.observe(el, { attributes: true, attributeFilter: ["data-ad-status"] });
-    return () => mo.disconnect();
-  }, []);
-  useEffect(() => {
-    loadScript(`${ADS.adsenseScript}?client=${ADS.adsenseClient}`)
-      .then(() => {
-        try {
-          ((window as unknown as { adsbygoogle: unknown[] }).adsbygoogle ||= []).push({});
-        } catch {}
-      })
-      .catch(() => {});
-  }, []);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <span style={{ fontSize: 12, color: "var(--text2)" }}>{ADS.label}</span>
-      <div style={{ minHeight: 120, borderRadius: 20, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)", overflow: "hidden" }}>
-        {unfilled && (
-          <a href={ADS.exportSponsor.url} target="_blank" rel="noopener noreferrer sponsored" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "20px 22px", minHeight: 120, justifyContent: "center" }}>
-            <span style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.02em" }}>{ADS.exportSponsor.headline}</span>
-            <span style={{ fontSize: 14, lineHeight: 1.45, color: "var(--text2)" }}>{ADS.exportSponsor.body}</span>
-          </a>
-        )}
-        <ins ref={ins} className="adsbygoogle" style={{ display: unfilled ? "none" : "block", minHeight: unfilled ? 0 : 120 }} data-ad-client={ADS.adsenseClient} data-ad-slot={ADS.adsenseSlot} data-ad-format="auto" data-full-width-responsive="true" data-adtest="on" />
       </div>
     </div>
   );

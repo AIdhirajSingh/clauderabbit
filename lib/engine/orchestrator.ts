@@ -33,6 +33,7 @@ import { SANDBOX_SIZES, sizeForRepo, type SandboxSize } from "./sandbox/resource
 import { fetchNpmTarball, npmCommitKey, resolveNpm, type NpmResolution } from "./resolve/npm";
 import { fetchOperatorTarball } from "./resolve/tarball";
 import { bootAnalysis, runAnalysisOn, type AnalysisResult } from "./sandbox/analyze";
+import { buildRanSummary } from "./ran";
 import { bootDetonation, runDetonation, type DetonationResult, type DetonationVm } from "./sandbox/detonate";
 import { REGISTRY_ALLOW_OUT, SandboxCreateError, type BootedSandbox, type SandboxProvider } from "./sandbox/provider";
 import { planInstall } from "./plan";
@@ -877,6 +878,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   timings.total = Math.round(deps.now() - startedAt);
   const sandboxSeconds = sandboxMs.reduce((s, x) => s + x, 0) / 1000;
   const cost: CostLedger = meter.ledger(sandboxSeconds, SANDBOX_SIZES[vmSize].cpuCount);
+  const ran = buildRanSummary({ detonation, plan: await planP, files: archive.files });
   const report: ReportPayload = {
     run_id: runId,
     target,
@@ -886,6 +888,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     band: result.band,
     summary: written.summary,
     luna_report: written.report,
+    ...(ran ? { ran } : {}),
     // A dependency danger with clean own code says so plainly, whatever the writer wrote.
     headline: result.label ? `${result.verdict}: ${result.label}` : written.headline,
     ...(result.label ? { label: result.label } : {}),

@@ -15,6 +15,7 @@ import type { EngineConfig } from "./config";
 import { ledgerFrom, type CostLedger } from "./cost";
 import { postgresExecutor, sqlState, validateDatabaseUrl, type SqlExecutor } from "./db";
 import type { OwnerCache, OwnerInfo } from "./reputation";
+import { ranFrom } from "./ran";
 import { bandFor } from "./score";
 import { EngineError, SCAN_EVENT_TYPES, type ErrorCode, type ReportPayload, type ScanEvent, type ScanEventType, type ScoreDelta, type Verdict } from "./types";
 
@@ -211,6 +212,7 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
       label: r.label ?? null,
       reputation_section: r.reputation_section ?? null,
       luna_report: r.luna_report ?? null,
+      ran: r.ran ?? null,
       template: r.template,
       cost: r.cost ?? null,
     },
@@ -279,6 +281,7 @@ export function payloadFromRows(row: StoredReportRow, run: { id: string; subject
     ...(typeof stats.label === "string" ? { label: stats.label } : {}),
     ...(stats.reputation_section && typeof stats.reputation_section === "object" ? { reputation_section: stats.reputation_section as ReportPayload["reputation_section"] } : {}),
     ...(lunaReportFrom(stats.luna_report) ? { luna_report: lunaReportFrom(stats.luna_report)! } : {}),
+    ...(ranFrom(stats.ran) ? { ran: ranFrom(stats.ran)! } : {}),
     ...(ledger ? { cost: ledger } : {}),
   };
 }

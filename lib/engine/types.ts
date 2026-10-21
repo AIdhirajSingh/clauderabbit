@@ -288,6 +288,25 @@ export interface ReportPayload {
    * `writer` field says which. Absent on reports written before this field.
    */
   luna_report?: { what_ran: string; what_matters: string };
+  /**
+   * What the sandbox run did, built in code from the run's facts (lib/engine/ran.ts).
+   * Every field the run did not establish is null. Absent on reports written before
+   * this field and on runs with no detonation result.
+   */
+  ran?: {
+    package_manager: string | null;
+    /** Packages in the installed tree. */
+    installed: number | null;
+    /** Dev packages the install plan did not run (no install script, or platform-only). */
+    skipped: number | null;
+    /** Install wall time. */
+    install_ms: number | null;
+    /** Install scripts in the installed tree (lockfile hasInstallScript, plus the repo's own). */
+    install_scripts: number | null;
+    /** Registry-only traffic, N non-registry calls answered by the forge, or no calls. */
+    network: { kind: "registry_only" } | { kind: "forged"; calls: number } | { kind: "none" } | null;
+    entry_point: { command: string; exit_code: number | null } | null;
+  };
   template: string;
   timings: Record<string, number>;
   writer: "model" | "deterministic";

@@ -44,6 +44,20 @@ function preStreamError(code: FinalLine extends infer F ? (F extends { type: "er
   return json({ type: "error", error: code, code, message, run_id: null, ad, ...extra }, statusFor(code), headers);
 }
 
+/**
+ * The final result line. The web never says whether a scan was stored, so its line
+ * leaves out `outcome` and the cost ledger (a stored result costs zero); the CLI
+ * and MCP keep both.
+ */
+function resultLineFor(surface: string, final: Extract<FinalLine, { type: "result" }>): Record<string, unknown> {
+  const line: Record<string, unknown> = { ...final, realtime_channel: realtimeChannel(final.run_id) };
+  if (surface === "web") {
+    delete line.outcome;
+    delete line.cost;
+  }
+  return line;
+}
+
 export async function POST(req: Request): Promise<Response> {
   const surface = surfaceFromHeader(req.headers.get("x-clauderabbit-client"));
   let config;
@@ -127,7 +141,7 @@ export async function POST(req: Request): Promise<Response> {
         const code = err instanceof EngineError ? err.code : "internal";
         final = { type: "error", code, message: err instanceof Error ? err.message.slice(0, 500) : "scan failed", run_id: null, ad };
       }
-      write(ndjsonLine(final.type === "result" ? { ...final, realtime_channel: realtimeChannel(final.run_id) } : final));
+      write(ndjsonLine(final.type === "result" ? resultLineFor(surface, final) : final));
       open = false;
       controller.close();
     },

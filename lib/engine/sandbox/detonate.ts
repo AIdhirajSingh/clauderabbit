@@ -76,6 +76,8 @@ export interface DetonationResult {
   harnessExit: number;
   install: PhaseOutcome;
   entry: PhaseOutcome;
+  /** The entry command's exit code from the harness result; null when entry did not run or was not recorded. */
+  entryExitCode?: number | null;
   ecosystem: "npm" | "python" | "none";
   installCommand: string;
   forgedCalls: ForgedCallData[];
@@ -217,6 +219,7 @@ export async function parseForensicBundle(
   return {
     install: rtext ? outcome(result.install?.status) : "failed",
     entry: rtext ? outcome(result.entry?.status) : "skipped",
+    entryExitCode: rtext && typeof result.entry?.exit_code === "number" && Number.isSafeInteger(result.entry.exit_code) ? result.entry.exit_code : null,
     ecosystem: eco,
     installCommand: result.install?.command ?? "",
     forgedCalls: summary.forgedCalls,

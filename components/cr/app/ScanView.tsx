@@ -15,16 +15,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { liveScan, subscribeLive } from "@/lib/cr/scan-client";
 import type { ReportPayload, ScanEvent, StageName } from "@/lib/engine/types";
-import { relativeTime, TONE_STYLE, toneOf } from "@/lib/cr/verdict";
+import { TONE_STYLE, toneOf } from "@/lib/cr/verdict";
 import { useAppSession } from "./AppShell";
 import { VerdictGlyph } from "./Board";
-import { DisplayAd, VideoAd } from "./Ads";
+import { VideoAd } from "./Ads";
 import s from "./app.module.css";
 
 const STAGES = ["Fetching", "Installing", "Running", "Checking", "Scoring"] as const;
 const STAGE_BUCKET: Record<StageName, number> = { cache: 0, resolve: 0, fetch: 0, verify: 0, reach: 1, osv: 1, detonate: 2, static: 3, checks: 3, score: 4, report: 4, persist: 4 };
 const STAGE_WORD: Record<StageName, string> = {
-  cache: "Checking the cache", resolve: "Finding the commit", fetch: "Fetching the code", verify: "Verifying the download", reach: "Mapping what install reaches",
+  cache: "Starting", resolve: "Finding the commit", fetch: "Fetching the code", verify: "Verifying the download", reach: "Mapping what install reaches",
   osv: "Checking the malware database", detonate: "Installing and running it", static: "Reading the code", checks: "Answering the security questions",
   score: "Scoring", report: "Writing the report", persist: "Saving the report",
 };
@@ -36,7 +36,34 @@ const CHECKS: { label: string; stages: StageName[] }[] = [
   { label: "Code checks", stages: ["static", "checks"] },
 ];
 
-interface RunReport { run_id: string; subject: string; commit_sha: string; status: "running" | "done" | "error"; error_code: string | null; started_at: string; finished_at: string | null; report: (ReportPayload & { luna_report?: { what_ran: string; what_matters: string } }) | null; report_created_at: string | null }
+/** The engine's typed summary of what the scan ran (ReportPayload.ran); every field may be unknown (null). */
+interface RanSummary {
+  package_manager: string | null;
+  installed: number | null;
+  skipped: number | null;
+  install_ms: number | null;
+  install_scripts: number | null;
+  network: { kind: "registry_only" } | { kind: "forged"; calls: number } | { kind: "none" } | null;
+  entry_point: { command: string; exit_code: number | null } | null;
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** The design's four labelled rows, built only from known fields; a row with nothing known is left out. */
+function ranSummaryRows(r: RanSummary): { k: string; v: string }[] {
+  const rows: { k: string; v: string }[] = [];
+  const pm = [r.package_manager, r.installed !== null ? `${r.installed} installed` : null, r.skipped !== null ? `${r.skipped} skipped` : null].filter(Boolean);
+  if (pm.length) rows.push({ k: "Package manager", v: pm.join(", ") });
+  const inst = [r.install_ms !== null ? `${(r.install_ms / 1000).toFixed(1)} s` : null, r.install_scripts !== null ? (r.install_scripts === 0 ? "no install scripts" : plural(r.install_scripts, "install script", "install scripts")) : null].filter(Boolean);
+  if (inst.length) rows.push({ k: "Install", v: inst.join(", ") });
+  if (r.network) rows.push({ k: "Network", v: r.network.kind === "registry_only" ? "Registry traffic only" : r.network.kind === "none" ? "No network calls" : `${plural(r.network.calls, "call", "calls")}, answered by the forge` });
+  if (r.entry_point) rows.push({ k: "Entry point", v: r.entry_point.exit_code === null ? r.entry_point.command : `${r.entry_point.command}, exit ${r.entry_point.exit_code}` });
+  return rows;
+}
+
+interface RunReport { run_id: string; subject: string; commit_sha: string; status: "running" | "done" | "error"; error_code: string | null; started_at: string; finished_at: string | null; report: (Omit<ReportPayload, "ran"> & { luna_report?: { what_ran: string; what_matters: string }; ran?: RanSummary }) | null; report_created_at: string | null }
 
 type LogLine = { at: number; text: string; tone: "ok" | "warn" | "bad" | null; seq: number };
 
@@ -44,6 +71,8 @@ function eventLine(e: ScanEvent): LogLine | null {
   const at = e.t_ms;
   switch (e.type) {
     case "stage": {
+      // The lookup for an earlier scan of this commit is internal; the page never says whether a scan was stored.
+      if (e.data.name === "cache") return null;
       const w = STAGE_WORD[e.data.name] ?? e.data.name;
       if (e.data.status === "start") return { at, text: w, tone: null, seq: e.seq };
       if (e.data.status === "error") return { at, text: `${w}: ${e.data.detail ?? "failed"}`, tone: "bad", seq: e.seq };
@@ -80,17 +109,22 @@ export function ScanView({ runId }: { runId: string }) {
   const router = useRouter();
   const params = useSearchParams();
   const replay = params.get("replay") === "1";
-  const exportMode = params.get("export") === "1";
-  const speed = Math.min(20, Math.max(1, Number(params.get("speed") ?? "4") || 4));
+  // Every scan started from the paste box plays at its recorded pace; Watch how it happened plays at `speed`.
+  const speed = replay ? Math.min(20, Math.max(1, Number(params.get("speed") ?? "4") || 4)) : 1;
+  const [startedHere] = useState(() => !replay && !!liveScan(runId));
+  const paced = replay || startedHere;
   const { session, ready } = useAppSession();
 
   const [run, setRun] = useState<RunReport | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [events, setEvents] = useState<ScanEvent[]>([]);
-  const [shown, setShown] = useState<number>(replay ? 0 : Infinity); // replay cursor
-  const [replayDone, setReplayDone] = useState(!replay);
+  const [playNow, setPlayNow] = useState(0);
+  const [playBase, setPlayBase] = useState<number | null>(null);
+  const [playDone, setPlayDone] = useState(false);
   const [toast, setToast] = useState("");
-  const [exp, setExp] = useState<{ state: "idle" | "rendering" | "done" | "error"; pct: number; url?: string }>({ state: "idle", pct: 0 });
+  const baseRef = useRef<number | null>(null);
+  const eventsRef = useRef<ScanEvent[]>([]);
+  const runRef = useRef<RunReport | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const seen = useRef(new Set<number>());
 
@@ -181,45 +215,61 @@ export function ScanView({ runId }: { runId: string }) {
     };
   }, [runId, replay, loadRun, loadEvents, addEvents]);
 
-  // Replay: reveal stored events by t_ms at `speed`, then show the result.
   useEffect(() => {
-    if (!replay || events.length === 0 || !run || run.status === "running") return;
-    const start = performance.now();
-    const last = events[events.length - 1]?.t_ms ?? 0;
+    eventsRef.current = events;
+  }, [events]);
+  useEffect(() => {
+    runRef.current = run;
+  }, [run]);
+
+  // Playback clock. A paste-box scan plays against the moment its first event
+  // arrived (minus that event's t_ms), so a fresh scan shows events as they come
+  // and a scan whose events arrive at once plays at the recorded pace. A replay
+  // starts when the stored events are loaded. The result opens after the last event.
+  useEffect(() => {
+    if (!paced || playDone) return;
     let raf = 0;
+    let lastPaint = 0;
     const step = () => {
-      const t = (performance.now() - start) * speed;
-      let n = 0;
-      while (n < events.length && (events[n]?.t_ms ?? 0) <= t) n++;
-      setShown(n);
-      if (t >= last + 800) {
-        setReplayDone(true);
+      const t = performance.now();
+      if (baseRef.current === null) {
+        if (replay) {
+          if (eventsRef.current.length > 0 && runRef.current?.status === "done") baseRef.current = t;
+        } else {
+          const o = liveScan(runId)?.origin;
+          if (o !== null && o !== undefined) baseRef.current = o;
+        }
+        if (baseRef.current !== null) setPlayBase(baseRef.current);
+      }
+      if (t - lastPaint > 100) {
+        lastPaint = t;
+        setPlayNow(t);
+      }
+      const base = baseRef.current;
+      const evs = eventsRef.current;
+      const last = evs[evs.length - 1]?.t_ms ?? 0;
+      const r = runRef.current;
+      if (base !== null && r?.report && r.status === "done" && (t - base) * speed >= last + 800) {
+        setPlayDone(true);
         return;
       }
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replay, run?.status, events.length, speed]);
+  }, [paced, playDone, replay, runId, speed]);
 
-  useEffect(() => {
-    if (exportMode && replayDone && run?.report) {
-      const t = setTimeout(() => ((window as unknown as { __CR_REPLAY_DONE?: boolean }).__CR_REPLAY_DONE = true), 2500);
-      return () => clearTimeout(t);
-    }
-  }, [exportMode, replayDone, run?.report]);
-
-  const visible = replay ? events.slice(0, Number.isFinite(shown) ? shown : events.length) : events;
-  const done = !!run?.report && run.status === "done" && replayDone;
+  const playMs = paced && playBase !== null ? Math.max(0, (playNow - playBase) * speed) : null;
+  const visible = useMemo(() => (paced ? (playMs === null ? [] : events.filter((e) => e.t_ms <= playMs)) : events), [paced, playMs, events]);
+  const done = !!run?.report && run.status === "done" && (!paced || playDone);
   const failed = run?.status === "error" && !replay;
   const running = !done && !failed;
 
   useEffect(() => {
-    if (!running || replay) return;
+    if (!running || paced) return;
     const id = setInterval(() => setClockNow(Date.now()), 100);
     return () => clearInterval(id);
-  }, [running, replay]);
+  }, [running, paced]);
 
   const stageState = useMemo(() => {
     const started = new Set<StageName>();
@@ -244,7 +294,7 @@ export function ScanView({ runId }: { runId: string }) {
 
   const log = useMemo(() => visible.map(eventLine).filter((l): l is LogLine => l !== null).slice(-14), [visible]);
   const lastT = visible[visible.length - 1]?.t_ms ?? 0;
-  const liveMs = run && !replay && running ? Math.max(lastT, clockNow - Date.parse(run.started_at)) : lastT;
+  const liveMs = playMs !== null ? playMs : run && running ? Math.max(lastT, clockNow - Date.parse(run.started_at)) : lastT;
   const report = run?.report ?? null;
   const totalMs = report ? (report.timings?.total_ms ?? report.timings?.total ?? (run?.finished_at && run.started_at ? Date.parse(run.finished_at) - Date.parse(run.started_at) : lastT)) : lastT;
 
@@ -263,34 +313,6 @@ export function ScanView({ runId }: { runId: string }) {
     setTimeout(() => setToast(""), 2400);
   };
 
-  const exportMp4 = async () => {
-    if (exp.state === "rendering") return;
-    if (exp.state === "done" && exp.url) {
-      window.open(exp.url, "_blank", "noopener,noreferrer");
-      return;
-    }
-    setExp({ state: "rendering", pct: 0 });
-    try {
-      let r = await fetch(`/api/scan/${runId}/export`, { method: "POST" });
-      for (let i = 0; i < 400; i++) {
-        if (!r.ok) throw new Error(String(r.status));
-        const j = (await r.json()) as { status: string; progress?: number; url?: string };
-        if (j.status === "done" && j.url) {
-          setExp({ state: "done", pct: 100, url: j.url });
-          window.open(j.url, "_blank", "noopener,noreferrer");
-          return;
-        }
-        if (j.status === "error") throw new Error("render failed");
-        setExp({ state: "rendering", pct: Math.max(0, Math.min(99, j.progress ?? 0)) });
-        await new Promise((res) => setTimeout(res, 1500));
-        r = await fetch(`/api/scan/${runId}/export`, { cache: "no-store" });
-      }
-      throw new Error("timeout");
-    } catch {
-      setExp({ state: "error", pct: 0 });
-    }
-  };
-
   if (notFound) {
     return (
       <div style={{ borderRadius: 28, background: "var(--surface)", padding: "clamp(24px,3vw,36px)", display: "flex", flexDirection: "column", gap: 16, alignItems: "flex-start" }}>
@@ -305,14 +327,14 @@ export function ScanView({ runId }: { runId: string }) {
   const paragraphs = report?.luna_report ? [report.luna_report.what_ran, report.luna_report.what_matters].filter(Boolean) : report?.summary ? [report.summary] : [];
   const repFacts = report?.reputation_section?.facts ?? [];
   const repWarnings = report?.reputation_section?.warnings ?? [];
-  const ran = report?.evidence?.behaviour ?? [];
-  const finishedAt = run?.finished_at ?? run?.report_created_at ?? null;
+  const ranRows = report?.ran ? ranSummaryRows(report.ran) : [];
+  const ranLines = ranRows.length === 0 ? (report?.evidence?.behaviour ?? []) : [];
 
   return (
     <div className={s.scanGrid}>
       <section aria-label={run ? subjectName(run.subject) : "Scan"} className={s.col} style={{ flex: "1 1 540px", gap: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {!exportMode && (
+          {(
             <button type="button" className={`${s.btn} ${s.press} ${s.ghost}`} onClick={() => router.push("/app")} aria-label="Back to the danger board" style={{ width: 48, height: 48, marginLeft: -12, borderRadius: 999, display: "grid", placeItems: "center", flex: "none" }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14.5 5.5L8 12l6.5 6.5" /></svg>
             </button>
@@ -363,13 +385,13 @@ export function ScanView({ runId }: { runId: string }) {
             <div style={{ display: "flex", alignItems: "flex-end", flexWrap: "wrap", gap: "12px 18px" }}>
               <span className={s.bigScore}>{report.score}</span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 40, padding: "0 16px", borderRadius: 999, fontSize: 17, fontWeight: 600, ...tone.pill }}><VerdictGlyph verdict={report.verdict} />{report.verdict}</span>
-              <span style={{ fontSize: 14, color: "var(--text2)", marginBottom: 8, fontVariantNumeric: "tabular-nums" }}>Scanned {finishedAt ? relativeTime(finishedAt).toLowerCase() : ""} · {Math.max(1, Math.round(totalMs / 1000))} s</span>
+              <span style={{ fontSize: 14, color: "var(--text2)", marginBottom: 8, fontVariantNumeric: "tabular-nums" }}>{Math.max(1, Math.round(totalMs / 1000))} s</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "20px 22px", borderRadius: 20, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>Report</span>
               {paragraphs.map((p, i) => <p key={i} style={{ margin: 0, fontSize: 16.5, lineHeight: 1.55 }}>{p}</p>)}
             </div>
-            {!exportMode && (
+            {(
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
                 <button type="button" className={`${s.btn} ${s.press} ${s.solid}`} onClick={share} style={{ height: 48, padding: "0 22px", borderRadius: 999, background: "var(--inv)", color: "var(--on-inv)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 10 }}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 15V4" /><path d="M8.5 7.5L12 4l3.5 3.5" /><path d="M8 11H6.5A1.5 1.5 0 005 12.5v6A1.5 1.5 0 006.5 20h11a1.5 1.5 0 001.5-1.5v-6a1.5 1.5 0 00-1.5-1.5H16" /></svg>Share
@@ -377,11 +399,6 @@ export function ScanView({ runId }: { runId: string }) {
                 <Link href={`/app/scan/${runId}?replay=1`} className={`${s.press} ${s.ghost}`} style={{ height: 48, padding: "0 20px", borderRadius: 999, boxShadow: "inset 0 0 0 1.5px var(--text)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5l11 6.5-11 6.5z" fill="currentColor" /></svg>Watch how it happened
                 </Link>
-                <button type="button" className={`${s.btn} ${s.press} ${s.ghost}`} onClick={exportMp4} aria-busy={exp.state === "rendering"} style={{ position: "relative", overflow: "hidden", height: 48, padding: "0 20px", borderRadius: 999, boxShadow: "inset 0 0 0 1.5px var(--border-e)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-                  <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${exp.pct}%`, background: "var(--hover)", transition: "width 120ms linear" }} />
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ position: "relative" }}><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14" /></svg>
-                  <span style={{ position: "relative" }}>{exp.state === "rendering" ? `Rendering ${Math.round(exp.pct)}%` : exp.state === "done" ? "Download MP4" : exp.state === "error" ? "Export failed, try again" : "Export MP4"}</span>
-                </button>
                 <Link href="/app" className={`${s.press} ${s.ghost}`} style={{ height: 48, padding: "0 22px", borderRadius: 999, boxShadow: "inset 0 0 0 1.5px var(--text)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center" }}>Scan another</Link>
                 {ready && !session && (
                   <Link href="/login" style={{ fontSize: 14, color: "var(--text2)", marginLeft: 6, minHeight: 48, display: "inline-flex", alignItems: "center" }}>
@@ -437,10 +454,16 @@ export function ScanView({ runId }: { runId: string }) {
                 </div>
               ))}
             </div>
-            {ran.length > 0 && (
+            {(ranRows.length > 0 || ranLines.length > 0) && (
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <h2 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 600 }}>What it ran</h2>
-                {ran.map((line, i) => (
+                {ranRows.map((row) => (
+                  <div key={row.k} style={{ display: "flex", gap: 16, padding: "10px 0", borderBottom: "1px solid var(--border)", fontSize: 14, lineHeight: 1.4 }}>
+                    <span style={{ flex: "0 0 120px", color: "var(--text2)" }}>{row.k}</span>
+                    <span style={{ flex: 1, minWidth: 0, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}>{row.v}</span>
+                  </div>
+                ))}
+                {ranLines.map((line, i) => (
                   <div key={i} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)", fontSize: 14, lineHeight: 1.4, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}>{line}</div>
                 ))}
               </div>
@@ -463,7 +486,6 @@ export function ScanView({ runId }: { runId: string }) {
                 ))}
               </div>
             </div>
-            {!exportMode && <DisplayAd />}
           </div>
         )}
       </section>
