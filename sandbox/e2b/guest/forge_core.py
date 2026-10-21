@@ -138,6 +138,9 @@ def registry_kind(policy: dict, host: str, method: str, path: str) -> Optional[s
 
 def npm_name_from_path(path: str) -> Optional[str]:
     p = path.split("?", 1)[0]
+    m = NPM_VERSION_RE.match(p)
+    if m and not NPM_TARBALL_RE.match(p):
+        return urllib.parse.unquote(m.group(1))
     m = NPM_TARBALL_RE.match(p)
     if m:
         return urllib.parse.unquote(m.group(1))
@@ -145,6 +148,26 @@ def npm_name_from_path(path: str) -> Optional[str]:
     if m:
         return urllib.parse.unquote(m.group(1))
     return None
+
+
+# The VM is linux x64 glibc. A prebuilt-binary package named for another OS or CPU
+# (@rollup/rollup-darwin-arm64, @esbuild/win32-x64, @img/sharp-linuxmusl-x64) is an
+# optional dependency the package manager would skip on this machine, so its
+# metadata is answered 404 at once instead of being fetched; npm and pnpm skip a
+# missing optional dependency. linux-x64 and linux-x64-gnu builds pass through.
+_CPU = r"(?:x64|x86_64|amd64|arm64|aarch64|arm|armv6l?|armv7l?|ia32|x86|32|64|universal|ppc64(?:le)?|riscv64|s390x|loong64|loongarch64|mips64el)"
+_FOREIGN_PLATFORM_RE = re.compile(
+    r"(?:^|[/._-])(?:"
+    r"(?:darwin|macos|win32|windows|freebsd|openbsd|netbsd|sunos|aix|android|openharmony|cygwin)[-_]" + _CPU
+    + r"|linux[-_](?:arm64|aarch64|arm|armv6l?|armv7l?|ia32|x86|ppc64(?:le)?|riscv64|s390x?|loong64|loongarch64|mips64el)"
+    r"|linux[-_]x64[-_]musl|linuxmusl[-_]" + _CPU
+    + r")(?:$|[-_.])"
+)
+
+
+def foreign_platform_package(name: Optional[str]) -> bool:
+    """True when an npm package name is a prebuilt binary for a platform other than linux x64 glibc."""
+    return bool(name) and _FOREIGN_PLATFORM_RE.search(name.lower()) is not None
 
 
 def normalize_pypi_name(name: str) -> str:

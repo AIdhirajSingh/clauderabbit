@@ -1,7 +1,7 @@
 {
   "version": 1,
   "registries": {
-    "npm": ["registry.npmjs.org"],
+    "npm": ["registry.npmjs.org", "registry.yarnpkg.com"],
     "pypi_index": ["pypi.org"],
     "pypi_files": ["files.pythonhosted.org"]
   },

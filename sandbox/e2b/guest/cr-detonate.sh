@@ -393,6 +393,14 @@ if [ -n "$INSTALL_CMD" ]; then
     *) INSTALL_STATUS=failed ;;
   esac
   log "install $INSTALL_STATUS exit=$INSTALL_EXIT ms=$INSTALL_MS"
+  # Registry pass-through (forge_addon.py): time from request to response headers.
+  RT=$(jq -rs '[.[] | select(.forged_kind == "registry" and .pass == true and (.ms | type) == "number") | .ms] | sort
+    | if length == 0 then "0 registry requests"
+      else "\(length) registry requests, median \(.[(length / 2 | floor)] | round) ms, p95 \(.[(length * 0.95 | floor)] | round) ms, slowest \(.[-1] | round) ms" end' \
+    "$OUT/capture.jsonl" 2>/dev/null || echo "registry timing unavailable")
+  PSKIP=$(jq -s '[.[] | select(.note == "other platform")] | length' "$OUT/capture.jsonl" 2>/dev/null || echo 0)
+  check registry_timing true "$RT; $PSKIP other-platform packages answered 404 before any fetch"
+  check disk_after_install true "free on /work and /tmp: $(df -h --output=avail,pcent /work /tmp 2>/dev/null | tail -n +2 | tr -s ' ' | paste -sd ';' -)"
 else
   check install_manifest false "no package.json, pyproject.toml, setup.py or requirements.txt"
 fi

@@ -184,7 +184,7 @@ const PROTOS = new Set(["http", "https", "dns", "tcp"]);
 
 /** Registry traffic served by the forge's mirror or registry handler (never scored). */
 const REGISTRY_KINDS = new Set(["mirror", "registry"]);
-const REGISTRY_HOST_SET = new Set(["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]);
+const REGISTRY_HOST_SET = new Set(["registry.npmjs.org", "registry.yarnpkg.com", "pypi.org", "files.pythonhosted.org"]);
 
 /**
  * True when a call can move the score (lib/engine/score.ts deriveBehaviour):

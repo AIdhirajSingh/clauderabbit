@@ -7,9 +7,17 @@ Started by cr-detonate.sh as root:
 All decisions live in forge_core.py. This file only converts mitmproxy flows to
 forge_core requests, applies the decision and appends one capture record per
 request, DNS query, refused TLS handshake and raw TCP connection. With
-connection_strategy=lazy and every HTTP response set in `request`, mitmproxy
-never opens an upstream connection for repo traffic; registry bytes are fetched
-by forge_core itself.
+connection_strategy=lazy and every forged HTTP response set in `request`,
+mitmproxy never opens an upstream connection for repo traffic.
+
+Registry traffic (an https GET of a registry shape on a registry host, see
+forge_core.registry_kind) passes straight through: mitmproxy connects to the real
+registry and streams the response to the client as it arrives, with no fetch in
+a worker thread, no whole-body buffer and no forge-side hashing. The package
+manager checks every tarball against its lockfile or packument integrity itself.
+Each such request is still logged as registry traffic, with its time to response
+headers. Metadata for prebuilt binaries of another platform is answered 404
+without any upstream fetch (forge_core.foreign_platform_package).
 """
 
 from __future__ import annotations
@@ -81,6 +89,16 @@ class CrForge:
             body=r.raw_content or b"",
             scheme=r.scheme,
         )
+        kind = forge_core.registry_kind(self.policy, host, r.method, r.path)
+        if kind in ("npm-packument", "npm-version") and forge_core.foreign_platform_package(forge_core.npm_name_from_path(req.bare_path)):
+            flow.response = http.Response.make(404, b'{"error":"not found"}', {"Content-Type": "application/json", "Connection": "keep-alive"})
+            self._registry_record(flow, host, sni, req, 404, 0.0, note="other platform", passed=False)
+            return
+        if kind is not None and r.scheme == "https" and int(r.port) == 443:
+            # Pass through: connect to the registry by name and stream the reply.
+            r.host = host
+            flow.metadata["cr_registry"] = {"t0": time.monotonic(), "host": host, "sni": sni, "req": req}
+            return
         decision = await asyncio.get_running_loop().run_in_executor(HANDLE_POOL, self.forge.handle, req)
         connection = "keep-alive" if decision.forged_kind in KEEPALIVE_KINDS else "close"
         flow.response = http.Response.make(decision.status, decision.body, {**decision.headers, "Connection": connection})
@@ -99,6 +117,42 @@ class CrForge:
             status=decision.status,
             integrity=decision.integrity,
         )
+
+    def _registry_record(self, flow, host, sni, req, status, ms, note=None, passed=True) -> None:
+        rec = forge_core.capture_record(
+            self.policy,
+            t=time.time(),
+            phase=self._phase(),
+            proto="https",
+            host=host,
+            port=int(flow.request.port),
+            method=req.method,
+            path=req.path,
+            sni=sni,
+            req_headers=req.headers,
+            req_body=req.body,
+            forged_kind="registry",
+            tls="intercepted",
+            status=status,
+        )
+        rec["ms"] = round(ms, 1)
+        rec["pass"] = passed
+        if note:
+            rec["note"] = note
+        forge_core.append_capture(self.capture_path, rec)
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        meta = flow.metadata.get("cr_registry")
+        if not meta or flow.response is None:
+            return
+        flow.response.stream = True
+        self._registry_record(flow, meta["host"], meta["sni"], meta["req"], flow.response.status_code, (time.monotonic() - meta["t0"]) * 1000)
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        meta = flow.metadata.get("cr_registry")
+        if not meta or flow.response is not None:
+            return
+        self._registry_record(flow, meta["host"], meta["sni"], meta["req"], 502, (time.monotonic() - meta["t0"]) * 1000, note=f"upstream error: {flow.error}"[:300])
 
     def tls_failed_client(self, data: tls.TlsData) -> None:
         sni = getattr(data.conn, "sni", None)
