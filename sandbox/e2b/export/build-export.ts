@@ -15,7 +15,8 @@ import { Template, defaultBuildLogger } from "e2b";
 export const EXPORT_TEMPLATE_NAME = "cr-export";
 export const EXPORT_TEMPLATE_VCPU = 2;
 export const EXPORT_TEMPLATE_MEMORY_MB = 2048;
-export const PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright/python:v1.55.0-noble";
+export const PLAYWRIGHT_VERSION = "1.55.0";
+export const PLAYWRIGHT_IMAGE = `mcr.microsoft.com/playwright/python:v${PLAYWRIGHT_VERSION}-noble`;
 
 function log(line: string): void {
   console.log(`[cr-export] ${line}`);
@@ -25,8 +26,15 @@ function template() {
   return Template()
     .fromImage(PLAYWRIGHT_IMAGE)
     .setUser("root")
-    .aptInstall(["ffmpeg"], { noInstallRecommends: true })
-    .runCmd(["mkdir -p /opt/cr-export", "ffmpeg -version | head -1", "python3 -c 'import playwright'"]);
+    .aptInstall(["ffmpeg", "python3-pip"], { noInstallRecommends: true })
+    .runCmd([
+      // The image carries the browsers for this playwright version, not the Python package.
+      `python3 -m pip install -q --break-system-packages playwright==${PLAYWRIGHT_VERSION}`,
+      "python3 -m playwright install chromium-headless-shell",
+      "mkdir -p /opt/cr-export",
+      "ffmpeg -version | head -1",
+      "python3 -c 'import playwright'",
+    ]);
 }
 
 async function main(): Promise<void> {
