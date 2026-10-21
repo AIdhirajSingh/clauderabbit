@@ -55,6 +55,24 @@ export function replayUrl(siteOrigin: string, runId: string, speed = REPLAY_SPEE
   return u.toString();
 }
 
+/**
+ * Where the sandbox loads the replay page. On a Vercel Preview the page lives on
+ * this deployment, not on NEXT_PUBLIC_SITE_URL (which is the production site), and
+ * the deployment is protected, so the URL carries Vercel's automation bypass
+ * (VERCEL_AUTOMATION_BYPASS_SECRET) and asks for the bypass cookie so the page's
+ * own API calls pass too. The URL only goes into the export sandbox; it is never logged.
+ */
+export function exportPageUrl(siteOrigin: string, runId: string, env: Record<string, string | undefined> = process.env): string {
+  const host = env.VERCEL_ENV === "preview" ? (env.VERCEL_BRANCH_URL || env.VERCEL_URL)?.trim() : undefined;
+  const url = new URL(replayUrl(host ? `https://${host}` : siteOrigin, runId));
+  const bypass = host ? env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim() : undefined;
+  if (bypass) {
+    url.searchParams.set("x-vercel-protection-bypass", bypass);
+    url.searchParams.set("x-vercel-set-bypass-cookie", "true");
+  }
+  return url.toString();
+}
+
 /** E2B price per second for the export sandbox size (rates from lib/engine/cost.ts). */
 export function exportUsdPerSecond(vcpu = EXPORT_VCPU, memoryMb = EXPORT_MEMORY_MB): number {
   return roundUsd(vcpu * E2B_USD_PER_VCPU_SECOND + (memoryMb / 1024) * E2B_USD_PER_GIB_SECOND);

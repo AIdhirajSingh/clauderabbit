@@ -82,3 +82,26 @@ test("storage config reads key names only and reports missing names", () => {
   const c = storageConfigFrom({ NEXT_PUBLIC_SUPABASE_URL: "https://p.supabase.co/", SUPABASE_SECRET_KEY: "k" });
   assert.deepEqual(c, { supabaseUrl: "https://p.supabase.co", key: "k" });
 });
+
+test("the export page URL: production uses the site origin; a Preview uses its own host with the automation bypass", async () => {
+  const { exportPageUrl } = await import("../../lib/server/export-mp4/plan");
+  const id = "3d84e8a3-d741-4d80-847f-0deccd00d1ed";
+  const prod = new URL(exportPageUrl("https://clauderabbit.in", id, { VERCEL_ENV: "production", VERCEL_URL: "x.vercel.app" }));
+  assert.equal(prod.origin, "https://clauderabbit.in");
+  assert.equal(prod.searchParams.get("x-vercel-protection-bypass"), null);
+  const prev = new URL(exportPageUrl("https://clauderabbit.in", id, { VERCEL_ENV: "preview", VERCEL_BRANCH_URL: "cr-git-20.vercel.app", VERCEL_AUTOMATION_BYPASS_SECRET: "s3cret" }));
+  assert.equal(prev.origin, "https://cr-git-20.vercel.app");
+  assert.equal(prev.pathname, `/app/scan/${id}`);
+  assert.equal(prev.searchParams.get("replay"), "1");
+  assert.equal(prev.searchParams.get("export"), "1");
+  assert.equal(prev.searchParams.get("x-vercel-protection-bypass"), "s3cret");
+  assert.equal(prev.searchParams.get("x-vercel-set-bypass-cookie"), "true");
+});
+
+test("the cr-export template is built at the size the export cost assumes", async () => {
+  const plan = await import("../../lib/server/export-mp4/plan");
+  const build = await import("../../sandbox/e2b/export/build-export.ts");
+  assert.equal(build.EXPORT_TEMPLATE_NAME, plan.EXPORT_TEMPLATE_DEFAULT);
+  assert.equal(build.EXPORT_TEMPLATE_VCPU, plan.EXPORT_VCPU);
+  assert.equal(build.EXPORT_TEMPLATE_MEMORY_MB, plan.EXPORT_MEMORY_MB);
+});

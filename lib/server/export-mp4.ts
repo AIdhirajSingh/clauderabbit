@@ -27,7 +27,7 @@ import {
   guestJob,
   parseProgressLine,
   progressFor,
-  replayUrl,
+  exportPageUrl,
 } from "./export-mp4/plan";
 import { signedExportUrl, storageConfigFrom, uploadExport, type StorageConfig } from "./export-mp4/storage";
 
@@ -126,7 +126,7 @@ export async function renderExport(store: V2Store, config: EngineConfig, storage
     await sbx.commands.run(GUEST_BOOTSTRAP, { user: "root", timeoutMs: 150_000 });
 
     const out = "/opt/cr-export/out.mp4";
-    const job = guestJob(replayUrl(pageOrigin, runId), out, { requireDone: true });
+    const job = guestJob(exportPageUrl(pageOrigin, runId), out, { requireDone: true });
     await sbx.files.write("/opt/cr-export/render.py", RENDER_PY, { user: "root" });
     await sbx.files.write("/opt/cr-export/job.json", JSON.stringify(job), { user: "root" });
 
