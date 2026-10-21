@@ -59,6 +59,8 @@ export interface DetonationInput {
   prefetched?: boolean;
   /** The server's install plan (lib/engine/plan.ts): dev packages with an install script. */
   plan?: import("../plan").InstallPlan | null;
+  /** Install only what runs: the workspace plan (lib/engine/reach/graph.ts planWorkspace). */
+  workspace?: import("../reach/graph").WorkspacePlan | null;
   canaries: Canaries;
   installTimeoutMs: number;
   entryTimeoutMs: number;
@@ -317,6 +319,7 @@ export async function runDetonation(dvm: DetonationVm, input: DetonationInput): 
           entry_timeout_s: Math.max(1, Math.round(input.entryTimeoutMs / 1000)),
           fake_rate: input.fakeRate,
           ...(input.plan ? { dev_scripts: input.plan.devScripts, dev_total: input.plan.devTotal, plan_source: input.plan.source } : {}),
+          ...(input.workspace ? { ws_root: input.workspace.root, ws_selected: input.workspace.selected, ws_total: input.workspace.total } : {}),
         }),
       ),
       s.writeFile("/root/.cr/canary.env", canaryEnvFile(input.canaries)),

@@ -244,3 +244,42 @@ test("unbounded install hook: only files an installer or entry point in the VM c
   assert.equal(g.classify("apps/shared/src/tests.rs"), "unreachable", "no Rust toolchain runs at install");
   assert.equal(g.classify("assets/notes"), "unreachable");
 });
+
+test("workspace plan: the root, what its deps and install scripts use, packages with install hooks, and their workspace deps; reach follows it", () => {
+  const files = filesOf({
+    "package.json": JSON.stringify({ name: "mono", private: true, dependencies: { "@m/core": "workspace:*" }, scripts: { postinstall: "node scripts/link.js && pnpm --filter @m/cli build" } }),
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n  - \"apps/**\"\n  - '!apps/ignored'\n",
+    "scripts/link.js": "",
+    "packages/core/package.json": JSON.stringify({ name: "@m/core", dependencies: { "@m/util": "workspace:*", lodash: "^4" } }),
+    "packages/core/index.js": "",
+    "packages/util/package.json": JSON.stringify({ name: "@m/util" }),
+    "packages/util/index.js": "",
+    "packages/cli/package.json": JSON.stringify({ name: "@m/cli" }),
+    "packages/native/package.json": JSON.stringify({ name: "@m/native", scripts: { install: "node-gyp rebuild" } }),
+    "packages/unused/package.json": JSON.stringify({ name: "@m/unused" }),
+    "packages/unused/steal.js": "require(process.env.X)",
+    "apps/web/package.json": JSON.stringify({ name: "web", dependencies: { "@m/core": "workspace:*" } }),
+    "apps/web/server.js": "",
+    "apps/studio/nested/package.json": JSON.stringify({ name: "studio" }),
+  });
+  const g = buildReachGraph(files);
+  assert.ok(g.workspace);
+  assert.equal(g.workspace!.root, "mono");
+  assert.deepEqual(g.workspace!.selected, ["@m/cli", "@m/core", "@m/native", "@m/util"]);
+  assert.equal(g.workspace!.total, 7);
+  // The unresolved postinstall makes runnable files install-reachable, but never in a workspace package that is not installed.
+  assert.equal(g.classify("packages/core/index.js"), "install");
+  assert.equal(g.classify("packages/unused/steal.js"), "unreachable");
+  assert.equal(g.classify("apps/web/server.js"), "unreachable");
+});
+
+test("workspace plan from package.json workspaces; a plain repo has none", () => {
+  const ws = buildReachGraph(filesOf({
+    "package.json": JSON.stringify({ name: "r", workspaces: ["libs/*"] }),
+    "libs/a/package.json": JSON.stringify({ name: "a", scripts: { postinstall: "node x.js" } }),
+    "libs/b/package.json": JSON.stringify({ name: "b" }),
+  }));
+  assert.deepEqual(ws.workspace?.selected, ["a"]);
+  assert.equal(ws.workspace?.total, 2);
+  assert.equal(buildReachGraph(filesOf({ "package.json": JSON.stringify({ name: "plain" }) })).workspace, null);
+});

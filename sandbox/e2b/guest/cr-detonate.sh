@@ -324,6 +324,26 @@ else
         check package_manager true "npm"
         fi ;;
     esac
+    # Install only what runs (lib/engine/reach/graph.ts planWorkspace): in a workspace,
+    # the root package and the planned workspace packages, with the package manager's
+    # own filter. Never the whole workspace.
+    WS_TOTAL=$(jq -r '.ws_total // 0' "$IN/run.json" 2>/dev/null || echo 0)
+    if [ "${WS_TOTAL:-0}" -gt 0 ] 2>/dev/null; then
+      WS_NAMES=$(jq -r '(.ws_selected // [])[] | select(test("^(@[a-z0-9._~-]+/)?[a-z0-9._~-]+$"))' "$IN/run.json" | tr '\n' ' ')
+      WS_ROOT=$(jq -r '(.ws_root // "") | select(test("^(@[a-z0-9._~-]+/)?[a-z0-9._~-]+$"))' "$IN/run.json")
+      WS_N=$(printf '%s' "$WS_NAMES" | wc -w | tr -d ' ')
+      case "$PM" in
+        pnpm)
+          F="--filter ${WS_ROOT:-.}"; for n in $WS_NAMES; do F="$F --filter $n"; done
+          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile $F" ;;
+        yarn)
+          INSTALL_CMD="(yarn workspaces focus --production $WS_ROOT $WS_NAMES || yarn install)" ;;
+        *)
+          F="--include-workspace-root"; for n in $WS_NAMES; do F="$F -w $n"; done
+          INSTALL_CMD="npm install --omit=dev --no-audit --no-fund $F" ;;
+      esac
+      check workspace_scope true "installing the root and $WS_N of $WS_TOTAL workspace packages ($PM)"
+    fi
   elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then
     ECO=python
     INSTALL_CMD="uv venv --quiet /work/.venv --python /usr/bin/python3"

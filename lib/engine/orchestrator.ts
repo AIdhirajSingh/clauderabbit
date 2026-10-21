@@ -26,7 +26,7 @@ import type { ModelAdapter } from "./model/adapter";
 import { buildDocsSlice, buildFlaggedSlice, buildInstallSlice, runDocsCheck, runFlaggedCheck, runInstallCheck, statedPurpose, type CheckAnswerRecord } from "./model/checks";
 import type { JevAdapter } from "./model/jev";
 import { writeReport } from "./model/writer";
-import { buildReachGraph, type ReachGraph } from "./reach/graph";
+import { buildReachGraph, type ReachGraph, type WorkspacePlan } from "./reach/graph";
 import { computeReputation, fetchGithubOwner, fetchWeeklyDownloads, type ReputationSignals } from "./reputation";
 import { fetchGithubTarball, githubTreeSize, resolveGithub, verifyGithubArchive, type GithubResolution } from "./resolve/github";
 import { SANDBOX_SIZES, sizeForRepo, type SandboxSize } from "./sandbox/resources";
@@ -288,6 +288,7 @@ function graphFromVm(g: VmGraphJson): ReachGraph {
     unbounded: g.unbounded,
     unboundedFrom: g.unboundedFrom,
     ecosystems: g.ecosystems,
+    workspace: g.workspace ?? null,
     classify: (path: string) => (g.classes[path] === 1 ? "install" : g.classes[path] === 2 ? "import" : "unreachable"),
   };
 }
@@ -300,6 +301,7 @@ interface VmGraphJson {
   unbounded: boolean;
   unboundedFrom: string[];
   ecosystems: ReachGraph["ecosystems"];
+  workspace?: WorkspacePlan | null;
   classes: Record<string, 1 | 2>;
 }
 
@@ -704,8 +706,11 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     try {
       const plan = await planP;
       if (plan) check("install_plan", true, `${plan.source}: ${plan.devScripts.length} of ${plan.devTotal} dev packages have an install script`);
+      const ws = resolved.kind === "github" ? (graph.workspace ?? null) : null;
+      if (ws) check("workspace_plan", true, `installing the root and ${ws.selected.length} of ${ws.total} workspace packages`);
       return await runDetonation(detVm!, {
         plan,
+        workspace: ws,
         runId,
         mode: resolved.kind === "npm" ? "npm-package" : "repo",
         packageName: resolved.kind === "npm" ? resolved.npm!.name : null,

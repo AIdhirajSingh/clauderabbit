@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 17; // 17: key-shaped strings are not a deduction; partial scans keep Low risk on pattern hits alone
+export const SCORE_RULES = 18; // 18: workspaces install only what runs; reach follows the install plan
+// 17 was: // 17: key-shaped strings are not a deduction; partial scans keep Low risk on pattern hits alone
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;

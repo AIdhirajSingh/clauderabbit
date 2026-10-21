@@ -39,7 +39,103 @@ export interface ReachGraph {
   /** Files whose non-literal require/import made the set unbounded. */
   unboundedFrom: string[];
   ecosystems: Array<"npm" | "python">;
+  /** The install plan for a JS workspace (null when the repo is not a workspace). */
+  workspace?: WorkspacePlan | null;
   classify(path: string): Reach;
+}
+
+/**
+ * Install only what runs. A JS workspace (package.json `workspaces` or
+ * pnpm-workspace.yaml) installs the root package, the workspace packages the root's
+ * dependencies and install scripts name, every workspace package with its own install
+ * hook, and the workspace packages those depend on. Never the whole workspace.
+ */
+export interface WorkspacePlan {
+  /** The root package's name, or null when it has none. */
+  root: string | null;
+  /** Names of the workspace packages to install with the root, sorted. */
+  selected: string[];
+  /** Directories of the selected packages. */
+  selectedDirs: string[];
+  /** Directories of every workspace package. */
+  allDirs: string[];
+  /** Workspace packages in the repo. */
+  total: number;
+}
+
+const INSTALL_HOOK_NAMES = ["preinstall", "install", "postinstall"];
+
+function globToRe(glob: string): RegExp {
+  const g = glob.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+  const re = g
+    .split("/")
+    .map((seg) => (seg === "**" ? "(?:[^/]+/)*?[^/]*" : seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")))
+    .join("/");
+  return new RegExp(`^${re}$`);
+}
+
+/** The workspace install plan from the manifests alone; null when the repo is not a JS workspace. */
+export function planWorkspace(files: Map<string, Uint8Array>, read: (p: string) => string | null): WorkspacePlan | null {
+  let root: { name?: string; workspaces?: string[] | { packages?: string[] }; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; scripts?: Record<string, string> } | null = null;
+  try {
+    root = JSON.parse(read("package.json") ?? "");
+  } catch {
+    return null;
+  }
+  if (!root || typeof root !== "object") return null;
+  let patterns: string[] = Array.isArray(root.workspaces) ? root.workspaces : Array.isArray(root.workspaces?.packages) ? root.workspaces!.packages! : [];
+  const pnpmWs = read("pnpm-workspace.yaml");
+  if (pnpmWs) {
+    const block = pnpmWs.split(/\n(?=\S)/).find((b) => /^packages\s*:/.test(b)) ?? "";
+    for (const line of block.split("\n").slice(1)) {
+      const m = line.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*(?:#.*)?$/);
+      if (m?.[1] && !m[1].startsWith("!")) patterns.push(m[1]);
+    }
+  }
+  patterns = patterns.filter((x) => typeof x === "string" && !x.startsWith("!"));
+  if (patterns.length === 0) return null;
+  const res = patterns.map(globToRe);
+  type Pkg = { name: string; dir: string; deps: string[]; hasHook: boolean };
+  const pkgs = new Map<string, Pkg>();
+  for (const path of files.keys()) {
+    if (!path.endsWith("/package.json") || path.includes("node_modules/")) continue;
+    const dir = path.slice(0, -"/package.json".length);
+    if (!res.some((r) => r.test(dir))) continue;
+    try {
+      const pj = JSON.parse(read(path) ?? "") as { name?: string; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string>; scripts?: Record<string, string> };
+      if (typeof pj.name !== "string" || !pj.name) continue;
+      const deps = Object.keys({ ...pj.dependencies, ...pj.optionalDependencies, ...pj.peerDependencies });
+      const hasHook = INSTALL_HOOK_NAMES.some((h) => typeof pj.scripts?.[h] === "string" && pj.scripts[h]!.trim() !== "");
+      pkgs.set(pj.name, { name: pj.name, dir, deps, hasHook });
+    } catch {
+      continue;
+    }
+  }
+  if (pkgs.size === 0) return null;
+  const rootDeps = Object.keys({ ...root.dependencies, ...root.optionalDependencies });
+  const rootScripts = INSTALL_HOOK_NAMES.concat(["prepare"]).map((h) => root!.scripts?.[h] ?? "").join("\n");
+  const want = new Set<string>();
+  for (const d of rootDeps) if (pkgs.has(d)) want.add(d);
+  for (const p of pkgs.values()) {
+    if (p.hasHook) want.add(p.name);
+    if (rootScripts && (rootScripts.includes(p.name) || rootScripts.includes(p.dir))) want.add(p.name);
+  }
+  const queue = [...want];
+  while (queue.length) {
+    const p = pkgs.get(queue.pop()!);
+    for (const d of p?.deps ?? []) if (pkgs.has(d) && !want.has(d)) {
+      want.add(d);
+      queue.push(d);
+    }
+  }
+  const selected = [...want].sort();
+  return {
+    root: typeof root.name === "string" && root.name ? root.name : null,
+    selected,
+    selectedDirs: selected.map((n) => pkgs.get(n)!.dir).sort(),
+    allDirs: [...pkgs.values()].map((p) => p.dir).sort(),
+    total: pkgs.size,
+  };
 }
 
 const JS_EXT = [".js", ".mjs", ".cjs", ".json", ".ts", ".mts", ".cts", ".jsx", ".tsx", ".node"];
@@ -505,6 +601,14 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
     return false;
   };
 
+  const workspace = planWorkspace(files, text);
+  // Under a workspace plan, files inside workspace packages that are not installed
+  // never run at install: reach follows the plan.
+  const notInstalled = (path: string): boolean => {
+    if (!workspace) return false;
+    const inPkg = workspace.allDirs.find((d) => path === d || path.startsWith(d + "/"));
+    return Boolean(inPkg) && !workspace.selectedDirs.includes(inPkg!);
+  };
   return {
     install,
     import: importSet,
@@ -513,9 +617,11 @@ export function buildReachGraph(files: Map<string, Uint8Array>): ReachGraph {
     unbounded,
     unboundedFrom: [...unboundedFrom].sort(),
     ecosystems,
+    workspace,
     classify(path: string): Reach {
       if (install.has(path) || INSTALL_MANIFESTS.has(path)) return "install";
       if (importSet.has(path)) return "import";
+      if (notInstalled(path)) return "unreachable";
       // An install hook that runs files we cannot name: every file but documentation can run at install.
       if (hookUnbounded && files.has(path) && !isDocPath(path) && (!isTestPath(path) || namedByHook(path)) && runnable(path)) return "install";
       if (unbounded && files.has(path) && !isUnreachablePath(path) && runnable(path)) return unboundedInstall ? "install" : "import";
