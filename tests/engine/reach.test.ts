@@ -283,3 +283,14 @@ test("workspace plan from package.json workspaces; a plain repo has none", () =>
   assert.equal(ws.workspace?.total, 2);
   assert.equal(buildReachGraph(filesOf({ "package.json": JSON.stringify({ name: "plain" }) })).workspace, null);
 });
+
+test("workspace plan: a short package name inside other words of a root script is not a mention", () => {
+  const g = buildReachGraph(filesOf({
+    "package.json": JSON.stringify({ name: "r", scripts: { postinstall: "node build-ui-icons.js && turbo run guide --filter=common" } }),
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+    "packages/ui/package.json": JSON.stringify({ name: "ui" }),
+    "packages/id/package.json": JSON.stringify({ name: "id" }),
+    "packages/common/package.json": JSON.stringify({ name: "common" }),
+  }));
+  assert.deepEqual(g.workspace?.selected, ["common"]);
+});

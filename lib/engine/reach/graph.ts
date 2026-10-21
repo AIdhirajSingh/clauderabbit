@@ -118,7 +118,11 @@ export function planWorkspace(files: Map<string, Uint8Array>, read: (p: string) 
   for (const d of rootDeps) if (pkgs.has(d)) want.add(d);
   for (const p of pkgs.values()) {
     if (p.hasHook) want.add(p.name);
-    if (rootScripts && (rootScripts.includes(p.name) || rootScripts.includes(p.dir))) want.add(p.name);
+    // Whole names and paths only: a short package name ("ui", "docs") must not match
+    // inside other words of the script.
+    const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\/@-]/g, "\\$&");
+    const named = (x: string) => new RegExp(`(^|[\\s'"=:,(])(?:\\./)?${esc(x)}(?=$|[\\s'"/,;:)\\]&|.]|\\.\\.\\.)`).test(rootScripts);
+    if (rootScripts && (named(p.name) || named(p.dir))) want.add(p.name);
   }
   const queue = [...want];
   while (queue.length) {
