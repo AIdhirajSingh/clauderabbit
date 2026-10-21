@@ -51,6 +51,19 @@ function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/**
+ * The sandbox starts the entry point through `env -i KEY=value ... <command>`; the
+ * row shows the command itself. Only leading `env`, its flags and KEY=value
+ * settings are dropped; nothing is added.
+ */
+export function entryCommand(raw: string): string {
+  const parts = raw.trim().split(/\s+/);
+  if (parts[0] !== "env") return raw.trim();
+  let i = 1;
+  while (i < parts.length && (/^-/.test(parts[i] ?? "") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(parts[i] ?? ""))) i++;
+  return parts.slice(i).join(" ") || raw.trim();
+}
+
 /** The design's four labelled rows, built only from known fields; a row with nothing known is left out. */
 function ranSummaryRows(r: RanSummary): { k: string; v: string }[] {
   const rows: { k: string; v: string }[] = [];
@@ -59,7 +72,10 @@ function ranSummaryRows(r: RanSummary): { k: string; v: string }[] {
   const inst = [r.install_ms !== null ? `${(r.install_ms / 1000).toFixed(1)} s` : null, r.install_scripts !== null ? (r.install_scripts === 0 ? "no install scripts" : plural(r.install_scripts, "install script", "install scripts")) : null].filter(Boolean);
   if (inst.length) rows.push({ k: "Install", v: inst.join(", ") });
   if (r.network) rows.push({ k: "Network", v: r.network.kind === "registry_only" ? "Registry traffic only" : r.network.kind === "none" ? "No network calls" : `${plural(r.network.calls, "call", "calls")}, answered by the forge` });
-  if (r.entry_point) rows.push({ k: "Entry point", v: r.entry_point.exit_code === null ? r.entry_point.command : `${r.entry_point.command}, exit ${r.entry_point.exit_code}` });
+  if (r.entry_point) {
+    const cmd = entryCommand(r.entry_point.command);
+    rows.push({ k: "Entry point", v: r.entry_point.exit_code === null ? cmd : `${cmd}, exit ${r.entry_point.exit_code}` });
+  }
   return rows;
 }
 
