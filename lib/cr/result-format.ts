@@ -12,10 +12,38 @@ export function shortMiddle(s: string, max = 64): string {
   return `${t.slice(0, head)}…${t.slice(t.length - (keep - head))}`;
 }
 
-/** At most `cap` evidence lines, shortened, plus how many more there are. */
+const RULE_WORDS: Array<[RegExp, string]> = [
+  [/^secret/, "Key-shaped string"],
+  [/^shell_fetch/, "Downloads and runs a script"],
+  [/^obfusc|^encoded|^base64/, "Hidden or encoded code"],
+  [/^exec|^child_process|^spawn/, "Runs a system command"],
+  [/^env/, "Reads environment variables"],
+  [/^net|^http|^fetch/, "Makes a network call"],
+];
+
+/** One evidence line in plain words: what was found and where, without rule ids or weights. */
+export function plainEvidence(e: string): string {
+  const h = e.match(/^-?\d+:\s*heuristic\s+heur\.([a-z_]+)[\w.]*\s+at\s+(.+?)(?:\s+\((?:install|import)\))?$/i);
+  if (h?.[1] && h[2]) {
+    const word = RULE_WORDS.find(([re]) => re.test(h[1]!))?.[1] ?? "Flagged code";
+    return `${word}: ${h[2]}`;
+  }
+  const j = e.match(/^-?\d+:\s*Jev [\w ]*check:\s*(malicious|suspicious)\s+at\s+(.+?)\s*\(/i);
+  if (j?.[1] && j[2]) return `Judged ${j[1].toLowerCase()}: ${j[2]}`;
+  return e.replace(/^-?\d+:\s*/, "");
+}
+
+/** A deduction's title in plain words. */
+export function plainTitle(detail: string): string {
+  const m = detail.match(/^(\d+) reachable finding location/i);
+  if (m?.[1]) return `Code flagged in ${m[1]} ${m[1] === "1" ? "place" : "places"} that install or the entry point can reach`;
+  return detail;
+}
+
+/** At most `cap` evidence lines, in plain words and shortened, plus how many more there are. */
 export function evidenceLines(evidence: readonly string[] | undefined, cap = 3): { lines: string[]; more: number } {
   const all = (evidence ?? []).filter(Boolean);
-  return { lines: all.slice(0, cap).map((e) => shortMiddle(e)), more: Math.max(0, all.length - cap) };
+  return { lines: all.slice(0, cap).map((e) => shortMiddle(plainEvidence(e))), more: Math.max(0, all.length - cap) };
 }
 
 /** Tool and pipeline names a builder should not need to know. */

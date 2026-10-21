@@ -17,7 +17,7 @@ import { liveScan, subscribeLive } from "@/lib/cr/scan-client";
 import type { ReportPayload, ScanEvent, StageName } from "@/lib/engine/types";
 import { TONE_STYLE, toneOf } from "@/lib/cr/verdict";
 import { plainLog, STAGE_WORD } from "@/lib/cr/plain-log";
-import { evidenceLines, notVerifiedBullets, reputationChips } from "@/lib/cr/result-format";
+import { evidenceLines, notVerifiedBullets, plainTitle, reputationChips } from "@/lib/cr/result-format";
 import { useAppSession } from "./AppShell";
 import { VerdictGlyph } from "./Board";
 import { VideoAd } from "./Ads";
@@ -457,7 +457,7 @@ export function ScanView({ runId }: { runId: string }) {
                 <div key={`${d.code}-${i}`} style={{ display: "flex", gap: 14, padding: "14px 0", borderBottom: "1px solid var(--border)" }}>
                   <span style={{ width: 38, flex: "none", fontSize: 16, fontWeight: 600, color: "var(--bad-text)", fontVariantNumeric: "tabular-nums" }}>{d.points}</span>
                   <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
-                    <span style={{ fontSize: 15, lineHeight: 1.4, fontWeight: 500 }}>{d.detail}</span>
+                    <span style={{ fontSize: 15, lineHeight: 1.4, fontWeight: 500 }}>{plainTitle(d.detail)}</span>
                     {(() => {
                       const ev = evidenceLines(d.evidence);
                       return ev.lines.length > 0 ? (
