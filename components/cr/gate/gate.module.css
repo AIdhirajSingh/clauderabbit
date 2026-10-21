@@ -50,7 +50,8 @@
   outline-offset: 3px;
 }
 
-.btnDark {
+.btnDark,
+.g a.btnDark {
   background: var(--btn);
   color: #ffffff;
 }

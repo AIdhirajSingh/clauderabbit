@@ -18,9 +18,9 @@ export const metadata: Metadata = {
   alternates: { canonical: `${siteUrl}/privacy` },
 };
 
-function H2({ children }: { children: React.ReactNode }) {
+function H2({ children, id }: { children: React.ReactNode; id?: string }) {
   return (
-    <h2 style={{ fontSize: 19, fontWeight: 600, color: "var(--t1)", margin: "40px 0 12px", letterSpacing: "-0.01em" }}>
+    <h2 id={id} style={{ fontSize: 19, fontWeight: 600, color: "var(--t1)", margin: "40px 0 12px", letterSpacing: "-0.01em" }}>
       {children}
     </h2>
   );
@@ -122,7 +122,7 @@ export default function PrivacyPolicy() {
           login.
         </P>
 
-        <H2>Retention and deletion</H2>
+        <H2 id="delete">Retention and deletion</H2>
         <P>
           Your account data lives until you ask us to remove it. Open an issue on{" "}
           <a href={REPO_ISSUES_URL} target="_blank" rel="noopener noreferrer" style={{ color: "var(--t1)" }}>

@@ -140,10 +140,10 @@ test("JSON and protocol routes get a load-nothing policy; the proxy and next.con
   assert.ok(!/contentSecurityPolicy\(\)/.test(cfg), "no static page CSP in next.config (it would stack with the nonce policy)");
 });
 
-test("the root layout reads the nonce and stamps the inline theme script", () => {
+test("the root layout renders per request for the nonce and carries no inline script (2.0 is light only)", () => {
   const layout = readFileSync(join(ROOT, "app/layout.tsx"), "utf8");
-  assert.match(layout, /\(await headers\(\)\)\.get\("x-nonce"\)/);
-  assert.match(layout, /<script nonce=\{nonce\} dangerouslySetInnerHTML=\{\{ __html: themeInitScript \}\} \/>/);
+  assert.match(layout, /await headers\(\);/);
+  assert.doesNotMatch(layout, /dangerouslySetInnerHTML/);
   const proxySrc = readFileSync(join(ROOT, "proxy.ts"), "utf8");
   assert.match(proxySrc, /headers\.set\("x-nonce", nonce\)/);
   assert.match(proxySrc, /headers\.set\("content-security-policy", csp\)/, "Next.js reads the nonce from the request CSP header");

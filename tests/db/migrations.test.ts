@@ -98,7 +98,7 @@ after(async () => {
   await db.close();
 });
 
-test("the 2.0 set is six v2 migrations with reverses; the destructive pair stays post-cutover", () => {
+test("the 2.0 set is eight v2 migrations with reverses; the destructive pair stays post-cutover", () => {
   assert.deepEqual(newUp, [
     "20261016000000_v2_schema_role.sql",
     "20261016000001_v2_scan_runs_events.sql",
@@ -106,6 +106,8 @@ test("the 2.0 set is six v2 migrations with reverses; the destructive pair stays
     "20261016000003_v2_scan_budget.sql",
     "20261018000001_v2_scan_runs_cost.sql",
     "20261018000002_v2_token_tables_deny_policy.sql",
+    "20261021000001_v2_ui_user_board.sql",
+    "20261021000002_v2_exports.sql",
   ]);
   for (const f of newUp) assert.ok(readFileSync(downFor(f), "utf8").length > 0, f);
   assert.deepEqual(postUp, ["20261016000004_drop_deep_queue.sql", "20261016000005_drop_dead_quota.sql"]);
@@ -134,7 +136,7 @@ test("public, auth, realtime and extensions catalogs are identical before and af
 
 test("every v2 table has RLS on and a policy only for the server role; the role is least privilege", async () => {
   const t = await db.query<{ relname: string; rls: boolean }>("select c.relname, c.relrowsecurity as rls from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'v2' and c.relkind = 'r' order by 1");
-  assert.deepEqual(t.rows.map((r) => r.relname), ["cli_tokens", "oauth_clients", "oauth_codes", "owners", "reports", "scan_budget", "scan_events", "scan_rate_limit", "scan_runs"]);
+  assert.deepEqual(t.rows.map((r) => r.relname), ["cli_tokens", "exports", "oauth_clients", "oauth_codes", "owners", "reports", "scan_budget", "scan_events", "scan_rate_limit", "scan_runs", "user_scans"]);
   for (const r of t.rows) assert.equal(r.rls, true, r.relname);
   // Permissive policies grant to the server role only; the token tables carry a
   // restrictive always-false policy instead, so no v2 table is "RLS on, no policy".
@@ -192,12 +194,48 @@ test("one running run per (subject, sha); events broadcast on scan:<run_id>", as
     return runId;
   });
   {
-    const sent = await db.query<{ event: string; topic: string; private: boolean; payload: { seq: number } }>("select * from realtime.sent");
+    const sent = await db.query<{ event: string; topic: string; private: boolean; payload: { seq: number } }>("select * from realtime.sent where topic like 'scan:%'");
     assert.equal(sent.rows.length, 1);
     assert.equal(sent.rows[0]!.topic, `scan:${runId}`);
     assert.equal(sent.rows[0]!.event, "stage");
     assert.equal(sent.rows[0]!.private, false);
     assert.equal(sent.rows[0]!.payload.seq, 0);
+  }
+});
+
+test("runs carry an optional user id; user_scans is server-only; every report write broadcasts on 'board'", async () => {
+  const user = "5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a";
+  await db.query("delete from realtime.sent");
+  await asRole(async () => {
+    const guest = (await db.query<{ id: string; user_id: string | null }>("insert into v2.scan_runs (target_kind, subject, commit_sha) values ('github', 'acme/board', 'g1') returning id, user_id")).rows[0]!;
+    assert.equal(guest.user_id, null, "a guest run stores no user");
+    const mine = (await db.query<{ id: string }>("insert into v2.scan_runs (target_kind, subject, commit_sha, user_id) values ('github', 'acme/board', 'u1', $1::uuid) returning id", [user])).rows[0]!.id;
+    await db.query("insert into v2.user_scans (user_id, run_id) values ($1::uuid, $2::uuid)", [user, mine]);
+    await db.query("insert into v2.user_scans (user_id, run_id) values ($1::uuid, $2::uuid)", [user, guest.id]);
+    const rows = await db.query<{ n: number }>("select count(*)::int as n from v2.user_scans where user_id = $1::uuid", [user]);
+    assert.equal(rows.rows[0]!.n, 2);
+    await assert.rejects(db.query("delete from v2.user_scans"), /permission denied/, "history rows are append-only for the server role");
+    await assert.rejects(db.query("insert into v2.user_scans (user_id, run_id) values ($1::uuid, gen_random_uuid())", [user]), /foreign key/);
+
+    await db.query("insert into v2.reports (owner_login, repo_name, commit_sha, score, verdict, run_id) values ('acme', 'board', 'u1', 22, 'Malicious', $1::uuid)", [mine]);
+    await db.query("update v2.reports set score = 35, verdict = 'High risk' where owner_login = 'acme' and repo_name = 'board'");
+  });
+  const sent = await db.query<{ event: string; topic: string; private: boolean; payload: Record<string, unknown> }>("select * from realtime.sent where topic = 'board'");
+  assert.equal(sent.rows.length, 2, "one broadcast per insert and per update");
+  for (const r of sent.rows) {
+    assert.equal(r.event, "report");
+    assert.equal(r.private, false);
+    assert.deepEqual(Object.keys(r.payload).sort(), ["commit_sha", "created_at", "owner_login", "repo_name", "run_id", "score", "updated_at", "verdict"]);
+  }
+  assert.deepEqual([sent.rows[0]!.payload.score, sent.rows[0]!.payload.verdict], [22, "Malicious"]);
+  assert.deepEqual([sent.rows[1]!.payload.score, sent.rows[1]!.payload.verdict], [35, "High risk"]);
+  for (const role of ["anon", "authenticated"]) {
+    await db.exec(`set role ${role}`);
+    try {
+      await assert.rejects(db.query("select 1 from v2.user_scans"), /permission denied/, role);
+    } finally {
+      await db.exec("reset role");
+    }
   }
 });
 
@@ -298,5 +336,5 @@ test("down in reverse removes v2 and the role and leaves 1.0 identical; up again
   assert.equal(await catalogOf(UNTOUCHED), pre);
   for (const f of newUp) await apply(path.join(UP_DIR, f));
   const again = await db.query<{ n: number }>("select count(*)::int as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'v2' and c.relkind = 'r'");
-  assert.equal(again.rows[0]!.n, 9);
+  assert.equal(again.rows[0]!.n, 11);
 });
