@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import { Figtree } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
 
@@ -46,6 +47,9 @@ const geist = localFont({
   adjustFontFallback: "Arial",
 });
 
+/** Figtree, the iDesign Pockit face used by every 2.0 screen (CSS var --font-figtree). */
+const figtree = Figtree({ subsets: ["latin"], weight: ["400", "500", "600", "700"], display: "swap", variable: "--font-figtree" });
+
 const instrumentSerif = localFont({
   src: [
     { path: "./fonts/instrument-serif-latin.woff2", weight: "400", style: "normal" },
@@ -68,25 +72,6 @@ export const metadata: Metadata = {
   alternates: { canonical: siteUrl },
 };
 
-/**
- * No-flash theme init — runs in <head> before first paint so the page never
- * flashes the wrong theme. Faithful port of the prototype's componentDidMount
- * theme logic (`design-source/Claude Rabbit.dc.html`, lines ~1116–1125):
- * a saved 'cr-theme' wins; otherwise fall back to the OS preference; otherwise
- * stay on the default 'light' that is already set on <html>.
- */
-const themeInitScript = `
-(function(){
-  try {
-    var saved = localStorage.getItem('cr-theme');
-    if (saved === 'light' || saved === 'dark') {
-      document.documentElement.setAttribute('data-theme', saved);
-    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      document.documentElement.setAttribute('data-theme', 'dark');
-    }
-  } catch (e) {}
-})();
-`;
 
 /**
  * Async because it reads the per-request CSP nonce that proxy.ts puts on the
@@ -98,13 +83,14 @@ const themeInitScript = `
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const nonce = (await headers()).get("x-nonce") ?? undefined;
+  // Light theme only (2.0). Reading the nonce header keeps every page rendered per request, which the CSP nonce needs.
+  await headers();
   return (
     <html
       lang="en"
       data-theme="light"
       data-scroll-behavior="smooth"
-      className={`${geist.variable} ${instrumentSerif.variable}`}
+      className={`${figtree.variable} ${geist.variable} ${instrumentSerif.variable}`}
       suppressHydrationWarning
     >
       <head>
@@ -115,7 +101,7 @@ export default async function RootLayout({
           request. The font-family CSS variables set on <html> above are
           consumed by globals.css.
         */}
-        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <meta name="color-scheme" content="light" />
       </head>
       <body>{children}</body>
     </html>

@@ -1,0 +1,232 @@
+/* Sign in, ported from p3/Login.dc.html. Light theme only. */
+
+.l {
+  font-family: var(--font-figtree), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #121212;
+  letter-spacing: -0.022em;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  min-height: 100dvh;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+}
+
+.l *,
+.l *::before,
+.l *::after {
+  box-sizing: border-box;
+}
+
+.l a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.press {
+  transition:
+    transform 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 160ms ease;
+}
+.press:active {
+  transform: scale(0.97);
+}
+.press:focus-visible {
+  outline: 2px solid #1b77f3;
+  outline-offset: 3px;
+}
+
+.ghost:hover {
+  background: #1212120a;
+}
+
+.top {
+  padding: 20px clamp(16px, 3vw, 32px);
+  display: flex;
+  justify-content: space-between;
+}
+
+.back {
+  height: 48px;
+  padding: 0 16px 0 10px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.notNow {
+  height: 48px;
+  padding: 0 18px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(32px, 6vw, 96px);
+  padding: 24px 16px 80px;
+}
+
+.side {
+  flex: 0 1 460px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 36px;
+}
+
+.tagline {
+  margin: 0;
+  font-size: clamp(30px, 3vw, 44px);
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .side {
+    display: none;
+  }
+}
+
+.card {
+  flex: 0 1 420px;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 28px;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px rgba(18, 18, 18, 0.06),
+    0 30px 70px -40px rgba(18, 18, 18, 0.35);
+  padding: 40px 32px 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  animation: in 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes in {
+  from {
+    opacity: 0;
+    filter: blur(10px);
+    transform: translateY(14px);
+  }
+}
+
+.markTile {
+  width: 72px;
+  height: 72px;
+  border-radius: 28%;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px rgba(18, 18, 18, 0.06),
+    0 10px 24px -12px rgba(18, 18, 18, 0.28);
+  display: grid;
+  place-items: center;
+}
+
+.h1 {
+  margin: 24px 0 0;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.026em;
+}
+
+.sub {
+  margin: 10px 0 0;
+  font-size: 17px;
+  line-height: 1.45;
+  color: #676767;
+}
+
+.google {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  margin-top: 28px;
+  width: 100%;
+  height: 56px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px #b8b8b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: #121212;
+  letter-spacing: inherit;
+  /* `all: unset` above clears .press, so restate its transition. */
+  transition:
+    transform 120ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 160ms ease;
+}
+
+.google[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.error {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #b5102a;
+}
+
+.legal {
+  margin: 24px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #676767;
+}
+
+.legalLink {
+  position: relative;
+  color: #121212 !important;
+  text-decoration: underline !important;
+}
+
+/* Inline text links keep their drawn size; the hit area reaches 48px tall. */
+.legalLink::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100%, 48px);
+  height: 48px;
+  transform: translate(-50%, -50%);
+}
+
+.legalLink:focus-visible {
+  outline: 2px solid #1b77f3;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    animation: none;
+  }
+  .press:active {
+    transform: none;
+  }
+}

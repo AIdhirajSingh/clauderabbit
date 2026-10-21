@@ -1,14 +1,17 @@
-"use client";
+import type { Metadata } from "next";
+import { Gate } from "@/components/cr/gate/Gate";
 
 /**
- * The ClaudeRabbit single-page app entry. The full interactive prototype
- * (`design-source/Claude Rabbit.dc.html`) is ported under `components/spa`;
- * this route simply mounts it. The theme attribute is applied to <html> before
- * paint by the no-flash script in `app/layout.tsx`.
+ * `/` — the ClaudeRabbit marketing gate (Claude Design export p3/Gate.dc.html).
+ * The scanning platform itself lives at `/app`.
  */
 
-import { AppRoot } from "@/components/spa/AppRoot";
+export const metadata: Metadata = {
+  title: "ClaudeRabbit",
+  description:
+    "ClaudeRabbit is a security audit tool that scans open-source repositories and packages to protect the developer and builder community from malware. It is live, free and open source.",
+};
 
 export default function HomePage() {
-  return <AppRoot />;
+  return <Gate />;
 }
