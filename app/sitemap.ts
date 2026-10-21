@@ -10,6 +10,7 @@ import type { MetadataRoute } from "next";
 import { fetchRecentReportSlugs, type ReportSlug } from "@/lib/report-fetch";
 import { v2DbOrNull } from "@/lib/server/report-source";
 import { fetchV2Slugs } from "@/lib/server/report-v2";
+import { hidesLegacyRoutes } from "@/lib/server/preview-scope";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
@@ -17,6 +18,8 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  // The 2.0 preview lists 2.0 pages only; no 1.0 report slugs.
+  if (hidesLegacyRoutes()) return ["/", "/app", "/login"].map((p) => ({ url: new URL(p, process.env.NEXT_PUBLIC_SITE_URL ?? "https://clauderabbit.in").toString() }));
   const staticRoutes: MetadataRoute.Sitemap = [
     { url: SITE_URL, changeFrequency: "daily", priority: 1 },
     { url: `${SITE_URL}/privacy`, changeFrequency: "yearly", priority: 0.3 },

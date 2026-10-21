@@ -29,6 +29,8 @@ import { AdSlot } from "@/components/ads/AdSlot";
 import { webAdFor } from "@/lib/ads-web";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import type { Report } from "@/lib/types";
+import { notFound } from "next/navigation";
+import { hidesLegacyRoutes } from "@/lib/server/preview-scope";
 
 // Rendered per request (the CSP nonce, see proxy.ts); the report data itself is
 // cached for 10 minutes and expired by a fresh scan (lib/server/report-cache.ts).
@@ -66,6 +68,7 @@ const getLatestReport = cache(async function getLatestReport(
 });
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {
+  if (hidesLegacyRoutes()) notFound();
   const { pkg } = await params;
   const name = packageName(pkg);
   const report = await getLatestReport(name);
@@ -143,6 +146,7 @@ function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
 }
 
 export default async function NpmReportPage({ params }: RouteParams) {
+  if (hidesLegacyRoutes()) notFound();
   const { pkg } = await params;
   const name = packageName(pkg);
   const report = await getLatestReport(name);

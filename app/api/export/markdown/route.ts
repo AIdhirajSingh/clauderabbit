@@ -14,6 +14,7 @@
 
 import { latestReport } from "@/lib/server/report-source";
 import { reportToMarkdown } from "@/lib/export-markdown";
+import { hidesLegacyRoutes, plainNotFound } from "@/lib/server/preview-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +44,7 @@ function json(body: unknown, status: number): Response {
 }
 
 export async function GET(req: Request): Promise<Response> {
+  if (hidesLegacyRoutes()) return plainNotFound();
   const url = new URL(req.url);
   const owner = url.searchParams.get("owner");
   const repo = url.searchParams.get("repo");

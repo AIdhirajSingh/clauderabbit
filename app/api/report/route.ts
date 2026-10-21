@@ -7,6 +7,7 @@
 
 import { isValidSlug } from "@/lib/report-fetch";
 import { latestReport } from "@/lib/server/report-source";
+import { hidesLegacyRoutes, plainNotFound } from "@/lib/server/preview-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +15,7 @@ export const dynamic = "force-dynamic";
 const SEGMENT_RE = /^[A-Za-z0-9._@-]{1,214}$/;
 
 export async function GET(req: Request): Promise<Response> {
+  if (hidesLegacyRoutes()) return plainNotFound();
   const url = new URL(req.url);
   const owner = url.searchParams.get("owner") ?? "";
   const repo = url.searchParams.get("repo") ?? "";

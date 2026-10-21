@@ -2,6 +2,8 @@ import { ImageResponse } from "next/og";
 import { buildReportView } from "@/lib/report-view";
 import { latestReport } from "@/lib/server/report-source";
 import { band } from "@/lib/score";
+import { notFound } from "next/navigation";
+import { hidesLegacyRoutes } from "@/lib/server/preview-scope";
 
 /**
  * Per-report OG/Twitter card image — overrides the site-wide default
@@ -34,6 +36,7 @@ const BAND_HEX: Record<ReturnType<typeof band>, string> = {
 };
 
 export default async function ReportOpengraphImage({ params }: RouteParams) {
+  if (hidesLegacyRoutes()) notFound();
   const { owner, repo } = await params;
   const slug = `${owner}/${repo}`;
 

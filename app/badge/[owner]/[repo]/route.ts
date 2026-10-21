@@ -12,6 +12,7 @@
 
 import { latestScore } from "@/lib/server/report-source";
 import { band } from "@/lib/score";
+import { hidesLegacyRoutes, plainNotFound } from "@/lib/server/preview-scope";
 
 export const revalidate = 600;
 
@@ -55,6 +56,7 @@ function badgeSvg(label: string, value: string, color: string): string {
 }
 
 export async function GET(_req: Request, { params }: RouteParams): Promise<Response> {
+  if (hidesLegacyRoutes()) return plainNotFound();
   const { owner, repo } = await params;
 
   const score = await latestScore(owner, repo);

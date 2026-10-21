@@ -35,6 +35,7 @@ import { existsSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
 import type { Browser } from "puppeteer-core";
+import { hidesLegacyRoutes, plainNotFound } from "@/lib/server/preview-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -174,6 +175,7 @@ const PDF_WIDTH_PX = 960;
 const CSS_PX_PER_INCH = 96;
 
 export async function GET(req: Request): Promise<Response> {
+  if (hidesLegacyRoutes()) return plainNotFound();
   const url = new URL(req.url);
   const owner = url.searchParams.get("owner");
   const repo = url.searchParams.get("repo");
