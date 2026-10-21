@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 20; // 20: no 404 for other-platform metadata (pnpm 12 fails the install on it)
+export const SCORE_RULES = 21; // 21: package-manager timeouts on the real clock; a failed root script is not a cut install; the install trace folds package-manager file lines
+// 20: no 404 for other-platform metadata (pnpm 12 fails the install on it)
 // 19: registry traffic streams through the forge, so installs that timed out now complete
 // 18: workspaces install only what runs; reach follows the install plan
 // 17 was: // 17: key-shaped strings are not a deduction; partial scans keep Low risk on pattern hits alone

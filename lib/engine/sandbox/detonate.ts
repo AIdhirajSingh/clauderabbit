@@ -203,6 +203,12 @@ export async function parseForensicBundle(
   }
   for (const c of checks) {
     if (c.ok) continue;
+    if (c.name === "root_script") {
+      // The dependencies and their scripts ran and are scored; only the repo's own
+      // lifecycle script failed, so coverage is not reduced.
+      gaps.push(`The repo's own install script failed after its dependencies installed (${c.detail ?? "unspecified"}); what ran before it was observed and scored.`);
+      continue;
+    }
     if (c.name === "forensics_truncated") gaps.push(`Forensic files were cut at the size cap (${c.detail ?? "unspecified"}), so records past the cut were not observed.`);
     else if (c.name === "canary_file_scan") gaps.push(`The canary search of written files did not finish (${c.detail ?? "unspecified"}).`);
     else if (c.name === "forensics_collected") gaps.push(`The forensic bundle was incomplete (${c.detail ?? "unspecified"}).`);

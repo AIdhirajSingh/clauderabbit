@@ -123,6 +123,7 @@ export function buildTemplate() {
       .copy("guest/cr-detonate.sh", "/opt/cr/bin/cr-detonate.sh", { mode: 0o755 })
       .copy("guest/cr-analyze.sh", "/opt/cr/bin/cr-analyze.sh", { mode: 0o755 })
       .copy("guest/cr-yara.py", "/opt/cr/bin/cr-yara.py", { mode: 0o755 })
+      .copy("guest/cr-trace-fold.py", "/opt/cr/bin/cr-trace-fold.py", { mode: 0o755 })
       .copy("guest/cr-smoke.sh", "/opt/cr/bin/cr-smoke.sh", { mode: 0o755 })
       .copy("guest/cr-proof.sh", "/opt/cr/bin/cr-proof.sh", { mode: 0o755 })
       .copy("guest/cr-drops.sh", "/opt/cr/bin/cr-drops.sh", { mode: 0o755 })

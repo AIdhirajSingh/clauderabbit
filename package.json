@@ -12,7 +12,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/resolve-ts.mjs --test \"tests/**/*.test.ts\" \"app/**/*.test.ts\" \"components/**/*.test.ts\" \"lib/**/*.test.ts\"",
-    "test:python": "python3 -m unittest sandbox/e2b/guest/test_forge_core.py",
+    "test:python": "python3 -m unittest sandbox/e2b/guest/test_forge_core.py sandbox/e2b/guest/test_trace_fold.py",
     "template:build": "node sandbox/e2b/build.ts"
   },
   "dependencies": {

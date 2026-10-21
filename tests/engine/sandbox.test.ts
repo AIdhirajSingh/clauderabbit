@@ -204,6 +204,15 @@ test("guest harness keeps the safety invariants", () => {
   assert.match(sh, /FAKETIME="\+0 x\$FAKE_RATE"/);
   const policy = JSON.parse(readFileSync(join(ROOT, "sandbox/e2b/guest/policy.json"), "utf8"));
   assert.deepEqual(policy.registries.npm, ["registry.npmjs.org", "registry.yarnpkg.com"]);
+  // Package-manager network timeouts are multiplied by the install clock factor.
+  assert.match(sh, /PNPM_FETCH_MS=\$\(\(60000 \* FAKE_RATE\)\)/);
+  assert.match(sh, /npm_config_fetch_timeout="\$NET_FETCH_MS"/);
+  assert.match(sh, /PNPM_FLAGS="[^"]*\$PNPM_TIMEOUTS"/);
+  assert.match(sh, /minimum-release-age=0 \$PNPM_TIMEOUTS \$F"/, "the filtered pnpm install carries the timeouts too");
+  // A failed root lifecycle script is recorded and the install is scored as completed.
+  assert.match(sh, /INSTALL_STATUS=completed\n\s+check root_script false/);
+  // The install trace is folded before the size cap is applied.
+  assert.ok(sh.indexOf("cr-trace-fold.py") > 0 && sh.indexOf("cr-trace-fold.py") < sh.indexOf("for f in trace.install trace.entry"));
 });
 
 test("detonate: an overrun salvages the live forensic files, keeps their evidence, and marks coverage lost", async () => {

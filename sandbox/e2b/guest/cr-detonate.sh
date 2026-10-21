@@ -222,13 +222,25 @@ printf 'github.com:\n    oauth_token: %s\n    user: cr\n' "${CANARY[GITHUB_TOKEN
 printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}\n' "$(printf 'cr:%s' "${CANARY[GITHUB_TOKEN]}" | base64 -w0)" | write_decoy "$H/.docker/config.json"
 printf 'https://cr:%s@github.com\n' "${CANARY[GITHUB_TOKEN]}" | write_decoy "$H/.git-credentials"
 
+# The install runs on a clock FAKE_RATE times fast (to trip time-delayed
+# payloads). The package manager cannot be given the real clock on its own: npm
+# and yarn run lifecycle scripts in the same node binaries libfaketime would have
+# to tell apart. So every package-manager network timeout is multiplied by the
+# clock factor instead; each stays its default length in real time.
+NET_FETCH_MS=$((300000 * FAKE_RATE))   # npm fetch-timeout, default 5 min
+PNPM_FETCH_MS=$((60000 * FAKE_RATE))   # pnpm fetch-timeout, default 60 s
+RETRY_MIN_MS=$((10000 * FAKE_RATE))    # fetch-retry-mintimeout, default 10 s
+RETRY_MAX_MS=$((60000 * FAKE_RATE))    # fetch-retry-maxtimeout, default 60 s
+PNPM_TIMEOUTS="--config.fetch-timeout=$PNPM_FETCH_MS --config.fetch-retry-mintimeout=$RETRY_MIN_MS --config.fetch-retry-maxtimeout=$RETRY_MAX_MS"
 BASE_ENV=(
   HOME="$H" USER="$CR_USER" LOGNAME="$CR_USER" SHELL=/bin/bash LANG=C.UTF-8 TMPDIR=/tmp
   PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin"
   LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 FAKETIME_NO_CACHE=1
   NODE_EXTRA_CA_CERTS=/etc/cr/ca.pem SSL_CERT_FILE=/etc/cr/ca.pem REQUESTS_CA_BUNDLE=/etc/cr/ca.pem UV_SYSTEM_CERTS=1
   NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
-  npm_config_fetch_timeout=3600000 npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
+  npm_config_fetch_timeout="$NET_FETCH_MS" npm_config_fetch_retry_mintimeout="$RETRY_MIN_MS" npm_config_fetch_retry_maxtimeout="$RETRY_MAX_MS"
+  npm_config_network_timeout="$PNPM_FETCH_MS" YARN_HTTP_TIMEOUT="$PNPM_FETCH_MS" YARN_NETWORK_TIMEOUT="$PNPM_FETCH_MS" UV_HTTP_TIMEOUT=$((30 * FAKE_RATE))
+  npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
   npm_config_update_notifier=false npm_config_cache="$H/.npm" CI=true
   npm_config_maxsockets=16 npm_config_network_concurrency=16 npm_config_dangerously_allow_all_builds=true
   COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack" COREPACK_ENABLE_STRICT=0
@@ -282,7 +294,7 @@ else
         # metadata for every lockfile entry before installing anything (1,307 requests on
         # a large workspace, 10 s each through the forge), whatever the filter. The scan
         # installs the exact locked versions and is itself the check, so the policy is off here.
-        PNPM_FLAGS="--prod --prefer-frozen-lockfile --config.minimum-release-age=0"
+        PNPM_FLAGS="--prod --prefer-frozen-lockfile --config.minimum-release-age=0 $PNPM_TIMEOUTS"
         INSTALL_CMD="pnpm install $PNPM_FLAGS"
         # pnpm-lock v6 to v8 mark build-script packages requiresBuild; v9 does not record it.
         PDEV=$(grep -c '^  /' /work/src/pnpm-lock.yaml 2>/dev/null || echo 0)
@@ -340,7 +352,7 @@ else
       case "$PM" in
         pnpm)
           F="--filter ${WS_ROOT:-.}"; for n in $WS_NAMES; do F="$F --filter $n"; done
-          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile --config.minimum-release-age=0 $F" ;;
+          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile --config.minimum-release-age=0 $PNPM_TIMEOUTS $F" ;;
         yarn)
           INSTALL_CMD="(yarn workspaces focus --production $WS_ROOT $WS_NAMES || yarn install)" ;;
         *)
@@ -392,6 +404,20 @@ if [ -n "$INSTALL_CMD" ]; then
     124|137) INSTALL_STATUS=timeout; pkill -KILL -u "$CR_UID" || true ;;
     *) INSTALL_STATUS=failed ;;
   esac
+  # A failed root lifecycle script (the repo's own preinstall, install,
+  # postinstall or prepare, run after every dependency is installed) is not a
+  # cut install: the dependencies and their scripts ran and are scored. The
+  # failure is recorded.
+  if [ "$INSTALL_STATUS" = failed ] && [ "$ECO" = npm ]; then
+    RS=$(cat "$OUT/install.out" "$OUT/install.err" 2>/dev/null | grep -aoE "^\. (preinstall|install|postinstall|prepare): Failed|$WORKDIR (preinstall|install|postinstall|prepare): .*exit status: [0-9]+|YN0009: .*@workspace:\. couldn't build successfully.*" | tail -n 1 || true)
+    if [ -z "$RS" ] && grep -aqE "^npm (error|ERR!) path $WORKDIR\$" "$OUT/install.err" 2>/dev/null && grep -aqE "^npm (error|ERR!) command failed" "$OUT/install.err" 2>/dev/null; then
+      RS="npm: $(grep -aoE '^> [^ ]+ (preinstall|install|postinstall|prepare)$' "$OUT/install.out" 2>/dev/null | tail -n 1 | awk '{print $NF}') of $WORKDIR failed"
+    fi
+    if [ -n "$RS" ]; then
+      INSTALL_STATUS=completed
+      check root_script false "the repo's own lifecycle script failed (exit $INSTALL_EXIT): ${RS:0:300}"
+    fi
+  fi
   log "install $INSTALL_STATUS exit=$INSTALL_EXIT ms=$INSTALL_MS"
   # Registry pass-through (forge_addon.py): time from request to response headers.
   RT=$(jq -rs '[.[] | select(.forged_kind == "registry" and .pass == true and (.ms | type) == "number") | .ms] | sort
@@ -572,6 +598,16 @@ if [ -f "$OUT/capture.jsonl" ] && [ "$(stat -c %s "$OUT/capture.jsonl")" -gt "$C
   fi
   truncate -s "<$CAP" "$OUT/capture.jsonl"
   check forensics_truncated false "capture.jsonl ${SIZE} bytes cut to 8 MB, scored records first"
+fi
+# The package manager's own store and node_modules writes are folded into counts
+# first (cr-trace-fold.py); script lines, execs, connects and sends all stay.
+if [ -f "$OUT/trace.install" ] && [ "$(stat -c %s "$OUT/trace.install")" -gt "$CAP" ]; then
+  SIZE=$(stat -c %s "$OUT/trace.install")
+  if FOLD=$(timeout 30 python3 /opt/cr/bin/cr-trace-fold.py "$OUT/trace.install" "$H" "$OUT/trace.install.folded.json" 2>"$RUN/fold.err"); then
+    check trace_folded true "trace.install ${SIZE} to $(stat -c %s "$OUT/trace.install") bytes: ${FOLD% *} package-manager file lines folded into counts, ${FOLD#* } lines kept"
+  else
+    check trace_folded false "fold did not finish: $(head -c 200 "$RUN/fold.err")"
+  fi
 fi
 for f in trace.install trace.entry; do
   if [ -f "$OUT/$f" ] && [ "$(stat -c %s "$OUT/$f")" -gt "$CAP" ]; then
