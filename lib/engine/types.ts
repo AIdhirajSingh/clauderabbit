@@ -288,6 +288,8 @@ export interface ReportPayload {
    * `writer` field says which. Absent on reports written before this field.
    */
   luna_report?: { what_ran: string; what_matters: string };
+  /** Install did not finish or the entry point did not run: the score covers only what was observed. */
+  partial?: boolean;
   /**
    * What the sandbox run did, built in code from the run's facts (lib/engine/ran.ts).
    * Every field the run did not establish is null. Absent on reports written before

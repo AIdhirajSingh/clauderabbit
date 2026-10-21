@@ -170,6 +170,8 @@ export function validateLunaReport(report: LunaReport, ctx: WriterContext): { ok
     if (MD_LIST_RE.test(text)) reasons.push(`${name} has a markdown list`);
   }
   if (/\bsafe\b/i.test(both)) reasons.push("banned: safe");
+  const internal = both.match(INTERNAL_WORDS);
+  if (internal) reasons.push(`internal word: ${internal[0]}`);
   for (const b of findBanned(both)) if (b !== "safe") reasons.push(`banned: ${b}`);
   const model = both.match(MODEL_NAME_RE);
   if (model) reasons.push(`names a model: ${model[0]}`);
@@ -234,7 +236,7 @@ export const WRITER_SYSTEM = [
   "- summary: at most 600 characters, in this order: what the sandbox run observed; what static analysis and the Jev checks found in reachable code; any known malicious dependency; then a separate sentence that starts with 'Reputation, separate from code:' carrying the reputation facts; and last, what was not verified, taken from not_verified.",
   "- report.what_ran: one plain-English paragraph of at most 300 characters for a reader who is not a security expert: what we ran (installed the package and ran its entry point in a throwaway sandbox, scanned the reachable code) and what happened.",
   "- report.what_matters: one plain-English paragraph of at most 300 characters: what matters in this result and what the reader does next, matched to the verdict (for Malicious or High risk: do not install; for Caution: read the flagged code first; otherwise: pin the scanned version), ending with the most important item of not_verified.",
-  "- The two report paragraphs: no headings, no lists, no markdown, no line breaks, and no model or product names (write 'a model check', never Jev or Luna).",
+  "- The two report paragraphs: no headings, no lists, no markdown, no line breaks, and no model or product names (write 'our code review', never Jev or Luna). Builder language only: never write forensic, record of, model check, fence, heuristic, canary, reachable finding, Semgrep, YARA, GuardDog or OSV. Say 'pattern checks' for heuristics, 'the malware database' for OSV, 'flagged code' for findings, 'the install did not finish' for a timeout.",
   "",
   "Rules that a validator enforces. Text that breaks one is discarded and a fixed template is published instead:",
   "- The score and verdict are final. Mention the verdict phrase given and no other verdict phrase. If you write a number out of 100 it must equal the score.",
@@ -326,6 +328,32 @@ function fitSentences(sentences: string[], max: number): string {
 }
 
 /**
+ * Words a builder should not meet in the report: pipeline internals and tool names.
+ * The validator rejects them; plainWords() rewrites them for the deterministic path.
+ */
+export const INTERNAL_WORDS = /\b(forensic|model checks?|fences?|heuristics?|semgrep|yara|guard\s?dog|osv|mitm\w*|strace|faketime|harness|canar(y|ies)|reachable finding)\b/i;
+
+export function plainWords(text: string): string {
+  return text
+    .replace(/\b(\d+) reachable finding location\(s\)/gi, (_m, n: string) => `${n} flagged ${n === "1" ? "place" : "places"} in code that can run`)
+    .replace(/\breachable finding location\(s\)/gi, "flagged places in code that can run")
+    .replace(/\bcomplete forensic record\b/gi, "full record of the run")
+    .replace(/\bforensic record\b/gi, "record of the run")
+    .replace(/\bforensic\s*/gi, "")
+    .replace(/\bthe (install|flagged|docs) model check\b/gi, "our code review")
+    .replace(/\bmodel checks?\b/gi, "our code review")
+    .replace(/\bstatic heuristics\b/gi, "pattern checks")
+    .replace(/\bheuristics?\b/gi, "pattern check")
+    .replace(/\b(semgrep|yara|guard\s?dog)\b(,\s*)?/gi, "")
+    .replace(/\bosv\b/gi, "the malware database")
+    .replace(/\bcanar(y|ies)\b/gi, "planted test credential")
+    .replace(/\bfences?\b/gi, "network lock")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
  * The two report paragraphs from data alone (the deterministic writer path).
  * Always passes validateLunaReport for the same score, verdict and sandbox.
  */
@@ -365,7 +393,7 @@ export function deterministicLunaReport(input: Pick<WriterInput, "score" | "verd
   }
   let whatRan = fitSentences(ran, PARAGRAPH_MAX);
   if (seen === "not_observed" && !/not observed/i.test(whatRan)) whatRan = fitSentences([ran[0]!, "The run did not produce a complete record, so install-time and runtime behaviour were not observed"], PARAGRAPH_MAX);
-  return { what_ran: whatRan, what_matters: whatMatters };
+  return { what_ran: fitSentences([plainWords(whatRan)], PARAGRAPH_MAX), what_matters: fitSentences([plainWords(whatMatters)], PARAGRAPH_MAX) };
 }
 
 /** Deterministic headline, summary and report paragraphs from the breakdown. Always passes both validators. */
@@ -442,7 +470,7 @@ export async function writeReport(model: ModelAdapter, input: WriterInput, signa
       const out: WriterOutput = {
         headline: r.value.headline.trim(),
         summary: r.value.summary.trim(),
-        report: { what_ran: repairParagraph(r.value.report.what_ran), what_matters: repairParagraph(r.value.report.what_matters) },
+        report: { what_ran: plainWords(repairParagraph(r.value.report.what_ran)), what_matters: plainWords(repairParagraph(r.value.report.what_matters)) },
       };
       const v = validateWriterOutput(out, ctx);
       const p = validateLunaReport(out.report, ctx);

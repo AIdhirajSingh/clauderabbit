@@ -888,6 +888,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     band: result.band,
     summary: written.summary,
     luna_report: written.report,
+    ...(result.partial ? { partial: true } : {}),
     ...(ran ? { ran } : {}),
     // A dependency danger with clean own code says so plainly, whatever the writer wrote.
     headline: result.label ? `${result.verdict}: ${result.label}` : written.headline,

@@ -61,7 +61,7 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 16; // 16: platform-only dev packages are not run (stated)
+export const SCORE_RULES = 17; // 17: key-shaped strings are not a deduction; partial scans keep Low risk on pattern hits alone
 
 /** A per-run canary value left the VM (request, DNS name) or was copied into a written file. */
 export const W_CANARY = -70;
@@ -329,6 +329,8 @@ export interface ScoreResult {
   notVerified: string[];
   /** Set when the repo's own code is clean and a dependency carries a known malicious record. */
   label?: string;
+  /** Install timed out or failed, or the entry point did not run: the score covers only what was observed. */
+  partial: boolean;
 }
 
 const OS_NAMES: Record<string, string> = { darwin: "macOS", linux: "Linux", win32: "Windows", freebsd: "FreeBSD" };
@@ -346,6 +348,9 @@ export function dependencyLabel(deps: MaliciousDependency[]): string {
   const more = deps.length > 3 ? ` and ${deps.length - 3} more` : "";
   return `Own code: clean. Danger in a dependency: ${parts.join("; ")}${more}.`;
 }
+
+/** The lowest score a partial scan reaches on static pattern hits alone: the bottom of Low risk. */
+export const PARTIAL_SCAN_FLOOR = 80;
 
 export function verdictFor(score: number): Verdict {
   if (score >= 90) return "No threats observed";
@@ -420,10 +425,24 @@ function checkPoints(f: TaggedCheckFinding): number {
   return f.severity === "high" ? W_CHECK_HIGH : f.severity === "medium" ? W_CHECK_MEDIUM : 0;
 }
 
+/**
+ * A finding that only says "this string looks like a key or secret". Seeing one in
+ * source is not malware: it costs points only when the sandbox saw it read and sent
+ * out (the canary and decoy behaviour deductions). Otherwise it is one Not verified line.
+ */
+const KEY_SHAPED_RULE = /secret|private[_.-]?key|api[_.-]?key|access[_.-]?key|token|credential|password/i;
+export function isKeyShapedFinding(f: { rule: string }): boolean {
+  return KEY_SHAPED_RULE.test(f.rule);
+}
+
 interface StaticTally {
   total: number;
   deltas: ScoreDelta[];
   reachableHigh: boolean;
+  /** Files with key-shaped strings that were not counted. */
+  keyShapedFiles: number;
+  /** Reachable locations the model judged malicious or suspicious. */
+  checkHits: number;
   /** Reachable locations Jev could not decide on. */
   unclear: string[];
 }
@@ -435,7 +454,12 @@ function staticTally(staticFindings: TaggedFinding[], checks: TaggedCheckFinding
     if (!prev || points < prev.points) best.set(key, { points, label, high: high || (prev?.high ?? false) });
     else if (high) prev.high = true;
   };
+  const keyShaped = new Set<string>();
   for (const f of staticFindings) {
+    if (isKeyShapedFinding(f)) {
+      keyShaped.add(f.file);
+      continue;
+    }
     if (f.reach === "unreachable") continue;
     const p = staticPoints(f);
     if (p === 0) continue;
@@ -443,6 +467,7 @@ function staticTally(staticFindings: TaggedFinding[], checks: TaggedCheckFinding
     consider(key, p, `${f.source} ${f.rule} at ${f.file}${f.line ? `:${f.line}` : ""} (${f.reach})`, f.severity === "high");
   }
   const unclear: string[] = [];
+  let checkHits = 0;
   for (const f of checks) {
     if (f.reach === "unreachable") continue;
     if (f.verdict === "unclear") {
@@ -451,6 +476,7 @@ function staticTally(staticFindings: TaggedFinding[], checks: TaggedCheckFinding
     }
     const p = checkPoints(f);
     if (p === 0) continue;
+    checkHits++;
     const key = `${f.file}:${f.line ?? `check:${f.check}:${f.question}`}`;
     consider(key, p, `Jev ${f.check} check: ${f.verdict} at ${f.file}${f.line ? `:${f.line}` : ""} (${f.reach}${f.probability !== null ? `, p=${f.probability.toFixed(2)}` : ""})`, f.severity === "high");
   }
@@ -467,7 +493,7 @@ function staticTally(staticFindings: TaggedFinding[], checks: TaggedCheckFinding
       evidence: entries.map((e) => `${e.points}: ${e.label}`).slice(0, 25),
     });
   }
-  return { total, deltas, reachableHigh: entries.some((e) => e.high), unclear: [...new Set(unclear)].sort() };
+  return { total, deltas, reachableHigh: entries.some((e) => e.high), keyShapedFiles: keyShaped.size, checkHits, unclear: [...new Set(unclear)].sort() };
 }
 
 function docsDelta(input: ScoreInput): ScoreDelta | null {
@@ -573,7 +599,10 @@ export function computeScore(input: ScoreInput): ScoreResult {
 
   const raw = Math.min(100, Math.max(0, BASE + B + I + Math.max(S, FLOOR_STATIC) + D + R));
   let score = raw;
+  // The lowest coverage cap that applied: a partial-scan floor never lifts past it.
+  let ceiling = 100;
   const applyCap = (cap: number, code: string, detail: string) => {
+    ceiling = Math.min(ceiling, cap);
     if (score > cap) {
       breakdown.push({ group: "cap", code, points: cap - score, detail });
       score = cap;
@@ -648,6 +677,16 @@ export function computeScore(input: ScoreInput): ScoreResult {
     breakdown.push({ group: "cap", code: "no_behaviour_floor", points: STATIC_ONLY_FLOOR - score, detail: `Nothing bad was observed when the code ran: without sandbox behaviour the score stays in Caution (at least ${STATIC_ONLY_FLOOR}).` });
     score = STATIC_ONLY_FLOOR;
   }
+  // A partial scan (install did not finish or the entry point did not run) scores only
+  // what was observed: with no behaviour, no intel and no code the model judged
+  // malicious or suspicious, static pattern hits alone never drop it below Low risk.
+  const partial = input.install !== "completed" || input.entry !== "completed";
+  const partialFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
+  if (partial && B === 0 && I === 0 && st.checkHits === 0 && score < partialFloor) {
+    breakdown.push({ group: "cap", code: "partial_scan_floor", points: partialFloor - score, detail: `Partial scan: nothing bad was seen while it ran, so pattern hits alone keep the score at ${partialFloor} or more.` });
+    score = partialFloor;
+  }
+  if (st.keyShapedFiles > 0) notVerified.push(`Key-shaped strings in ${st.keyShapedFiles} ${st.keyShapedFiles === 1 ? "file" : "files"}, never seen leaving the machine.`);
   if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {
     // Fully observed and nothing taken off: the code evidence alone earns the top
     // band, whatever the reputation group says.
@@ -669,5 +708,6 @@ export function computeScore(input: ScoreInput): ScoreResult {
     breakdown,
     notVerified: unique,
     ...(label ? { label } : {}),
+    partial,
   };
 }

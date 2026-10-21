@@ -486,3 +486,37 @@ test("score: package-manager traffic alone can never produce Malicious or High r
   assert.equal(exfil.canaryHits.length, 1);
   assert.deepEqual(exfil.nonDistributionHosts, ["registry.npmjs.org"]);
 });
+
+test("key-shaped strings are never a deduction by themselves; they become one Not verified line", () => {
+  const keys = [
+    sf({ rule: "heur.secret.private_key", file: "apps/a/form.tsx", line: 10 }),
+    sf({ rule: "heur.secret.api_key", file: "apps/b/env.ts", line: 3 }),
+    sf({ rule: "heur.secret.private_key", file: "apps/b/env.ts", line: 9 }),
+  ];
+  const r = computeScore(input({ staticFindings: keys }));
+  assert.equal(r.breakdown.some((d) => d.code === "reachable_static_findings"), false);
+  assert.ok(r.notVerified.includes("Key-shaped strings in 2 files, never seen leaving the machine."));
+  // The same key seen leaving the machine is a behaviour deduction, scored in full.
+  const leaked = computeScore(input({ staticFindings: keys, behaviour: { ...NO_BEHAVIOUR, canaryHits: ["AWS_ACCESS_KEY_ID sent to c2.example (https, install)"] } }));
+  assert.ok(leaked.breakdown.some((d) => d.code === "canary_exfiltration"));
+  assert.ok(leaked.score < 20);
+});
+
+test("a partial scan with only pattern hits stays at Low risk and says it is partial; caps still win", () => {
+  const hits = [sf({}), sf({ file: "b.js", line: 2 }), sf({ file: "c.js", line: 3 }), sf({ file: "d.js", line: 4 })];
+  const partial = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits }));
+  assert.equal(partial.partial, true);
+  assert.equal(partial.score, 80);
+  assert.equal(partial.verdict, "Low risk");
+  assert.ok(partial.breakdown.some((d) => d.code === "partial_scan_floor"));
+  // A complete scan with the same hits is not lifted.
+  const complete = computeScore(input({ staticFindings: hits }));
+  assert.equal(complete.partial, false);
+  assert.ok(complete.score < 80);
+  // A lost record caps lower; the floor never lifts past a cap that applied.
+  const lost = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits, forensics: { coverage: "lost", gaps: [] } }));
+  assert.ok(lost.score <= CAP_FORENSICS_LOST + 1);
+  // Behaviour seen in the sandbox is never floored away.
+  const seen = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits, behaviour: { ...NO_BEHAVIOUR, decoyReads: ["/home/cr/.aws/credentials"] } }));
+  assert.ok(seen.score < 80);
+});

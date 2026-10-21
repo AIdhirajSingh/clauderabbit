@@ -394,6 +394,7 @@ export function ScanView({ runId }: { runId: string }) {
             <div style={{ display: "flex", alignItems: "flex-end", flexWrap: "wrap", gap: "12px 18px" }}>
               <span className={s.bigScore}>{report.score}</span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 40, padding: "0 16px", borderRadius: 999, fontSize: 17, fontWeight: 600, ...tone.pill }}><VerdictGlyph verdict={report.verdict} />{report.verdict}</span>
+              {report.partial && <span style={{ display: "inline-flex", alignItems: "center", height: 32, padding: "0 12px", borderRadius: 999, background: "var(--muted)", color: "var(--text)", fontSize: 14, fontWeight: 600 }}>Partial scan</span>}
               <span style={{ fontSize: 14, color: "var(--text2)", marginBottom: 8, fontVariantNumeric: "tabular-nums" }}>{Math.max(1, Math.round(totalMs / 1000))} s</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "20px 22px", borderRadius: 20, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)" }}>
