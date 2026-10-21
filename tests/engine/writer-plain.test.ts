@@ -13,3 +13,8 @@ test("Luna's paragraphs: internal words become builder words, and none survive",
   assert.match(out, /our code review/);
   assert.match(out, /the malware database/);
 });
+
+test("a canary credential becomes one planted test credential, never doubled", () => {
+  assert.equal(plainWords("A per-run canary credential left the sandbox."), "a planted test credential left the sandbox.");
+  assert.equal(plainWords("The canary credentials were read."), "The planted test credential were read.");
+});

@@ -47,7 +47,7 @@ export function evidenceLines(evidence: readonly string[] | undefined, cap = 3):
 }
 
 /** Tool and pipeline names a builder should not need to know. */
-const INTERNAL = /\b(semgrep|yara(-x)?|guarddog|osv(\.dev)?|mitmproxy|mitmdump|jev|luna|faketime|harness|forensic(s)?)\b/i;
+const INTERNAL = /\b(semgrep|yara(-x)?|guarddog|osv(\.dev)?|mitmproxy|mitmdump|jev|luna|faketime|harness|forensic(s)?|fence|datagrams?|lockfile v\d+|size cap)\b/i;
 
 /** Not verified, as short plain bullets: at most three up front, the rest behind "More". */
 export function notVerifiedBullets(items: readonly string[], cap = 3): { shown: string[]; more: string[] } {

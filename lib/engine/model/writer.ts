@@ -337,6 +337,7 @@ export function plainWords(text: string): string {
   return text
     .replace(/\b(\d+) reachable finding location\(s\)/gi, (_m, n: string) => `${n} flagged ${n === "1" ? "place" : "places"} in code that can run`)
     .replace(/\breachable finding location\(s\)/gi, "flagged places in code that can run")
+    .replace(/\breachable findings?\b/gi, "flagged code")
     .replace(/\bcomplete forensic record\b/gi, "full record of the run")
     .replace(/\bforensic record\b/gi, "record of the run")
     .replace(/\bforensic\s*/gi, "")
@@ -346,6 +347,8 @@ export function plainWords(text: string): string {
     .replace(/\bheuristics?\b/gi, "pattern check")
     .replace(/\b(semgrep|yara|guard\s?dog)\b(,\s*)?/gi, "")
     .replace(/\bosv\b/gi, "the malware database")
+    .replace(/\b(?:a\s+)?per-run canar(?:y|ies) credentials?\b/gi, "a planted test credential")
+    .replace(/\bcanar(?:y|ies) credentials?\b/gi, "planted test credential")
     .replace(/\bcanar(y|ies)\b/gi, "planted test credential")
     .replace(/\bfences?\b/gi, "network lock")
     .replace(/\(\s*\)/g, "")
