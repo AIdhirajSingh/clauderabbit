@@ -32,6 +32,7 @@ const PAYLOAD: ReportPayload = {
   evidence: { behaviour: ["POST http://c2.cr-fixture.invalid/collect carried the AWS canary"], code: ["postinstall runs beacon.js"], reputation: ["owner account is 3 days old"] },
   breakdown: [{ group: "behaviour", code: "canary_exfil", points: -70, detail: "canary left the VM" }],
   not_verified: ["Behaviour outside the observed install and entry windows."],
+  luna_report: { what_ran: "We installed the package in a throwaway sandbox; its postinstall sent a planted key out.", what_matters: "Malicious, 12/100. Do not install it." },
   forensics: { version: 2, forged_calls: 1 },
   packages: { installed: [], malicious: [], advisories: [] },
   model_id: "gpt-6-luna",
@@ -133,6 +134,31 @@ test("V2Store on schema v2 as cr_v2_server: claim, dedup, events, report, cache,
     assert.equal(costRow.rows[0]!.cost.total_usd, ledger.total_usd);
     assert.equal(costRow.rows[0]!.cost.luna.cached_input_tokens, 2048);
     assert.equal((await v2.pg.query<{ n: number }>("select count(*)::int as n from v2.reports")).rows[0]!.n, 1);
+
+    // Signed-in history: the claiming user is on the run row; guests are null; every result lands in user_scans.
+    const user = "6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b";
+    const run3 = "55555555-5555-4555-8555-555555555555";
+    assert.deepEqual(await store.claimRun({ ...claim, runId: run3, commitSha: "b".repeat(40), userId: user }), { status: "claimed", runId: run3 });
+    const owners = await v2.pg.query<{ id: string; user_id: string | null }>("select id::text as id, user_id::text as user_id from v2.scan_runs order by started_at, id");
+    assert.deepEqual(owners.rows.find((r) => r.id === run3)?.user_id, user);
+    assert.equal(owners.rows.find((r) => r.id === PAYLOAD.run_id)?.user_id, null, "a guest run stores no user");
+    assert.deepEqual(await store.listUserScans(user), [], "nothing until a result is received");
+    now += 1000;
+    await store.recordUserScan(user, run2);
+    now += 1000;
+    await store.recordUserScan(user, run3);
+    now += 1000;
+    await store.recordUserScan(user, run2);
+    const history = await store.listUserScans(user, 10);
+    assert.deepEqual(history.map((h) => [h.run_id, h.subject, h.score, h.verdict]), [
+      [run2, "acme/lib", 40, "High risk"],
+      [run3, "acme/lib", null, null],
+    ], "newest first, one entry per run, a run without a report row has no score yet");
+    assert.equal(history[0]!.scanned_at, new Date(now).toISOString());
+    assert.deepEqual(await store.listUserScans("not-a-uuid"), []);
+    await assert.rejects(store.recordUserScan("not-a-uuid", run2), /must be uuids/);
+    const broadcasts = await v2.pg.query<{ n: number }>("select count(*)::int as n from realtime.sent where topic = 'board' and event = 'report'");
+    assert.equal(broadcasts.rows[0]!.n, 2, "each report write reached the board");
 
     assert.equal(await store.chargeBudget({ sandboxSeconds: 9.4, tokens: 100, capSeconds: 20000, capTokens: 20000000 }), true);
     assert.equal(await store.chargeBudget({ sandboxSeconds: 0, tokens: 0, capSeconds: 9, capTokens: 20000000 }), false);

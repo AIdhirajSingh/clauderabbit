@@ -25,7 +25,11 @@ function report(req: StructuredRequest<unknown>) {
     `Reputation, separate from code: ${rep.length > 0 ? rep.join("; ") : "no reputation signal moved the score"}.`,
     `Not verified: ${facts.not_verified.slice(0, 2).map((n) => n.replace(/\.$/, "")).join("; ")}.`,
   ];
-  return { headline: `${facts.verdict} after install and entry ran in the sandbox`, summary: parts.join(" ") };
+  const report = {
+    what_ran: behaviour.length > 0 ? `We installed the package and ran its entry point in a throwaway sandbox. In that run: ${behaviour.join("; ")}.` : "We installed the package and ran its entry point in a throwaway sandbox; nothing reached a host outside the package registries.",
+    what_matters: `${facts.verdict}, ${facts.score}/100. Not verified: ${(facts.not_verified[0] ?? "coverage limits of this run").replace(/\.$/, "")}.`,
+  };
+  return { headline: `${facts.verdict} after install and entry ran in the sandbox`, summary: parts.join(" "), report };
 }
 
 export class StandInModel implements ModelAdapter {

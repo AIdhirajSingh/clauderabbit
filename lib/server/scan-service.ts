@@ -211,6 +211,20 @@ export async function followRun(store: V2Store, runId: string, opts: { deadlineM
   return { error: "timeout", message: "the joined scan did not finish before the deadline" };
 }
 
+/**
+ * Put a result a signed-in caller received into their history (v2.user_scans).
+ * Guests (no user id) are never recorded. Best effort: a history write that
+ * fails never fails the scan, and the message carries no id or secret.
+ */
+export async function recordUserScan(store: Pick<V2Store, "recordUserScan">, userId: string | null, runId: string): Promise<void> {
+  if (!userId) return;
+  try {
+    await store.recordUserScan(userId, runId);
+  } catch (err) {
+    console.error("user scan history write failed:", err instanceof Error ? err.message.slice(0, 200) : "unknown error");
+  }
+}
+
 /** Run one scan end to end on the production pipeline and produce the final line. */
 export async function executeScan(
   ctx: CallerContext,
@@ -227,11 +241,13 @@ export async function executeScan(
   if (outcome.kind === "attached") {
     const followed = await followRun(store, outcome.runId, { deadlineMs: config.deadlines.scanMs + 15_000, now: deps.now, onEvent: opts.onEvent, signal: opts.signal });
     // The joined run's cost belongs to the request that started it; this request spent nothing.
+    if ("report" in followed) await recordUserScan(store, caller.userId, outcome.runId);
     if ("report" in followed) return { type: "result", outcome: "fresh", run_id: outcome.runId, report: followed.report, report_url: reportUrl, ad, cost: cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx }) };
     return { type: "error", code: followed.error, message: followed.message, run_id: outcome.runId, ad };
   }
   // Fresh: this request's ledger. Cached: no model call and no sandbox ran, so a zero ledger.
   const cost = outcome.kind === "fresh" ? (outcome.report.cost ?? null) : cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx });
+  await recordUserScan(store, caller.userId, outcome.runId);
   return { type: "result", outcome: outcome.kind, run_id: outcome.runId, report: outcome.report, report_url: reportUrl, ad, cost };
 }
 

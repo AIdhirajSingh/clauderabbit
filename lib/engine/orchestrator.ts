@@ -557,7 +557,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   fetchP?.catch(() => undefined);
   let claim;
   try {
-    claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template });
+    claim = await deps.store.claimRun({ runId, targetKind: resolved.kind, subject: resolved.subject, commitSha, modelId: deps.luna.modelId, template: deps.sandbox.template, userId: req.caller.userId });
   } catch (err) {
     return fail(new EngineError("internal", `could not record the run: ${errMessage(err)}`), null);
   }
@@ -841,7 +841,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     deadline(cfg.deadlines.writerMs, outer),
   );
   if (written.calls > 0) meter.recordLuna("report", written.usage);
-  bus.transcript("luna.report", "model", `${written.headline}\n${written.summary}`);
+  bus.transcript("luna.report", "model", `${written.headline}\n${written.summary}\n${written.report.what_ran}\n${written.report.what_matters}`);
   if (written.writer === "deterministic") check("writer_fallback", false, [...written.errors, ...written.rejections.map((r) => r.join("; "))].join(" | ").slice(0, 400) || "model output rejected");
   emitStage("report", "done", written.writer);
 
@@ -885,6 +885,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     verdict: result.verdict,
     band: result.band,
     summary: written.summary,
+    luna_report: written.report,
     // A dependency danger with clean own code says so plainly, whatever the writer wrote.
     headline: result.label ? `${result.verdict}: ${result.label}` : written.headline,
     ...(result.label ? { label: result.label } : {}),

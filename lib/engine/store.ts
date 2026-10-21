@@ -36,6 +36,8 @@ export interface ClaimRequest {
   commitSha: string;
   modelId: string;
   template: string;
+  /** Supabase user id of the signed-in caller; null or absent for a guest (stored as null, shown as Anonymous). */
+  userId?: string | null;
 }
 
 export type ClaimResult = { status: "claimed"; runId: string } | { status: "running"; runId: string };
@@ -208,6 +210,7 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
       score_rules: r.score_rules ?? null,
       label: r.label ?? null,
       reputation_section: r.reputation_section ?? null,
+      luna_report: r.luna_report ?? null,
       template: r.template,
       cost: r.cost ?? null,
     },
@@ -275,8 +278,16 @@ export function payloadFromRows(row: StoredReportRow, run: { id: string; subject
     ...(typeof stats.score_rules === "number" ? { score_rules: stats.score_rules } : {}),
     ...(typeof stats.label === "string" ? { label: stats.label } : {}),
     ...(stats.reputation_section && typeof stats.reputation_section === "object" ? { reputation_section: stats.reputation_section as ReportPayload["reputation_section"] } : {}),
+    ...(lunaReportFrom(stats.luna_report) ? { luna_report: lunaReportFrom(stats.luna_report)! } : {}),
     ...(ledger ? { cost: ledger } : {}),
   };
+}
+
+/** The two stored report paragraphs, or null when the row predates them or they are malformed. */
+export function lunaReportFrom(v: unknown): ReportPayload["luna_report"] | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  return typeof o.what_ran === "string" && typeof o.what_matters === "string" && o.what_ran && o.what_matters ? { what_ran: o.what_ran, what_matters: o.what_matters } : null;
 }
 
 interface EventRow {
@@ -325,6 +336,23 @@ export interface DoneRunRow {
   cost: unknown;
   report_id: string;
 }
+
+/** One entry of a signed-in user's scan history (`V2Store.listUserScans`). */
+export interface UserScanRow {
+  run_id: string;
+  subject: string;
+  commit_sha: string;
+  /** Null while the run's report row is not written yet. */
+  score: number | null;
+  verdict: Verdict | null;
+  /** ISO-8601 UTC: when this user last received this run's result. */
+  scanned_at: string;
+}
+
+/** Upper bound on history rows one read returns. */
+export const MAX_USER_SCANS = 200;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface RunRow {
   id: string;
@@ -456,9 +484,9 @@ export class V2Store implements ScanStore {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         await this.db.query(
-          `insert into v2.scan_runs (id, target_kind, subject, commit_sha, status, model_id, template)
-           values ($1::uuid, $2, $3, $4, 'running', $5, $6)`,
-          [req.runId, req.targetKind, req.subject, req.commitSha, req.modelId, req.template],
+          `insert into v2.scan_runs (id, target_kind, subject, commit_sha, status, model_id, template, user_id)
+           values ($1::uuid, $2, $3, $4, 'running', $5, $6, $7::uuid)`,
+          [req.runId, req.targetKind, req.subject, req.commitSha, req.modelId, req.template, req.userId && UUID_RE.test(req.userId) ? req.userId : null],
         );
         return { status: "claimed", runId: req.runId };
       } catch (err) {
@@ -538,6 +566,45 @@ export class V2Store implements ScanStore {
         result.cost ? JSON.stringify(result.cost) : null,
       ]),
     );
+  }
+
+  /**
+   * Record that a signed-in user received this run's result (fresh, cached or
+   * attached). Guests are never recorded: callers pass only a verified user id.
+   */
+  async recordUserScan(userId: string, runId: string): Promise<void> {
+    if (!UUID_RE.test(userId) || !UUID_RE.test(runId)) throw new EngineError("internal", "user_scans insert: user id and run id must be uuids");
+    await run("user_scans insert", () =>
+      this.db.query("insert into v2.user_scans (user_id, run_id, scanned_at) values ($1::uuid, $2::uuid, $3::timestamptz)", [userId, runId, new Date(this.now()).toISOString()]),
+    );
+  }
+
+  /**
+   * A signed-in user's scans, newest first, one entry per run (its latest
+   * scanned_at), joined to the run and to the report row that run wrote.
+   */
+  async listUserScans(userId: string, limit = 50): Promise<UserScanRow[]> {
+    if (!UUID_RE.test(userId)) return [];
+    const n = Math.max(1, Math.min(Math.floor(limit) || 1, MAX_USER_SCANS));
+    const rows = await run("user_scans read", () =>
+      this.db.query<{ run_id: string; subject: string; commit_sha: string; score: number | null; verdict: string | null; scanned_at: string }>(
+        `select u.run_id::text as run_id, sr.subject, sr.commit_sha, r.score, r.verdict, ${iso("u.scanned_at")} as scanned_at
+           from (select run_id, max(scanned_at) as scanned_at from v2.user_scans where user_id = $1::uuid group by run_id) u
+           join v2.scan_runs sr on sr.id = u.run_id
+           left join v2.reports r on r.id = sr.report_id
+          order by u.scanned_at desc
+          limit $2::int`,
+        [userId, n],
+      ),
+    );
+    return rows.map((r) => ({
+      run_id: r.run_id,
+      subject: r.subject,
+      commit_sha: r.commit_sha,
+      score: typeof r.score === "number" ? r.score : null,
+      verdict: VERDICTS.includes(r.verdict as Verdict) ? (r.verdict as Verdict) : null,
+      scanned_at: r.scanned_at,
+    }));
   }
 
   async chargeBudget(charge: BudgetCharge): Promise<boolean> {

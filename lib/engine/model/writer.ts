@@ -7,8 +7,13 @@
  * passes `validateWriterOutput` or it is not used: no bare "safe" claim, none
  * of the owner brief's banned words, no em dash, the verdict phrase of the
  * actual band present and no other band's phrase, and any "N/100" equal to the
- * real score. A rejected or failed call is not retried: the deterministic
- * summary built from the breakdown is published (`writer: "deterministic"`).
+ * real score. The same call also returns `report`, the two plain-English
+ * paragraphs (what ran and what happened; what matters and what to do), held
+ * to `validateLunaReport`: markdown is repaired away, and a "safe", a model
+ * name, another verdict, a wrong score or an unobserved-behaviour claim
+ * rejects it. A rejected or failed call is not retried: the deterministic
+ * headline, summary and paragraphs built from the breakdown are published
+ * (`writer: "deterministic"`).
  */
 
 import { z } from "zod";
@@ -16,14 +21,32 @@ import type { ScoreDelta, Verdict } from "../types";
 import { ZERO_USAGE, type ModelAdapter, type ModelUsage } from "./adapter";
 import { fenceSafe, type CheckAnswerRecord } from "./checks";
 
+export const lunaReportSchema = z.object({
+  what_ran: z.string(),
+  what_matters: z.string(),
+});
+export type LunaReport = z.infer<typeof lunaReportSchema>;
+
 export const writerSchema = z.object({
   headline: z.string(),
   summary: z.string(),
+  report: lunaReportSchema,
 });
 export type WriterOutput = z.infer<typeof writerSchema>;
 
 export const HEADLINE_MAX = 140;
+/** Hard bound the validator enforces; the instructions ask Luna for at most SUMMARY_TARGET. */
 export const SUMMARY_MAX = 1200;
+export const SUMMARY_TARGET = 600;
+/** Hard bound per report paragraph; the instructions ask for at most PARAGRAPH_TARGET. */
+export const PARAGRAPH_MAX = 450;
+export const PARAGRAPH_TARGET = 300;
+/**
+ * Unchanged at 1,200 with the paragraphs added: the summary target dropped from
+ * 1,200 to 600 characters, so headline + summary + two paragraphs ask for the
+ * same 1,340 characters the headline and summary asked for before. Luna runs at
+ * reasoning effort none, so no reasoning tokens draw on this cap.
+ */
 export const WRITER_MAX_OUTPUT_TOKENS = 1_200;
 
 export const ALL_VERDICTS: readonly Verdict[] = ["No threats observed", "Low risk", "Caution", "High risk", "Malicious"];
@@ -79,7 +102,7 @@ export function findBanned(text: string): string[] {
   return [...BANNED_PATTERNS, ...CERTAINTY_PATTERNS].filter((p) => p.re.test(text)).map((p) => p.label);
 }
 
-export function validateWriterOutput(out: WriterOutput, ctx: WriterContext): { ok: true } | { ok: false; reasons: string[] } {
+export function validateWriterOutput(out: Pick<WriterOutput, "headline" | "summary">, ctx: WriterContext): { ok: true } | { ok: false; reasons: string[] } {
   const reasons: string[] = [];
   const headline = out.headline.trim();
   const summary = out.summary.trim();
@@ -107,6 +130,62 @@ export function validateWriterOutput(out: WriterOutput, ctx: WriterContext): { o
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
+/** Model and provider names the report paragraphs never carry (the reader sees findings, not our tooling). */
+export const MODEL_NAME_RE = /\b(?:jev|luna|gpt(?:-[\w.]+)?|openai|chatgpt|gemini|vertex|claude|anthropic|deepseek|kimi|llama|mistral|qwen|grok)\b/i;
+/** Markdown structure the paragraphs never carry: headings, list items, emphasis, code, tables, quotes. */
+const MD_HEADING_RE = /^\s{0,3}#{1,6}\s/m;
+const MD_LIST_RE = /^\s*(?:[-*+\u2022]|\d{1,3}[.)])\s+/m;
+
+/**
+ * Repair what is only markdown: strip heading markers, list markers, emphasis,
+ * code ticks and quote markers, and fold every line break into one paragraph.
+ * Words are never changed, so a banned word survives repair and is rejected.
+ */
+export function repairParagraph(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s{0,3}#{1,6}\s+/, "").replace(/^\s*>\s?/, "").replace(/^\s*(?:[-*+\u2022]|\d{1,3}[.)])\s+/, "").replace(/\|/g, " "))
+    .join(" ")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/(^|\s)[*_](\S[^*_]*?\S|\S)[*_](?=\s|[.,;:!?]|$)/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The rail on the two report paragraphs. Each is one non-empty paragraph of at
+ * most PARAGRAPH_MAX characters with no markdown, no banned or certainty word
+ * (so never "safe"), no model name, no verdict label but the real one, any
+ * "N/100" equal to the score, and no clean-behaviour claim when the run was
+ * not observed (which the paragraphs must then say).
+ */
+export function validateLunaReport(report: LunaReport, ctx: WriterContext): { ok: true } | { ok: false; reasons: string[] } {
+  const reasons: string[] = [];
+  const both = `${report.what_ran}\n${report.what_matters}`;
+  for (const [name, text] of [["what_ran", report.what_ran], ["what_matters", report.what_matters]] as const) {
+    if (!text.trim()) reasons.push(`empty ${name}`);
+    if (text.length > PARAGRAPH_MAX) reasons.push(`${name} longer than ${PARAGRAPH_MAX}`);
+    if (/\n/.test(text)) reasons.push(`${name} is more than one paragraph`);
+    if (MD_HEADING_RE.test(text)) reasons.push(`${name} has a markdown heading`);
+    if (MD_LIST_RE.test(text)) reasons.push(`${name} has a markdown list`);
+  }
+  if (/\bsafe\b/i.test(both)) reasons.push("banned: safe");
+  for (const b of findBanned(both)) if (b !== "safe") reasons.push(`banned: ${b}`);
+  const model = both.match(MODEL_NAME_RE);
+  if (model) reasons.push(`names a model: ${model[0]}`);
+  for (const v of ALL_VERDICTS) {
+    if (v !== ctx.verdict && new RegExp(`\\b${v.replace(/ /g, "\\s+")}\\b`).test(both)) reasons.push(`band mismatch: mentions "${v}"`);
+  }
+  for (const m of both.matchAll(/\b(\d{1,3})\s*(?:\/\s*100|out of 100)\b/gi)) {
+    if (Number(m[1]) !== ctx.score) reasons.push(`score mismatch: ${m[0]}`);
+  }
+  if (ctx.sandbox === "not_observed") {
+    for (const re of OBSERVED_ONLY_PATTERNS) if (re.test(both)) reasons.push(`claims observed behaviour but the sandbox run was not observed: ${re.source}`);
+    if (!/not observed/i.test(both)) reasons.push("must state that sandbox behaviour was not observed");
+  }
+  return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
+}
+
 export interface WriterInput {
   target: string;
   score: number;
@@ -122,7 +201,7 @@ export interface WriterInput {
 }
 
 /** Routes every report call to the same OpenAI prompt cache (the instructions and schema are the shared prefix). */
-export const LUNA_PROMPT_CACHE_KEY = "clauderabbit-luna-report-v1";
+export const LUNA_PROMPT_CACHE_KEY = "clauderabbit-luna-report-v2";
 
 /**
  * The static instructions. Sent first and identical on every scan, so OpenAI
@@ -152,7 +231,10 @@ export const WRITER_SYSTEM = [
   "",
   "What you output:",
   "- headline: one sentence of at most 140 characters that starts with the exact verdict phrase given in the facts.",
-  "- summary: at most 1200 characters, in this order: what the sandbox run observed; what static analysis and the Jev checks found in reachable code; any known malicious dependency; then a separate sentence that starts with 'Reputation, separate from code:' carrying the reputation facts; and last, what was not verified, taken from not_verified.",
+  "- summary: at most 600 characters, in this order: what the sandbox run observed; what static analysis and the Jev checks found in reachable code; any known malicious dependency; then a separate sentence that starts with 'Reputation, separate from code:' carrying the reputation facts; and last, what was not verified, taken from not_verified.",
+  "- report.what_ran: one plain-English paragraph of at most 300 characters for a reader who is not a security expert: what we ran (installed the package and ran its entry point in a throwaway sandbox, scanned the reachable code) and what happened.",
+  "- report.what_matters: one plain-English paragraph of at most 300 characters: what matters in this result and what the reader does next, matched to the verdict (for Malicious or High risk: do not install; for Caution: read the flagged code first; otherwise: pin the scanned version), ending with the most important item of not_verified.",
+  "- The two report paragraphs: no headings, no lists, no markdown, no line breaks, and no model or product names (write 'a model check', never Jev or Luna).",
   "",
   "Rules that a validator enforces. Text that breaks one is discarded and a fixed template is published instead:",
   "- The score and verdict are final. Mention the verdict phrase given and no other verdict phrase. If you write a number out of 100 it must equal the score.",
@@ -160,7 +242,7 @@ export const WRITER_SYSTEM = [
   "- If sandbox_observation is not_observed, say that sandbox behaviour was not observed, and never say that nothing happened, that no contact was made or that nothing was sent. If it is partial, limit behaviour statements to the recorded part of the run.",
   "- Keep reputation apart from code and behaviour. A popular or long-standing publisher never cancels a behaviour or code finding, and a new publisher is not itself evidence of malice.",
   "- Present Jev answers as judgements of code that was read. Name the file and the answer; do not describe a Jev answer as observed behaviour.",
-  "- Use only facts from the input. Plain declarative sentences, past tense for what the run did. No marketing tone, no advice beyond the facts.",
+  "- Use only facts from the input. Plain declarative sentences, past tense for what the run did. No marketing tone. Advice appears only in report.what_matters.",
   "",
   "How to read the facts you are given:",
   "- score, verdict: final. The headline starts with the verdict phrase, for example 'Malicious: ...' or 'Low risk: ...'.",
@@ -173,7 +255,7 @@ export const WRITER_SYSTEM = [
   "Worked phrasing, by situation:",
   "- A canary left the sandbox: 'During install, <file> sent the planted <canary name> credential to <host>; the forge captured the request.' Then the cap sentence.",
   "- Contact with a non-registry host but no canary: 'During install the code contacted <host>, which is neither a package registry nor a distribution host; the forge answered and nothing left the sandbox.'",
-  "- A Jev answer without a behaviour hit: 'Jev judged <file> suspicious from its code; the sandbox run did not show that behaviour in the observed window.'",
+  "- A Jev answer without a behaviour hit: 'Jev judged <file> suspicious from its code; the sandbox run did not show that behaviour.'",
   "- A clean observed run: 'In the sandbox run the forge recorded no contact outside package registries, no decoy credential reads and no persistence writes.' Never shorten this to a claim that the package is harmless.",
   "- A run that was not observed: 'The sandbox run did not produce a complete forensic record, so install-time and runtime behaviour were not observed.'",
   "- Reputation: 'Reputation, separate from code: the GitHub owner account is 12 days old; the repository has 3,400 stars.'",
@@ -208,7 +290,85 @@ function sentence(s: string): string {
   return /[.!?]$/.test(t) ? t : `${t}.`;
 }
 
-/** Deterministic headline and summary from the breakdown. Always passes the validator. */
+/** What the reader does next, by verdict (the only advice the report gives). */
+export const NEXT_STEP: Record<Verdict, string> = {
+  Malicious: "Do not install it. If it is already installed, remove it and rotate every credential that machine could reach.",
+  "High risk": "Do not install it until the findings above are explained or checked by hand.",
+  Caution: "Read the flagged code before installing, and pin the exact version that was scanned.",
+  "Low risk": "Pin the exact version that was scanned and scan again before upgrading.",
+  "No threats observed": "Pin the exact version that was scanned and scan again before upgrading.",
+};
+
+/** Evidence text with model names turned into plain words, banned words redacted, one line. */
+function plainDetail(s: string): string {
+  let out = s
+    .replace(/\bJev(?:'s)?\s+(install|flagged|docs)\s+check\b/gi, "the $1 model check")
+    .replace(/\bJev\b/g, "a model check")
+    .replace(/\bLuna\b/g, "the report writer")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\.$/, "");
+  for (const p of [...BANNED_PATTERNS, ...CERTAINTY_PATTERNS]) out = out.replace(new RegExp(p.re.source, "gi"), "[redacted]");
+  out = out.replace(new RegExp(MODEL_NAME_RE.source, "gi"), "a model");
+  return out;
+}
+
+/** Join sentences in order while they fit; the first always goes in, cut on a word boundary if needed. */
+function fitSentences(sentences: string[], max: number): string {
+  let out = "";
+  for (const raw of sentences) {
+    const s = sentence(raw);
+    const next = out ? `${out} ${s}` : s;
+    if (next.length <= max) out = next;
+    else if (!out) out = s.slice(0, max - 1).replace(/\s+\S*$/, "") + ".";
+  }
+  return out;
+}
+
+/**
+ * The two report paragraphs from data alone (the deterministic writer path).
+ * Always passes validateLunaReport for the same score, verdict and sandbox.
+ */
+export function deterministicLunaReport(input: Pick<WriterInput, "score" | "verdict" | "breakdown" | "notVerified" | "sandbox">): LunaReport {
+  const seen: SandboxObservation = input.sandbox ?? "not_observed";
+  const behaviour = input.breakdown.filter((d) => d.group === "behaviour" && d.points < 0).sort((a, b) => a.points - b.points);
+  const stat = input.breakdown.filter((d) => (d.group === "static" || d.group === "docs") && d.points < 0).sort((a, b) => a.points - b.points);
+  const intel = input.breakdown.filter((d) => d.group === "intel" && d.points < 0);
+  const negatives = input.breakdown.filter((d) => d.points < 0 && d.group !== "cap" && d.group !== "reputation").sort((a, b) => a.points - b.points);
+  const caps = input.breakdown.filter((d) => d.group === "cap");
+  const rep = input.breakdown.filter((d) => d.group === "reputation" && d.points < 0);
+
+  const ran: string[] = [
+    seen === "not_observed"
+      ? "We tried to install the package and run its entry point in a throwaway sandbox, and we scanned the code that install and import reach"
+      : "We installed the package and ran its entry point in a throwaway sandbox that answered every outbound call itself, and we scanned the code that install and import reach",
+  ];
+  if (behaviour.length > 0) ran.push(`In that run, ${behaviour.slice(0, 2).map((d) => plainDetail(d.detail)).join("; ")}`);
+  else if (seen === "observed") ran.push("The run recorded no contact outside package registries, no reads of the planted decoy credentials and no persistence writes");
+  else if (seen === "partial") ran.push("In the recorded part of the run there was no contact outside package registries, no decoy credential reads and no persistence writes; part of the record was cut");
+  if (seen === "not_observed") ran.push("The run did not produce a complete record, so install-time and runtime behaviour were not observed");
+  ran.push(stat.length > 0 ? `The code scan reported: ${stat.slice(0, 2).map((d) => plainDetail(d.detail)).join("; ")}` : "The code scan found no medium or high finding in reachable code");
+
+  const matters: string[] = [`${input.verdict}, ${input.score}/100`];
+  if (negatives[0]) matters.push(`What moved the score most: ${plainDetail(negatives[0].detail)}`);
+  if (intel[0] && intel[0] !== negatives[0]) matters.push(plainDetail(intel[0].detail));
+  if (caps[0]) matters.push(plainDetail(caps[0].detail));
+  matters.push(NEXT_STEP[input.verdict]);
+  if (rep[0]) matters.push(`Separately, about the publisher and not the code: ${plainDetail(rep[0].detail)}`);
+  if (input.notVerified[0]) matters.push(`Not verified: ${plainDetail(input.notVerified[0])}`);
+
+  // The verdict, the next step and the not-verified line must survive the length cap: drop optional sentences first.
+  let whatMatters = fitSentences(matters, PARAGRAPH_MAX);
+  if (!whatMatters.includes(NEXT_STEP[input.verdict])) {
+    const keep = [matters[0]!, NEXT_STEP[input.verdict], ...(input.notVerified[0] ? [`Not verified: ${plainDetail(input.notVerified[0])}`] : [])];
+    whatMatters = fitSentences(keep, PARAGRAPH_MAX);
+  }
+  let whatRan = fitSentences(ran, PARAGRAPH_MAX);
+  if (seen === "not_observed" && !/not observed/i.test(whatRan)) whatRan = fitSentences([ran[0]!, "The run did not produce a complete record, so install-time and runtime behaviour were not observed"], PARAGRAPH_MAX);
+  return { what_ran: whatRan, what_matters: whatMatters };
+}
+
+/** Deterministic headline, summary and report paragraphs from the breakdown. Always passes both validators. */
 export function deterministicReport(input: Pick<WriterInput, "score" | "verdict" | "breakdown" | "notVerified" | "sandbox">): WriterOutput {
   const seen: SandboxObservation = input.sandbox ?? "not_observed";
   const negatives = input.breakdown.filter((d) => d.points < 0 && d.group !== "cap").sort((a, b) => a.points - b.points);
@@ -242,7 +402,7 @@ export function deterministicReport(input: Pick<WriterInput, "score" | "verdict"
     for (const p of [...BANNED_PATTERNS, ...CERTAINTY_PATTERNS]) out = out.replace(new RegExp(p.re.source, "gi"), "[redacted]");
     return out;
   };
-  return { headline: scrub(headline), summary: scrub(summary) };
+  return { headline: scrub(headline), summary: scrub(summary), report: deterministicLunaReport(input) };
 }
 
 export interface WriterResult extends WriterOutput {
@@ -279,10 +439,16 @@ export async function writeReport(model: ModelAdapter, input: WriterInput, signa
         signal,
       });
       usage = { ...r.usage };
-      const out = { headline: r.value.headline.trim(), summary: r.value.summary.trim() };
+      const out: WriterOutput = {
+        headline: r.value.headline.trim(),
+        summary: r.value.summary.trim(),
+        report: { what_ran: repairParagraph(r.value.report.what_ran), what_matters: repairParagraph(r.value.report.what_matters) },
+      };
       const v = validateWriterOutput(out, ctx);
-      if (v.ok) return { ...out, writer: "model", usage, calls, rejections, errors };
-      rejections.push(v.reasons);
+      const p = validateLunaReport(out.report, ctx);
+      if (v.ok && p.ok) return { ...out, writer: "model", usage, calls, rejections, errors };
+      // All or nothing: a rejected paragraph discards the model's headline and summary too, so `writer` names one author.
+      rejections.push([...(v.ok ? [] : v.reasons), ...(p.ok ? [] : p.reasons.map((x) => `report: ${x}`))]);
     } catch (err) {
       errors.push((err as Error).message ?? String(err));
     }

@@ -281,6 +281,13 @@ export interface ReportPayload {
   label?: string;
   /** Reputation, kept apart from the code verdict: each fact with its source; warnings never lower the code score. */
   reputation_section?: { facts: Array<{ fact: string; source: string }>; warnings: string[] };
+  /**
+   * The report in two short plain-English paragraphs: what was run and what
+   * happened, then what matters and what to do. Written by the report writer
+   * (Luna) or, when its output is rejected or absent, built from the data; the
+   * `writer` field says which. Absent on reports written before this field.
+   */
+  luna_report?: { what_ran: string; what_matters: string };
   template: string;
   timings: Record<string, number>;
   writer: "model" | "deterministic";

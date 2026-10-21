@@ -17,10 +17,10 @@ import {
 } from "../../lib/engine/model/checks.ts";
 import { GatewayJevAdapter, checkedAnswers } from "../../lib/engine/model/jev.ts";
 import { OpenAIAdapter } from "../../lib/engine/model/openai.ts";
-import { deterministicReport, findBanned, LUNA_PROMPT_CACHE_KEY, validateWriterOutput, writeReport, writerInputText, writerSchema, WRITER_SYSTEM } from "../../lib/engine/model/writer.ts";
+import { deterministicLunaReport, deterministicReport, findBanned, LUNA_PROMPT_CACHE_KEY, NEXT_STEP, PARAGRAPH_MAX, validateLunaReport, validateWriterOutput, writeReport, writerInputText, writerSchema, WRITER_SYSTEM } from "../../lib/engine/model/writer.ts";
 import { buildReachGraph } from "../../lib/engine/reach/graph.ts";
 import { computeScore, NO_BEHAVIOUR } from "../../lib/engine/score.ts";
-import type { TaggedFinding } from "../../lib/engine/types.ts";
+import type { TaggedFinding, Verdict } from "../../lib/engine/types.ts";
 import { ScriptedModel } from "../support/scripted-model.ts";
 import { ScriptedJev } from "../support/stand-in-jev.ts";
 import { filesOf } from "../support/tar.ts";
@@ -58,7 +58,7 @@ function openaiWith(respond: (body: Record<string, unknown>) => Response) {
   return { adapter, seen };
 }
 
-const okReport = { headline: "Malicious: the postinstall sent a canary key to c2.cr-fixture.invalid", summary: "Malicious, score 0/100. The forge captured a POST carrying the canary key." };
+const okReport = { headline: "Malicious: the postinstall sent a canary key to c2.cr-fixture.invalid", summary: "Malicious, score 0/100. The forge captured a POST carrying the canary key.", report: { what_ran: "We installed the package in a throwaway sandbox; its postinstall sent a planted key to c2.cr-fixture.invalid.", what_matters: "Malicious, 0/100. Do not install it. Not verified: behaviour outside the install and entry windows." } };
 const lunaReq = { task: "report" as const, system: "static instructions", input: "per-scan facts", schema: writerSchema, schemaName: "report_writer", maxOutputTokens: 500, promptCacheKey: LUNA_PROMPT_CACHE_KEY };
 
 test("Luna: one Responses API call, static instructions first, facts last, prompt_cache_key, strict json_schema, store false; cached tokens recorded", async () => {
@@ -85,7 +85,7 @@ test("Luna: one Responses API call, static instructions first, facts last, promp
   assert.equal(format.strict, true);
   const schema = format.schema as { type: string; additionalProperties: boolean; required: string[] };
   assert.equal(schema.additionalProperties, false);
-  assert.deepEqual(schema.required.sort(), ["headline", "summary"]);
+  assert.deepEqual(schema.required.sort(), ["headline", "report", "summary"]);
 });
 
 test("Luna adapter maps refusal, incomplete, HTTP errors and abort to ModelError kinds", async () => {
@@ -378,7 +378,7 @@ test("Luna writes once: a passing answer is used; the instructions are a static 
   // Well over 1024 tokens of static prefix (OpenAI caches from 1024 tokens): about 4.5 characters per token.
   assert.ok(WRITER_SYSTEM.length > 6400, `instructions are ${WRITER_SYSTEM.length} characters`);
   assert.doesNotMatch(WRITER_SYSTEM, /\d{2,}\/100|npm:|phone-home/, "no per-scan text in the cached prefix");
-  const good = new ScriptedModel([{ headline: "Malicious: the postinstall sent a canary AWS key to c2.cr-fixture.invalid", summary: "Malicious, score 0/100. During install the forge captured a POST carrying the canary key." }]);
+  const good = new ScriptedModel([{ headline: "Malicious: the postinstall sent a canary AWS key to c2.cr-fixture.invalid", summary: "Malicious, score 0/100. During install the forge captured a POST carrying the canary key.", report: { what_ran: "## What ran\n- We installed the package in a throwaway sandbox.\n- Its postinstall sent a planted AWS key to c2.cr-fixture.invalid.", what_matters: "**Malicious**, 0/100. Do not install it. Not verified: behaviour outside the install and entry windows." } }]);
   const r1 = await writeReport(good, input, new AbortController().signal);
   assert.equal(r1.writer, "model");
   assert.equal(r1.calls, 1);
@@ -386,12 +386,75 @@ test("Luna writes once: a passing answer is used; the instructions are a static 
   assert.equal(good.requests[0]!.system, WRITER_SYSTEM);
   assert.equal(good.requests[0]!.promptCacheKey, LUNA_PROMPT_CACHE_KEY);
   assert.equal(r1.usage.cachedInputTokens, 1920);
+  // Markdown is repaired away, words untouched.
+  assert.equal(r1.report.what_ran, "What ran We installed the package in a throwaway sandbox. Its postinstall sent a planted AWS key to c2.cr-fixture.invalid.");
+  assert.equal(r1.report.what_matters, "Malicious, 0/100. Do not install it. Not verified: behaviour outside the install and entry windows.");
+});
+
+test("Luna report paragraphs: safe, model names, other verdicts, wrong scores and unobserved claims reject the whole answer", async () => {
+  const ctx = { score: 15, verdict: "Malicious" as const, sandbox: "observed" as const };
+  const ok = { what_ran: "We installed it in a throwaway sandbox and its postinstall sent a planted key out.", what_matters: "Malicious, 15/100. Do not install it." };
+  assert.deepEqual(validateLunaReport(ok, ctx), { ok: true });
+  const cases: Array<[Partial<typeof ok>, RegExp]> = [
+    [{ what_matters: "It is not safe to install." }, /banned: safe/],
+    [{ what_matters: "Safe to skip." }, /banned: safe/],
+    [{ what_ran: "Jev judged the install script malicious." }, /names a model/],
+    [{ what_ran: "GPT-6 read the code." }, /names a model/],
+    [{ what_matters: "High risk overall." }, /band mismatch/],
+    [{ what_matters: "Malicious, 40/100." }, /score mismatch/],
+    [{ what_ran: "- one\n- two" }, /markdown list|more than one paragraph/],
+    [{ what_ran: "# Heading" }, /markdown heading/],
+    [{ what_ran: "" }, /empty what_ran/],
+    [{ what_ran: "x".repeat(PARAGRAPH_MAX + 1) }, /longer than/],
+  ];
+  for (const [patch, re] of cases) {
+    const v = validateLunaReport({ ...ok, ...patch }, ctx);
+    assert.equal(v.ok, false, JSON.stringify(patch));
+    if (!v.ok) assert.match(v.reasons.join("|"), re);
+  }
+  const notSeen = validateLunaReport({ what_ran: "We ran it and nothing was sent.", what_matters: "High risk, 59/100." }, { score: 59, verdict: "High risk", sandbox: "not_observed" });
+  assert.equal(notSeen.ok, false);
+  // A passing headline and summary with a failing paragraph still publishes the deterministic writer for all three.
+  const s = scored();
+  const input = { target: "npm:phone-home", score: s.score, verdict: s.verdict, breakdown: s.breakdown, notVerified: s.notVerified, checkAnswers: [], statedPurpose: null, sandbox: "observed" as const };
+  const m = new ScriptedModel([{ headline: `${s.verdict}: the postinstall sent a canary AWS key out`, summary: `${s.verdict}, score ${s.score}/100. During install the forge captured a POST carrying the canary key.`, report: { what_ran: "We ran it in a sandbox.", what_matters: "It is not safe. Do not install it." } }]);
+  const r = await writeReport(m, input, new AbortController().signal);
+  assert.equal(r.writer, "deterministic");
+  assert.match(r.rejections[0]!.join("|"), /report: banned: safe/);
+  assert.deepEqual(validateLunaReport(r.report, { score: s.score, verdict: s.verdict, sandbox: "observed" }), { ok: true });
+});
+
+test("deterministic report paragraphs pass the rail for every band and observation, with model names removed", () => {
+  const verdictFor = (n: number): Verdict => (n >= 90 ? "No threats observed" : n >= 80 ? "Low risk" : n >= 60 ? "Caution" : n >= 30 ? "High risk" : "Malicious");
+  const s = scored();
+  const breakdowns = [
+    [],
+    s.breakdown,
+    [
+      { group: "static" as const, code: "reachable_static_findings", points: -20, detail: "Jev install check: malicious at install.js (install, p=0.91)." },
+      { group: "reputation" as const, code: "owner_new", points: -5, detail: "GitHub owner account is 12 days old." },
+      { group: "cap" as const, code: "cap", points: 0, detail: "Capped at 74: the install did not finish." },
+    ],
+  ];
+  for (const score of [0, 15, 45, 70, 85, 95]) {
+    for (const breakdown of breakdowns) {
+      for (const sandbox of ["observed", "partial", "not_observed"] as const) {
+        const nv = ["Behaviour outside the observed install and entry windows.", "Windows and macOS code paths."];
+        const p = deterministicLunaReport({ score, verdict: verdictFor(score), breakdown, notVerified: nv, sandbox });
+        const v = validateLunaReport(p, { score, verdict: verdictFor(score), sandbox });
+        assert.deepEqual(v, { ok: true }, `${score} ${sandbox} ${JSON.stringify(p)}`);
+        assert.match(p.what_matters, new RegExp(NEXT_STEP[verdictFor(score)].replace(/[.]/g, "\\.")));
+        assert.match(p.what_matters, /Not verified:/);
+        assert.doesNotMatch(`${p.what_ran} ${p.what_matters}`, /\bJev\b|\bLuna\b/);
+      }
+    }
+  }
 });
 
 test("Luna is never retried: a rejected answer or an error publishes the deterministic report after one call", async () => {
   const s = scored();
   const input = { target: "npm:phone-home", score: s.score, verdict: s.verdict, breakdown: s.breakdown, notVerified: s.notVerified, checkAnswers: [], statedPurpose: null, sandbox: "observed" as const };
-  const rejected = new ScriptedModel([{ headline: "Safe", summary: "Low risk" }, { headline: "unused", summary: "unused" }]);
+  const rejected = new ScriptedModel([{ headline: "Safe", summary: "Low risk", report: { what_ran: "x", what_matters: "y" } }, { headline: "unused", summary: "unused", report: { what_ran: "x", what_matters: "y" } }]);
   const r = await writeReport(rejected, input, new AbortController().signal);
   assert.equal(rejected.requests.length, 1);
   assert.equal(r.calls, 1);
@@ -429,7 +492,7 @@ test("writer: a run whose behaviour was not observed never reads as clean", asyn
   assert.match(defaulted.summary, /behaviour was not observed/, "a caller that omits the observation gets the not-observed text");
   const cleanClaim = validateWriterOutput({ headline: "High risk: install ran", summary: "High risk, score 59/100. The forge recorded no contact outside registries." }, { score: 59, verdict: "High risk", sandbox: "not_observed" });
   assert.equal(cleanClaim.ok, false);
-  const model = new ScriptedModel([{ headline: "High risk: nothing was sent", summary: "High risk. No network contact." }]);
+  const model = new ScriptedModel([{ headline: "High risk: nothing was sent", summary: "High risk. No network contact.", report: { what_ran: "We ran it.", what_matters: "High risk." } }]);
   const r = await writeReport(model, { target: "npm:x", score: 59, verdict: "High risk", breakdown: [], notVerified: ["x"], checkAnswers: [], statedPurpose: null, sandbox: "not_observed" }, new AbortController().signal);
   assert.equal(r.writer, "deterministic");
   assert.match(r.summary, /behaviour was not observed/);
