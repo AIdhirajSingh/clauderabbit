@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 22; // 22: a skipped or failed entry is not a partial scan; retry waits not scaled
+export const SCORE_RULES = 23; // 23: scaled fetch timeouts come from a typed npmrc (pnpm 11 crashed on the --config string)
+// 22: a skipped or failed entry is not a partial scan; retry waits not scaled
 // 21: package-manager timeouts on the real clock; a failed root script is not a cut install; the install trace folds package-manager file lines
 // 20: no 404 for other-platform metadata (pnpm 12 fails the install on it)
 // 19: registry traffic streams through the forge, so installs that timed out now complete

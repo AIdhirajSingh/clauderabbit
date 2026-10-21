@@ -227,18 +227,22 @@ printf 'https://cr:%s@github.com\n' "${CANARY[GITHUB_TOKEN]}" | write_decoy "$H/
 # and yarn run lifecycle scripts in the same node binaries libfaketime would have
 # to tell apart. So every package-manager network timeout is multiplied by the
 # clock factor instead; each stays its default length in real time.
-NET_FETCH_MS=$((300000 * FAKE_RATE))   # npm fetch-timeout, default 5 min
-PNPM_FETCH_MS=$((60000 * FAKE_RATE))   # pnpm fetch-timeout, default 60 s
+NET_FETCH_MS=$((300000 * FAKE_RATE))   # fetch-timeout (npm 5 min, pnpm 60 s by default): the longer
+PNPM_FETCH_MS=$((60000 * FAKE_RATE))   # yarn and uv timeouts, default 60 s
 # Retry waits are not scaled: a shorter real wait between retries does no harm,
 # and pnpm 11 fails outright when the retry minimum passes a maximum it fixes
 # itself ("minTimeout is greater than maxTimeout").
-PNPM_TIMEOUTS="--config.fetch-timeout=$PNPM_FETCH_MS"
+# The timeouts go in the install's user npmrc, where npm and pnpm type them as
+# numbers: pnpm 11 passes a `--config.fetch-timeout=` value to
+# AbortSignal.timeout as a string and every request throws.
+printf 'fetch-timeout=%s\nnetwork-timeout=%s\n' "$NET_FETCH_MS" "$PNPM_FETCH_MS" >/etc/cr/npmrc-install
+chmod 0644 /etc/cr/npmrc-install
 BASE_ENV=(
   HOME="$H" USER="$CR_USER" LOGNAME="$CR_USER" SHELL=/bin/bash LANG=C.UTF-8 TMPDIR=/tmp
   PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin"
   LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 FAKETIME_NO_CACHE=1
   NODE_EXTRA_CA_CERTS=/etc/cr/ca.pem SSL_CERT_FILE=/etc/cr/ca.pem REQUESTS_CA_BUNDLE=/etc/cr/ca.pem UV_SYSTEM_CERTS=1
-  NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
+  NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-install npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
   npm_config_fetch_timeout="$NET_FETCH_MS"
   npm_config_network_timeout="$PNPM_FETCH_MS" YARN_HTTP_TIMEOUT="$PNPM_FETCH_MS" YARN_NETWORK_TIMEOUT="$PNPM_FETCH_MS" UV_HTTP_TIMEOUT=$((30 * FAKE_RATE))
   npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
@@ -295,7 +299,7 @@ else
         # metadata for every lockfile entry before installing anything (1,307 requests on
         # a large workspace, 10 s each through the forge), whatever the filter. The scan
         # installs the exact locked versions and is itself the check, so the policy is off here.
-        PNPM_FLAGS="--prod --prefer-frozen-lockfile --config.minimum-release-age=0 $PNPM_TIMEOUTS"
+        PNPM_FLAGS="--prod --prefer-frozen-lockfile --config.minimum-release-age=0"
         INSTALL_CMD="pnpm install $PNPM_FLAGS"
         # pnpm-lock v6 to v8 mark build-script packages requiresBuild; v9 does not record it.
         PDEV=$(grep -c '^  /' /work/src/pnpm-lock.yaml 2>/dev/null || echo 0)
@@ -353,7 +357,7 @@ else
       case "$PM" in
         pnpm)
           F="--filter ${WS_ROOT:-.}"; for n in $WS_NAMES; do F="$F --filter $n"; done
-          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile --config.minimum-release-age=0 $PNPM_TIMEOUTS $F" ;;
+          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile --config.minimum-release-age=0 $F" ;;
         yarn)
           INSTALL_CMD="(yarn workspaces focus --production $WS_ROOT $WS_NAMES || yarn install)" ;;
         *)

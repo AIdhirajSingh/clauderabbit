@@ -207,8 +207,9 @@ test("guest harness keeps the safety invariants", () => {
   // Package-manager network timeouts are multiplied by the install clock factor.
   assert.match(sh, /PNPM_FETCH_MS=\$\(\(60000 \* FAKE_RATE\)\)/);
   assert.match(sh, /npm_config_fetch_timeout="\$NET_FETCH_MS"/);
-  assert.match(sh, /PNPM_FLAGS="[^"]*\$PNPM_TIMEOUTS"/);
-  assert.match(sh, /minimum-release-age=0 \$PNPM_TIMEOUTS \$F"/, "the filtered pnpm install carries the timeouts too");
+  assert.match(sh, /printf 'fetch-timeout=%s\\nnetwork-timeout=%s\\n' "\$NET_FETCH_MS" "\$PNPM_FETCH_MS" >\/etc\/cr\/npmrc-install/);
+  assert.match(sh, /NPM_CONFIG_USERCONFIG=\/etc\/cr\/npmrc-install npm_config_dangerously/, "the install reads the scaled timeouts as typed npmrc settings");
+  assert.doesNotMatch(sh, /--config\.fetch-timeout=\$/, "pnpm 11 types a --config.fetch-timeout value as a string");
   // A failed root lifecycle script is recorded and the install is scored as completed.
   assert.match(sh, /INSTALL_STATUS=completed\n\s+check root_script false/);
   // The install trace is folded before the size cap is applied.
