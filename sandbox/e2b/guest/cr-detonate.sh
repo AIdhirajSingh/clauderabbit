@@ -278,7 +278,12 @@ else
     # Every lockfile package is still checked against OSV (orchestrator), dev included.
     case "$PM" in
       pnpm)
-        INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile"
+        # The repo's minimumReleaseAge supply-chain policy makes pnpm fetch registry
+        # metadata for every lockfile entry before installing anything (1,307 requests on
+        # a large workspace, 10 s each through the forge), whatever the filter. The scan
+        # installs the exact locked versions and is itself the check, so the policy is off here.
+        PNPM_FLAGS="--prod --prefer-frozen-lockfile --config.minimum-release-age=0"
+        INSTALL_CMD="pnpm install $PNPM_FLAGS"
         # pnpm-lock v6 to v8 mark build-script packages requiresBuild; v9 does not record it.
         PDEV=$(grep -c '^  /' /work/src/pnpm-lock.yaml 2>/dev/null || echo 0)
         if grep -q 'requiresBuild: true' /work/src/pnpm-lock.yaml 2>/dev/null; then
@@ -335,7 +340,7 @@ else
       case "$PM" in
         pnpm)
           F="--filter ${WS_ROOT:-.}"; for n in $WS_NAMES; do F="$F --filter $n"; done
-          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile $F" ;;
+          INSTALL_CMD="pnpm install --prod --prefer-frozen-lockfile --config.minimum-release-age=0 $F" ;;
         yarn)
           INSTALL_CMD="(yarn workspaces focus --production $WS_ROOT $WS_NAMES || yarn install)" ;;
         *)
