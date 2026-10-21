@@ -101,18 +101,24 @@ export interface ForgedCallData {
   forged_kind: string;
   tls?: "intercepted" | "refused";
   canary_hits: string[];
+  /** When it happened inside the sandbox (epoch ms), when the record carries a time. */
+  at?: number;
 }
 export interface FileEventData {
   phase: Phase;
   op: "write" | "create" | "unlink" | "rename" | "chmod" | "read_decoy";
   path: string;
   pid: number;
+  /** When it happened inside the sandbox (epoch ms), when the record carries a time. */
+  at?: number;
 }
 export interface ProcessEventData {
   phase: Phase;
   pid: number;
   ppid: number;
   argv: string[];
+  /** When it happened inside the sandbox (epoch ms), when the record carries a time. */
+  at?: number;
 }
 export interface CheckEventData {
   name: string;

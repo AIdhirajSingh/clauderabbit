@@ -244,6 +244,7 @@ export function summarizeCapture(records: CaptureRecord[], m: CanaryMatcher): Ca
       forged_kind: r.forged_kind,
       ...(r.tls === "intercepted" || r.tls === "refused" ? { tls: r.tls } : {}),
       canary_hits: recordCanaryHits(r, m),
+      ...(r.t > 0 ? { at: Math.round(r.t * 1000) } : {}),
     };
     if (forgedCalls.length < MAX_FORGED_EVENTS) {
       forgedCalls.push(call);

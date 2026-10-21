@@ -97,7 +97,11 @@ export function createRunEventBus(opts: RunEventBusOptions): RunEventBus {
 
   const make = (body: ScanEventBody): ScanEvent => {
     seq += 1;
-    const t = Math.max(0, Math.round(opts.now() - opts.startedAt));
+    const now = Math.max(0, Math.round(opts.now() - opts.startedAt));
+    // Sandbox events carry the time they happened (epoch ms). Stamp them with it,
+    // clamped into the run so far, instead of the time they were collected.
+    const at = (body.data as { at?: unknown }).at;
+    const t = typeof at === "number" && Number.isFinite(at) && at > 0 ? Math.min(now, Math.max(0, Math.round(at - opts.startedAt))) : now;
     return { run_id: opts.runId, seq, t_ms: t, ...body } as ScanEvent;
   };
 

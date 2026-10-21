@@ -187,6 +187,8 @@ interface Call {
   name: string;
   args: string;
   ret: number | null;
+  /** strace -ttt time of the call (epoch seconds). */
+  t: number;
 }
 
 /** Join `<unfinished ...>` / `<... resumed>` pairs and yield complete calls. */
@@ -226,7 +228,7 @@ export function* straceCalls(text: string, stats: StraceParse["stats"]): Generat
       continue;
     }
     const ret = c[3] === "?" ? null : c[3]!.startsWith("0x") ? parseInt(c[3]!, 16) : Number(c[3]);
-    yield { pid, name: c[1]!, args: c[2]!, ret };
+    yield { pid, name: c[1]!, args: c[2]!, ret, t: Number(m[2]) };
   }
 }
 
@@ -278,6 +280,8 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
     return cwd.get(pid) ?? null;
   };
 
+  // Time of the call being handled, carried onto the events it produces.
+  let curAt: number | undefined;
   const addFile = (op: FileEventData["op"], path: string, pid: number) => {
     const key = `${op}:${path}`;
     if (seenFiles.has(key)) return;
@@ -288,11 +292,12 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
       stats.droppedFiles++;
       return;
     }
-    files.push({ phase: opts.phase, op, path, pid });
+    files.push({ phase: opts.phase, op, path, pid, ...(curAt ? { at: curAt } : {}) });
   };
 
   for (const call of straceCalls(text, stats)) {
     const { pid, name, ret } = call;
+    curAt = Number.isFinite(call.t) && call.t > 0 ? Math.round(call.t * 1000) : undefined;
     const here = cwdOf(pid);
     if (name === "sendto" || name === "sendmsg" || name === "sendmmsg") {
       const d = datagramDestination(call.args);
@@ -333,7 +338,7 @@ export function parseStrace(text: string, opts: StraceOptions): StraceParse {
           stats.droppedProcesses++;
           break;
         }
-        processes.push({ phase: opts.phase, pid, ppid: ppid.get(pid) ?? 0, argv });
+        processes.push({ phase: opts.phase, pid, ppid: ppid.get(pid) ?? 0, argv, ...(curAt ? { at: curAt } : {}) });
         break;
       }
       case "chdir": {
