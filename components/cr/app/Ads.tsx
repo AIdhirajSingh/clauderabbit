@@ -124,6 +124,15 @@ export function VideoAd({ playKey }: { playKey: string }) {
 /** The display slot under Reputation: AdSense's published test publisher with adtest on. */
 export function DisplayAd() {
   const ins = useRef<HTMLModElement | null>(null);
+  const [unfilled, setUnfilled] = useState(false);
+  useEffect(() => {
+    const el = ins.current;
+    if (!el) return;
+    // Google marks a slot it could not fill with data-ad-status="unfilled"; show the house card instead of a blank box.
+    const mo = new MutationObserver(() => setUnfilled(el.getAttribute("data-ad-status") === "unfilled"));
+    mo.observe(el, { attributes: true, attributeFilter: ["data-ad-status"] });
+    return () => mo.disconnect();
+  }, []);
   useEffect(() => {
     loadScript(`${ADS.adsenseScript}?client=${ADS.adsenseClient}`)
       .then(() => {
@@ -137,7 +146,13 @@ export function DisplayAd() {
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <span style={{ fontSize: 12, color: "var(--text2)" }}>{ADS.label}</span>
       <div style={{ minHeight: 120, borderRadius: 20, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)", overflow: "hidden" }}>
-        <ins ref={ins} className="adsbygoogle" style={{ display: "block", minHeight: 120 }} data-ad-client={ADS.adsenseClient} data-ad-slot={ADS.adsenseSlot} data-ad-format="auto" data-full-width-responsive="true" data-adtest="on" />
+        {unfilled && (
+          <a href={ADS.exportSponsor.url} target="_blank" rel="noopener noreferrer sponsored" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "20px 22px", minHeight: 120, justifyContent: "center" }}>
+            <span style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.02em" }}>{ADS.exportSponsor.headline}</span>
+            <span style={{ fontSize: 14, lineHeight: 1.45, color: "var(--text2)" }}>{ADS.exportSponsor.body}</span>
+          </a>
+        )}
+        <ins ref={ins} className="adsbygoogle" style={{ display: unfilled ? "none" : "block", minHeight: unfilled ? 0 : 120 }} data-ad-client={ADS.adsenseClient} data-ad-slot={ADS.adsenseSlot} data-ad-format="auto" data-full-width-responsive="true" data-adtest="on" />
       </div>
     </div>
   );
