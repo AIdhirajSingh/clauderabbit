@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
-import { Figtree } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
 
@@ -47,8 +46,18 @@ const geist = localFont({
   adjustFontFallback: "Arial",
 });
 
-/** Figtree, the iDesign Pockit face used by every 2.0 screen (CSS var --font-figtree). */
-const figtree = Figtree({ subsets: ["latin"], weight: ["400", "500", "600", "700"], display: "swap", variable: "--font-figtree" });
+/**
+ * Figtree, the iDesign Pockit face used by every 2.0 screen (CSS var --font-figtree).
+ * Self-hosted for the same reason as the faces above: next/font/google fetches at
+ * build time and a failed fetch fails the build. Variable latin face
+ * (@fontsource-variable/figtree 5.2.10, sha256 4ba7d3d0…62dd), weights 300 to 900.
+ */
+const figtree = localFont({
+  src: [{ path: "./fonts/figtree-latin.woff2", weight: "300 900", style: "normal" }],
+  display: "swap",
+  variable: "--font-figtree",
+  adjustFontFallback: "Arial",
+});
 
 const instrumentSerif = localFont({
   src: [

@@ -7,7 +7,7 @@
  * the two in step).
  *
  *   E2B_API_KEY=... node sandbox/e2b/export/build-export.ts
- *   node sandbox/e2b/export/build-export.ts --vercel-hook   (Preview builds only; skips when the template exists)
+ *   node sandbox/e2b/export/build-export.ts --vercel-hook   (Preview builds only; skips when this content tag is built)
  */
 
 import { Template, defaultBuildLogger } from "e2b";
@@ -17,6 +17,8 @@ export const EXPORT_TEMPLATE_VCPU = 2;
 export const EXPORT_TEMPLATE_MEMORY_MB = 2048;
 export const PLAYWRIGHT_VERSION = "1.55.0";
 export const PLAYWRIGHT_IMAGE = `mcr.microsoft.com/playwright/python:v${PLAYWRIGHT_VERSION}-noble`;
+/** Bump when template() changes; a build is skipped only when this exact tag exists. */
+export const EXPORT_TEMPLATE_TAG = `pw-${PLAYWRIGHT_VERSION.replace(/\./g, "-")}-r2`;
 
 function log(line: string): void {
   console.log(`[cr-export] ${line}`);
@@ -53,13 +55,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   if (hook && process.env.CR_EXPORT_REBUILD !== "1" && (await Template.exists(name))) {
-    log(`skip: template ${name} exists (set CR_EXPORT_REBUILD=1 to rebuild)`);
-    return;
+    const tags = await Template.getTags(name);
+    if (tags.some((t) => t.tag === EXPORT_TEMPLATE_TAG)) {
+      log(`skip: template ${name} already has build ${EXPORT_TEMPLATE_TAG} (set CR_EXPORT_REBUILD=1 to rebuild)`);
+      return;
+    }
   }
   const started = Date.now();
   const info = await Template.build(template(), name, {
     cpuCount: EXPORT_TEMPLATE_VCPU,
     memoryMB: EXPORT_TEMPLATE_MEMORY_MB,
+    tags: [EXPORT_TEMPLATE_TAG],
     onBuildLogs: defaultBuildLogger(),
   });
   log(`built ${name} (${EXPORT_TEMPLATE_VCPU} vCPU / ${EXPORT_TEMPLATE_MEMORY_MB} MB) in ${Math.round((Date.now() - started) / 1000)} s, build ${info.buildId}`);
