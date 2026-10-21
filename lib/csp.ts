@@ -35,12 +35,15 @@
 
 /** Script hosts are not listed: Google supports only nonce + 'strict-dynamic' for its tags. */
 export const GOOGLE_ADS_FRAME_SOURCES = [
+  // The IMA SDK (lib/ads-config.ts videoTag) renders its ad UI in an imasdk.googleapis.com frame.
+  "https://imasdk.googleapis.com",
   "https://*.doubleclick.net",
   "https://*.googlesyndication.com",
   "https://*.google.com",
   "https://*.adtrafficquality.google",
 ];
 export const GOOGLE_ADS_CONNECT_SOURCES = [
+  "https://imasdk.googleapis.com",
   "https://*.doubleclick.net",
   "https://*.googlesyndication.com",
   "https://*.google.com",
