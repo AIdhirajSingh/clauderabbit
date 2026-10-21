@@ -52,16 +52,20 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /**
- * The sandbox starts the entry point through `env -i KEY=value ... <command>`; the
- * row shows the command itself. Only leading `env`, its flags and KEY=value
- * settings are dropped; nothing is added.
+ * The sandbox starts the entry point through `env -i KEY=value ... <command>`, and
+ * the engine's capture can cut that line short. The row shows only what follows
+ * the last KEY=value setting; when nothing does, the command is unknown (null)
+ * and the row leaves it out. Nothing is added.
  */
-export function entryCommand(raw: string): string {
-  const parts = raw.trim().split(/\s+/);
-  if (parts[0] !== "env") return raw.trim();
-  let i = 1;
-  while (i < parts.length && (/^-/.test(parts[i] ?? "") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(parts[i] ?? ""))) i++;
-  return parts.slice(i).join(" ") || raw.trim();
+export function entryCommand(raw: string): string | null {
+  const parts = raw.trim().split(/\s+/).filter(Boolean);
+  if (parts[0] !== "env") return parts.length ? parts.join(" ") : null;
+  let last = 0;
+  parts.forEach((t, i) => {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) last = i;
+  });
+  const cmd = parts.slice(last + 1).filter((t) => !/^-/.test(t));
+  return last > 0 && cmd.length ? cmd.join(" ") : null;
 }
 
 /** The design's four labelled rows, built only from known fields; a row with nothing known is left out. */
@@ -74,7 +78,9 @@ function ranSummaryRows(r: RanSummary): { k: string; v: string }[] {
   if (r.network) rows.push({ k: "Network", v: r.network.kind === "registry_only" ? "Registry traffic only" : r.network.kind === "none" ? "No network calls" : `${plural(r.network.calls, "call", "calls")}, answered by the forge` });
   if (r.entry_point) {
     const cmd = entryCommand(r.entry_point.command);
-    rows.push({ k: "Entry point", v: r.entry_point.exit_code === null ? cmd : `${cmd}, exit ${r.entry_point.exit_code}` });
+    const exit = r.entry_point.exit_code === null ? null : `exit ${r.entry_point.exit_code}`;
+    const v = [cmd, exit].filter(Boolean).join(", ");
+    if (v) rows.push({ k: "Entry point", v });
   }
   return rows;
 }
