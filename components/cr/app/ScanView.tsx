@@ -63,8 +63,11 @@ function eventLine(e: ScanEvent): LogLine | null {
   }
 }
 
+/** A git SHA shows 7 characters; an npm "version+integrity" shows the version. */
 function shortSha(sha: string): string {
-  return /^[0-9a-f]{40}$/i.test(sha) ? sha.slice(0, 7) : sha;
+  if (/^[0-9a-f]{40}$/i.test(sha)) return sha.slice(0, 7);
+  const version = sha.split("+")[0] ?? sha;
+  return version.length > 24 ? `${version.slice(0, 24)}…` : version;
 }
 function subjectName(subject: string): string {
   return subject.startsWith("npm:") ? subject.slice(4) : subject;
@@ -315,7 +318,7 @@ export function ScanView({ runId }: { runId: string }) {
             </button>
           )}
           <h1 className={s.h1} style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 30, lineHeight: 1.1, fontWeight: 600, letterSpacing: "-0.035em", overflowWrap: "anywhere" }}>{run ? subjectName(run.subject) : "Starting…"}</h1>
-          <span className={s.mono} style={{ fontSize: 13, color: "var(--text2)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{run ? shortSha(run.commit_sha) : ""}</span>
+          <span className={s.mono} title={run?.commit_sha} style={{ flex: "none", maxWidth: "40%", overflow: "hidden", textOverflow: "ellipsis", fontSize: 13, color: "var(--text2)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{run ? shortSha(run.commit_sha) : ""}</span>
         </div>
 
         {running && (

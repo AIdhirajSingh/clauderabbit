@@ -105,7 +105,9 @@ export async function startScan(target: string, accessToken: string | null): Pro
         settle(runId, final.type === "result" && final.outcome === "cached");
         return;
       }
-      const ev = msg as unknown as ScanEvent;
+      // Each event line is {"type":"event","event":<ScanEvent>} (lib/engine/events.ts eventLine).
+      if (msg.type !== "event" || !msg.event || typeof msg.event !== "object") return;
+      const ev = msg.event as ScanEvent;
       if (typeof ev.run_id !== "string" || typeof ev.seq !== "number") return;
       if (!scan) {
         scan = { runId: ev.run_id, events: [], final: null, dropped: false, listeners: new Set() };
