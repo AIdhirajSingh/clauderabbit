@@ -16,6 +16,8 @@ import { createClient } from "@/lib/supabase/client";
 import { liveScan, subscribeLive } from "@/lib/cr/scan-client";
 import type { ReportPayload, ScanEvent, StageName } from "@/lib/engine/types";
 import { TONE_STYLE, toneOf } from "@/lib/cr/verdict";
+import { plainLog, STAGE_WORD } from "@/lib/cr/plain-log";
+import { evidenceLines, notVerifiedBullets, reputationChips } from "@/lib/cr/result-format";
 import { useAppSession } from "./AppShell";
 import { VerdictGlyph } from "./Board";
 import { VideoAd } from "./Ads";
@@ -23,11 +25,7 @@ import s from "./app.module.css";
 
 const STAGES = ["Fetching", "Installing", "Running", "Checking", "Scoring"] as const;
 const STAGE_BUCKET: Record<StageName, number> = { cache: 0, resolve: 0, fetch: 0, verify: 0, reach: 1, osv: 1, detonate: 2, static: 3, checks: 3, score: 4, report: 4, persist: 4 };
-const STAGE_WORD: Record<StageName, string> = {
-  cache: "Starting", resolve: "Finding the commit", fetch: "Fetching the code", verify: "Verifying the download", reach: "Mapping what install reaches",
-  osv: "Checking the malware database", detonate: "Installing and running it", static: "Reading the code", checks: "Answering the security questions",
-  score: "Scoring", report: "Writing the report", persist: "Saving the report",
-};
+
 const CHECKS: { label: string; stages: StageName[] }[] = [
   { label: "Malware database", stages: ["osv"] },
   { label: "Install scripts", stages: ["detonate"] },
@@ -68,51 +66,35 @@ export function entryCommand(raw: string): string | null {
   return last > 0 && cmd.length ? cmd.join(" ") : null;
 }
 
-/** The design's four labelled rows, built only from known fields; a row with nothing known is left out. */
-function ranSummaryRows(r: RanSummary): { k: string; v: string }[] {
-  const rows: { k: string; v: string }[] = [];
-  const pm = [r.package_manager, r.installed !== null ? `${r.installed} installed` : null, r.skipped !== null ? `${r.skipped} skipped` : null].filter(Boolean);
-  if (pm.length) rows.push({ k: "Package manager", v: pm.join(", ") });
-  const inst = [r.install_ms !== null ? `${(r.install_ms / 1000).toFixed(1)} s` : null, r.install_scripts !== null ? (r.install_scripts === 0 ? "no install scripts" : plural(r.install_scripts, "install script", "install scripts")) : null].filter(Boolean);
-  if (inst.length) rows.push({ k: "Install", v: inst.join(", ") });
-  if (r.network) rows.push({ k: "Network", v: r.network.kind === "registry_only" ? "Registry traffic only" : r.network.kind === "none" ? "No network calls" : `${plural(r.network.calls, "call", "calls")}, answered by the forge` });
-  if (r.entry_point) {
+/**
+ * The design's four labelled rows, always all four. Values come from the engine's
+ * `ran` summary and the detonate stage's own outcome (install timed out, entry
+ * skipped); a value the run did not record says "Not recorded".
+ */
+function ranSummaryRows(r: RanSummary | undefined, outcome: { installTimedOut: boolean; entrySkipped: boolean }): { k: string; v: string }[] {
+  const pm = r ? [r.package_manager, r.installed !== null ? `${r.installed} installed` : null, r.skipped !== null ? `${r.skipped} skipped` : null].filter(Boolean).join(", ") : "";
+  const secs = r?.install_ms != null ? Math.round(r.install_ms / 1000) : null;
+  const scripts = r?.install_scripts != null ? (r.install_scripts === 0 ? "no install scripts" : plural(r.install_scripts, "install script", "install scripts")) : null;
+  const install = outcome.installTimedOut ? (secs !== null ? `Timed out at ${secs} s` : "Timed out") : [secs !== null ? `${(r!.install_ms! / 1000).toFixed(1)} s` : null, scripts].filter(Boolean).join(", ");
+  const net = r?.network ? (r.network.kind === "registry_only" ? "Registry traffic only" : r.network.kind === "none" ? "No network calls" : `${plural(r.network.calls, "call", "calls")}, answered by the forge`) : "";
+  let entry = "";
+  if (outcome.entrySkipped) entry = "Not run";
+  else if (r?.entry_point) {
     const cmd = entryCommand(r.entry_point.command);
     const exit = r.entry_point.exit_code === null ? null : `exit ${r.entry_point.exit_code}`;
-    const v = [cmd, exit].filter(Boolean).join(", ");
-    if (v) rows.push({ k: "Entry point", v });
+    entry = [cmd, exit].filter(Boolean).join(", ") || "Ran";
   }
-  return rows;
+  return [
+    { k: "Package manager", v: pm || "Not recorded" },
+    { k: "Install", v: install || "Not recorded" },
+    { k: "Network", v: net || "Not recorded" },
+    { k: "Entry point", v: entry || "Not recorded" },
+  ];
 }
 
 interface RunReport { run_id: string; subject: string; commit_sha: string; status: "running" | "done" | "error"; error_code: string | null; started_at: string; finished_at: string | null; report: (Omit<ReportPayload, "ran"> & { luna_report?: { what_ran: string; what_matters: string }; ran?: RanSummary }) | null; report_created_at: string | null }
 
-type LogLine = { at: number; text: string; tone: "ok" | "warn" | "bad" | null; seq: number };
 
-function eventLine(e: ScanEvent): LogLine | null {
-  const at = e.t_ms;
-  switch (e.type) {
-    case "stage": {
-      // The lookup for an earlier scan of this commit is internal; the page never says whether a scan was stored.
-      if (e.data.name === "cache") return null;
-      const w = STAGE_WORD[e.data.name] ?? e.data.name;
-      if (e.data.status === "start") return { at, text: w, tone: null, seq: e.seq };
-      if (e.data.status === "error") return { at, text: `${w}: ${e.data.detail ?? "failed"}`, tone: "bad", seq: e.seq };
-      if (e.data.status === "skipped") return e.data.detail ? { at, text: `${w}: skipped, ${e.data.detail}`, tone: null, seq: e.seq } : null;
-      return e.data.detail ? { at, text: e.data.detail, tone: null, seq: e.seq } : null;
-    }
-    case "forged_call":
-      return { at, text: `${e.data.method ? e.data.method + " " : ""}${e.data.host}${e.data.path ?? ""}: answered by the forge with a fake reply`, tone: "warn", seq: e.seq };
-    case "file":
-      return { at, text: `${e.data.op === "read_decoy" ? "Read a decoy credential" : e.data.op === "unlink" ? "Deleted" : "Wrote"} ${e.data.path}`, tone: e.data.op === "read_decoy" ? "bad" : null, seq: e.seq };
-    case "process":
-      return { at, text: `Ran ${e.data.argv.join(" ").slice(0, 160)}`, tone: null, seq: e.seq };
-    case "check":
-      return { at, text: e.data.detail ? `${e.data.name}: ${e.data.detail}` : e.data.name, tone: e.data.ok ? "ok" : "warn", seq: e.seq };
-    default:
-      return null;
-  }
-}
 
 /** A git SHA shows 7 characters; an npm "version+integrity" shows the version. */
 function shortSha(sha: string): string {
@@ -314,7 +296,7 @@ export function ScanView({ runId }: { runId: string }) {
     return { current, finished, buckets };
   }, [visible]);
 
-  const log = useMemo(() => visible.map(eventLine).filter((l): l is LogLine => l !== null).slice(-14), [visible]);
+  const log = useMemo(() => plainLog(visible).slice(-14), [visible]);
   const lastT = visible[visible.length - 1]?.t_ms ?? 0;
   const liveMs = playMs !== null ? playMs : paced ? 0 : run && running ? Math.max(lastT, clockNow - Date.parse(run.started_at)) : lastT;
   const report = run?.report ?? null;
@@ -349,8 +331,13 @@ export function ScanView({ runId }: { runId: string }) {
   const paragraphs = report?.luna_report ? [report.luna_report.what_ran, report.luna_report.what_matters].filter(Boolean) : report?.summary ? [report.summary] : [];
   const repFacts = report?.reputation_section?.facts ?? [];
   const repWarnings = report?.reputation_section?.warnings ?? [];
-  const ranRows = report?.ran ? ranSummaryRows(report.ran) : [];
+  const detonateDetail = [...events].reverse().find((e) => e.type === "stage" && e.data.name === "detonate" && e.data.status !== "start");
+  const dd = detonateDetail && detonateDetail.type === "stage" ? (detonateDetail.data.detail ?? "") : "";
+  const outcome = { installTimedOut: /install timeout/i.test(dd), entrySkipped: /entry skipped/i.test(dd) };
+  const ranRows = report?.ran || outcome.installTimedOut || outcome.entrySkipped ? ranSummaryRows(report?.ran, outcome) : [];
   const ranLines = ranRows.length === 0 ? (report?.evidence?.behaviour ?? []) : [];
+  const nv = notVerifiedBullets(report?.not_verified ?? []);
+  const repChips = reputationChips(report?.reputation_section?.facts ?? []);
 
   return (
     <div className={s.scanGrid}>
@@ -418,9 +405,9 @@ export function ScanView({ runId }: { runId: string }) {
                 <button type="button" className={`${s.btn} ${s.press} ${s.solid}`} onClick={share} style={{ height: 48, padding: "0 22px", borderRadius: 999, background: "var(--inv)", color: "var(--on-inv)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 10 }}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 15V4" /><path d="M8.5 7.5L12 4l3.5 3.5" /><path d="M8 11H6.5A1.5 1.5 0 005 12.5v6A1.5 1.5 0 006.5 20h11a1.5 1.5 0 001.5-1.5v-6a1.5 1.5 0 00-1.5-1.5H16" /></svg>Share
                 </button>
-                <Link href={`/app/scan/${runId}?replay=1`} className={`${s.press} ${s.ghost}`} style={{ height: 48, padding: "0 20px", borderRadius: 999, boxShadow: "inset 0 0 0 1.5px var(--text)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+                <button type="button" onClick={() => router.push(`/app/scan/${runId}?replay=1&r=${Date.now()}`)} className={`${s.btn} ${s.press} ${s.ghost}`} style={{ height: 48, padding: "0 20px", borderRadius: 999, boxShadow: "inset 0 0 0 1.5px var(--text)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5l11 6.5-11 6.5z" fill="currentColor" /></svg>Watch how it happened
-                </Link>
+                </button>
                 <Link href="/app" className={`${s.press} ${s.ghost}`} style={{ height: 48, padding: "0 22px", borderRadius: 999, boxShadow: "inset 0 0 0 1.5px var(--text)", fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center" }}>Scan another</Link>
                 {ready && !session && (
                   <Link href="/login" style={{ fontSize: 14, color: "var(--text2)", marginLeft: 6, minHeight: 48, display: "inline-flex", alignItems: "center" }}>
@@ -471,7 +458,15 @@ export function ScanView({ runId }: { runId: string }) {
                   <span style={{ width: 38, flex: "none", fontSize: 16, fontWeight: 600, color: "var(--bad-text)", fontVariantNumeric: "tabular-nums" }}>{d.points}</span>
                   <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
                     <span style={{ fontSize: 15, lineHeight: 1.4, fontWeight: 500 }}>{d.detail}</span>
-                    {d.evidence && d.evidence.length > 0 && <code className={s.mono} style={{ fontSize: 12.5, color: "var(--text2)", overflowWrap: "anywhere" }}>{d.evidence.slice(0, 3).join(" · ")}</code>}
+                    {(() => {
+                      const ev = evidenceLines(d.evidence);
+                      return ev.lines.length > 0 ? (
+                        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          {ev.lines.map((l, j) => <code key={j} className={s.mono} style={{ fontSize: 12.5, color: "var(--text2)", overflowWrap: "anywhere" }}>{l}</code>)}
+                          {ev.more > 0 && <span style={{ fontSize: 12.5, color: "var(--text3)" }}>+{ev.more} more</span>}
+                        </span>
+                      ) : null;
+                    })()}
                   </span>
                 </div>
               ))}
@@ -490,18 +485,31 @@ export function ScanView({ runId }: { runId: string }) {
                 ))}
               </div>
             )}
-            {report.not_verified.length > 0 && (
-              <div style={{ display: "flex", gap: 10, fontSize: 14, lineHeight: 1.45, color: "var(--text2)" }}>
-                <span style={{ flex: "none", fontWeight: 600, color: "var(--text)" }}>Not verified</span>
-                <span>{report.not_verified.join(" ")}</span>
+            {nv.shown.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14, lineHeight: 1.45, color: "var(--text2)" }}>
+                <span style={{ fontWeight: 600, color: "var(--text)" }}>Not verified</span>
+                <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {nv.shown.map((t, i) => <li key={i}>{t}</li>)}
+                </ul>
+                {nv.more.length > 0 && (
+                  <details>
+                    <summary style={{ cursor: "pointer", minHeight: 32, display: "flex", alignItems: "center", fontWeight: 500, color: "var(--text)" }}>More</summary>
+                    <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {nv.more.map((t, i) => <li key={i}>{t}</li>)}
+                    </ul>
+                  </details>
+                )}
               </div>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Reputation <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text2)" }}>shown separately</span></h2>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {repFacts.length === 0 && repWarnings.length === 0 && <span style={{ fontSize: 14, color: "var(--text2)" }}>No reputation facts were recorded for this scan.</span>}
-                {repFacts.map((f, i) => (
-                  <span key={`f${i}`} title={`Source: ${f.source}`} style={{ display: "inline-flex", alignItems: "center", minHeight: 32, padding: "4px 12px", borderRadius: 999, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)", fontSize: 13, fontWeight: 500 }}>{f.fact}</span>
+                {repChips.length === 0 && repWarnings.length === 0 && <span style={{ fontSize: 14, color: "var(--text2)" }}>No reputation facts were recorded for this scan.</span>}
+                {repChips.map((c, i) => (
+                  <span key={`f${i}`} style={{ display: "inline-flex", alignItems: "center", gap: 8, minHeight: 32, padding: "4px 12px", borderRadius: 999, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)", fontSize: 13, fontWeight: 500 }}>
+                    {c.text}
+                    <span style={{ fontSize: 11, fontWeight: 500, color: "var(--text3)" }}>{c.source}</span>
+                  </span>
                 ))}
                 {repWarnings.map((w, i) => (
                   <span key={`w${i}`} style={{ display: "inline-flex", alignItems: "center", minHeight: 32, padding: "4px 12px", borderRadius: 999, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)", fontSize: 13, fontWeight: 500, color: "var(--warn-text)" }}>{w}</span>
