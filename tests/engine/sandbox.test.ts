@@ -205,9 +205,11 @@ test("guest harness keeps the safety invariants", () => {
   const policy = JSON.parse(readFileSync(join(ROOT, "sandbox/e2b/guest/policy.json"), "utf8"));
   assert.deepEqual(policy.registries.npm, ["registry.npmjs.org", "registry.yarnpkg.com"]);
   // Package-manager network timeouts are multiplied by the install clock factor.
-  assert.match(sh, /PNPM_FETCH_MS=\$\(\(60000 \* FAKE_RATE\)\)/);
-  assert.match(sh, /npm_config_fetch_timeout="\$NET_FETCH_MS"/);
-  assert.match(sh, /printf 'fetch-timeout=%s\\nnetwork-timeout=%s\\n' "\$NET_FETCH_MS" "\$PNPM_FETCH_MS" >\/etc\/cr\/npmrc-install/);
+  assert.match(sh, /FETCH_MS=\$\(\(60000 \* FAKE_RATE\)\)/);
+  assert.match(sh, /printf 'fetch-timeout=%s\\nnetwork-timeout=%s\\n' "\$FETCH_MS" "\$FETCH_MS" >\/etc\/cr\/npmrc-install/);
+  assert.match(sh, /printf 'fetchTimeout: %s\\n' "\$FETCH_MS" \| install -o "\$CR_USER" -g "\$CR_USER" -m 0600 \/dev\/stdin "\$H\/\.config\/pnpm\/config\.yaml"/, "pnpm 11 reads its global config.yaml");
+  assert.match(sh, /XDG_CONFIG_HOME="\$H\/\.config" npm_config_fetch_timeout="\$FETCH_MS" pnpm_config_fetch_timeout="\$FETCH_MS"/);
+  assert.match(sh, /check pnpm_fetch_timeout /);
   assert.match(sh, /NPM_CONFIG_USERCONFIG=\/etc\/cr\/npmrc-install npm_config_dangerously/, "the install reads the scaled timeouts as typed npmrc settings");
   assert.doesNotMatch(sh, /--config\.fetch-timeout=\$/, "pnpm 11 types a --config.fetch-timeout value as a string");
   // A failed root lifecycle script is recorded and the install is scored as completed.

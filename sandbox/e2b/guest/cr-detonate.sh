@@ -227,24 +227,29 @@ printf 'https://cr:%s@github.com\n' "${CANARY[GITHUB_TOKEN]}" | write_decoy "$H/
 # and yarn run lifecycle scripts in the same node binaries libfaketime would have
 # to tell apart. So every package-manager network timeout is multiplied by the
 # clock factor instead; each stays its default length in real time.
-NET_FETCH_MS=$((300000 * FAKE_RATE))   # fetch-timeout (npm 5 min, pnpm 60 s by default): the longer
-PNPM_FETCH_MS=$((60000 * FAKE_RATE))   # yarn and uv timeouts, default 60 s
+FETCH_MS=$((60000 * FAKE_RATE))   # fetch-timeout and the yarn timeouts: 60 s in real time
 # Retry waits are not scaled: a shorter real wait between retries does no harm,
 # and pnpm 11 fails outright when the retry minimum passes a maximum it fixes
 # itself ("minTimeout is greater than maxTimeout").
 # The timeouts go in the install's user npmrc, where npm and pnpm type them as
 # numbers: pnpm 11 passes a `--config.fetch-timeout=` value to
 # AbortSignal.timeout as a string and every request throws.
-printf 'fetch-timeout=%s\nnetwork-timeout=%s\n' "$NET_FETCH_MS" "$PNPM_FETCH_MS" >/etc/cr/npmrc-install
+printf 'fetch-timeout=%s\nnetwork-timeout=%s\n' "$FETCH_MS" "$FETCH_MS" >/etc/cr/npmrc-install
 chmod 0644 /etc/cr/npmrc-install
+# pnpm 11 no longer reads its settings from an npmrc: it reads its global
+# config.yaml under XDG_CONFIG_HOME and pnpm_config_* variables. XDG_CONFIG_HOME
+# is the sandbox user's own ~/.config, so decoys under it (gh/hosts.yml) stay
+# where an XDG-aware reader looks; ~/.npmrc, the npm token decoy, is untouched.
+install -d -o "$CR_USER" -g "$CR_USER" -m 0700 "$H/.config/pnpm"
+printf 'fetchTimeout: %s\n' "$FETCH_MS" | install -o "$CR_USER" -g "$CR_USER" -m 0600 /dev/stdin "$H/.config/pnpm/config.yaml"
 BASE_ENV=(
   HOME="$H" USER="$CR_USER" LOGNAME="$CR_USER" SHELL=/bin/bash LANG=C.UTF-8 TMPDIR=/tmp
   PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin"
   LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 FAKETIME_NO_CACHE=1
   NODE_EXTRA_CA_CERTS=/etc/cr/ca.pem SSL_CERT_FILE=/etc/cr/ca.pem REQUESTS_CA_BUNDLE=/etc/cr/ca.pem UV_SYSTEM_CERTS=1
   NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-install npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
-  npm_config_fetch_timeout="$NET_FETCH_MS"
-  npm_config_network_timeout="$PNPM_FETCH_MS" YARN_HTTP_TIMEOUT="$PNPM_FETCH_MS" YARN_NETWORK_TIMEOUT="$PNPM_FETCH_MS" UV_HTTP_TIMEOUT=$((30 * FAKE_RATE))
+  XDG_CONFIG_HOME="$H/.config" npm_config_fetch_timeout="$FETCH_MS" pnpm_config_fetch_timeout="$FETCH_MS"
+  npm_config_network_timeout="$FETCH_MS" YARN_HTTP_TIMEOUT="$FETCH_MS" YARN_NETWORK_TIMEOUT="$FETCH_MS" UV_HTTP_TIMEOUT=$((30 * FAKE_RATE))
   npm_config_fetch_retries=1 npm_config_audit=false npm_config_fund=false
   npm_config_update_notifier=false npm_config_cache="$H/.npm" CI=true
   npm_config_maxsockets=16 npm_config_network_concurrency=16 npm_config_dangerously_allow_all_builds=true
@@ -424,6 +429,13 @@ if [ -n "$INSTALL_CMD" ]; then
     fi
   fi
   log "install $INSTALL_STATUS exit=$INSTALL_EXIT ms=$INSTALL_MS"
+  if [ "${PM:-}" = pnpm ]; then
+    # The scaled timeout as the install's own pnpm sees it, in the install's env.
+    PFT=$( (cd "$WORKDIR" && timeout 15 runuser -u "$CR_USER" -- env -i "${BASE_ENV[@]}" pnpm config get fetch-timeout) 2>&1 | tail -n 1 | head -c 120 || true)
+    check pnpm_fetch_timeout "$([ "$PFT" = "$FETCH_MS" ] && echo true || echo false)" "pnpm config get fetch-timeout: $PFT (want $FETCH_MS)"
+  fi
+  E23=$(cat "$OUT/install.out" "$OUT/install.err" 2>/dev/null | grep -c 'error (23)' || true)
+  check fetch_timeouts "$([ "${E23:-0}" = 0 ] && echo true || echo false)" "${E23:-0} package-manager requests timed out (error 23)"
   # Registry pass-through (forge_addon.py): time from request to response headers.
   RT=$(jq -rs '[.[] | select(.forged_kind == "registry" and .pass == true and (.ms | type) == "number") | .ms] | sort
     | if length == 0 then "0 registry requests"
