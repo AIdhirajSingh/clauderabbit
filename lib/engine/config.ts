@@ -52,6 +52,12 @@ export interface AdsenseConfig {
 }
 
 export interface EngineConfig {
+  /**
+   * Full-install scans only: every VM lives HEARTBEAT_GRACE_MS unless the viewer's
+   * page keeps extending it (POST /api/scan/<id>/heartbeat every 10 s), so a closed
+   * tab stops the scan's sandboxes within that window.
+   */
+  heartbeatSandboxes?: boolean;
   /** Luna's model id (CR_MODEL_ID). */
   modelId: string;
   /** Jev's gateway model id (CR_JEV_MODEL_ID). */
@@ -127,6 +133,9 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
  * ends as a partial scan with its coverage gaps stated, like any overrun.
  */
 export const FULL_INSTALL_MS = 180_000;
+/** A heartbeat-kept VM's life without a heartbeat: 30 s, the tab-closed window. */
+export const HEARTBEAT_GRACE_MS = 30_000;
+
 export function fullInstallDeadlines(d: EngineDeadlines): EngineDeadlines {
   const installMs = Math.max(d.installMs, FULL_INSTALL_MS);
   const detonateTotalMs = Math.max(d.detonateTotalMs, installMs + d.entryMs + HARNESS_OVERHEAD_MS);

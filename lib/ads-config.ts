@@ -12,13 +12,13 @@
  * labelled "Advertisement".
  *
  *  gpt           the GPT library.
- *  scanSlot      the scan screen's display slot (it can serve display or
- *                out-stream video creatives); refreshed every `refreshMs` while
- *                the scan screen is open, so ads play back to back until the
- *                result opens. 10 s is the business target: at ₹100 eCPM one
- *                impression every 10 s is 1 paisa a second. It is faster than
- *                Google's 30 s refresh guidance, so the slot must be declared as
- *                refreshed inventory in Ad Manager.
+ *  scanSlot      the scan screen's 16:9 video slot, asking for video-capable
+ *                sizes (out-stream video or, when no video fills, display). A new
+ *                ad starts when the previous video ends or after `refreshMs`,
+ *                never faster: Google's refresh guidance is 30 s.
+ *  refreshKey    targeting key set on every refresh (0 on the first request), so
+ *                Ad Manager sees the slot's refreshed impressions; the ad unit
+ *                must also be declared as refreshed inventory in Ad Manager.
  *  interstitial  GPT web interstitial, shown by GPT on the next same-site page
  *                navigation (the continue card's Yes is such a navigation).
  *  ecpmInr       default estimated eCPM for the earnings estimate, INR per 1,000
@@ -29,9 +29,10 @@
 export const ADS = {
   label: "Advertisement",
   gpt: "https://securepubads.g.doubleclick.net/tag/js/gpt.js",
-  scanSlot: { unit: "/6355419/Travel/Europe", sizes: [[300, 250], [336, 280]] as [number, number][] },
+  scanSlot: { unit: "/6355419/Travel/Europe", sizes: [[640, 360], [640, 480], [480, 270], [300, 250]] as [number, number][] },
   interstitial: "/6355419/Travel/Europe/France/Paris",
-  refreshMs: 10_000,
+  refreshMs: 30_000,
+  refreshKey: "refresh",
   ecpmInr: 100,
   houseCard: {
     headline: "Your product here",

@@ -239,7 +239,7 @@ export async function executeScan(
 ): Promise<FinalLine> {
   const { store, caller } = ctx;
   const full = opts.full === true;
-  const config = full ? { ...ctx.config, deadlines: fullInstallDeadlines(ctx.config.deadlines) } : ctx.config;
+  const config = full ? { ...ctx.config, deadlines: fullInstallDeadlines(ctx.config.deadlines), heartbeatSandboxes: true } : ctx.config;
   const ad = adForSurface(config, caller.surface, target);
   const deps = productionDeps(config, store);
   const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(full && opts.signal ? { stop: opts.signal } : {}) });

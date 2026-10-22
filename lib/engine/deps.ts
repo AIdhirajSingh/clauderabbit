@@ -58,7 +58,7 @@ class LazySandbox implements SandboxProvider {
   readonly #get: () => Promise<SandboxProvider>;
   constructor(config: EngineConfig) {
     this.template = config.e2bTemplate;
-    this.#get = once(async () => new (await import("./sandbox/e2b")).E2BProvider({ apiKey: config.e2bApiKey!, template: config.e2bTemplate }));
+    this.#get = once(async () => new (await import("./sandbox/e2b")).E2BProvider({ apiKey: config.e2bApiKey!, template: config.e2bTemplate, heartbeat: config.heartbeatSandboxes === true }));
   }
   async create(opts: SandboxCreateOptions): Promise<SandboxSession> {
     return (await this.#get()).create(opts);

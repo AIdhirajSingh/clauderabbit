@@ -586,14 +586,14 @@ export class V2Store implements ScanStore {
 
   /**
    * One ad impression on this run's scan screen (v2.scan_runs.ads_shown). At most
-   * one every 8 s per run is counted, so the counter cannot outpace the slot's 10 s
-   * refresh. Returns whether it was counted.
+   * one every 25 s per run is counted, so the counter cannot outpace the slot's 30 s
+   * refresh floor. Returns whether it was counted.
    */
   async recordAdImpression(runId: string): Promise<boolean> {
     if (!UUID_RE.test(runId)) return false;
     const rows = await run("ad impression", () =>
       this.db.query<{ id: string }>(
-        "update v2.scan_runs set ads_shown = ads_shown + 1, ads_last_at = now() where id = $1::uuid and (ads_last_at is null or ads_last_at < now() - interval '8 seconds') returning id::text as id",
+        "update v2.scan_runs set ads_shown = ads_shown + 1, ads_last_at = now() where id = $1::uuid and (ads_last_at is null or ads_last_at < now() - interval '25 seconds') returning id::text as id",
         [runId],
       ),
     );

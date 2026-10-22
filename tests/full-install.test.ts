@@ -29,6 +29,25 @@ test("ads go through GPT test units; no IMA in the scan screen", () => {
   assert.match(ads, /OutOfPageFormat\.INTERSTITIAL/);
   const card = readFileSync(new URL("../components/cr/app/ContinueCard.tsx", import.meta.url), "utf8");
   assert.match(card, /This is a very large repo\. Keep installing to scan it fully\?/);
-  assert.match(card, /\?full=1/);
+  assert.match(card, /href=\{`\/app\/scan\/\$\{runId\}\/full`\}/);
   assert.match(card, /ANSWER_MS = 15_000/);
+});
+
+test("full scans run on heartbeat-kept VMs: 30 s without a heartbeat stops them", () => {
+  const e2b = readFileSync(new URL("../lib/engine/sandbox/e2b.ts", import.meta.url), "utf8");
+  assert.match(e2b, /timeoutMs: HEARTBEAT_GRACE_MS, metadata: \{ \.\.\.base\.metadata, heartbeat: "1" \}/);
+  assert.match(e2b, /Sandbox\.setTimeout\(s\.sandboxId, graceMs, \{ apiKey \}\)/);
+  const view = readFileSync(new URL("../components/cr/app/ScanView.tsx", import.meta.url), "utf8");
+  assert.match(view, /setInterval\(beat, 10_000\)/);
+  assert.match(view, /NEXT_PUBLIC_VERCEL_ENV !== "production"/, "the test card flag never works in production");
+  const svc = readFileSync(new URL("../lib/server/scan-service.ts", import.meta.url), "utf8");
+  assert.match(svc, /heartbeatSandboxes: true/);
+});
+
+test("the scan slot respects Google's 30 s refresh floor and declares refreshes", () => {
+  assert.ok(ADS.refreshMs >= 30_000);
+  assert.equal(ADS.refreshKey, "refresh");
+  const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
+  assert.match(ads, /aspectRatio: "16 \/ 9"/, "the design's video slot");
+  assert.match(ads, /export function Interstitial\(\)/);
 });

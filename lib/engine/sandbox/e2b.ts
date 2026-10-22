@@ -9,12 +9,31 @@
  */
 
 import { CommandExitError, Sandbox } from "e2b";
+import { HEARTBEAT_GRACE_MS } from "../config";
 import { SANDBOX_SIZES } from "./resources";
 import { REGISTRY_ALLOW_OUT, type CommandResult, type RunOptions, type SandboxCreateOptions, type SandboxProvider, type SandboxSession } from "./provider";
 
 export interface E2BProviderOptions {
   apiKey: string;
   template: string;
+  /** Full-install scans: VMs live HEARTBEAT_GRACE_MS and are tagged so the heartbeat route can extend them. */
+  heartbeat?: boolean;
+}
+
+/**
+ * Extends every heartbeat-kept VM of a run by HEARTBEAT_GRACE_MS. Returns how many
+ * were extended. Called by POST /api/scan/<id>/heartbeat.
+ */
+export async function extendRunSandboxes(apiKey: string, runId: string, graceMs: number): Promise<number> {
+  const pages = Sandbox.list({ apiKey, query: { metadata: { runId, heartbeat: "1" } } });
+  let n = 0;
+  while (pages.hasNext) {
+    for (const s of await pages.nextItems()) {
+      await Sandbox.setTimeout(s.sandboxId, graceMs, { apiKey });
+      n += 1;
+    }
+  }
+  return n;
 }
 
 /** The exact `Sandbox.create` options for a purpose (exported for tests). */
@@ -96,15 +115,19 @@ export class E2BProvider implements SandboxProvider {
   readonly template: string;
   readonly canSetEgress = true;
   #apiKey: string;
+  #heartbeat: boolean;
 
   constructor(opts: E2BProviderOptions) {
     if (!opts.apiKey) throw new Error("E2B_API_KEY is required for the E2B provider");
     this.#apiKey = opts.apiKey;
     this.template = opts.template;
+    this.#heartbeat = opts.heartbeat === true;
   }
 
   async create(opts: SandboxCreateOptions): Promise<SandboxSession> {
-    const sbx = await Sandbox.create(`${this.template}${SANDBOX_SIZES[opts.size ?? "small"].suffix}`, e2bCreateOptions(opts, this.#apiKey));
+    const base = e2bCreateOptions(opts, this.#apiKey);
+    const create = this.#heartbeat ? { ...base, timeoutMs: HEARTBEAT_GRACE_MS, metadata: { ...base.metadata, heartbeat: "1" } } : base;
+    const sbx = await Sandbox.create(`${this.template}${SANDBOX_SIZES[opts.size ?? "small"].suffix}`, create);
     return new E2BSession(sbx);
   }
 }

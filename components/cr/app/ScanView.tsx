@@ -20,7 +20,7 @@ import { plainLog, STAGE_WORD } from "@/lib/cr/plain-log";
 import { evidenceLines, notVerifiedBullets, plainTitle, reputationChips } from "@/lib/cr/result-format";
 import { useAppSession } from "./AppShell";
 import { VerdictGlyph } from "./Board";
-import { ScanAd } from "./Ads";
+import { Interstitial, ScanAd } from "./Ads";
 import { ContinueCard } from "./ContinueCard";
 import s from "./app.module.css";
 
@@ -111,7 +111,7 @@ function secs(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
-export function ScanView({ runId }: { runId: string }) {
+export function ScanView({ runId, full = false }: { runId: string; full?: boolean }) {
   const router = useRouter();
   const params = useSearchParams();
   const replay = params.get("replay") === "1";
@@ -271,8 +271,23 @@ export function ScanView({ runId }: { runId: string }) {
   const failed = run?.status === "error" && !replay;
   const running = !done && !failed;
   // The install hit its time limit, as far as the scan has played: the continue card asks.
-  const installHitLimit = useMemo(() => visible.some((e) => e.type === "stage" && e.data.name === "detonate" && e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? "")), [visible]);
-  const full = params.get("full") === "1";
+  // `?test_card=1` (never in production) asks as soon as the install starts, to test the
+  // card and the full scan on a repo whose install finishes inside the limit.
+  const testCard = params.get("test_card") === "1" && process.env.NEXT_PUBLIC_VERCEL_ENV !== "production";
+  const installHitLimit = useMemo(
+    () =>
+      visible.some((e) => e.type === "stage" && e.data.name === "detonate" && (testCard || (e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? "")))),
+    [visible, testCard],
+  );
+  // While the scan runs, a heartbeat every 10 s keeps a full scan's sandboxes alive
+  // (POST /api/scan/<id>/heartbeat); a closed tab lets them stop within 30 s.
+  useEffect(() => {
+    if (!running) return;
+    const beat = () => void fetch(`/api/scan/${runId}/heartbeat`, { method: "POST", headers: { "x-clauderabbit-client": "web" }, keepalive: true }).catch(() => {});
+    beat();
+    const id = setInterval(beat, 10_000);
+    return () => clearInterval(id);
+  }, [running, runId]);
   const subject = run?.subject ?? null;
   useEffect(() => {
     // Yes on the continue card: play back the stored full scan or run one (the server decides), as a new run page.
@@ -441,6 +456,8 @@ export function ScanView({ runId }: { runId: string }) {
       <section className={s.col} style={{ flex: "1 1 420px", gap: 22 }}>
         {/* The card outlives the running screen: its 15 s answer window runs on after the result opens. */}
         <ContinueCard runId={runId} show={installHitLimit && !full} />
+        {/* Defined for the page's whole life, before Yes is clicked: GPT shows it on the navigation to /full. */}
+        <Interstitial />
         {running && (
           <>
             <ScanAd key={`${runId}-${replay ? "replay" : "live"}`} runId={runId} />

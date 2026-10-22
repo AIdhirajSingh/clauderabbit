@@ -458,7 +458,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     const onKilled = (ok: boolean, detail: string) => check("sandbox_killed", ok, detail);
     detVm = bootDetonation(
       deps.sandbox,
-      { runId, totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: vmSize === "large" ? LARGE_SANDBOX_MS : cfg.deadlines.sandboxTimeoutMs, size: vmSize },
+      { runId, totalTimeoutMs: vmSize === "large" ? Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs) : cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: vmSize === "large" ? Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs) : cfg.deadlines.sandboxTimeoutMs, size: vmSize },
       { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
     );
     // One VM per GitHub scan on E2B: the scanners run in the detonation VM before any repo code.
@@ -726,7 +726,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         installTimeoutMs: vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs,
         entryTimeoutMs: cfg.deadlines.entryMs,
         totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs,
-        sandboxTimeoutMs: vmSize === "large" ? LARGE_SANDBOX_MS : cfg.deadlines.sandboxTimeoutMs,
+        sandboxTimeoutMs: vmSize === "large" ? Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs) : cfg.deadlines.sandboxTimeoutMs,
         fakeRate: FAKE_CLOCK_RATE,
       });
     } catch (err) {
