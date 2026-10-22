@@ -221,6 +221,7 @@ export function reportsRowFor(record: ReportRecord): ReportsUpsertRow {
       reputation_section: r.reputation_section ?? null,
       luna_report: r.luna_report ?? null,
       partial: r.partial ?? null,
+      partial_reason: r.partial_reason ?? null,
       ran: r.ran ?? null,
       template: r.template,
       cost: r.cost ?? null,
@@ -291,6 +292,7 @@ export function payloadFromRows(row: StoredReportRow, run: { id: string; subject
     ...(stats.reputation_section && typeof stats.reputation_section === "object" ? { reputation_section: stats.reputation_section as ReportPayload["reputation_section"] } : {}),
     ...(lunaReportFrom(stats.luna_report) ? { luna_report: lunaReportFrom(stats.luna_report)! } : {}),
     ...(stats.partial === true ? { partial: true } : {}),
+    ...(stats.partial === true && typeof stats.partial_reason === "string" ? { partial_reason: stats.partial_reason } : {}),
     ...(ranFrom(stats.ran) ? { ran: ranFrom(stats.ran)! } : {}),
     ...(ledger ? { cost: ledger } : {}),
   };

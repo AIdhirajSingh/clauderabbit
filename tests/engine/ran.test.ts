@@ -142,3 +142,10 @@ test("ran: old rows without it (or with a malformed one) give undefined", () => 
   assert.equal(ranFrom({ package_manager: "npm", installed: "3", skipped: null, install_ms: null, install_scripts: null, network: null, entry_point: null }), null);
   assert.equal(ranFrom({ package_manager: "npm", installed: 3, skipped: null, install_ms: null, install_scripts: null, network: { kind: "bogus" }, entry_point: null }), null);
 });
+
+test("a partial scan's reason line is stored and read back with it (stored scans and replays show it)", () => {
+  const back = roundTrip({ ...BASE, partial: true, partial_reason: "Build ran out of time, so the program never ran" });
+  assert.equal(back.partial, true);
+  assert.equal(back.partial_reason, "Build ran out of time, so the program never ran");
+  assert.equal(roundTrip(BASE).partial_reason, undefined);
+});
