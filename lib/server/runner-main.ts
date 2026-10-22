@@ -21,6 +21,8 @@ interface RunnerRequest {
   runId: string;
   /** This runner's own sandbox, removed when the scan is done. */
   sandboxId: string;
+  /** When the starter created this runner's sandbox (epoch ms), for the scan's ledger. */
+  createdAt: number;
   target: ScanTarget;
   caller: ScanCaller;
   full: boolean;
@@ -32,7 +34,7 @@ async function main(): Promise<void> {
   const req = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as RunnerRequest;
   const base = loadEngineConfig(process.env);
   const deadlines = req.testInstallMs ? { ...base.deadlines, installMs: req.testInstallMs } : base.deadlines;
-  const config = { ...base, deadlines, runner: true, heartbeatSandboxes: req.heartbeat };
+  const config = { ...base, deadlines, runner: true, runnerStartedAt: req.createdAt, heartbeatSandboxes: req.heartbeat };
   const store = createV2Store(config);
   const out = (line: string) => process.stdout.write(line.endsWith("\n") ? line : `${line}\n`);
   const pending: Promise<void>[] = [];

@@ -323,6 +323,8 @@ const LARGE_DETONATE_MS = 265_000;
  * that is 170 s, which keeps a large scan inside its 280 s budget.
  */
 const CONTINUE_EXTRA_MS = 110_000;
+/** Seconds a runner lives after the ledger is written: the report persist and its own removal. */
+const RUNNER_TAIL_S = 3;
 /** On a runner (no request limit), a Yes lets the build run this long past its install limit. */
 const RUNNER_CONTINUE_MS = 25 * 60_000;
 const CONTINUE_RESERVE_MS = 90_000;
@@ -586,8 +588,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       : Promise.resolve(null),
   ]);
   if (treeR.status === "fulfilled" && treeR.value) {
-    vmSize = sizeForRepo(treeR.value.files, treeR.value.bytes, treeR.value.truncated);
-    check("vm_size", true, `${treeR.value.files} files, ${treeR.value.bytes} bytes${treeR.value.truncated ? " (tree truncated)" : ""}: ${SANDBOX_SIZES[vmSize].cpuCount} vCPU`);
+    vmSize = sizeForRepo(treeR.value.files, treeR.value.bytes, treeR.value.truncated, Boolean(treeR.value.heavyBuild));
+    check("vm_size", true, `${treeR.value.files} files, ${treeR.value.bytes} bytes${treeR.value.truncated ? " (tree truncated)" : ""}${treeR.value.heavyBuild ? `, heavy build (${treeR.value.heavyBuild})` : ""}: ${SANDBOX_SIZES[vmSize].cpuCount} vCPU`);
   } else if (treeR.status === "rejected") {
     check("vm_size", false, `tree size unavailable (${errMessage(treeR.reason)}); 1 vCPU`);
   }
@@ -925,7 +927,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   await Promise.allSettled(kills);
   timings.total = Math.round(deps.now() - startedAt);
   const sandboxSeconds = sandboxMs.reduce((s, x) => s + x, 0) / 1000;
-  const cost: CostLedger = meter.ledger(sandboxSeconds, SANDBOX_SIZES[vmSize].cpuCount);
+  // On a runner its own seconds count too: from its creation to now, plus the persist and
+  // its own removal that follow this ledger (RUNNER_TAIL_S).
+  const runnerSeconds = cfg.runner && cfg.runnerStartedAt ? Math.max(0, (deps.now() - cfg.runnerStartedAt) / 1000) + RUNNER_TAIL_S : 0;
+  const cost: CostLedger = meter.ledger(sandboxSeconds, SANDBOX_SIZES[vmSize].cpuCount, SANDBOX_SIZES[vmSize].memoryMB, runnerSeconds);
   const ran = buildRanSummary({ detonation, plan: await planP, files: archive.files });
   const report: ReportPayload = {
     run_id: runId,

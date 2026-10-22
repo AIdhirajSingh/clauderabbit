@@ -120,6 +120,8 @@ export interface CostLedger {
   jev: ModelLine;
   luna: ModelLine;
   sandbox: SandboxLine;
+  /** The scan's own runner sandbox (lib/server/runner.ts), when the scan ran on one. */
+  runner?: SandboxLine;
   total_usd: number | null;
   total_inr: number | null;
   fx: FxRate;
@@ -198,26 +200,24 @@ export class CostMeter {
     return this.#jev.input_tokens + this.#jev.output_tokens + this.#luna.input_tokens + this.#luna.output_tokens;
   }
 
-  ledger(sandboxSeconds: number, cpuCount = SANDBOX_CPU_COUNT): CostLedger {
-    const perSecond = sandboxUsdPerSecond(cpuCount);
-    const seconds = Math.max(0, Math.round(sandboxSeconds * 1000) / 1000);
-    const sandbox: SandboxLine = {
-      seconds,
-      vcpu: cpuCount,
-      memory_gib: SANDBOX_MEMORY_MB / 1024,
-      usd_per_second: perSecond,
-      usd: roundUsd(seconds * perSecond),
-      source: E2B_PRICE_SOURCE,
-      as_of: PRICE_DATE,
+  ledger(sandboxSeconds: number, cpuCount = SANDBOX_CPU_COUNT, memoryMb = SANDBOX_MEMORY_MB, runnerSeconds = 0): CostLedger {
+    const line = (secs: number, vcpu: number, mb: number): SandboxLine => {
+      const perSecond = sandboxUsdPerSecond(vcpu, mb);
+      const seconds = Math.max(0, Math.round(secs * 1000) / 1000);
+      return { seconds, vcpu, memory_gib: mb / 1024, usd_per_second: perSecond, usd: roundUsd(seconds * perSecond), source: E2B_PRICE_SOURCE, as_of: PRICE_DATE };
     };
+    const sandbox = line(sandboxSeconds, cpuCount, memoryMb);
+    // The runner is the default (small) size.
+    const runner = runnerSeconds > 0 ? line(runnerSeconds, SANDBOX_CPU_COUNT, SANDBOX_MEMORY_MB) : null;
     const jev = { ...this.#jev };
     const luna = { ...this.#luna };
-    const total = jev.usd === null || luna.usd === null ? null : roundUsd(jev.usd + luna.usd + sandbox.usd);
+    const total = jev.usd === null || luna.usd === null ? null : roundUsd(jev.usd + luna.usd + sandbox.usd + (runner?.usd ?? 0));
     return {
       version: 1,
       jev,
       luna,
       sandbox,
+      ...(runner ? { runner } : {}),
       total_usd: total,
       total_inr: total === null ? null : Math.round(total * this.#fx.usd_inr * 1e6) / 1e6,
       fx: { ...this.#fx },

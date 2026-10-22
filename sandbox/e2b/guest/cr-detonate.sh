@@ -503,8 +503,18 @@ if [ -n "$INSTALL_CMD" ]; then
   CUT=0
   if [ "$INSTALL_MAX" -gt "$INSTALL_TIMEOUT" ]; then
     ASKED=0
+    NEXT_PROGRESS=15
     while kill -0 "$IPID" 2>/dev/null; do
       EL=$(( ($(now_ms) - START) / 1000 ))
+      # Progress every 15 s: the run keeps writing events while a long build goes on, and
+      # its record shows where the time goes (CPU load, the busiest process, registry
+      # requests so far, files written under /work).
+      if [ "$EL" -ge "$NEXT_PROGRESS" ]; then
+        NEXT_PROGRESS=$(( EL + 15 ))
+        TOP=$(ps -u "$CR_UID" -o pcpu=,comm= --sort=-pcpu 2>/dev/null | head -n 2 | tr -s ' ' | paste -sd ';' - | head -c 120 || true)
+        REG=$(grep -c '"forged_kind":"registry"' "$OUT/capture.jsonl" 2>/dev/null || true)
+        log "install-progress ${EL} s: load $(cut -d' ' -f1-3 /proc/loadavg) on $(nproc) vCPU; busiest ${TOP:-none}; ${REG:-0} registry requests"
+      fi
       if [ "$EL" -ge "$INSTALL_TIMEOUT" ]; then
         if [ "$ASKED" = 0 ]; then log "install-at-limit ${INSTALL_TIMEOUT} s: waiting ${ASK_S} s for keep-installing"; ASKED=1; fi
         if [ -f "$IN/stop-installing" ]; then

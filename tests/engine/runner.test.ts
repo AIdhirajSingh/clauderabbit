@@ -26,7 +26,7 @@ test("the runner gets only the keys a scan needs, as process environment, never 
   for (const k of ["OPENAI_API_KEY", "E2B_API_KEY", "CR_V2_DATABASE_URL"]) assert.ok((RUNNER_ENV_NAMES as readonly string[]).includes(k), k);
   const src = readFileSync(new URL("../../lib/server/runner.ts", import.meta.url), "utf8");
   // The request file holds no key: only the run, the target, the caller and flags.
-  assert.match(src, /files\.write\(`\$\{RUNNER_DIR\}\/request\.json`, JSON\.stringify\(\{ runId, sandboxId: sbx\.sandboxId, target: s\.target, caller: s\.caller, full: s\.full, heartbeat,/);
+  assert.match(src, /files\.write\(`\$\{RUNNER_DIR\}\/request\.json`, JSON\.stringify\(\{ runId, sandboxId: sbx\.sandboxId, createdAt, target: s\.target, caller: s\.caller, full: s\.full, heartbeat,/);
   assert.match(src, /commands\.run\(`cd \$\{RUNNER_DIR\} && exec \$\{NODE\} runner\.mjs request\.json`, \{ background: true, envs,/);
   // Web scans are heartbeat-kept: a closed tab stops the runner within HEARTBEAT_GRACE_MS.
   assert.match(src, /timeoutMs: heartbeat \? HEARTBEAT_GRACE_MS : RUNNER_UNATTENDED_MS/);

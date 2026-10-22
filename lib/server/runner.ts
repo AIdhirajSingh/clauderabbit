@@ -60,6 +60,7 @@ export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promis
   const { Sandbox } = await import("e2b");
   const runId = randomUUID();
   const heartbeat = s.caller.surface === "web";
+  const createdAt = Date.now();
   const sbx = await Sandbox.create(config.e2bTemplate, {
     apiKey: config.e2bApiKey!,
     timeoutMs: heartbeat ? HEARTBEAT_GRACE_MS : RUNNER_UNATTENDED_MS,
@@ -69,7 +70,7 @@ export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promis
     { path: `${RUNNER_DIR}/runner.mjs`, data: code },
     ...RUNNER_TOOL_FILES.map((rel) => ({ path: `${RUNNER_DIR}/${rel}`, data: readFileSync(join(process.cwd(), rel), "utf8") })),
   ]);
-  await sbx.files.write(`${RUNNER_DIR}/request.json`, JSON.stringify({ runId, sandboxId: sbx.sandboxId, target: s.target, caller: s.caller, full: s.full, heartbeat, ...(s.testInstallMs ? { testInstallMs: s.testInstallMs } : {}) }));
+  await sbx.files.write(`${RUNNER_DIR}/request.json`, JSON.stringify({ runId, sandboxId: sbx.sandboxId, createdAt, target: s.target, caller: s.caller, full: s.full, heartbeat, ...(s.testInstallMs ? { testInstallMs: s.testInstallMs } : {}) }));
   const envs: Record<string, string> = {};
   for (const name of RUNNER_ENV_NAMES) {
     const v = process.env[name];

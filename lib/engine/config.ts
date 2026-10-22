@@ -64,6 +64,8 @@ export interface EngineConfig {
    * (RUNNER_CONTINUE_MS at most), with no 300 s request limit around it.
    */
   runner?: boolean;
+  /** When the runner sandbox was created (epoch ms): its seconds are priced into the scan's ledger. */
+  runnerStartedAt?: number;
   /** Luna's model id (CR_MODEL_ID). */
   modelId: string;
   /** Jev's gateway model id (CR_JEV_MODEL_ID). */

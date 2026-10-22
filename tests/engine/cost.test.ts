@@ -78,13 +78,33 @@ test("a cache hit reports a zero ledger; CR_USD_INR overrides the pinned rate", 
   assert.equal(loadEngineConfig({ CR_JEV_MODEL_ID: "typesafe-ai/jev-1.14.0" }).jevModelId, "typesafe-ai/jev-1.14.0");
 });
 
-test("VM size: 1 vCPU by default, 2 vCPU for a huge repo, and the ledger prices the size that ran", async () => {
-  const { sizeForRepo, SANDBOX_SIZES } = await import("../../lib/engine/sandbox/resources.ts");
+test("VM size: 1 vCPU by default, 4 vCPU for a huge repo or a heavy build, and the ledger prices the size that ran", async () => {
+  const { sizeForRepo, SANDBOX_SIZES, isHeavyBuildPath } = await import("../../lib/engine/sandbox/resources.ts");
   assert.equal(SANDBOX_SIZES.small.cpuCount, 1);
-  assert.equal(SANDBOX_SIZES.large.cpuCount, 2);
+  assert.equal(SANDBOX_SIZES.large.cpuCount, 4);
+  assert.equal(SANDBOX_SIZES.large.memoryMB, 4096);
+  // A compiled build or a large lockfile is a heavy build; a small lockfile or a test fixture is not.
+  assert.equal(isHeavyBuildPath("go.mod", 900), true);
+  assert.equal(isHeavyBuildPath("tool/Cargo.toml", 500), true);
+  assert.equal(isHeavyBuildPath("yarn.lock", 900_000), true);
+  assert.equal(isHeavyBuildPath("yarn.lock", 40_000), false);
+  assert.equal(isHeavyBuildPath("testdata/go.mod", 100), false);
+  assert.equal(isHeavyBuildPath("a/b/c/go.mod", 100), false);
+  assert.equal(sizeForRepo(359, 1_017_364, false, true), "large", "a Go module of 359 files builds on 4 vCPU");
   assert.equal(sizeForRepo(214, 710_996, false), "small", "expressjs/express 0dee2c5");
   assert.equal(sizeForRepo(57_365, 668_309_190, false), "large", "openclaw/openclaw 104730b");
   assert.equal(sizeForRepo(9_000, 60 * 1024 * 1024, false), "large", "over 50 MB");
   assert.equal(sizeForRepo(100, 1_000, true), "large", "a truncated tree is huge");
   assert.equal(sandboxUsdPerSecond(2), Math.round((2 * 0.000014 + 2 * 0.0000045) * 1e9) / 1e9);
+});
+
+test("the ledger prices the scan VM at its own size and adds the runner's seconds to the total", () => {
+  const m = new CostMeter({ jevModel: "typesafe-ai/jev", lunaModel: "gpt-6-luna" });
+  const without = m.ledger(100, 4, 4096);
+  assert.equal(without.sandbox.usd, Math.round(100 * (4 * 0.000014 + 4 * 0.0000045) * 1e9) / 1e9);
+  assert.equal(without.runner, undefined);
+  const withRunner = m.ledger(100, 4, 4096, 120);
+  assert.equal(withRunner.runner?.seconds, 120);
+  assert.equal(withRunner.runner?.usd, Math.round(120 * 0.000023 * 1e9) / 1e9);
+  assert.equal(withRunner.total_usd, Math.round(((without.total_usd ?? 0) + withRunner.runner!.usd) * 1e9) / 1e9);
 });

@@ -7,6 +7,7 @@
  * this binds the bytes we scan to the commit we report.
  */
 
+import { isHeavyBuildPath } from "../sandbox/resources";
 import type { ParsedArchive } from "../archive";
 import { EngineError } from "../types";
 import { USER_AGENT, fetchWithDeadline, readCapped, type FetchLike } from "./http";
@@ -252,20 +253,22 @@ export function codeloadUrl(owner: string, repo: string, sha: string): string {
  * File count and total file bytes at one commit (git trees API, recursive), used to
  * size the scan VM before it boots. `truncated` means GitHub cut a very large tree.
  */
-export async function githubTreeSize(owner: string, repo: string, sha: string, ctx: GithubContext): Promise<{ files: number; bytes: number; truncated: boolean }> {
+export async function githubTreeSize(owner: string, repo: string, sha: string, ctx: GithubContext): Promise<{ files: number; bytes: number; truncated: boolean; heavyBuild: string | null }> {
   if (!SHA_RE.test(sha)) throw new EngineError("invalid_target", "commit SHA must be 40 lowercase hex characters");
   const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`;
   const res = await fetchWithDeadline(ctx.fetch, url, { headers: apiHeaders(ctx.token) }, ctx.timeoutMs, ctx.signal);
   if (!res.ok) await failFor(res, `tree for ${owner}/${repo}@${sha.slice(0, 12)}`);
-  const body = (await res.json()) as { tree?: Array<{ type?: string; size?: number }>; truncated?: boolean };
+  const body = (await res.json()) as { tree?: Array<{ type?: string; size?: number; path?: string }>; truncated?: boolean };
   let files = 0;
   let bytes = 0;
+  let heavyBuild: string | null = null;
   for (const e of body.tree ?? []) {
     if (e.type !== "blob") continue;
     files++;
     if (typeof e.size === "number") bytes += e.size;
+    if (!heavyBuild && typeof e.path === "string" && isHeavyBuildPath(e.path, e.size ?? 0)) heavyBuild = e.path;
   }
-  return { files, bytes, truncated: body.truncated === true };
+  return { files, bytes, truncated: body.truncated === true, heavyBuild };
 }
 
 /** Download the codeload tarball for one commit, capped. */
