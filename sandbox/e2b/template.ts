@@ -40,6 +40,11 @@ export const APT_PACKAGES = [
   "openssl",
   "git",
   "build-essential",
+  // A package whose prebuilt binary download is answered by the forge often falls back
+  // to building from source with the GNU autotools.
+  "autoconf",
+  "automake",
+  "libtool",
   "util-linux",
   "procps",
   "iproute2",

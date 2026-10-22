@@ -693,7 +693,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   for (const g of input.forensics.gaps) notVerified.push(g);
   const plain = input.behaviour.blockedPlainFetches ?? [];
   if (plain.length > 0) {
-    notVerified.push(`Blocked downloads: ${plain.length} plain ${plain.length === 1 ? "request" : "requests"} to ${plain.slice(0, 5).join(", ")}${plain.length > 5 ? " and more" : ""} sent nothing and were answered by the sandbox, so nothing arrived or ran; what the real hosts would have returned was not checked.`);
+    notVerified.push(`Blocked downloads: ${plain.length} plain ${plain.length === 1 ? "request" : "requests"} to ${plain.slice(0, 5).join(", ")}${plain.length > 5 ? " and more" : ""} sent nothing and ${plain.length === 1 ? "was" : "were"} answered by the sandbox, so nothing arrived or ran; what the real hosts would have returned was not checked.`);
   }
   if (input.behaviour.canaryHits.length > 0 || input.behaviour.persistenceWrites.length > 0) {
     applyCap(CAP_CANARY_OR_PERSISTENCE, "cap_canary_or_persistence", `Credential exfiltration or persistence caps the score at ${CAP_CANARY_OR_PERSISTENCE}.`);
