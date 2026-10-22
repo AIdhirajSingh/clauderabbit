@@ -37,7 +37,7 @@ export const ADS = {
   unit: "/6355419/Travel/Europe",
   // Desktop and phone sizes per slot kind (GPT size mapping at 768 px).
   videoSizes: { desktop: [[640, 360], [640, 480], [480, 270], [300, 250]] as [number, number][], phone: [[300, 250], [320, 180]] as [number, number][] },
-  bannerSizes: { desktop: [[300, 250]] as [number, number][], phone: [[320, 50]] as [number, number][] },
+  bannerSizes: { desktop: [[300, 250]] as [number, number][], phone: [[320, 50], [300, 50]] as [number, number][] },
   // The video slot plus banner_1 to banner_3: 4 slots × one impression per 30 s ×
   // 10 paise (₹100 eCPM) = 1.33 paise a second.
   slotCount: 4,

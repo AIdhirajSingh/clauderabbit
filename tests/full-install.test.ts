@@ -57,7 +57,7 @@ test("enough staggered slots to earn 1 paisa a second at ₹100 eCPM, each count
   // One impression per slot every refreshMs, 10 paise each at ₹100 eCPM.
   const paisePerSecond = (ADS.slotCount * (100 / 10)) / (ADS.refreshMs / 1000);
   assert.ok(paisePerSecond >= 1, `${paisePerSecond} paise a second`);
-  assert.deepEqual(ADS.bannerSizes.phone, [[320, 50]], "phone banners stay small for the 30 % density limit");
+  assert.ok(ADS.bannerSizes.phone.every(([, h]) => h <= 50), "phone banners stay small for the 30 % density limit");
   const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
   assert.match(ads, /n \* STAGGER_MS/);
   assert.match(ads, /reportImpression\(runIdRef\.current, "interstitial"\)/);
