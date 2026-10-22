@@ -416,8 +416,11 @@ else
     # every build script and every rustc (which runs the proc macros). There the monotonic
     # clock stays real, so cargo-style absolute timed waits keep their meaning; the wall
     # clock and every sleep run on the sped-up clock. The template smoke checks a build script.
-    CARGO_CLOCK="--config 'env.LD_PRELOAD={value=\"$FAKETIME_LIB\",force=true}' --config 'env.FAKETIME_DONT_FAKE_MONOTONIC={value=\"1\",force=true}'"
-    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins $CARGO_CLOCK"
+    # The table is a root-owned file (the command line takes no inline table); a config
+    # file given with --config has the command line's precedence.
+    printf '[env]\nLD_PRELOAD = { value = "%s", force = true }\nFAKETIME_DONT_FAKE_MONOTONIC = { value = "1", force = true }\n' "$FAKETIME_LIB" >/etc/cr/cargo-clock.toml
+    chmod 0644 /etc/cr/cargo-clock.toml
+    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins --config /etc/cr/cargo-clock.toml"
     [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="$INSTALL_CMD --locked"
     check package_manager true "$("$RUST_BIN/cargo" --version 2>/dev/null || echo cargo)"
   elif [ -f "$WORKDIR/pyproject.toml" ] || [ -f "$WORKDIR/setup.py" ] || [ -f "$WORKDIR/requirements.txt" ]; then
