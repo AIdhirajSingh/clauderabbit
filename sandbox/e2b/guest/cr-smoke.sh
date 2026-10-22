@@ -90,11 +90,12 @@ smoke_repo() {
   cp -p /tmp/ca-bundle.orig "$BUNDLE"
   if [ "$eco" = go ]; then
     printf 'module example.invalid/crsmoke\n\ngo 1.22\n' >"$dir/go.mod"
-    printf 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("cr-smoke-go-ran") }\n' >"$dir/main.go"
+    # Reads the wall and monotonic clocks, sleeps one (sped-up) second, reads again.
+    printf 'package main\n\nimport (\n\t"fmt"\n\t"time"\n)\n\nfunc main() {\n\tw0, m0 := time.Now().Round(0), time.Now()\n\ttime.Sleep(time.Second)\n\tfmt.Printf("cr-smoke-go-ran wall_ms=%%d mono_ms=%%d\\n", time.Now().Round(0).Sub(w0).Milliseconds(), time.Since(m0).Milliseconds())\n}\n' >"$dir/main.go"
   else
     mkdir -p "$dir/src"
     printf '[package]\nname = "crsmoke"\nversion = "0.1.0"\nedition = "2021"\n' >"$dir/Cargo.toml"
-    printf 'fn main() { println!("cr-smoke-rust-ran"); }\n' >"$dir/src/main.rs"
+    printf 'use std::time::{Instant, SystemTime};\nfn main() {\n    let (w0, m0) = (SystemTime::now(), Instant::now());\n    std::thread::sleep(std::time::Duration::from_secs(1));\n    println!("cr-smoke-rust-ran wall_ms={} mono_ms={}", w0.elapsed().unwrap().as_millis(), m0.elapsed().as_millis());\n}\n' >"$dir/src/main.rs"
   fi
   tar -czf /root/in/target.tgz -C /tmp/cr-smoke repo
   printf '{"mode":"repo","name":null,"install_timeout_s":120,"entry_timeout_s":8,"fake_rate":30}\n' >/root/in/run.json
@@ -103,6 +104,17 @@ smoke_repo() {
   jq -e --arg e "$eco" '.ecosystem == $e and .install.status == "completed" and .entry.status == "completed"' "$OUT/result.json" >/dev/null \
     || fail "$eco: $(cat "$OUT/result.json") $(tail -c 2000 "$OUT/install.err") $(tail -c 1000 "$OUT/entry.err")"
   grep -q "cr-smoke-$eco-ran" "$OUT/entry.out" || fail "$eco: the built program did not run: $(tail -c 1000 "$OUT/entry.out")"
+  # The sped-up clock reached the program: one second passed on both of its clocks
+  # (wall and monotonic) while the whole entry phase took well under one real second.
+  local line wall mono ems
+  line=$(grep -m1 "cr-smoke-$eco-ran" "$OUT/entry.out")
+  wall=$(sed -n 's/.*wall_ms=\([0-9]*\).*/\1/p' <<<"$line"); mono=$(sed -n 's/.*mono_ms=\([0-9]*\).*/\1/p' <<<"$line")
+  ems=$(jq -r '.entry.ms' "$OUT/result.json")
+  if [ "${wall:-0}" -ge 900 ] && [ "${mono:-0}" -ge 900 ] && [ "${wall:-0}" -le 5000 ] && [ "${mono:-0}" -le 5000 ] && [ "$ems" -lt 700 ]; then
+    echo "cr-smoke: $eco clock sped up: the program saw ${wall} ms wall and ${mono} ms monotonic across a ${ems} ms entry phase"
+  else
+    fail "$eco: clock not sped up: program saw wall ${wall:-?} ms, monotonic ${mono:-?} ms; entry phase ${ems} ms real"
+  fi
   jq -s -e 'map(select(.name=="egress_contained" and .ok)) | length == 1' "$OUT/checks.jsonl" >/dev/null || fail "$eco: egress not contained"
   echo "cr-smoke: PASS $eco $(jq -c '{install:.install, entry:.entry}' "$OUT/result.json")"
 }

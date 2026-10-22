@@ -269,9 +269,9 @@ BASE_ENV=(
   GOPATH="$H/go" GOMODCACHE="$H/go/pkg/mod" GOCACHE="$H/.cache/go-build" GOPROXY=https://proxy.golang.org
   GOSUMDB=sum.golang.org GOTOOLCHAIN=local GOFLAGS=-buildvcs=false GOTELEMETRY=off
   # Rust: crates from the sparse crates.io index, each checked against its index checksum
-  # by cargo. cargo's http timeout is scaled by the clock factor like npm's.
+  # by cargo (which runs on the real clock, see the Cargo install step).
   CARGO_HOME="$H/.cargo" CARGO_TARGET_DIR=/work/target CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
-  CARGO_HTTP_TIMEOUT=$((30 * FAKE_RATE)) CARGO_HTTP_CAINFO=/etc/cr/ca.pem CARGO_NET_RETRY=1 CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
+  CARGO_HTTP_TIMEOUT=30 CARGO_HTTP_CAINFO=/etc/cr/ca.pem CARGO_NET_RETRY=1 CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
   AWS_ACCESS_KEY_ID="${CANARY[AWS_ACCESS_KEY_ID]}" AWS_SECRET_ACCESS_KEY="${CANARY[AWS_SECRET_ACCESS_KEY]}"
   NPM_TOKEN="${CANARY[NPM_TOKEN]}" GITHUB_TOKEN="${CANARY[GITHUB_TOKEN]}" OPENAI_API_KEY="${CANARY[OPENAI_API_KEY]}"
 )
@@ -407,11 +407,14 @@ else
     # Every main package of the module, built into /work/bin; run below.
     INSTALL_CMD="install -d /work/bin && go build -o /work/bin/ ./..."
     check package_manager true "go $("$GO_BIN/go" env GOVERSION 2>/dev/null || echo unknown)"
-    check clock_scope false "Go programs read the clock through the vDSO, not libc, so the sped-up clock reaches the build's C tools but not Go code"
   elif [ -f "$WORKDIR/Cargo.toml" ]; then
     ECO=rust
-    INSTALL_CMD="cargo build --bins"
-    [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="cargo build --bins --locked"
+    # cargo stops making progress under the preloaded clock library (no output in 120 s
+    # on a one-file crate in the template smoke), so cargo and rustc run on the real clock;
+    # the built programs run on the sped-up clock below.
+    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins"
+    [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="$INSTALL_CMD --locked"
+    check clock_scope false "cargo, rustc and the crates' build scripts ran on the real clock; the built programs ran on the sped-up clock"
     check package_manager true "$("$RUST_BIN/cargo" --version 2>/dev/null || echo cargo)"
   elif [ -f "$WORKDIR/pyproject.toml" ] || [ -f "$WORKDIR/setup.py" ] || [ -f "$WORKDIR/requirements.txt" ]; then
     ECO=python

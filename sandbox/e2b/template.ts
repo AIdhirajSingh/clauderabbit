@@ -104,6 +104,13 @@ export function buildTemplate() {
         "/opt/cr/rust/bin/rustc --version | grep -q '^rustc " + PINS.rust.version + " '",
         "/opt/cr/rust/bin/cargo --version | grep -q '^cargo '",
       ])
+      // The sped-up clock in the Go runtime every scanned Go program is compiled with
+      // (guest/cr-go-clock.py); the smoke detonation below checks it in a run.
+      .copy("guest/cr-go-clock.py", "/opt/cr/bin/cr-go-clock.py", { mode: 0o755 })
+      .runCmd([
+        "python3 /opt/cr/bin/cr-go-clock.py /opt/cr/go",
+        "GOCACHE=/tmp/cr-gocache GOTOOLCHAIN=local /opt/cr/go/bin/go build runtime time && rm -rf /tmp/cr-gocache",
+      ])
       .setEnvs({ UV_TOOL_DIR: "/opt/cr/tools/uv", UV_TOOL_BIN_DIR: "/opt/cr/tools/bin", UV_PYTHON_DOWNLOADS: "never" })
       .runCmd([
         `/opt/cr/tools/bin/uv tool install --python /usr/bin/python3 mitmproxy==${PINS.python.mitmproxy}`,
