@@ -15,6 +15,7 @@
  * empty.
  */
 
+import { REGISTRY_ALLOW_OUT } from "./sandbox/provider";
 import type {
   Band,
   FileEventData,
@@ -61,7 +62,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 30; // 30: points only from observed behaviour or an installed dependency's malware record; read-only findings under not verified
+export const SCORE_RULES = 31; // 31: the scorer's registry hosts are the sandbox's (yarn and JSR registries were scored as unknown hosts)
+// 30: points only from observed behaviour or an installed dependency's malware record; read-only findings under not verified
 // 29: JSR's npm registry is a registry; npm names may have capitals
 // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
 // 27: a pinned package manager is fetched before the install, on the real clock
@@ -154,7 +156,10 @@ export type ForensicCoverage = "complete" | "partial" | "lost";
 
 /** Forge record kinds for registry traffic served from the mirror (never scored). */
 export const REGISTRY_FORGED_KINDS = new Set(["mirror", "registry"]);
-export const REGISTRY_HOSTS = new Set(["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]);
+// The package registries the sandbox lets through (lib/engine/sandbox/provider.ts
+// REGISTRY_ALLOW_OUT): one list, so a registry the forge passes is never scored as
+// an unknown host (registry.yarnpkg.com was, on react).
+export const REGISTRY_HOSTS: ReadonlySet<string> = new Set(REGISTRY_ALLOW_OUT);
 /** Distribution hosts for behaviour scoring (section 5.3). Anchored suffix match. */
 export const BEHAVIOUR_DISTRIBUTION_HOSTS = ["github.com", "objects.githubusercontent.com", "sourceforge.net", "nodejs.org"];
 

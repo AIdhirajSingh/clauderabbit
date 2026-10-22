@@ -24,3 +24,10 @@ test("the rule the benchmark guards: read findings with nothing observed take no
   assert.ok(seen.breakdown.some((d) => d.group === "static" && d.points < 0), "with observed behaviour the read findings count");
   assert.ok(seen.score < 30);
 });
+
+test("the scorer's registry hosts are the sandbox's: a registry the forge passes is never an unknown host", async () => {
+  const { REGISTRY_HOSTS } = await import("../lib/engine/score.ts");
+  const { REGISTRY_ALLOW_OUT } = await import("../lib/engine/sandbox/provider.ts");
+  for (const h of REGISTRY_ALLOW_OUT) assert.ok(REGISTRY_HOSTS.has(h), h);
+  for (const h of ["registry.yarnpkg.com", "npm.jsr.io"]) assert.ok(REGISTRY_HOSTS.has(h), h);
+});
