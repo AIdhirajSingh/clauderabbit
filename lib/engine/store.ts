@@ -501,7 +501,18 @@ export class V2Store implements ScanStore {
   }
 
   async claimRun(req: ClaimRequest): Promise<ClaimResult> {
-    await run("expire_stale_runs", () => this.db.query("select v2.expire_stale_runs() as n"));
+    // A run is stale after five quiet minutes (no event), not five minutes after it started:
+    // on its runner a scan may build for longer after a Yes, writing events as it goes.
+    // Last activity is the start plus the latest event's t_ms.
+    await run("expire_stale_runs", () =>
+      this.db.query(
+        `update v2.scan_runs r
+            set status = 'error', error_code = 'stale', finished_at = now()
+          where r.status = 'running'
+            and r.started_at + make_interval(secs => coalesce((select max(e.t_ms) from v2.scan_events e where e.run_id = r.id), 0) / 1000.0)
+                < now() - interval '5 minutes'`,
+      ),
+    );
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         await this.db.query(
