@@ -100,7 +100,7 @@ export function buildTemplate() {
         `cd /tmp && sha256sum -c ${RUST_TARBALL}.sha256`,
         `cd /tmp && mkdir rust-dist && tar -xJf ${RUST_TARBALL} -C rust-dist --strip-components=1`,
         "cd /tmp/rust-dist && ./install.sh --prefix=/opt/cr/rust --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu --disable-ldconfig >/dev/null",
-        `rm -rf /tmp/rust-dist /tmp/${RUST_TARBALL} /tmp/${RUST_TARBALL}.sha256`,
+        `cd / && rm -rf /tmp/rust-dist /tmp/${RUST_TARBALL} /tmp/${RUST_TARBALL}.sha256`,
         "/opt/cr/rust/bin/rustc --version | grep -q '^rustc " + PINS.rust.version + " '",
         "/opt/cr/rust/bin/cargo --version | grep -q '^cargo '",
       ])
