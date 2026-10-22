@@ -123,3 +123,27 @@ Totals (newest scan per target and commit): `TOTALS scans=63 failed=0 partial=3 
  8. usestrix/strix — 80 Low risk
  9. microsoft/JARVIS — 80 Low risk
 10. AmrDab/clawdcursor — 80 Low risk
+
+## False positives on trusted packages (step 35)
+
+### Every deduction on the four targets, traced
+
+| target | score before | what took points off | file / evidence | reached by install or entry? | seen doing anything in the sandbox? | after |
+|---|---|---|---|---|---|---|
+| react (`9ffcb46`) | Caution 60 | coverage cap: no forensic record (-31) | the stored run was a scan stopped on purpose when its tab closed (step 31 heartbeat test) | n/a | no record | fresh scan; then -25 for "a host that is neither a registry nor a distribution host": the host was `registry.yarnpkg.com`, a registry the forge passes, missing from the scorer's own list (fixed) |
+| lodash (`2b5e6f7`) | Caution 74 | malware record cap (-16) | `package-lock.json`: fsevents 1.2.2, OSV MAL-2023-462, macOS only, dev only | not installed on Linux, not a production dependency | no: never installed | 90, the record listed under not verified |
+| bufferutil 4.1.0 | Caution 74 | coverage cap: record partial (-13) | the written-file listing passed its 5 s budget after the native build | install (node-gyp build) | nothing bad; the listing walked `/` and then `/work`, `/home`, `/var`, `/etc` and `/usr/local` again, plus all of `/usr` | 90 |
+| OpenJarvis (`8f81c02`) | Caution 60 | 23 code-pattern hits (-40) | `scripts/install/install.sh:2` and `:257` (shell download, public IP), `deploy/posthog/posthog-hetzner-prep.sh:101` (shell download), more in install and deploy scripts | reachable on read (import), never run by the install or entry | no: no bad behaviour in the run | fresh scan below |
+
+### The rule that changed (score rules 30 and 31)
+
+- A deduction stands only on behaviour the sandbox observed, or on a malware record for a dependency the sandbox
+  installed. Pattern hits, the model's code review and documentation claims that were only read, and never seen doing
+  anything, go under not verified with their locations and take no points. When the same run showed bad behaviour,
+  the read findings count in full: the fixture keeps its -40 next to its canary, decoy and host deductions.
+- A malware record for a package the run never installed (dev-only or other-platform lockfile entries) goes under not
+  verified.
+- The scorer's registry hosts are the sandbox's (`REGISTRY_ALLOW_OUT`), so a registry the forge passes is never an
+  unknown host.
+- Not scoring rules, but found the same way: the written-file listing walks each place once and has 15 s; npm tarball
+  caps fit the largest popular packages (next@16 is 43.7 MB, 192 MB unpacked).

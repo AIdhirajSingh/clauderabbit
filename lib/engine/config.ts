@@ -89,7 +89,8 @@ export const DEFAULT_LIMITS: EngineLimits = {
   maxCompressedBytes: 64 * 1024 * 1024,
   maxExpandedBytes: 256 * 1024 * 1024,
   maxFiles: 20_000,
-  maxPackumentBytes: 24 * 1024 * 1024,
+  // next's full packument is 31.5 MB (every version since 2016).
+  maxPackumentBytes: 64 * 1024 * 1024,
 };
 
 /**
