@@ -438,9 +438,10 @@ export function ScanView({ runId }: { runId: string }) {
       </section>
 
       <section className={s.col} style={{ flex: "1 1 420px", gap: 22 }}>
+        {/* The card outlives the running screen: its 15 s answer window runs on after the result opens. */}
+        <ContinueCard runId={runId} show={installHitLimit && !full} />
         {running && (
           <>
-            <ContinueCard runId={runId} show={installHitLimit && !full} />
             <ScanAd key={`${runId}-${replay ? "replay" : "live"}`} runId={runId} />
             <div style={{ display: "flex", flexDirection: "column" }}>
               {CHECKS.map((c) => {
