@@ -16,6 +16,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getVercelOidcToken } from "@vercel/oidc";
 import { HEARTBEAT_GRACE_MS, type EngineConfig } from "../engine/config";
 import type { ScanCaller, ScanTarget } from "../engine/types";
@@ -25,6 +27,13 @@ import type { FinalLine } from "./scan-service";
 const RUNNER_UNATTENDED_MS = 30 * 60_000;
 const RUNNER_DIR = "/tmp/cr-runner";
 const NODE = "/opt/cr/node/bin/node";
+
+/**
+ * Source files the pipeline reads from its working folder at run time and uploads into
+ * the scan VM (the repo map tool, lib/engine/sandbox/vmfetch.ts); next.config.ts ships
+ * them with this route, and the runner gets them at the same relative paths.
+ */
+export const RUNNER_TOOL_FILES = ["lib/engine/sandbox/vm-map.mjs", "lib/engine/reach/graph.ts", "lib/engine/static/heuristics.ts", "lib/engine/archive.ts"] as const;
 
 /** The environment a scan needs, by name. Values are read from this process and passed to the runner's one command. */
 export const RUNNER_ENV_NAMES = [
@@ -56,7 +65,10 @@ export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promis
     timeoutMs: heartbeat ? HEARTBEAT_GRACE_MS : RUNNER_UNATTENDED_MS,
     metadata: { runId, purpose: "runner", ...(heartbeat ? { heartbeat: "1" } : {}) },
   });
-  await sbx.files.write(`${RUNNER_DIR}/runner.mjs`, code);
+  await sbx.files.write([
+    { path: `${RUNNER_DIR}/runner.mjs`, data: code },
+    ...RUNNER_TOOL_FILES.map((rel) => ({ path: `${RUNNER_DIR}/${rel}`, data: readFileSync(join(process.cwd(), rel), "utf8") })),
+  ]);
   await sbx.files.write(`${RUNNER_DIR}/request.json`, JSON.stringify({ runId, sandboxId: sbx.sandboxId, target: s.target, caller: s.caller, full: s.full, heartbeat, ...(s.testInstallMs ? { testInstallMs: s.testInstallMs } : {}) }));
   const envs: Record<string, string> = {};
   for (const name of RUNNER_ENV_NAMES) {
