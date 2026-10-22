@@ -34,7 +34,7 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 800; // a full-install scan (lib/engine/config.ts fullInstallDeadlines) needs up to scanMs + 300 s
+export const maxDuration = 300; // the most the Vercel plan allows; a full-install scan fits inside it (lib/engine/config.ts fullInstallDeadlines)
 
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra } });

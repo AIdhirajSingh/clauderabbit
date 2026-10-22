@@ -37,9 +37,9 @@ function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T
 
 const req = (body: unknown, headers: Record<string, string> = {}) => new Request("https://clauderabbit.in/api/scan", { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
 
-test("route config: node runtime, maxDuration 800 covers the full-install scan deadline", () => {
+test("route config: node runtime, maxDuration 300 covers the scan deadline, full install included", () => {
   assert.equal(runtime, "nodejs");
-  assert.equal(maxDuration, 800);
+  assert.equal(maxDuration, 300);
   assert.ok(maxDuration * 1000 > fullInstallDeadlines(DEFAULT_DEADLINES).scanMs + 15_000);
 });
 

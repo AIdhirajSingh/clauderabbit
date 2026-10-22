@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DEFAULT_DEADLINES, FULL_INSTALL_EXTRA_MS, deadlineViolations, fullInstallDeadlines } from "../lib/engine/config";
+import { DEFAULT_DEADLINES, deadlineViolations, fullInstallDeadlines } from "../lib/engine/config";
 import { parseScanBody } from "../lib/server/scan-service";
 import { ADS } from "../lib/ads-config";
 
-test("full-install deadlines give the install more time and stay consistent", () => {
+test("full-install deadlines give the install 180 s; the command and VM cover it; the scan deadline stays", () => {
   const d = fullInstallDeadlines(DEFAULT_DEADLINES);
-  assert.equal(d.installMs, DEFAULT_DEADLINES.installMs + FULL_INSTALL_EXTRA_MS);
-  assert.deepEqual(deadlineViolations(d), []);
+  assert.equal(d.installMs, 180_000);
+  assert.equal(d.scanMs, DEFAULT_DEADLINES.scanMs, "the scan deadline does not grow past the route's 300 s");
+  // Only the serial-path rule is knowingly broken: the scan deadline is the real bound.
+  assert.deepEqual(deadlineViolations(d).filter((v) => !v.startsWith("scanMs")), []);
 });
 
 test("the scan body carries full only when it is exactly true", () => {

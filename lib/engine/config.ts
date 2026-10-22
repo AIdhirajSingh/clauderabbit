@@ -120,14 +120,18 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
 
 /**
  * Deadlines for a full-install scan (the viewer pressed Yes on "Keep installing
- * to scan it fully?"): the install gets FULL_INSTALL_EXTRA_MS more, and every
- * deadline that must cover it (the detonation command, the VM, the scan) grows
- * by the same amount. The route's maxDuration bounds the whole scan.
+ * to scan it fully?"): the install gets FULL_INSTALL_MS, and the detonation
+ * command and the VM are sized to cover it. The scan deadline does not grow:
+ * the route's maxDuration (300 s, the most the Vercel plan allows) bounds every
+ * scan, so scanMs stays the real limit. A full install that does not fit in it
+ * ends as a partial scan with its coverage gaps stated, like any overrun.
  */
-export const FULL_INSTALL_EXTRA_MS = 300_000;
+export const FULL_INSTALL_MS = 180_000;
 export function fullInstallDeadlines(d: EngineDeadlines): EngineDeadlines {
-  const x = FULL_INSTALL_EXTRA_MS;
-  return { ...d, installMs: d.installMs + x, detonateTotalMs: d.detonateTotalMs + x, sandboxTimeoutMs: d.sandboxTimeoutMs + x, scanMs: d.scanMs + x };
+  const installMs = Math.max(d.installMs, FULL_INSTALL_MS);
+  const detonateTotalMs = Math.max(d.detonateTotalMs, installMs + d.entryMs + HARNESS_OVERHEAD_MS);
+  const sandboxTimeoutMs = Math.max(d.sandboxTimeoutMs, detonateTotalMs + SALVAGE_BUDGET_MS + 10_000);
+  return { ...d, installMs, detonateTotalMs, sandboxTimeoutMs };
 }
 
 /**
