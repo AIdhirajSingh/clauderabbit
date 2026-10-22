@@ -466,7 +466,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     const onKilled = (ok: boolean, detail: string) => check("sandbox_killed", ok, detail);
     detVm = bootDetonation(
       deps.sandbox,
-      { runId, totalTimeoutMs: vmSize === "large" ? Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs) : cfg.deadlines.detonateTotalMs, sandboxTimeoutMs: vmSize === "large" ? Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs) : cfg.deadlines.sandboxTimeoutMs, size: vmSize },
+      // Every VM size gets the large budget, so a Yes on "Keep installing?" has the same room to finish.
+      { runId, totalTimeoutMs: Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs), sandboxTimeoutMs: Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs), size: vmSize },
       { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
     );
     // One VM per GitHub scan on E2B: the scanners run in the detonation VM before any repo code.
@@ -739,11 +740,11 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         // Yes on "Keep installing?" lets the running install go on, inside the scan's budget.
         installMaxMs: Math.min(
           (vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs) + CONTINUE_EXTRA_MS,
-          (vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs) - CONTINUE_RESERVE_MS,
+          Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs) - CONTINUE_RESERVE_MS,
         ),
         entryTimeoutMs: cfg.deadlines.entryMs,
-        totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs,
-        sandboxTimeoutMs: vmSize === "large" ? Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs) : cfg.deadlines.sandboxTimeoutMs,
+        totalTimeoutMs: Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs),
+        sandboxTimeoutMs: Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs),
         fakeRate: FAKE_CLOCK_RATE,
       });
     } catch (err) {
