@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 25; // 25: pattern hits alone floor a complete scan at Low risk too, as they did a partial one
+export const SCORE_RULES = 26; // 26: an install the viewer asks to continue runs on in the same run (a different install record)
+// 25: pattern hits alone floor a complete scan at Low risk too, as they did a partial one
 // 24: pnpm 11 reads the scaled fetch timeout from its global config.yaml and pnpm_config_*
 // 23: scaled fetch timeouts come from a typed npmrc (pnpm 11 crashed on the --config string)
 // 22: a skipped or failed entry is not a partial scan; retry waits not scaled
