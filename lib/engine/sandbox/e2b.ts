@@ -36,6 +36,21 @@ export async function extendRunSandboxes(apiKey: string, runId: string, graceMs:
   return n;
 }
 
+/** How many of a run's sandboxes (runner and scan VMs) are still running. Extends nothing. */
+export async function countRunSandboxes(apiKey: string, runId: string): Promise<{ total: number; byPurpose: Record<string, number> }> {
+  const pages = Sandbox.list({ apiKey, query: { metadata: { runId }, state: ["running"] } });
+  const byPurpose: Record<string, number> = {};
+  let total = 0;
+  while (pages.hasNext) {
+    for (const s of await pages.nextItems()) {
+      const p = String((s.metadata as Record<string, string> | undefined)?.purpose ?? "unknown");
+      byPurpose[p] = (byPurpose[p] ?? 0) + 1;
+      total += 1;
+    }
+  }
+  return { total, byPurpose };
+}
+
 /** The exact `Sandbox.create` options for a purpose (exported for tests). */
 export function e2bCreateOptions(opts: SandboxCreateOptions, apiKey: string) {
   const base = {

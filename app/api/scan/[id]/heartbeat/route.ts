@@ -7,7 +7,7 @@
  */
 
 import { HEARTBEAT_GRACE_MS } from "@/lib/engine/config";
-import { extendRunSandboxes } from "@/lib/engine/sandbox/e2b";
+import { countRunSandboxes, extendRunSandboxes } from "@/lib/engine/sandbox/e2b";
 import { serverConfig } from "@/lib/server/scan-service";
 
 export const runtime = "nodejs";
@@ -23,6 +23,19 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     if (!config.e2bApiKey) return new Response(null, { status: 503 });
     const extended = await extendRunSandboxes(config.e2bApiKey, id, HEARTBEAT_GRACE_MS);
     return Response.json({ extended });
+  } catch {
+    return new Response(null, { status: 503 });
+  }
+}
+
+/** GET: how many of the run's sandboxes are still running (the closed-tab check). Extends nothing. */
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
+  const { id } = await params;
+  if (!UUID_RE.test(id)) return new Response(null, { status: 400 });
+  try {
+    const config = serverConfig();
+    if (!config.e2bApiKey) return new Response(null, { status: 503 });
+    return Response.json({ running: await countRunSandboxes(config.e2bApiKey, id) }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return new Response(null, { status: 503 });
   }
