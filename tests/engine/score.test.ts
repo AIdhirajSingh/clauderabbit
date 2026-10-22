@@ -95,18 +95,18 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "four distribution fetches still cost nothing", in: { behaviour: beh({ distributionFetches: ["a", "b", "c", "d"] }) }, score: 90, verdict: "No threats observed" },
   { name: "behaviour group floors at -85", in: { behaviour: beh({ decoyReads: ["a"], tunnelingDns: ["b"], tlsRefused: ["c"], nonDistributionHosts: ["d", "e"] }) }, score: 0, verdict: "Malicious" },
   { name: "a malicious dependency with clean own code is a labelled dependency danger in Caution", in: { malicious: [{ ecosystem: "npm", name: "evil", version: "1.0.0", ids: ["MAL-2025-1"] }], reputation: STRONG_REP }, score: 74, verdict: "Caution" },
-  { name: "one reachable high static finding: pattern hits alone keep Low risk", in: { staticFindings: [sf({})] }, score: 80, verdict: "Low risk" },
-  { name: "one reachable medium static finding", in: { staticFindings: [sf({ severity: "medium" })] }, score: 80, verdict: "Low risk" },
+  { name: "one reachable high static finding: pattern hits alone keep Low risk (read only, never seen running: not verified, no points)", in: { staticFindings: [sf({})] }, score: 85, verdict: "Low risk" },
+  { name: "one reachable medium static finding (read only, never seen running: not verified, no points)", in: { staticFindings: [sf({ severity: "medium" })] }, score: 90, verdict: "No threats observed" },
   { name: "low static finding is worth 0", in: { staticFindings: [sf({ severity: "low" })] }, score: 90, verdict: "No threats observed" },
   { name: "unreachable high finding changes nothing", in: { staticFindings: [sf({ reach: "unreachable", file: "test/a.js" })], reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
-  { name: "same file:line from two scanners counts once at the worst weight", in: { staticFindings: [sf({ source: "semgrep" }), sf({ source: "yara", severity: "medium" })] }, score: 80, verdict: "Low risk" },
-  { name: "static pattern hits alone keep a complete scan at Low risk, as a partial one", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 80, verdict: "Low risk" },
-  { name: "Jev malicious high", in: { checkFindings: [cf({})] }, score: 77, verdict: "Caution" },
-  { name: "Jev suspicious medium", in: { checkFindings: [cf({ severity: "medium", verdict: "suspicious" })] }, score: 81, verdict: "Low risk" },
+  { name: "same file:line from two scanners counts once at the worst weight (read only, never seen running: not verified, no points)", in: { staticFindings: [sf({ source: "semgrep" }), sf({ source: "yara", severity: "medium" })] }, score: 85, verdict: "Low risk" },
+  { name: "static pattern hits alone keep a complete scan at Low risk, as a partial one (read only, never seen running: not verified, no points)", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 85, verdict: "Low risk" },
+  { name: "Jev malicious high (read only, never seen running: not verified, no points)", in: { checkFindings: [cf({})] }, score: 85, verdict: "Low risk" },
+  { name: "Jev suspicious medium (read only, never seen running: not verified, no points)", in: { checkFindings: [cf({ severity: "medium", verdict: "suspicious" })] }, score: 90, verdict: "No threats observed" },
   { name: "Jev benign answer is worth 0", in: { checkFindings: [cf({ verdict: "benign", severity: "low" })] }, score: 90, verdict: "No threats observed" },
   { name: "Jev unclear answer is worth 0 points and does not block 90 (it is listed as not verified)", in: { checkFindings: [cf({ verdict: "unclear", severity: "low" })], reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "Jev answer on an unreachable file is worth 0", in: { checkFindings: [cf({ reach: "unreachable" })] }, score: 90, verdict: "No threats observed" },
-  { name: "Jev and static on the same line dedup to the worst", in: { staticFindings: [sf({ line: 9 })], checkFindings: [cf({})] }, score: 73, verdict: "Caution" },
+  { name: "Jev and static on the same line dedup to the worst (read only, never seen running: not verified, no points)", in: { staticFindings: [sf({ line: 9 })], checkFindings: [cf({})] }, score: 85, verdict: "Low risk" },
   {
     name: "docs no-network contradicted by behaviour",
     in: { docs: { declaresNoNetwork: true, declaresPure: false, quote: "makes no network requests" }, behaviour: beh({ nonDistributionHosts: ["c2.example"] }) },
@@ -114,10 +114,10 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
     verdict: "High risk",
   },
   {
-    name: "docs no-network contradicted by reachable static capability only",
+    name: "docs no-network contradicted by reachable static capability only (read only, never seen running: not verified, no points)",
     in: { docs: { declaresNoNetwork: true, declaresPure: false, quote: "offline" }, capabilities: [{ file: "lib/a.js", capability: "network", reach: "import" }] },
-    score: 79,
-    verdict: "Caution",
+    score: 90,
+    verdict: "No threats observed",
   },
   {
     name: "docs no-network with only unreachable network capability",
@@ -126,10 +126,10 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
     verdict: "No threats observed",
   },
   {
-    name: "docs pure contradicted by reachable process capability",
+    name: "docs pure contradicted by reachable process capability (read only, never seen running: not verified, no points)",
     in: { docs: { declaresNoNetwork: false, declaresPure: true, quote: "pure functions" }, capabilities: [{ file: "a.js", capability: "process", reach: "install" }] },
-    score: 79,
-    verdict: "Caution",
+    score: 90,
+    verdict: "No threats observed",
   },
   { name: "new GitHub owner is shown but takes nothing off", in: { reputation: { ...NO_REP, ownerAgeDays: 10 } }, score: 90, verdict: "No threats observed" },
   {
@@ -233,10 +233,15 @@ for (const c of CASES) {
 }
 
 test("score: behaviour outweighs static (max static loss is smaller than one canary)", () => {
-  const worstStatic = computeScore(input({ staticFindings: Array.from({ length: 20 }, (_, i) => sf({ line: i + 1 })) }));
+  const hits = Array.from({ length: 20 }, (_, i) => sf({ line: i + 1 }));
+  const worstStatic = computeScore(input({ staticFindings: hits }));
   const oneCanary = computeScore(input({ behaviour: beh({ canaryHits: ["x"] }) }));
   assert.ok(worstStatic.score > oneCanary.score);
-  assert.equal(worstStatic.groups.static, -40);
+  // Read only, never seen running: no points, stated under not verified.
+  assert.equal(worstStatic.groups.static, 0);
+  assert.ok(worstStatic.notVerified.some((l) => /read but never seen doing anything/.test(l)));
+  // With bad behaviour observed in the same run, the read findings count in full.
+  assert.equal(computeScore(input({ staticFindings: hits, behaviour: beh({ canaryHits: ["x"] }) })).groups.static, -40);
 });
 
 test("score: failed phases and coverage gaps are listed in not_verified", () => {
@@ -416,10 +421,16 @@ test("an unclear Jev answer is listed under not_verified with its location", () 
 test("score: own code clean, danger only in a dependency: labelled, Caution, never Malicious", () => {
   // lodash/lodash 2b5e6f7: package-lock.json pins fsevents 1.2.2 (OSV MAL-2023-462), dev, darwin-only, not installed on Linux.
   const fsevents = { ecosystem: "npm" as const, name: "fsevents", version: "1.2.2", ids: ["MAL-2023-462"], scope: { installed: false, dev: true, optional: true, os: ["darwin"] } };
-  const r = computeScore(input({ malicious: [fsevents], reputation: STRONG_REP }));
+  // Never installed in this run: the record is stated under not verified and takes no points.
+  const absent = computeScore(input({ malicious: [fsevents], reputation: STRONG_REP }));
+  assert.ok(absent.score >= 80, String(absent.score));
+  assert.ok(!absent.breakdown.some((x) => x.code === "dependency_malicious_record"));
+  assert.ok(absent.notVerified.some((l) => /malware record exists for a dependency this run never installed: fsevents 1\.2\.2 \(MAL-2023-462\)/.test(l)));
+  // Installed in the run: the record counts.
+  const r = computeScore(input({ malicious: [{ ...fsevents, scope: { ...fsevents.scope, installed: true } }], reputation: STRONG_REP }));
   assert.equal(r.verdict, "Caution");
   assert.equal(r.score, 74);
-  assert.equal(r.label, "Own code: clean. Danger in a dependency: fsevents 1.2.2 (MAL-2023-462), macOS only, dev lockfile only (repo install, not package users), not installed in this run.");
+  assert.equal(r.label, "Own code: clean. Danger in a dependency: fsevents 1.2.2 (MAL-2023-462), macOS only, dev lockfile only (repo install, not package users).");
   const d = r.breakdown.find((x) => x.code === "dependency_malicious_record")!;
   assert.ok(d.points < 0 && d.evidence!.includes("npm fsevents@1.2.2: MAL-2023-462"), "the finding stays prominent, with its advisory");
 });
@@ -506,14 +517,13 @@ test("a partial scan with only pattern hits stays at Low risk and says it is par
   const hits = [sf({}), sf({ file: "b.js", line: 2 }), sf({ file: "c.js", line: 3 }), sf({ file: "d.js", line: 4 })];
   const partial = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits }));
   assert.equal(partial.partial, true);
-  assert.equal(partial.score, 80);
-  assert.equal(partial.verdict, "Low risk");
-  assert.ok(partial.breakdown.some((d) => d.code === "partial_scan_floor"));
+  // Read only, never seen running: no points; the partial mark still shows.
+  assert.ok(partial.score >= 80, String(partial.score));
+  assert.ok(!partial.breakdown.some((d) => d.group === "static"));
   // A complete scan with the same hits gets the same score, without the partial mark.
   const complete = computeScore(input({ staticFindings: hits }));
   assert.equal(complete.partial, false);
-  assert.equal(complete.score, 80);
-  assert.ok(complete.breakdown.some((d) => d.code === "pattern_only_floor"));
+  assert.equal(complete.score, partial.score);
   // A lost record caps lower; the floor never lifts past a cap that applied.
   const lost = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits, forensics: { coverage: "lost", gaps: [] } }));
   assert.ok(lost.score <= CAP_FORENSICS_LOST + 1);

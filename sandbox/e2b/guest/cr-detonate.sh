@@ -625,14 +625,24 @@ fi
 pkill -KILL -u "$CR_UID" || true
 
 # Written files, NUL-separated so a file name holding a newline can never turn
-# into a second path (a FIFO or device the root grep would block on).
+# into a second path (a FIFO or device the root grep would block on). Each place is
+# walked once: the root filesystem, plus /tmp and /dev/shm only when they are their
+# own mounts (walking /work, /home, /var or /etc again as roots doubled the walk of a
+# large node_modules). System trees the sandbox user cannot write (/usr outside
+# /usr/local, /lib, /bin, /sbin, /boot) are not walked. A native build leaves many
+# files, so the budget is 15 s.
+WALK_EXTRA=""
+for m in /tmp /dev/shm; do mountpoint -q "$m" 2>/dev/null && WALK_EXTRA="$WALK_EXTRA $m"; done
 set +e
-timeout 5 find / /tmp /home /work /var /etc /usr/local -xdev \
-  \( -path /proc -o -path /sys -o -path /dev -o -path /root -o -path /opt/cr -o -path /run/cr \) -prune \
+# shellcheck disable=SC2086
+timeout 15 find / $WALK_EXTRA -xdev \
+  \( -path /proc -o -path /sys -o -path /dev -o -path /root -o -path /opt/cr -o -path /run/cr \
+     -o -path /usr/bin -o -path /usr/lib -o -path /usr/lib64 -o -path /usr/libexec -o -path /usr/share -o -path /usr/include \
+     -o -path /usr/sbin -o -path /usr/src -o -path /lib -o -path /lib64 -o -path /bin -o -path /sbin -o -path /boot \) -prune \
   -o -type f -newer "$RUN/start.marker" -print0 2>/dev/null >"$RUN/written.0"
 FIND_EXIT=$?
 set -e
-[ "$FIND_EXIT" = 124 ] && check canary_file_scan false "written-file listing passed its 5 s budget"
+[ "$FIND_EXIT" = 124 ] && check canary_file_scan false "written-file listing passed its 15 s budget"
 tr '\0' '\n' <"$RUN/written.0" | head -n 20000 >"$OUT/written.txt" || true
 : >"$OUT/canary_files.txt"
 # Candidates: written regular files outside the npm/uv caches and the venv tree.

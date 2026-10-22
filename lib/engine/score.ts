@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 29; // 29: JSR's npm registry is a registry; npm names may have capitals
+export const SCORE_RULES = 30; // 30: points only from observed behaviour or an installed dependency's malware record; read-only findings under not verified
+// 29: JSR's npm registry is a registry; npm names may have capitals
 // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
 // 27: a pinned package manager is fetched before the install, on the real clock
 // 26: an install the viewer asks to continue runs on in the same run (a different install record)
@@ -583,15 +584,27 @@ function evidenced(d: ScoreDelta): boolean {
 export function computeScore(input: ScoreInput): ScoreResult {
   const bDeltas = behaviourDeltas(input.behaviour).filter(evidenced);
   const B = Math.max(CAP_BEHAVIOUR, bDeltas.reduce((s, d) => s + d.points, 0));
+  // A known malware record counts only for a dependency the sandbox installed; a
+  // record for one it never installed (a dev-only or other-platform lockfile entry)
+  // is stated under not verified.
+  const malicious = input.malicious.filter((m) => m.scope?.installed !== false);
+  const notInstalledMalicious = input.malicious.filter((m) => m.scope?.installed === false);
+  // Points come only from what the sandbox observed (behaviour) or a known malware
+  // record for an installed dependency. Code that was only read (pattern hits, the
+  // model's code review, documentation claims) and never seen doing anything is
+  // stated under not verified, never taken off the score. When the sandbox did see
+  // bad behaviour, the read findings count with it.
+  const observed = B < 0 || malicious.length > 0;
   // The repo's own code is clean when nothing in behaviour, static or docs takes a
   // point off. Then a known-malicious dependency is a dependency danger: labelled,
   // capped into Caution, never called Malicious. With own-code signals it counts in full.
   const ownCodeClean = behaviourDeltas(input.behaviour).filter(evidenced).length === 0 && staticTally(input.staticFindings, input.checkFindings).total === 0 && !docsDelta(input);
-  const dependencyOnly = input.malicious.length > 0 && ownCodeClean;
-  const I = input.malicious.length > 0 && !dependencyOnly ? W_MALICIOUS_DEP : 0;
-  const st = staticTally(input.staticFindings, input.checkFindings);
+  const dependencyOnly = malicious.length > 0 && ownCodeClean;
+  const I = malicious.length > 0 && !dependencyOnly ? W_MALICIOUS_DEP : 0;
+  const stRead = staticTally(input.staticFindings, input.checkFindings);
+  const st = observed ? stRead : { ...stRead, total: 0, deltas: [] as ScoreDelta[] };
   const S = st.total;
-  const dRaw = docsDelta(input);
+  const dRaw = observed ? docsDelta(input) : null;
   const dDelta = dRaw && evidenced(dRaw) ? dRaw : null;
   const D = dDelta ? dDelta.points : 0;
   const rep = reputationDeltas(input.reputation);
@@ -607,7 +620,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
       code: "osv_malicious_dependency",
       points: I,
       detail: "A dependency has an OSV malicious-package record.",
-      evidence: input.malicious.map((m) => `${m.ecosystem} ${m.name}@${m.version}: ${m.ids.join(", ")}`),
+      evidence: malicious.map((m) => `${m.ecosystem} ${m.name}@${m.version}: ${m.ids.join(", ")}`),
     });
   }
   breakdown.push(...st.deltas);
@@ -631,6 +644,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
   };
 
   const notVerified = [...BASE_NOT_VERIFIED];
+  if (!observed && stRead.deltas.length > 0) {
+    const where = stRead.deltas.flatMap((d) => (Array.isArray(d.evidence) ? d.evidence : [])).slice(0, 3).join("; ");
+    notVerified.push(`Flagged code that was read but never seen doing anything in the sandbox, so it takes no points: ${stRead.deltas.map((d) => d.detail).join(" ")}${where ? ` (${where})` : ""}`);
+  }
+  if (!observed && docsDelta(input)) notVerified.push("The documentation's claims differ from the capabilities read in the code; nothing in the sandbox showed them used, so this takes no points.");
+  if (notInstalledMalicious.length > 0) notVerified.push(`A malware record exists for a dependency this run never installed: ${dependencyLabel(notInstalledMalicious).replace(/^Own code: clean\. Danger in a dependency: /, "")}`);
   if (input.forensics.coverage === "lost") {
     applyCap(CAP_FORENSICS_LOST, "cap_forensics_lost", `The sandbox run produced no forensic record, so behaviour was not observed and the score is capped at ${CAP_FORENSICS_LOST}.`);
     notVerified.push("The sandbox run did not produce a forensic record, so install-time and runtime behaviour were not observed.");
@@ -648,12 +667,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
         group: "cap",
         code: "dependency_malicious_record",
         points: CAP_DEPENDENCY_ONLY - score,
-        detail: `${dependencyLabel(input.malicious)} The repo's own code is clean, so the score is capped at ${CAP_DEPENDENCY_ONLY} (Caution).`,
-        evidence: input.malicious.map((m) => `${m.ecosystem} ${m.name}@${m.version}: ${m.ids.join(", ")}`),
+        detail: `${dependencyLabel(malicious)} The repo's own code is clean, so the score is capped at ${CAP_DEPENDENCY_ONLY} (Caution).`,
+        evidence: malicious.map((m) => `${m.ecosystem} ${m.name}@${m.version}: ${m.ids.join(", ")}`),
       });
       score = CAP_DEPENDENCY_ONLY;
     }
-  } else if (input.malicious.length > 0) {
+  } else if (malicious.length > 0) {
     applyCap(CAP_MALICIOUS_DEP, "cap_malicious_dependency", `A known malicious dependency caps the score at ${CAP_MALICIOUS_DEP}.`);
   }
   // Running out of time is not a bad signal: a phase that timed out (and an entry
@@ -711,7 +730,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   const patternFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
   // Not when a dependency has a malicious-package record or the docs are contradicted:
   // those are more than pattern hits.
-  if (B === 0 && I === 0 && D === 0 && input.malicious.length === 0 && st.checkHits === 0 && score < patternFloor) {
+  if (B === 0 && I === 0 && D === 0 && malicious.length === 0 && st.checkHits === 0 && score < patternFloor) {
     breakdown.push(
       partial
         ? { group: "cap", code: "partial_scan_floor", points: patternFloor - score, detail: `Partial scan: nothing bad was seen while it ran, so pattern hits alone keep the score at ${patternFloor} or more.` }
@@ -731,7 +750,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   }
 
   const unique = [...new Set(notVerified)];
-  const label = dependencyOnly ? dependencyLabel(input.malicious) : undefined;
+  const label = dependencyOnly ? dependencyLabel(malicious) : undefined;
   return {
     score,
     raw,

@@ -1,0 +1,21 @@
+{
+  "about": "Widely trusted npm packages and repos. Every one must score 80 or above on a fresh scan, with no points taken off for code that was only read. Run on the preview: each entry is a /api/scan body. Results go in docs/runs/2.0-keyday.md.",
+  "min_score": 80,
+  "targets": [
+    { "target": "github.com/facebook/react" },
+    { "target": "github.com/lodash/lodash" },
+    { "target": "github.com/vitejs/vite" },
+    { "target": "npm:express" },
+    { "target": "npm:axios" },
+    { "target": "npm:chalk" },
+    { "target": "npm:typescript" },
+    { "target": "npm:next" },
+    { "target": "npm:debug" },
+    { "target": "npm:commander" },
+    { "target": "npm:zod" },
+    { "target": "npm:uuid" },
+    { "target": "npm:prettier" },
+    { "target": "npm:dotenv" },
+    { "target": "npm:semver" }
+  ]
+}
