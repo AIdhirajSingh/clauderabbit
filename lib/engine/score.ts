@@ -66,7 +66,8 @@ export const BASE = 85;
 // 32: Go, Cargo and Python projects (also one or two folders down) are built and run in the sandbox.
 // 33: the Go module proxy's zip redirects pass the forge (under 32 they were forged and a Go build could fail).
 // 34: Go module paths with capitals (sent as %21) pass the forge.
-export const SCORE_RULES = 35; // 35: above 80 only when the build completed and the program ran, in every language; otherwise a partial scan at 80 with one reason line
+// 35: above 80 only when the build completed and the program ran, in every language; otherwise a partial scan at 80 with one reason line.
+export const SCORE_RULES = 36; // 36: a plain blocked download (no data out, no credential, nothing run) followed by nothing bad is listed as not verified, with no points
 // 30: points only from observed behaviour or an installed dependency's malware record; read-only findings under not verified
 // 29: JSR's npm registry is a registry; npm names may have capitals
 // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
@@ -235,6 +236,12 @@ export interface BehaviourSignals {
   tlsRefused: string[];
   suspiciousInstallExecs: string[];
   distributionFetches: string[];
+  /**
+   * Plain requests the forge answered with data (a GET or HEAD with no body, no canary or
+   * credential, not a script the forge served): nothing went out, nothing fetched could
+   * run. Scored only when the run shows bad behaviour too; otherwise listed as not verified.
+   */
+  blockedPlainFetches: string[];
 }
 
 export const NO_BEHAVIOUR: BehaviourSignals = {
@@ -246,7 +253,14 @@ export const NO_BEHAVIOUR: BehaviourSignals = {
   tlsRefused: [],
   suspiciousInstallExecs: [],
   distributionFetches: [],
+  blockedPlainFetches: [],
 };
+
+/** A request that carried nothing out: GET or HEAD, no body, no canary or credential, answered by the forge with data (not a script). */
+export function isBlockedPlainFetch(c: ForgedCallData): boolean {
+  const m = (c.method ?? "").toUpperCase();
+  return (c.proto === "http" || c.proto === "https") && (m === "GET" || m === "HEAD") && c.req_bytes === 0 && c.canary_hits.length === 0 && c.tls !== "refused" && c.forged_kind === "json";
+}
 
 export interface ForensicSummary {
   forgedCalls: ForgedCallData[];
@@ -265,6 +279,7 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
   const nonDist: string[] = [];
   const tls: string[] = [];
   const dist: string[] = [];
+  const plain: string[] = [];
   for (const c of f.forgedCalls) {
     const host = c.host.toLowerCase();
     for (const hit of c.canary_hits) canary.push(`${hit} sent to ${host} (${c.proto}, ${c.phase})`);
@@ -283,6 +298,7 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
     if (REGISTRY_HOSTS.has(host) && isPackageManagerRequest(c.method, c.path)) continue;
     if (c.tls === "refused") tls.push(host);
     if (isBehaviourDistributionHost(host)) dist.push(host);
+    else if (isBlockedPlainFetch(c)) plain.push(host);
     else nonDist.push(host);
   }
   for (const p of f.canaryInFiles) canary.push(`canary copied into written file ${p}`);
@@ -302,6 +318,10 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
       execs.push(p.argv.slice(0, 3).join(" ").slice(0, 160));
     }
   }
+  // A plain blocked fetch costs nothing only when nothing bad follows it: with any other
+  // bad behaviour in the run it counts as a contact like any other.
+  const badElsewhere = canary.length + decoy.length + persist.length + tunnel.length + nonDist.length + tls.length + execs.length > 0;
+  if (badElsewhere) nonDist.push(...plain);
   return {
     canaryHits: uniq(canary),
     decoyReads: uniq(decoy),
@@ -311,6 +331,7 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
     tlsRefused: uniq(tls),
     suspiciousInstallExecs: uniq(execs),
     distributionFetches: uniq(dist),
+    blockedPlainFetches: badElsewhere ? [] : uniq(plain),
   };
 }
 
@@ -670,6 +691,10 @@ export function computeScore(input: ScoreInput): ScoreResult {
     notVerified.push("Part of the sandbox forensic record was cut, so behaviour in the cut part was not observed.");
   }
   for (const g of input.forensics.gaps) notVerified.push(g);
+  const plain = input.behaviour.blockedPlainFetches ?? [];
+  if (plain.length > 0) {
+    notVerified.push(`Blocked downloads: ${plain.length} plain ${plain.length === 1 ? "request" : "requests"} to ${plain.slice(0, 5).join(", ")}${plain.length > 5 ? " and more" : ""} sent nothing and were answered by the sandbox, so nothing arrived or ran; what the real hosts would have returned was not checked.`);
+  }
   if (input.behaviour.canaryHits.length > 0 || input.behaviour.persistenceWrites.length > 0) {
     applyCap(CAP_CANARY_OR_PERSISTENCE, "cap_canary_or_persistence", `Credential exfiltration or persistence caps the score at ${CAP_CANARY_OR_PERSISTENCE}.`);
   }

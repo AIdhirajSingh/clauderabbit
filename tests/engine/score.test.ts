@@ -574,3 +574,25 @@ test("a repo with no install step is a partial scan: capped at Low risk 80 with 
   // A cut install is still a partial scan.
   assert.equal(computeScore(input({ install: "timeout", entry: "skipped" })).partial, true);
 });
+
+test("a plain blocked download that leads nowhere costs no points; data out, a canary, a served script or other bad behaviour still do", () => {
+  const get = (host: string, over: Partial<ForgedCallData> = {}): ForgedCallData => ({ phase: "install", proto: "https", host, port: 443, method: "GET", path: "/vendor/linux/x64/tool", req_bytes: 0, forged_kind: "json", tls: "intercepted", canary_hits: [], ...over });
+  const run = (calls: ForgedCallData[], files: FileEventData[] = []) => deriveBehaviour({ forgedCalls: calls, files, processes: [], canaryInFiles: [], datagramEgress: [] });
+  const quiet = run([get("raw.example-cdn.invalid"), get("downloads.example.invalid")]);
+  assert.deepEqual(quiet.nonDistributionHosts, []);
+  assert.deepEqual(quiet.blockedPlainFetches, ["downloads.example.invalid", "raw.example-cdn.invalid"]);
+  const r = computeScore(input({ behaviour: quiet, reputation: STRONG_REP }));
+  assert.equal(r.score, 90);
+  assert.ok(!r.breakdown.some((d) => d.code === "non_distribution_contact"));
+  assert.ok(r.notVerified.some((l) => /^Blocked downloads: 2 plain requests/.test(l)));
+  // Data going out, a canary, a script the forge served, or a refused TLS handshake still count.
+  assert.deepEqual(run([get("c2.invalid", { method: "POST", req_bytes: 40 })]).nonDistributionHosts, ["c2.invalid"]);
+  assert.deepEqual(run([get("c2.invalid", { req_bytes: 12 })]).nonDistributionHosts, ["c2.invalid"]);
+  assert.deepEqual(run([get("c2.invalid", { canary_hits: ["GITHUB_TOKEN"] })]).nonDistributionHosts, ["c2.invalid"]);
+  assert.deepEqual(run([get("c2.invalid", { forged_kind: "shell" })]).nonDistributionHosts, ["c2.invalid"]);
+  assert.deepEqual(run([get("c2.invalid", { tls: "refused" })]).nonDistributionHosts, ["c2.invalid"]);
+  // Followed by something bad (a decoy credential read): the plain fetch counts again.
+  const bad = run([get("raw.example-cdn.invalid")], [{ phase: "install", op: "read_decoy", path: "/home/cr/.aws/credentials", pid: 7 }]);
+  assert.deepEqual(bad.nonDistributionHosts, ["raw.example-cdn.invalid"]);
+  assert.deepEqual(bad.blockedPlainFetches, []);
+});
