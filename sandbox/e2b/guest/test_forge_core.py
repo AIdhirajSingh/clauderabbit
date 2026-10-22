@@ -273,6 +273,11 @@ class GoAndCratesRegistryTests(unittest.TestCase):
         self.assertIsNone(k("proxy.golang.org", "/upload"))
         self.assertIsNone(k("sum.golang.org", "/exfil?d=x"))
         self.assertIsNone(k("proxy.golang.org.evil.example", "/github.com/google/uuid/@v/list"))
+        # the proxy's redirect target for a module zip, and nothing else on that host
+        self.assertEqual(k("storage.googleapis.com", "/proxy-golang-org-prod/6a89ded4d0a2dd3d-github.com:klauspost:compress-v1.20.1.zip?Expires=1&Signature=x"), "go-zip")
+        self.assertIsNone(k("storage.googleapis.com", "/attacker-bucket/payload.zip"))
+        self.assertIsNone(k("storage.googleapis.com", "/proxy-golang-org-prod/../x.zip"))
+        self.assertIsNone(k("storage.googleapis.com", "/proxy-golang-org-prod/abc-x.zip", "PUT"))
 
     def test_crates_shapes(self):
         k = lambda h, p: fc.registry_kind(POLICY, h, "GET", p)  # noqa: E731

@@ -59,6 +59,9 @@ PYPI_FILE_RE = re.compile(r"^/packages/[^?#]+/([^/?#]+)$")
 # Go module proxy (GOPROXY protocol): list, info, mod, zip and latest for an escaped
 # module path; the checksum database: lookup, latest and tiles.
 GO_PROXY_RE = re.compile(r"^/[A-Za-z0-9._~!/-]+/@(?:v/(?:list|[^/]+\.(info|mod|zip))|latest)$")
+# proxy.golang.org answers a module zip with a redirect to a signed URL in its own
+# storage bucket; only that bucket's zip objects pass, never another path on the host.
+GO_PROXY_FILE_RE = re.compile(r"^/proxy-golang-org-prod/[0-9a-f]+-[A-Za-z0-9._~!:+-]+\.zip$")
 GO_SUMDB_RE = re.compile(r"^/(?:latest|lookup/[A-Za-z0-9._~!/-]+@[^/]+|tile/[0-9]+/(?:data|[0-9]+)/[x0-9/]+(?:\.p/[0-9]+)?)$")
 # crates.io sparse index (config.json and the 1/, 2/, 3/x/ and ab/cd/ entry paths) and crate files.
 CRATES_INDEX_RE = re.compile(r"^/(?:config\.json|1/[a-z0-9_-]+|2/[a-z0-9_-]+|3/[a-z0-9_-]/[a-z0-9_-]+|[a-z0-9_-]{2}/[a-z0-9_-]{2}/[a-z0-9_-]+)$")
@@ -147,6 +150,8 @@ def registry_kind(policy: dict, host: str, method: str, path: str) -> Optional[s
         if m:
             return "go-zip" if m.group(1) == "zip" else "go-meta"
         return None
+    if h in regs.get("go_proxy_files", []):
+        return "go-zip" if GO_PROXY_FILE_RE.match(p) else None
     if h in regs.get("go_sumdb", []):
         return "go-sumdb" if GO_SUMDB_RE.match(p) else None
     if h in regs.get("crates_index", []):

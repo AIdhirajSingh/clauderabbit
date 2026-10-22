@@ -5,6 +5,7 @@
     "pypi_index": ["pypi.org"],
     "pypi_files": ["files.pythonhosted.org"],
     "go_proxy": ["proxy.golang.org"],
+    "go_proxy_files": ["storage.googleapis.com"],
     "go_sumdb": ["sum.golang.org"],
     "crates_index": ["index.crates.io"],
     "crates_files": ["static.crates.io"]
