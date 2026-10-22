@@ -211,10 +211,13 @@ export function Interstitial({ runId }: { runId: string }) {
       slot = gt.defineOutOfPageSlot(ADS.interstitial, gt.enums.OutOfPageFormat.INTERSTITIAL);
       if (!slot) return; // GPT declines interstitials on pages it judges ineligible.
       slot.addService(gt.pubads());
-      const onRender = (e: Gt) => {
-        if (e.slot === slot && !e.isEmpty && runIdRef.current) reportImpression(runIdRef.current, "interstitial");
+      // GPT preloads the interstitial when the page loads and shows it only on a
+      // navigation; it is counted when it is actually seen (impressionViewable), never
+      // on the preload.
+      const onSeen = (e: Gt) => {
+        if (e.slot === slot && runIdRef.current) reportImpression(runIdRef.current, "interstitial");
       };
-      gt.pubads().addEventListener("slotRenderEnded", onRender);
+      gt.pubads().addEventListener("impressionViewable", onSeen);
       slot.setConfig?.({ interstitial: { triggers: { navBar: true, unhideWindow: true } } });
       gt.enableServices();
       gt.display(slot);

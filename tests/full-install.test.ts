@@ -61,6 +61,7 @@ test("enough staggered slots to earn 1 paisa a second at ₹100 eCPM, each count
   const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
   assert.match(ads, /n \* FIRST_GAP_MS, n \* STAGGER_MS/, "first ads within seconds, refreshes staggered evenly");
   assert.match(ads, /reportImpression\(runIdRef\.current, "interstitial"\)/);
+  assert.match(ads, /addEventListener\("impressionViewable", onSeen\)/, "the interstitial counts when seen, not on its preload");
 });
 
 test("Yes continues the running install: the harness holds at the limit and reads the server's flag", () => {
