@@ -528,3 +528,14 @@ test("a repo with no entry point is not a partial scan; an entry cut by its time
   assert.equal(computeScore(input({ install: "completed", entry: "timeout" })).partial, true);
   assert.ok(computeScore(input({ install: "completed", entry: "skipped" })).notVerified.some((l) => /Entry phase was skipped/.test(l)));
 });
+
+test("a repo with no install step is not a partial scan: capped at Low risk 80 with the reason", () => {
+  const r = computeScore(input({ install: "none", entry: "skipped" }));
+  assert.equal(r.partial, false);
+  assert.equal(r.score, 80);
+  assert.equal(r.verdict, "Low risk");
+  assert.ok(r.breakdown.some((d) => d.code === "cap_nothing_to_run"));
+  assert.ok(r.notVerified.some((l) => /no install step/.test(l) && /read, not run/.test(l)));
+  // A cut install is still a partial scan.
+  assert.equal(computeScore(input({ install: "timeout", entry: "skipped" })).partial, true);
+});

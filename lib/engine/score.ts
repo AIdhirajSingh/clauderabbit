@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 27; // 27: a pinned package manager is fetched before the install, on the real clock
+export const SCORE_RULES = 28; // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
+// 27: a pinned package manager is fetched before the install, on the real clock
 // 26: an install the viewer asks to continue runs on in the same run (a different install record)
 // 25: pattern hits alone floor a complete scan at Low risk too, as they did a partial one
 // 24: pnpm 11 reads the scaled fetch timeout from its global config.yaml and pnpm_config_*
@@ -126,6 +127,8 @@ export const CAP_MALICIOUS_DEP = 25;
 /** Own code clean, danger only in a dependency: the Caution band (60 to 79), at its top. */
 export const CAP_DEPENDENCY_ONLY = 74;
 export const CAP_INSTALL_INCOMPLETE = 74;
+/** A repo with no install step: nothing ran, so the score rests on reading the code. Top of Low risk. */
+export const CAP_NOTHING_TO_RUN = 80;
 export const CAP_ENTRY_INCOMPLETE = 89;
 export const CAP_NOT_PROVEN = 89;
 /** Lowest score of the Caution band: where static-only findings stop. */
@@ -301,7 +304,13 @@ export function deriveBehaviour(f: ForensicSummary): BehaviourSignals {
 
 // ---- score -------------------------------------------------------------------
 
-export type PhaseOutcome = "completed" | "failed" | "timeout" | "skipped";
+/**
+ * "none": there was nothing to run in that phase, because the repo has no install
+ * step the sandbox supports (no package.json, pyproject.toml, setup.py or
+ * requirements.txt). Not a cut scan: the code was read, not run, and the report
+ * says so.
+ */
+export type PhaseOutcome = "completed" | "failed" | "timeout" | "skipped" | "none";
 
 export interface DocsClaims {
   declaresNoNetwork: boolean;
@@ -561,6 +570,7 @@ function reputationDeltas(r: ReputationSignals): { total: number; deltas: ScoreD
 }
 
 function phaseText(name: string, p: PhaseOutcome): string {
+  if (p === "none") return `${name}: the repo has no install step the sandbox runs (no package.json, pyproject.toml, setup.py or requirements.txt), so its code was read, not run.`;
   return p === "skipped" ? `${name} phase was skipped, so its behaviour was not observed.` : `${name} phase did not complete (${p}), so later behaviour was not observed.`;
 }
 
@@ -653,7 +663,9 @@ export function computeScore(input: ScoreInput): ScoreResult {
   // is not a bad signal either. It is stated as not verified.
   const entryRan = true;
   if (input.install !== "completed") notVerified.push(phaseText("Install", input.install));
-  if (!installRan || input.archiveTruncated) {
+  if (input.install === "none" && !input.archiveTruncated) {
+    applyCap(CAP_NOTHING_TO_RUN, "cap_nothing_to_run", `The repo has no install step, so nothing ran in the sandbox and the score rests on reading the code: capped at ${CAP_NOTHING_TO_RUN}.`);
+  } else if (!installRan || input.archiveTruncated) {
     applyCap(CAP_INSTALL_INCOMPLETE, "cap_install_incomplete", `Install did not complete, so the score is capped at ${CAP_INSTALL_INCOMPLETE}.`);
     if (input.archiveTruncated) notVerified.push("Files past the archive size cap were not analysed.");
   } else if (!entryRan) {
@@ -694,7 +706,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   // entry point was cut by its time limit) is still marked partial. An entry that was
   // skipped because the repo has none, or that ran and failed, is not a cut scan; it
   // is stated as not verified.
-  const partial = input.install !== "completed" || input.entry === "timeout";
+  const partial = (input.install !== "completed" && input.install !== "none") || input.entry === "timeout";
   const patternFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
   // Not when a dependency has a malicious-package record or the docs are contradicted:
   // those are more than pattern hits.

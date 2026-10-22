@@ -231,7 +231,8 @@ export async function parseForensicBundle(
     gaps.push(`${cap.invalid} forge capture record(s) were unreadable.`);
   }
   return {
-    install: rtext ? outcome(result.install?.status) : "failed",
+    // No manifest the harness can install from: nothing to run, not a cut install.
+    install: rtext ? (result.install?.status === "skipped" && checks.some((c) => c.name === "install_manifest" && !c.ok) ? "none" : outcome(result.install?.status)) : "failed",
     entry: rtext ? outcome(result.entry?.status) : "skipped",
     entryExitCode: rtext && typeof result.entry?.exit_code === "number" && Number.isSafeInteger(result.entry.exit_code) ? result.entry.exit_code : null,
     ecosystem: eco,
