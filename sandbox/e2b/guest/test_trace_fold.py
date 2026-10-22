@@ -48,6 +48,30 @@ class FoldTests(unittest.TestCase):
         self.assertIn("connect(", out)
         self.assertIn('execve("/bin/sh"', out)
 
+    def test_split_calls_fold_for_the_package_manager_only(self):
+        trace = (
+            '100 1.0 execve("/opt/cr/go/bin/go", ["go", "build"], 0x1 /* 3 vars */) = 0\n'
+            '100 1.1 openat(AT_FDCWD, "/opt/cr/go/src/runtime/proc.go", O_RDONLY|O_CLOEXEC <unfinished ...>\n'
+            '100 1.2 <... openat resumed>) = 7\n'
+            '100 1.3 clone(child_stack=NULL, flags=SIGCHLD) = 101\n'
+            '101 1.4 execve("/bin/sh", ["sh", "-c", "./gen.sh"], 0x1 /* 3 vars */) = 0\n'
+            '101 1.5 openat(AT_FDCWD, "/usr/lib/secret", O_RDONLY <unfinished ...>\n'
+            '101 1.6 <... openat resumed>) = 3\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            t, j = os.path.join(d, "trace.install"), os.path.join(d, "folded.json")
+            with open(t, "w") as f:
+                f.write(trace)
+            subprocess.run([sys.executable, FOLD, t, "/home/cr", j], check=True, capture_output=True)
+            with open(t) as f:
+                out = f.read()
+            with open(j) as f:
+                info = json.load(f)
+        self.assertEqual(info["folded"], 2, "both halves of the package manager's split call")
+        self.assertNotIn("runtime/proc.go", out)
+        self.assertIn("/usr/lib/secret", out, "a script's split call stays, both halves")
+        self.assertEqual(out.count("openat resumed"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

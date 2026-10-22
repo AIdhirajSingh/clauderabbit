@@ -50,6 +50,8 @@ def main(trace: str, home: str, out_json: str) -> int:
     state: dict = {}
     first = None
     counts: dict = {}
+    # pid -> call whose first half (with the path) was folded; its resumed half folds too.
+    pm_unfinished: dict = {}
     folded = 0
     kept = 0
     tmp = trace + ".fold"
@@ -83,10 +85,16 @@ def main(trace: str, home: str, out_json: str) -> int:
                     st = "script"
                 state[pid] = st
             if r:
+                # The second half of a split call (a busy multi-threaded tool, such as a
+                # compiler, splits most of them): folded with its first half for the
+                # package manager's own file calls, kept for everything else.
+                if st == "pm" and call in FOLD_CALLS and pid in pm_unfinished and pm_unfinished.pop(pid) == call:
+                    folded += 1
+                    continue
                 dst.write(line)
                 kept += 1
                 continue
-            if st == "pm" and call in FOLD_CALLS and "<unfinished" not in rest:
+            if st == "pm" and call in FOLD_CALLS:
                 p = PATH_RE.search(rest)
                 path = p.group(1) if p else ""
                 if path.startswith(places):
@@ -94,6 +102,8 @@ def main(trace: str, home: str, out_json: str) -> int:
                     key = call + " /" + "/".join(parts[:3])
                     counts[key] = counts.get(key, 0) + 1
                     folded += 1
+                    if "<unfinished" in rest:
+                        pm_unfinished[pid] = call
                     continue
             dst.write(line)
             kept += 1
