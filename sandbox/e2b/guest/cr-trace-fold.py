@@ -42,7 +42,11 @@ RESUMED_RE = re.compile(r"^(\d+)\s+[\d.]+\s+<\.\.\. (\w+) resumed>(.*)$")
 
 
 def main(trace: str, home: str, out_json: str) -> int:
-    places = ("/work/", "/tmp/", home.rstrip("/") + "/.npm/", home.rstrip("/") + "/.cache/", home.rstrip("/") + "/.local/", home.rstrip("/") + "/go/", home.rstrip("/") + "/.cargo/")
+    # The package manager's and compilers' own reads of the toolchains and system files
+    # (GOROOT, the Rust sysroot, Node, C headers and libraries) fold too: a Go compile of a
+    # thousand packages read them hundreds of thousands of times and the trace was cut.
+    places = ("/work/", "/tmp/", home.rstrip("/") + "/.npm/", home.rstrip("/") + "/.cache/", home.rstrip("/") + "/.local/", home.rstrip("/") + "/go/", home.rstrip("/") + "/.cargo/",
+              "/opt/cr/go/", "/opt/cr/rust/", "/opt/cr/node/", "/usr/", "/lib/", "/lib64/")
     state: dict = {}
     first = None
     counts: dict = {}

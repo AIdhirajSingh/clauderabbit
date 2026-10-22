@@ -503,6 +503,7 @@ if [ -n "$INSTALL_CMD" ]; then
   CUT=0
   if [ "$INSTALL_MAX" -gt "$INSTALL_TIMEOUT" ]; then
     ASKED=0
+    CONTINUING=0
     NEXT_PROGRESS=15
     while kill -0 "$IPID" 2>/dev/null; do
       EL=$(( ($(now_ms) - START) / 1000 ))
@@ -515,7 +516,8 @@ if [ -n "$INSTALL_CMD" ]; then
         REG=$(grep -c '"forged_kind":"registry"' "$OUT/capture.jsonl" 2>/dev/null || true)
         log "install-progress ${EL} s: load $(cut -d' ' -f1-3 /proc/loadavg) on $(nproc) vCPU; busiest ${TOP:-none}; ${REG:-0} registry requests"
       fi
-      if [ "$EL" -ge "$INSTALL_TIMEOUT" ]; then
+      # After Yes the loop goes on until the build ends, so the progress lines go on too.
+      if [ "$EL" -ge "$INSTALL_TIMEOUT" ] && [ "$CONTINUING" = 0 ]; then
         if [ "$ASKED" = 0 ]; then log "install-at-limit ${INSTALL_TIMEOUT} s: waiting ${ASK_S} s for keep-installing"; ASKED=1; fi
         if [ -f "$IN/stop-installing" ]; then
           log "stop-installing: the viewer answered No at ${EL} s"
@@ -524,9 +526,9 @@ if [ -n "$INSTALL_CMD" ]; then
         if [ -f "$IN/keep-installing" ]; then
           log "keep-installing: the install continues, up to ${INSTALL_MAX} s"
           check install_continued true "the viewer asked to keep installing at ${EL} s; limit ${INSTALL_MAX} s"
-          break
+          CONTINUING=1
         fi
-        if [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S + DELIVER_S )) ]; then CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break; fi
+        if [ "$CONTINUING" = 0 ] && [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S + DELIVER_S )) ]; then CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break; fi
       fi
       sleep 0.5
     done
