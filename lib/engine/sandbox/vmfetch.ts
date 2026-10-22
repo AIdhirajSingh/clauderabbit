@@ -88,7 +88,12 @@ export async function proveFenceInVm(s: SandboxSession): Promise<{ ok: boolean; 
     // Wait until the harness finished bringing the forge up and ran its own probes (it
     // renames capture.jsonl to capture.probe.jsonl right before waiting for inputs): on a
     // 1 vCPU VM a small repo's fetch can finish first.
-    `set -uo pipefail; for _ in $(seq 1 150); do [ -f /root/out/capture.probe.jsonl ] && break; sleep 0.2; done; pid=$(pgrep -o -f mitmdump || true); [ -n "$pid" ] || { echo "no forge process"; exit 2; }; ` +
+    // Then wait (at most 30 s) for the forge itself: its process and its listening port.
+    // The pattern's bracket keeps pgrep from matching this shell, whose own command line
+    // holds the pattern (a fresh VM's forge was not up yet, and the oldest match was this shell).
+    `set -uo pipefail; for _ in $(seq 1 150); do [ -f /root/out/capture.probe.jsonl ] && break; sleep 0.2; done; ` +
+      `pid=""; for _ in $(seq 1 150); do pid=$(pgrep -o -f 'mitmdum[p] --mode transparent' || true); [ -n "$pid" ] && ss -ltn 'sport = :8080' | grep -q LISTEN && break; pid=""; sleep 0.2; done; ` +
+      `[ -n "$pid" ] || { echo "no forge process listening within 30 s"; exit 2; }; ` +
       `timeout 40 /opt/cr/bin/cr-proof.sh "$pid" /root/proof-after-fetch.txt; p=$?; ` +
       `if curl -sS --max-time 4 -o /dev/null https://${CODELOAD_HOST}/ 2>/dev/null; then c=OPEN; else c=CLOSED; fi; ` +
       // The proof's own test datagrams (uid 1001 UDP, ICMP) are counted by the fence's
