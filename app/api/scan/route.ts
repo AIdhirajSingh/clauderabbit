@@ -16,6 +16,7 @@ import { eventLine, ndjsonLine } from "@/lib/engine/events";
 import { EngineError, type Ad, type ScanEvent } from "@/lib/engine/types";
 import { createV2Store } from "@/lib/engine/store";
 import { invalidateReport } from "@/lib/server/report-cache";
+import { scanOnRunner } from "@/lib/server/runner";
 import {
   MAX_BODY_BYTES,
   adForRequest,
@@ -35,6 +36,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // the most the Vercel plan allows; a full-install scan fits inside it (lib/engine/config.ts fullInstallDeadlines)
+
+/** This request relays a runner's lines this long, then ends the stream; the scan itself has no such limit. */
+const RELAY_MS = 270_000;
+
+/** On Vercel every scan runs in its own runner sandbox; an operator regenerate and local runs stay in this process. */
+function useRunner(regenerate: boolean): boolean {
+  return Boolean(process.env.VERCEL_ENV) && process.env.CR_SCAN_RUNNER !== "off" && !regenerate;
+}
 
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra } });
@@ -59,6 +68,7 @@ function resultLineFor(surface: string, final: Extract<FinalLine, { type: "resul
 }
 
 export async function POST(req: Request): Promise<Response> {
+  const startedAt = Date.now();
   const surface = surfaceFromHeader(req.headers.get("x-clauderabbit-client"));
   let config;
   try {
@@ -131,6 +141,24 @@ export async function POST(req: Request): Promise<Response> {
       const onEvent = (e: ScanEvent) => write(eventLine(e));
       let final: FinalLine;
       try {
+        if (useRunner(regenerate)) {
+          // The scan runs in its own runner sandbox; this request only relays it while it lives.
+          const r = await scanOnRunner(ctx.config, {
+            target: parsed.target,
+            caller: ctx.caller,
+            full: parsed.full === true,
+            ...(process.env.VERCEL_ENV === "preview" && parsed.testInstallLimitS ? { testInstallMs: parsed.testInstallLimitS * 1000 } : {}),
+            onLine: (line) => write(`${line}\n`),
+            relayUntil: startedAt + RELAY_MS,
+          });
+          if (!r.final) {
+            // Still running: the page follows the run from Supabase (stored events, Realtime).
+            open = false;
+            controller.close();
+            return;
+          }
+          final = r.final;
+        } else
         final = await executeScan(ctx, parsed.target, regenerate, {
           full: parsed.full === true,
           // Preview-only test hook (lib/server/scan-service.ts parseScanBody).

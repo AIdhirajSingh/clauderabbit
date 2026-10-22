@@ -58,6 +58,12 @@ export interface EngineConfig {
    * tab stops the scan's sandboxes within that window.
    */
   heartbeatSandboxes?: boolean;
+  /**
+   * The scan runs in its own runner sandbox (lib/server/runner.ts), not inside a Vercel
+   * request: a Yes on "Keep installing?" lets the build run on until it completes
+   * (RUNNER_CONTINUE_MS at most), with no 300 s request limit around it.
+   */
+  runner?: boolean;
   /** Luna's model id (CR_MODEL_ID). */
   modelId: string;
   /** Jev's gateway model id (CR_JEV_MODEL_ID). */

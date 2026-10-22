@@ -68,3 +68,6 @@ ClaudeRabbit Claude Design.zip
 
 .vercel
 .env*
+
+# scan runner bundle (scripts/build-runner.mjs)
+lib/server/runner-bundle.generated.mjs

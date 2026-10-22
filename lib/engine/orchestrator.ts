@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { ArchiveError, parseTarball, type ParsedArchive } from "./archive";
-import type { EngineConfig } from "./config";
+import { HARNESS_OVERHEAD_MS, SALVAGE_BUDGET_MS, type EngineConfig } from "./config";
 import { createRunEventBus, type RunEventBus } from "./events";
 import { makeCanaries, type Canaries } from "./forensics/capture";
 import { CostMeter, type CostLedger } from "./cost";
@@ -323,8 +323,31 @@ const LARGE_DETONATE_MS = 265_000;
  * that is 170 s, which keeps a large scan inside its 280 s budget.
  */
 const CONTINUE_EXTRA_MS = 110_000;
+/** On a runner (no request limit), a Yes lets the build run this long past its install limit. */
+const RUNNER_CONTINUE_MS = 25 * 60_000;
 const CONTINUE_RESERVE_MS = 90_000;
 const LARGE_SANDBOX_MS = 285_000;
+
+/**
+ * The detonation's time budget. Without Yes every scan stops at the install limit plus
+ * the card's wait. With Yes, inside a Vercel request the build may go on to 170 s; on a
+ * runner it goes on until it completes (RUNNER_CONTINUE_MS at most).
+ */
+export function detonationBudget(cfg: EngineConfig, vmSize: SandboxSize): { installTimeoutMs: number; installMaxMs: number; totalTimeoutMs: number; sandboxTimeoutMs: number } {
+  const installTimeoutMs = vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs;
+  if (cfg.runner) {
+    const installMaxMs = installTimeoutMs + RUNNER_CONTINUE_MS;
+    const totalTimeoutMs = Math.max(LARGE_DETONATE_MS, installMaxMs + cfg.deadlines.entryMs + HARNESS_OVERHEAD_MS);
+    return { installTimeoutMs, installMaxMs, totalTimeoutMs, sandboxTimeoutMs: totalTimeoutMs + SALVAGE_BUDGET_MS + 10_000 };
+  }
+  const totalTimeoutMs = Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs);
+  return {
+    installTimeoutMs,
+    installMaxMs: Math.min(installTimeoutMs + CONTINUE_EXTRA_MS, totalTimeoutMs - CONTINUE_RESERVE_MS),
+    totalTimeoutMs,
+    sandboxTimeoutMs: Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs),
+  };
+}
 
 /** Scanner window in the one-VM path: small repos finish in 3 to 5 s; openclaw (57k files) did not finish in 45 s nor in 90 s, so the longer window only bought cost. */
 const VM_SCANNER_MS = 45_000;
@@ -409,7 +432,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const cfg = deps.config;
   const startedAt = deps.now();
   const runId = (deps.newRunId ?? randomUUID)();
-  const outer = req.full && opts.stop ? AbortSignal.any([AbortSignal.timeout(cfg.deadlines.scanMs), opts.stop]) : AbortSignal.timeout(cfg.deadlines.scanMs);
+  // On a runner the scan has no request limit: its deadline covers the longest build a Yes allows.
+  const scanMs = cfg.runner ? Math.max(cfg.deadlines.scanMs, detonationBudget(cfg, "large").totalTimeoutMs + 120_000) : cfg.deadlines.scanMs;
+  const outer = req.full && opts.stop ? AbortSignal.any([AbortSignal.timeout(scanMs), opts.stop]) : AbortSignal.timeout(scanMs);
   const g = gate(opts.onEvent);
   let claimed = false;
   let discard = false;
@@ -467,7 +492,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     detVm = bootDetonation(
       deps.sandbox,
       // Every VM size gets the large budget, so a Yes on "Keep installing?" has the same room to finish.
-      { runId, totalTimeoutMs: Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs), sandboxTimeoutMs: Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs), size: vmSize },
+      { runId, totalTimeoutMs: detonationBudget(cfg, vmSize).totalTimeoutMs, sandboxTimeoutMs: detonationBudget(cfg, vmSize).sandboxTimeoutMs, size: vmSize },
       { onLog: (stream, text) => bus.transcript("install", stream, text), onKilled, trackKill },
     );
     // One VM per GitHub scan on E2B: the scanners run in the detonation VM before any repo code.
@@ -736,15 +761,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         tarball: bytes,
         prefetched: Boolean(fetched!.vm),
         canaries,
-        installTimeoutMs: vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs,
         // Yes on "Keep installing?" lets the running install go on, inside the scan's budget.
-        installMaxMs: Math.min(
-          (vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs) + CONTINUE_EXTRA_MS,
-          Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs) - CONTINUE_RESERVE_MS,
-        ),
+        ...detonationBudget(cfg, vmSize),
         entryTimeoutMs: cfg.deadlines.entryMs,
-        totalTimeoutMs: Math.max(LARGE_DETONATE_MS, cfg.deadlines.detonateTotalMs),
-        sandboxTimeoutMs: Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs),
         fakeRate: FAKE_CLOCK_RATE,
       });
     } catch (err) {

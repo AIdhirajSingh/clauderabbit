@@ -241,14 +241,14 @@ export async function executeScan(
   ctx: CallerContext,
   target: ScanTarget,
   regenerate: boolean,
-  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean; testInstallMs?: number },
+  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean; testInstallMs?: number; runId?: string },
 ): Promise<FinalLine> {
   const { store, caller } = ctx;
   const full = opts.full === true;
   const base = opts.testInstallMs ? { ...ctx.config, deadlines: { ...ctx.config.deadlines, installMs: opts.testInstallMs } } : ctx.config;
   const config = full ? { ...base, deadlines: fullInstallDeadlines(base.deadlines), heartbeatSandboxes: true } : base;
   const ad = adForSurface(config, caller.surface, target);
-  const deps = productionDeps(config, store);
+  const deps = { ...productionDeps(config, store), ...(opts.runId ? { newRunId: () => opts.runId! } : {}) };
   const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(full && opts.signal ? { stop: opts.signal } : {}) });
   const reportUrl = reportUrlFor(config.siteUrl, target);
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad };
