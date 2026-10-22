@@ -63,10 +63,12 @@ type SlotName = "video" | "banner_1" | "banner_2" | "banner_3";
 
 /**
  * One GPT slot of the scan page, refreshed while mounted: the next ad starts when the
- * playing video ends or at ADS.refreshMs (30 s), never sooner. `startDelayMs`
- * staggers the slots evenly across the 30 s, so impressions arrive steadily.
+ * playing video ends or at ADS.refreshMs (30 s), never sooner. Every slot shows its
+ * first ad within the first seconds (`firstDelayMs`, 2 s apart), so a short scan
+ * fills them all; `phaseMs` then staggers the refreshes evenly across the 30 s (the
+ * first refresh comes at phaseMs + 30 s after mount), so impressions arrive steadily.
  */
-function useGptSlot(runId: string, slotName: SlotName, divId: string, sizes: { desktop: [number, number][]; phone: [number, number][] }, startDelayMs: number) {
+function useGptSlot(runId: string, slotName: SlotName, divId: string, sizes: { desktop: [number, number][]; phone: [number, number][] }, firstDelayMs: number, phaseMs: number) {
   const [state, setState] = useState<"loading" | "showing" | "banner">("loading");
   const [shown, setShown] = useState(0);
   useEffect(() => {
@@ -77,6 +79,7 @@ function useGptSlot(runId: string, slotName: SlotName, divId: string, sizes: { d
     let endListener: ((e: MessageEvent) => void) | null = null;
     let refreshes = 0;
     let lastStart = 0;
+    const mountedAt = Date.now();
     const gt0 = gpt();
     gptLoading!.catch(() => !cancelled && setState("banner"));
     const start = setTimeout(() => {
@@ -106,7 +109,8 @@ function useGptSlot(runId: string, slotName: SlotName, divId: string, sizes: { d
             setShown((n) => n + 1);
             reportImpression(runId, slotName);
           }
-          lastStart = Date.now();
+          // The first refresh keeps the slot's phase; later ones follow the last start.
+          lastStart = refreshes === 0 ? mountedAt + phaseMs : Date.now();
           next();
         };
         if (slotName === "video") {
@@ -120,7 +124,7 @@ function useGptSlot(runId: string, slotName: SlotName, divId: string, sizes: { d
         gt.enableServices();
         gt.display(divId);
       });
-    }, startDelayMs);
+    }, firstDelayMs);
     return () => {
       cancelled = true;
       clearTimeout(start);
@@ -132,12 +136,13 @@ function useGptSlot(runId: string, slotName: SlotName, divId: string, sizes: { d
         if (slot) gt.destroySlots([slot]);
       });
     };
-  }, [runId, slotName, divId, sizes, startDelayMs]);
+  }, [runId, slotName, divId, sizes, firstDelayMs, phaseMs]);
   return { state, shown };
 }
 
 const slotDiv = (runId: string, name: string) => `cr-ad-${name}-${runId.replace(/[^a-z0-9]/gi, "").slice(0, 12)}`;
 const STAGGER_MS = ADS.refreshMs / ADS.slotCount;
+const FIRST_GAP_MS = 2_000;
 
 function HouseBanner({ compact }: { compact?: boolean }) {
   return (
@@ -151,7 +156,7 @@ function HouseBanner({ compact }: { compact?: boolean }) {
 /** The scan screen's 16:9 video slot: GPT video-capable ads, one after another while mounted. */
 export function ScanAd({ runId }: { runId: string }) {
   const divId = slotDiv(runId, "video");
-  const { state, shown } = useGptSlot(runId, "video", divId, ADS.videoSizes, 0);
+  const { state, shown } = useGptSlot(runId, "video", divId, ADS.videoSizes, 0, 0);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }} data-ad-slot="video" data-ads-shown={shown}>
       <span style={{ fontSize: 12, color: "var(--text2)" }}>{ADS.label}</span>
@@ -172,7 +177,7 @@ export function ScanAd({ runId }: { runId: string }) {
 export function BannerAd({ runId, n }: { runId: string; n: 1 | 2 | 3 }) {
   const name = `banner_${n}` as SlotName;
   const divId = slotDiv(runId, name);
-  const { state, shown } = useGptSlot(runId, name, divId, ADS.bannerSizes, n * STAGGER_MS);
+  const { state, shown } = useGptSlot(runId, name, divId, ADS.bannerSizes, n * FIRST_GAP_MS, n * STAGGER_MS);
   const [phone, setPhone] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 767px)");

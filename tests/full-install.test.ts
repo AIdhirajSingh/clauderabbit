@@ -59,7 +59,7 @@ test("enough staggered slots to earn 1 paisa a second at ₹100 eCPM, each count
   assert.ok(paisePerSecond >= 1, `${paisePerSecond} paise a second`);
   assert.ok(ADS.bannerSizes.phone.every(([, h]) => h <= 50), "phone banners stay small for the 30 % density limit");
   const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
-  assert.match(ads, /n \* STAGGER_MS/);
+  assert.match(ads, /n \* FIRST_GAP_MS, n \* STAGGER_MS/, "first ads within seconds, refreshes staggered evenly");
   assert.match(ads, /reportImpression\(runIdRef\.current, "interstitial"\)/);
 });
 
