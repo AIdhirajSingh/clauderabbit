@@ -61,7 +61,7 @@ test("e2b create options: detonation is registry-only, analysis has no internet"
     timeoutMs: 90_000,
     metadata: { runId: "r1", purpose: "detonate" },
     allowInternetAccess: true,
-    network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "registry.yarnpkg.com", "pypi.org", "files.pythonhosted.org"], allowPublicTraffic: false },
+    network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io", "pypi.org", "files.pythonhosted.org"], allowPublicTraffic: false },
   });
   const a = e2bCreateOptions({ purpose: "analyze", runId: "r1", timeoutMs: 90_000, network: "none" }, "k");
   // No egress at all: every destination denied and nothing allowed, expressed as
@@ -203,7 +203,7 @@ test("guest harness keeps the safety invariants", () => {
   assert.match(sh, /npm_config_dangerously_allow_all_scripts=true/);
   assert.match(sh, /FAKETIME="\+0 x\$FAKE_RATE"/);
   const policy = JSON.parse(readFileSync(join(ROOT, "sandbox/e2b/guest/policy.json"), "utf8"));
-  assert.deepEqual(policy.registries.npm, ["registry.npmjs.org", "registry.yarnpkg.com"]);
+  assert.deepEqual(policy.registries.npm, ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io"]);
   // Package-manager network timeouts are multiplied by the install clock factor.
   assert.match(sh, /FETCH_MS=\$\(\(60000 \* FAKE_RATE\)\)/);
   assert.match(sh, /printf 'fetch-timeout=%s\\nnetwork-timeout=%s\\n' "\$FETCH_MS" "\$FETCH_MS" >\/etc\/cr\/npmrc-install/);

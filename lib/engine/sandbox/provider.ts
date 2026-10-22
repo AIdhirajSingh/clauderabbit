@@ -61,7 +61,7 @@ export interface SandboxProvider {
 }
 
 /** Hosts the detonation VM's outer fence allows (DESIGN.md section 3.2). */
-export const REGISTRY_ALLOW_OUT = ["registry.npmjs.org", "registry.yarnpkg.com", "pypi.org", "files.pythonhosted.org"] as const;
+export const REGISTRY_ALLOW_OUT = ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io", "pypi.org", "files.pythonhosted.org"] as const;
 
 /** The provider could not start a VM (quota, concurrency, outage). Nothing ran. */
 export class SandboxCreateError extends Error {

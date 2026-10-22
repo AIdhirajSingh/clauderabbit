@@ -203,7 +203,8 @@ INSTALL_MAX=$(jq -r '.install_max_s // 0' "$IN/run.json")
 ASK_S=15
 MODE=$(jq -r '.mode' "$IN/run.json")
 PKG_NAME=$(jq -r '.name // ""' "$IN/run.json")
-SAFE_NAME_RE='^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$'
+# npm names: lowercase today, but older packages (npm:Hello) have capitals.
+SAFE_NAME_RE='^(@[A-Za-z0-9][A-Za-z0-9._~-]*/)?[A-Za-z0-9][A-Za-z0-9._~-]*$'
 case "$MODE" in npm-package|repo) ;; *) log "bad mode"; exit 2 ;; esac
 [[ "$INSTALL_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$ENTRY_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$FAKE_RATE" =~ ^[0-9]+$ ]] && [[ "$INSTALL_MAX" =~ ^[0-9]+$ ]] || { log "bad run.json"; exit 2; }
 [ "$INSTALL_MAX" -gt "$INSTALL_TIMEOUT" ] || INSTALL_MAX=$INSTALL_TIMEOUT

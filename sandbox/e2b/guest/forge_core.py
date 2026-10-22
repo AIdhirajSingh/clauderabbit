@@ -47,6 +47,8 @@ REGISTRY_KINDS = ("mirror", "registry")
 PHASES = ("install", "entry", "probe", "collect")
 
 NPM_TARBALL_RE = re.compile(r"^/((?:@[^/]+/)?[^/@][^/]*)/-/([^/]+\.tgz)$")
+# JSR's npm-compatible registry (npm.jsr.io) serves tarballs at /~/<n>/@jsr/<scope>__<name>/<version>.tgz.
+JSR_TARBALL_RE = re.compile(r"^/~/[0-9]+/(@jsr/[^/]+)/([^/]+\.tgz)$")
 NPM_PACKUMENT_RE = re.compile(r"^/((?:@[^/%]+(?:/|%2[fF]))?[^/@%][^/]*)$")
 # A single version's manifest (GET /<name>/<version>), what corepack reads to fetch the
 # package manager a repo pins. Registry metadata, passed through like a packument.
@@ -116,7 +118,7 @@ def registry_kind(policy: dict, host: str, method: str, path: str) -> Optional[s
     p = path.split("?", 1)[0].split("#", 1)[0]
     regs = policy["registries"]
     if h in regs.get("npm", []):
-        if NPM_TARBALL_RE.match(p):
+        if NPM_TARBALL_RE.match(p) or JSR_TARBALL_RE.match(p):
             return "npm-tarball"
         if NPM_PACKUMENT_RE.match(p) and not p.startswith("/-/"):
             return "npm-packument"

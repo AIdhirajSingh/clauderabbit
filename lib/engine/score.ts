@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 28; // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
+export const SCORE_RULES = 29; // 29: JSR's npm registry is a registry; npm names may have capitals
+// 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
 // 27: a pinned package manager is fetched before the install, on the real clock
 // 26: an install the viewer asks to continue runs on in the same run (a different install record)
 // 25: pattern hits alone floor a complete scan at Low risk too, as they did a partial one

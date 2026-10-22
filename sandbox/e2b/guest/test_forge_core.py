@@ -242,3 +242,11 @@ class DnsAndCaptureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JsrRegistryTests(unittest.TestCase):
+    def test_jsr_npm_registry_is_a_registry(self):
+        self.assertEqual(fc.registry_kind(POLICY, "npm.jsr.io", "GET", "/~/11/@jsr/std__path/1.0.8.tgz"), "npm-tarball")
+        self.assertEqual(fc.registry_kind(POLICY, "npm.jsr.io", "GET", "/@jsr/std__path"), "npm-packument")
+        self.assertIsNone(fc.registry_kind(POLICY, "npm.jsr.io", "POST", "/@jsr/std__path"))
+        self.assertIsNone(fc.registry_kind(POLICY, "jsr.io.evil.example", "GET", "/@jsr/std__path"))
