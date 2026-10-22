@@ -61,7 +61,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 24; // 24: pnpm 11 reads the scaled fetch timeout from its global config.yaml and pnpm_config_*
+export const SCORE_RULES = 25; // 25: pattern hits alone floor a complete scan at Low risk too, as they did a partial one
+// 24: pnpm 11 reads the scaled fetch timeout from its global config.yaml and pnpm_config_*
 // 23: scaled fetch timeouts come from a typed npmrc (pnpm 11 crashed on the --config string)
 // 22: a skipped or failed entry is not a partial scan; retry waits not scaled
 // 21: package-manager timeouts on the real clock; a failed root script is not a cut install; the install trace folds package-manager file lines
@@ -684,16 +685,24 @@ export function computeScore(input: ScoreInput): ScoreResult {
     breakdown.push({ group: "cap", code: "no_behaviour_floor", points: STATIC_ONLY_FLOOR - score, detail: `Nothing bad was observed when the code ran: without sandbox behaviour the score stays in Caution (at least ${STATIC_ONLY_FLOOR}).` });
     score = STATIC_ONLY_FLOOR;
   }
-  // A partial scan (install did not finish, or the entry point was cut by its time
-  // limit) scores only what was observed: with no behaviour, no intel and no code the
-  // model judged malicious or suspicious, static pattern hits alone never drop it below
-  // Low risk. An entry that was skipped because the repo has none, or that ran and
-  // failed, is not a cut scan; it is stated as not verified.
+  // With no behaviour, no intel and no code the model judged malicious or suspicious,
+  // static pattern hits alone never drop a scan below Low risk, whether the scan was
+  // complete or partial: the same evidence gets the same score, and a complete scan
+  // never scores lower than a cut one. A partial scan (install did not finish, or the
+  // entry point was cut by its time limit) is still marked partial. An entry that was
+  // skipped because the repo has none, or that ran and failed, is not a cut scan; it
+  // is stated as not verified.
   const partial = input.install !== "completed" || input.entry === "timeout";
-  const partialFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
-  if (partial && B === 0 && I === 0 && st.checkHits === 0 && score < partialFloor) {
-    breakdown.push({ group: "cap", code: "partial_scan_floor", points: partialFloor - score, detail: `Partial scan: nothing bad was seen while it ran, so pattern hits alone keep the score at ${partialFloor} or more.` });
-    score = partialFloor;
+  const patternFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
+  // Not when a dependency has a malicious-package record or the docs are contradicted:
+  // those are more than pattern hits.
+  if (B === 0 && I === 0 && D === 0 && input.malicious.length === 0 && st.checkHits === 0 && score < patternFloor) {
+    breakdown.push(
+      partial
+        ? { group: "cap", code: "partial_scan_floor", points: patternFloor - score, detail: `Partial scan: nothing bad was seen while it ran, so pattern hits alone keep the score at ${patternFloor} or more.` }
+        : { group: "cap", code: "pattern_only_floor", points: patternFloor - score, detail: `Nothing bad was seen when the code ran, so pattern hits alone keep the score at ${patternFloor} or more.` },
+    );
+    score = patternFloor;
   }
   if (st.keyShapedFiles > 0) notVerified.push(`Key-shaped strings in ${st.keyShapedFiles} ${st.keyShapedFiles === 1 ? "file" : "files"}, never seen leaving the machine.`);
   if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {

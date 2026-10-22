@@ -95,12 +95,12 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
   { name: "four distribution fetches still cost nothing", in: { behaviour: beh({ distributionFetches: ["a", "b", "c", "d"] }) }, score: 90, verdict: "No threats observed" },
   { name: "behaviour group floors at -85", in: { behaviour: beh({ decoyReads: ["a"], tunnelingDns: ["b"], tlsRefused: ["c"], nonDistributionHosts: ["d", "e"] }) }, score: 0, verdict: "Malicious" },
   { name: "a malicious dependency with clean own code is a labelled dependency danger in Caution", in: { malicious: [{ ecosystem: "npm", name: "evil", version: "1.0.0", ids: ["MAL-2025-1"] }], reputation: STRONG_REP }, score: 74, verdict: "Caution" },
-  { name: "one reachable high static finding", in: { staticFindings: [sf({})] }, score: 73, verdict: "Caution" },
+  { name: "one reachable high static finding: pattern hits alone keep Low risk", in: { staticFindings: [sf({})] }, score: 80, verdict: "Low risk" },
   { name: "one reachable medium static finding", in: { staticFindings: [sf({ severity: "medium" })] }, score: 80, verdict: "Low risk" },
   { name: "low static finding is worth 0", in: { staticFindings: [sf({ severity: "low" })] }, score: 90, verdict: "No threats observed" },
   { name: "unreachable high finding changes nothing", in: { staticFindings: [sf({ reach: "unreachable", file: "test/a.js" })], reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
-  { name: "same file:line from two scanners counts once at the worst weight", in: { staticFindings: [sf({ source: "semgrep" }), sf({ source: "yara", severity: "medium" })] }, score: 73, verdict: "Caution" },
-  { name: "static pattern hits alone land at Caution at most (floor 60)", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 60, verdict: "Caution" },
+  { name: "same file:line from two scanners counts once at the worst weight", in: { staticFindings: [sf({ source: "semgrep" }), sf({ source: "yara", severity: "medium" })] }, score: 80, verdict: "Low risk" },
+  { name: "static pattern hits alone keep a complete scan at Low risk, as a partial one", in: { staticFindings: [1, 2, 3, 4, 5].map((line) => sf({ line })) }, score: 80, verdict: "Low risk" },
   { name: "Jev malicious high", in: { checkFindings: [cf({})] }, score: 77, verdict: "Caution" },
   { name: "Jev suspicious medium", in: { checkFindings: [cf({ severity: "medium", verdict: "suspicious" })] }, score: 81, verdict: "Low risk" },
   { name: "Jev benign answer is worth 0", in: { checkFindings: [cf({ verdict: "benign", severity: "low" })] }, score: 90, verdict: "No threats observed" },
@@ -509,10 +509,11 @@ test("a partial scan with only pattern hits stays at Low risk and says it is par
   assert.equal(partial.score, 80);
   assert.equal(partial.verdict, "Low risk");
   assert.ok(partial.breakdown.some((d) => d.code === "partial_scan_floor"));
-  // A complete scan with the same hits is not lifted.
+  // A complete scan with the same hits gets the same score, without the partial mark.
   const complete = computeScore(input({ staticFindings: hits }));
   assert.equal(complete.partial, false);
-  assert.ok(complete.score < 80);
+  assert.equal(complete.score, 80);
+  assert.ok(complete.breakdown.some((d) => d.code === "pattern_only_floor"));
   // A lost record caps lower; the floor never lifts past a cap that applied.
   const lost = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits, forensics: { coverage: "lost", gaps: [] } }));
   assert.ok(lost.score <= CAP_FORENSICS_LOST + 1);

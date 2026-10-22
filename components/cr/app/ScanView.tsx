@@ -24,7 +24,8 @@ import { ScanAd } from "./Ads";
 import { ContinueCard } from "./ContinueCard";
 import s from "./app.module.css";
 
-const STAGES = ["Fetching", "Installing", "Running", "Checking", "Scoring"] as const;
+// One bar per group of STAGE_BUCKET: fetch, read the code (reach map, malware lookup), install and run, code checks, score.
+const STAGES = ["Fetching", "Reading", "Installing", "Checking", "Scoring"] as const;
 const STAGE_BUCKET: Record<StageName, number> = { cache: 0, resolve: 0, fetch: 0, verify: 0, reach: 1, osv: 1, detonate: 2, static: 3, checks: 3, score: 4, report: 4, persist: 4 };
 
 const CHECKS: { label: string; stages: StageName[] }[] = [

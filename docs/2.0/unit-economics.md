@@ -20,12 +20,14 @@ money is earned; the earnings column is an estimate at the configured eCPM, not 
 
 ## How the slot earns
 
-The scan screen's slot is a GPT standalone display slot refreshed every 30 s (`lib/ads-config.ts` `refreshMs`) for as
-long as the scan screen is open. At ₹100 eCPM one impression is 10 paise, so a 30 s refresh earns about 0.33 paise a
-second, a third of the 1 paisa a second goal. Reaching 1 paisa a second at ₹100 eCPM needs one impression every 10 s
-(about 3 times the current rate), or an eCPM of about ₹300 at the 30 s refresh. Google Ad Manager's guidance is to
-refresh no faster than 30 s and to declare refreshed inventory; 10 s refresh would break that, so the realistic lever
-is eCPM (real units, video-capable creatives in the slot) rather than refresh rate.
+The scan screen's slot is a GPT standalone display slot refreshed every 10 s (`lib/ads-config.ts` `refreshMs`) for as
+long as the scan screen is open. At ₹100 eCPM one impression is 10 paise, so one every 10 s is 1 paisa a second, the
+goal, against a cost of about 0.4 paise a second. The counter takes at most one impression per run every 8 s.
+
+10 s is faster than Google Ad Manager's guidance (refresh no faster than 30 s, and declare refreshed inventory). Before
+real units go live, the slot must be declared as refreshed inventory in Ad Manager, and the realised eCPM on refreshed
+impressions should be checked against the ₹100 assumption in `v2.ad_settings`. A refresh faster than about 10 s is
+not used: an impression needs time in view to count as viewable, and faster refresh reads as invalid traffic.
 
 ## Totals (preview, 2026-10-22, all v2 runs in the last 30 days)
 

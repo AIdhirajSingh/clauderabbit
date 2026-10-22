@@ -2,7 +2,7 @@
  * POST /api/scan/ads { run_id }
  * One GPT ad impression rendered on the scan screen of that run (components/cr/app/Ads.tsx).
  * Counted into v2.scan_runs.ads_shown for the run's unit economics (v2.scan_economics);
- * the store counts at most one every 10 s per run.
+ * the store counts at most one every 8 s per run (the slot refreshes every 10 s).
  */
 
 import { createV2Store } from "@/lib/engine/store";
