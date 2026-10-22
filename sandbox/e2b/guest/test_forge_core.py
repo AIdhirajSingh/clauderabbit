@@ -263,6 +263,8 @@ class GoAndCratesRegistryTests(unittest.TestCase):
         self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.info"), "go-meta")
         self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.mod"), "go-meta")
         self.assertEqual(k("proxy.golang.org", "/github.com/!burnt!sushi/toml/@latest"), "go-meta")
+        self.assertEqual(k("proxy.golang.org", "/github.com/%21google%21cloud%21platform/opentelemetry-operations-go/exporter/metric/@v/v0.59.0.zip"), "go-zip")
+        self.assertEqual(k("sum.golang.org", "/lookup/github.com/%21burnt%21sushi/toml@v1.4.0"), "go-sumdb")
         self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.zip"), "go-zip")
         self.assertEqual(k("proxy.golang.org", "/github.com/docker/docker/@v/v28.0.0+incompatible.zip"), "go-zip")
         self.assertEqual(k("sum.golang.org", "/lookup/github.com/google/uuid@v1.6.0"), "go-sumdb")
