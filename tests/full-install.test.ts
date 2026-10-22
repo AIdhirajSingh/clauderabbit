@@ -70,9 +70,21 @@ test("Yes continues the running install: the harness holds at the limit and read
   assert.match(sh, /if \[ -f "\$IN\/keep-installing" \]; then/);
   assert.match(sh, /exec timeout --kill-after=2 "\$INSTALL_MAX"/);
   const e2b = readFileSync(new URL("../lib/engine/sandbox/e2b.ts", import.meta.url), "utf8");
-  assert.match(e2b, /files\.write\("\/root\/in\/keep-installing", "1", \{ user: "root" \}\)/);
+  assert.match(e2b, /files\.write\(answer === "yes" \? "\/root\/in\/keep-installing" : "\/root\/in\/stop-installing", "1", \{ user: "root" \}\)/);
   const view = readFileSync(new URL("../components/cr/app/ScanView.tsx", import.meta.url), "utf8");
   assert.match(view, /\/api\/scan\/\$\{runId\}\/continue/);
+});
+
+test("No, or no answer, stops the waiting install; the wait covers the answer's delivery", () => {
+  const sh = readFileSync(new URL("../sandbox/e2b/guest/cr-detonate.sh", import.meta.url), "utf8");
+  assert.match(sh, /^ASK_S=15$/m);
+  assert.match(sh, /^DELIVER_S=30$/m);
+  assert.match(sh, /if \[ -f "\$IN\/stop-installing" \]; then/);
+  assert.match(sh, /INSTALL_TIMEOUT \+ ASK_S \+ DELIVER_S/);
+  const card = readFileSync(new URL("../components/cr/app/ContinueCard.tsx", import.meta.url), "utf8");
+  assert.match(card, /\/api\/scan\/\$\{runId\}\/continue\?answer=no/);
+  const route = readFileSync(new URL("../app/api/scan/[id]/continue/route.ts", import.meta.url), "utf8");
+  assert.match(route, /searchParams\.get\("answer"\) === "no"/);
 });
 
 test("the test install limit is parsed only in range, and the route honours it on a Preview only", () => {
