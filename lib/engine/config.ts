@@ -83,9 +83,11 @@ export interface EngineConfig {
   deadlines: EngineDeadlines;
 }
 
+// next@16 is a 43.7 MB tarball that unpacks to 192 MB; the caps fit the largest
+// popular npm packages (found by the trusted benchmark, step 35).
 export const DEFAULT_LIMITS: EngineLimits = {
-  maxCompressedBytes: 25 * 1024 * 1024,
-  maxExpandedBytes: 120 * 1024 * 1024,
+  maxCompressedBytes: 64 * 1024 * 1024,
+  maxExpandedBytes: 256 * 1024 * 1024,
   maxFiles: 20_000,
   maxPackumentBytes: 24 * 1024 * 1024,
 };
