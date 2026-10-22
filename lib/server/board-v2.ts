@@ -8,6 +8,7 @@ import type { SqlExecutor } from "@/lib/engine/db";
 import { payloadFromRows, type StoredReportRow } from "@/lib/engine/store";
 import type { ReportPayload, ScoreDelta } from "@/lib/engine/types";
 import { FILTER_VERDICTS, topFinding, type BoardFilter } from "@/lib/cr/verdict";
+import { TEST_FIXTURE_REPO_RE } from "./public-lists";
 
 export const BOARD_PAGE = 30;
 
@@ -33,17 +34,27 @@ interface RawBoardRow {
   created_at: string;
 }
 
-/** Score ascending, then newest. `offset` paginates; `filter` narrows by verdict. Tarball (operator) runs stay off the board. */
+/**
+ * One row per scanned target, its latest scan, most dangerous first (score
+ * ascending, then newest). Only real scans written by a run: tarball (operator)
+ * runs and our own test fixture repos (lib/server/public-lists.ts) stay off the
+ * board. `offset` paginates; `filter` narrows by the latest scan's verdict.
+ */
 export async function listBoard(db: SqlExecutor, filter: BoardFilter, offset: number, limit = BOARD_PAGE): Promise<{ rows: BoardRow[]; next: number | null }> {
   const verdicts = filter === "all" ? null : FILTER_VERDICTS[filter];
   const rows = await db.query<RawBoardRow>(
-    `select run_id::text as run_id, owner_login, repo_name, commit_sha, score, verdict, score_breakdown,
-            to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
-       from v2.reports
-      where owner_login <> 'tarball' and run_id is not null and ($1::text[] is null or verdict = any($1::text[]))
-      order by score asc, created_at desc
+    `select run_id, owner_login, repo_name, commit_sha, score, verdict, score_breakdown, created_at
+       from (select distinct on (owner_login, repo_name)
+                    run_id::text as run_id, owner_login, repo_name, commit_sha, score, verdict, score_breakdown,
+                    created_at as created_at_ts,
+                    to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
+               from v2.reports
+              where owner_login <> 'tarball' and run_id is not null and repo_name !~* $4
+              order by owner_login, repo_name, created_at desc) latest
+      where ($1::text[] is null or verdict = any($1::text[]))
+      order by score asc, created_at_ts desc
       limit $2 offset $3`,
-    [verdicts, limit + 1, offset],
+    [verdicts, limit + 1, offset, TEST_FIXTURE_REPO_RE],
   );
   const page = rows.slice(0, limit).map((r) => ({
     run_id: r.run_id,

@@ -8,6 +8,7 @@ import type { SqlExecutor } from "../engine/db";
 import { type ReportSlug } from "../report-fetch";
 import { reportRowToReport, type ReportRow } from "../report-row";
 import type { Report } from "../types";
+import { TEST_FIXTURE_REPO_RE } from "./public-lists";
 
 const V2_REPORT_SQL = `
 select r.owner_login, r.repo_name, r.commit_sha, r.score, r.verdict, r.cached, r.deep, r.summary,
@@ -35,12 +36,12 @@ export async function fetchV2Score(db: SqlExecutor, owner: string, repo: string)
   return typeof rows[0]?.score === "number" ? rows[0].score : null;
 }
 
-/** Most recently updated v2 report slugs, one per owner/repo. Throws on a database error. */
+/** Most recently updated v2 report slugs, one per owner/repo, without test fixtures (public-lists.ts). Throws on a database error. */
 export async function fetchV2Slugs(db: SqlExecutor, limit = 2000): Promise<ReportSlug[]> {
   const rows = await db.query<{ owner_login: string; repo_name: string; lastmod: string }>(
     `select owner_login, repo_name, to_char(max(updated_at) at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as lastmod
-       from v2.reports group by owner_login, repo_name order by max(updated_at) desc limit $1::int`,
-    [Math.max(1, Math.min(limit, 50_000))],
+       from v2.reports where repo_name !~* $2 group by owner_login, repo_name order by max(updated_at) desc limit $1::int`,
+    [Math.max(1, Math.min(limit, 50_000)), TEST_FIXTURE_REPO_RE],
   );
   return rows.map((r) => ({ owner: r.owner_login, repo: r.repo_name, lastmod: r.lastmod }));
 }
