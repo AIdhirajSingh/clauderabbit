@@ -138,15 +138,19 @@ export async function resolveGithub(spec: GithubTargetSpec, ctx: GithubContext):
  * Resolves a public repo's ref to a commit through git's smart HTTP endpoint
  * (info/refs), which the REST API rate limit does not cover: HEAD and its default
  * branch, a branch or tag, or a full commit SHA as given. A private or missing repo
- * answers 401/404 there and is not_found. Repo metadata the API would give (stars,
+ * answers 401/404 there and is not_found; 403/429 there is still a rate limit. Repo metadata the API would give (stars,
  * description, dates) is unknown on this path and left null.
  */
 export async function resolveViaGit(spec: GithubTargetSpec, ctx: GithubContext): Promise<GithubResolution> {
   const url = `https://github.com/${encodeURIComponent(spec.owner)}/${encodeURIComponent(spec.repo)}.git/info/refs?service=git-upload-pack`;
   const res = await fetchWithDeadline(ctx.fetch, url, { headers: { "User-Agent": "git/2.45.0", "Git-Protocol": "version=1" } }, ctx.timeoutMs, ctx.signal);
-  if (res.status === 401 || res.status === 403 || res.status === 404) {
+  if (res.status === 401 || res.status === 404) {
     await res.body?.cancel();
     throw new EngineError("not_found", `${spec.owner}/${spec.repo} was not found on GitHub, or it is private`);
+  }
+  if (res.status === 403 || res.status === 429) {
+    await res.body?.cancel();
+    throw new EngineError("rate_limited", "GitHub rate limit reached; retry later");
   }
   if (!res.ok) {
     await res.body?.cancel();

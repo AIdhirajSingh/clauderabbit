@@ -31,3 +31,11 @@ test("resolving without the API: HEAD, a branch, a peeled tag, a SHA as given, a
   const gone = (async () => new Response("", { status: 401 })) as unknown as typeof fetch;
   await assert.rejects(resolveViaGit({ owner: "o", repo: "r" }, { ...ctx, fetch: gone }), /not found on GitHub, or it is private/);
 });
+
+test("resolveGithub falls back to git's refs endpoint when the API is rate limited", async () => {
+  const f = (async (url: string | URL) => String(url).includes("api.github.com") ? new Response("{}", { status: 403, headers: { "x-ratelimit-remaining": "0" } }) : new Response(ADV, { status: 200 })) as unknown as typeof fetch;
+  const { resolveGithub } = await import("../../lib/engine/resolve/github.ts");
+  const r = await resolveGithub({ owner: "o", repo: "r" }, { fetch: f, token: null, timeoutMs: 1000 });
+  assert.equal(r.sha, A);
+  assert.equal(r.info.stars, null);
+});
