@@ -806,12 +806,16 @@ if [ -f "$OUT/trace.install" ] && [ "$(stat -c %s "$OUT/trace.install")" -gt "$C
     check trace_folded false "fold did not finish: $(head -c 200 "$RUN/fold.err")"
   fi
 fi
+# Traces are cut at TRACE_CAP (after the fold): a compiled build of a thousand packages
+# keeps about 27 MB of lines that are not the package manager's own file traffic, and
+# cutting them made a fully observed build a partial record.
+TRACE_CAP=33554432
 for f in trace.install trace.entry; do
-  if [ -f "$OUT/$f" ] && [ "$(stat -c %s "$OUT/$f")" -gt "$CAP" ]; then
+  if [ -f "$OUT/$f" ] && [ "$(stat -c %s "$OUT/$f")" -gt "$TRACE_CAP" ]; then
     SIZE=$(stat -c %s "$OUT/$f")
-    { head -c 4194304 "$OUT/$f"; printf '\n'; tail -c 4194304 "$OUT/$f"; } >"$RUN/$f.cut"
+    { head -c 16777216 "$OUT/$f"; printf '\n'; tail -c 16777216 "$OUT/$f"; } >"$RUN/$f.cut"
     mv "$RUN/$f.cut" "$OUT/$f"
-    check forensics_truncated false "$f ${SIZE} bytes cut to its first and last 4 MB"
+    check forensics_truncated false "$f ${SIZE} bytes cut to its first and last 16 MB"
   fi
 done
 truncate -s "<$CAP" "$OUT/written.txt"
