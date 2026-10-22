@@ -133,6 +133,8 @@ export async function POST(req: Request): Promise<Response> {
       try {
         final = await executeScan(ctx, parsed.target, regenerate, {
           full: parsed.full === true,
+          // Preview-only test hook (lib/server/scan-service.ts parseScanBody).
+          ...(process.env.VERCEL_ENV === "preview" && parsed.testInstallLimitS ? { testInstallMs: parsed.testInstallLimitS * 1000 } : {}),
           onEvent,
           signal: req.signal,
           background,

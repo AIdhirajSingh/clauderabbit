@@ -32,7 +32,7 @@ export type FinalLine =
   | { type: "result"; outcome: "cached" | "fresh"; run_id: string; report: ReportPayload; report_url: string; ad: Ad; cost: CostLedger | null }
   | { type: "error"; code: ErrorCode; message: string; run_id: string | null; ad: Ad; signInUrl?: string; retryAfter?: number };
 
-export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null; full?: boolean } | { ok: false; message: string };
+export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null; full?: boolean; testInstallLimitS?: number } | { ok: false; message: string };
 
 function s(v: unknown): string | undefined {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
@@ -46,7 +46,13 @@ function s(v: unknown): string | undefined {
  */
 export function parseScanBody(body: unknown): ParsedTarget {
   const r = parseScanTarget(body);
-  return r.ok ? { ...r, full: (body as Record<string, unknown>).full === true } : r;
+  if (!r.ok) return r;
+  const b = body as Record<string, unknown>;
+  // Test hook, honoured on a Vercel Preview only (the route checks): a shorter
+  // install limit, to exercise "Keep installing?" on a repo that installs quickly.
+  const t = b.test_install_limit_s;
+  const testInstallLimitS = typeof t === "number" && Number.isInteger(t) && t >= 5 && t <= 59 ? t : undefined;
+  return { ...r, full: b.full === true, ...(testInstallLimitS ? { testInstallLimitS } : {}) };
 }
 
 function parseScanTarget(body: unknown): ParsedTarget {
@@ -235,11 +241,12 @@ export async function executeScan(
   ctx: CallerContext,
   target: ScanTarget,
   regenerate: boolean,
-  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean },
+  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean; testInstallMs?: number },
 ): Promise<FinalLine> {
   const { store, caller } = ctx;
   const full = opts.full === true;
-  const config = full ? { ...ctx.config, deadlines: fullInstallDeadlines(ctx.config.deadlines), heartbeatSandboxes: true } : ctx.config;
+  const base = opts.testInstallMs ? { ...ctx.config, deadlines: { ...ctx.config.deadlines, installMs: opts.testInstallMs } } : ctx.config;
+  const config = full ? { ...base, deadlines: fullInstallDeadlines(base.deadlines), heartbeatSandboxes: true } : base;
   const ad = adForSurface(config, caller.surface, target);
   const deps = productionDeps(config, store);
   const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(full && opts.signal ? { stop: opts.signal } : {}) });

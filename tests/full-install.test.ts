@@ -73,3 +73,12 @@ test("Yes continues the running install: the harness holds at the limit and read
   const view = readFileSync(new URL("../components/cr/app/ScanView.tsx", import.meta.url), "utf8");
   assert.match(view, /\/api\/scan\/\$\{runId\}\/continue/);
 });
+
+test("the test install limit is parsed only in range, and the route honours it on a Preview only", () => {
+  const ok = parseScanBody({ target: "npm:left-pad", test_install_limit_s: 15 });
+  const no = parseScanBody({ target: "npm:left-pad", test_install_limit_s: 600 });
+  assert.ok(ok.ok && ok.testInstallLimitS === 15);
+  assert.ok(no.ok && no.testInstallLimitS === undefined);
+  const route = readFileSync(new URL("../app/api/scan/route.ts", import.meta.url), "utf8");
+  assert.match(route, /process\.env\.VERCEL_ENV === "preview" && parsed\.testInstallLimitS/);
+});
