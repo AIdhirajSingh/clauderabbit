@@ -316,6 +316,14 @@ interface VmGraphJson {
  */
 const LARGE_INSTALL_MS = 60_000;
 const LARGE_DETONATE_MS = 265_000;
+/**
+ * A continued install (the viewer pressed Yes) gets up to this much past the
+ * install limit, never closer than CONTINUE_RESERVE_MS to the detonation deadline
+ * (the wait for inputs, extraction, entry and collection). With the 60 s install
+ * that is 170 s, which keeps a large scan inside its 280 s budget.
+ */
+const CONTINUE_EXTRA_MS = 110_000;
+const CONTINUE_RESERVE_MS = 90_000;
 const LARGE_SANDBOX_MS = 285_000;
 
 /** Scanner window in the one-VM path: small repos finish in 3 to 5 s; openclaw (57k files) did not finish in 45 s nor in 90 s, so the longer window only bought cost. */
@@ -724,6 +732,11 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         prefetched: Boolean(fetched!.vm),
         canaries,
         installTimeoutMs: vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs,
+        // Yes on "Keep installing?" lets the running install go on, inside the scan's budget.
+        installMaxMs: Math.min(
+          (vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs) + CONTINUE_EXTRA_MS,
+          (vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs) - CONTINUE_RESERVE_MS,
+        ),
         entryTimeoutMs: cfg.deadlines.entryMs,
         totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs,
         sandboxTimeoutMs: vmSize === "large" ? Math.max(LARGE_SANDBOX_MS, cfg.deadlines.sandboxTimeoutMs) : cfg.deadlines.sandboxTimeoutMs,

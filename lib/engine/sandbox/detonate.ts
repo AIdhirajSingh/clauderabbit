@@ -63,6 +63,12 @@ export interface DetonationInput {
   workspace?: import("../reach/graph").WorkspacePlan | null;
   canaries: Canaries;
   installTimeoutMs: number;
+  /**
+   * The longest the install may run when the viewer answers "Keep installing?" with
+   * Yes while it runs (POST /api/scan/<id>/continue); the harness asks at
+   * installTimeoutMs. Equal to installTimeoutMs (or absent) when it cannot continue.
+   */
+  installMaxMs?: number;
   entryTimeoutMs: number;
   totalTimeoutMs: number;
   sandboxTimeoutMs: number;
@@ -322,6 +328,7 @@ export async function runDetonation(dvm: DetonationVm, input: DetonationInput): 
           mode: input.mode,
           name: input.packageName,
           install_timeout_s: Math.max(1, Math.round(input.installTimeoutMs / 1000)),
+          install_max_s: Math.max(1, Math.round(Math.max(input.installTimeoutMs, input.installMaxMs ?? 0) / 1000)),
           entry_timeout_s: Math.max(1, Math.round(input.entryTimeoutMs / 1000)),
           fake_rate: input.fakeRate,
           ...(input.plan ? { dev_scripts: input.plan.devScripts, dev_total: input.plan.devTotal, plan_source: input.plan.source } : {}),

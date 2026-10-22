@@ -22,7 +22,7 @@ test("the scan body carries full only when it is exactly true", () => {
 
 test("ads go through GPT test units; no IMA in the scan screen", () => {
   assert.match(ADS.gpt, /^https:\/\/securepubads\.g\.doubleclick\.net\/tag\/js\/gpt\.js$/);
-  assert.ok(ADS.scanSlot.unit.startsWith("/6355419/"), "Google's published GPT sample network");
+  assert.ok(ADS.unit.startsWith("/6355419/"), "Google's published GPT sample network");
   assert.ok(ADS.interstitial.startsWith("/6355419/"));
   const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(ads, /imasdk|google\.ima|ima3/);
@@ -49,5 +49,27 @@ test("the scan slot respects Google's 30 s refresh floor and declares refreshes"
   assert.equal(ADS.refreshKey, "refresh");
   const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
   assert.match(ads, /aspectRatio: "16 \/ 9"/, "the design's video slot");
-  assert.match(ads, /export function Interstitial\(\)/);
+  assert.match(ads, /export function Interstitial\(\{ runId \}/);
+});
+
+test("enough staggered slots to earn 1 paisa a second at ₹100 eCPM, each counted on its own", () => {
+  assert.ok(ADS.slotCount >= 4);
+  // One impression per slot every refreshMs, 10 paise each at ₹100 eCPM.
+  const paisePerSecond = (ADS.slotCount * (100 / 10)) / (ADS.refreshMs / 1000);
+  assert.ok(paisePerSecond >= 1, `${paisePerSecond} paise a second`);
+  assert.deepEqual(ADS.bannerSizes.phone, [[320, 50]], "phone banners stay small for the 30 % density limit");
+  const ads = readFileSync(new URL("../components/cr/app/Ads.tsx", import.meta.url), "utf8");
+  assert.match(ads, /n \* STAGGER_MS/);
+  assert.match(ads, /reportImpression\(runIdRef\.current, "interstitial"\)/);
+});
+
+test("Yes continues the running install: the harness holds at the limit and reads the server's flag", () => {
+  const sh = readFileSync(new URL("../sandbox/e2b/guest/cr-detonate.sh", import.meta.url), "utf8");
+  assert.match(sh, /log "install-at-limit/);
+  assert.match(sh, /if \[ -f "\$IN\/keep-installing" \]; then/);
+  assert.match(sh, /exec timeout --kill-after=2 "\$INSTALL_MAX"/);
+  const e2b = readFileSync(new URL("../lib/engine/sandbox/e2b.ts", import.meta.url), "utf8");
+  assert.match(e2b, /files\.write\("\/root\/in\/keep-installing", "1", \{ user: "root" \}\)/);
+  const view = readFileSync(new URL("../components/cr/app/ScanView.tsx", import.meta.url), "utf8");
+  assert.match(view, /\/api\/scan\/\$\{runId\}\/continue/);
 });

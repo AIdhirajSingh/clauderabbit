@@ -12,10 +12,15 @@
  * labelled "Advertisement".
  *
  *  gpt           the GPT library.
- *  scanSlot      the scan screen's 16:9 video slot, asking for video-capable
+ *  unit          the scan page slots' ad unit.
+ *  videoSizes    the scan screen's 16:9 video slot, asking for video-capable
  *                sizes (out-stream video or, when no video fills, display). A new
  *                ad starts when the previous video ends or after `refreshMs`,
  *                never faster: Google's refresh guidance is 30 s.
+ *  bannerSizes   the banner slots in the screen's empty areas (300×250 desktop,
+ *                320×50 phone, keeping phone ad density under 30 % of the page).
+ *  slotCount     slots on the scan screen; their starts are staggered evenly
+ *                across refreshMs.
  *  refreshKey    targeting key set on every refresh (0 on the first request), so
  *                Ad Manager sees the slot's refreshed impressions; the ad unit
  *                must also be declared as refreshed inventory in Ad Manager.
@@ -29,7 +34,13 @@
 export const ADS = {
   label: "Advertisement",
   gpt: "https://securepubads.g.doubleclick.net/tag/js/gpt.js",
-  scanSlot: { unit: "/6355419/Travel/Europe", sizes: [[640, 360], [640, 480], [480, 270], [300, 250]] as [number, number][] },
+  unit: "/6355419/Travel/Europe",
+  // Desktop and phone sizes per slot kind (GPT size mapping at 768 px).
+  videoSizes: { desktop: [[640, 360], [640, 480], [480, 270], [300, 250]] as [number, number][], phone: [[300, 250], [320, 180]] as [number, number][] },
+  bannerSizes: { desktop: [[300, 250]] as [number, number][], phone: [[320, 50]] as [number, number][] },
+  // The video slot plus banner_1 to banner_3: 4 slots × one impression per 30 s ×
+  // 10 paise (₹100 eCPM) = 1.33 paise a second.
+  slotCount: 4,
   interstitial: "/6355419/Travel/Europe/France/Paris",
   refreshMs: 30_000,
   refreshKey: "refresh",

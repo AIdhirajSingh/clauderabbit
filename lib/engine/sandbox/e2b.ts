@@ -131,3 +131,21 @@ export class E2BProvider implements SandboxProvider {
     return new E2BSession(sbx);
   }
 }
+
+/**
+ * Tells a run's running install to keep going: writes /root/in/keep-installing (a
+ * root-only path the repo's code cannot write) into the run's detonation VM, which
+ * the harness checks while it asks at the install limit. Returns how many VMs got it.
+ */
+export async function continueRunInstall(apiKey: string, runId: string): Promise<number> {
+  const pages = Sandbox.list({ apiKey, query: { metadata: { runId, purpose: "detonate" } } });
+  let n = 0;
+  while (pages.hasNext) {
+    for (const s of await pages.nextItems()) {
+      const sbx = await Sandbox.connect(s.sandboxId, { apiKey });
+      await sbx.files.write("/root/in/keep-installing", "1", { user: "root" });
+      n += 1;
+    }
+  }
+  return n;
+}

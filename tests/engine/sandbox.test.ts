@@ -156,7 +156,7 @@ test("detonate writes per-run inputs as root, parses the bundle, and kills the V
   assert.equal(p.created[0]!.network, "registry-only");
   assert.equal(s.killed, 1);
   const run = JSON.parse(new TextDecoder().decode(s.files.get("/root/in/run.json")));
-  assert.deepEqual(run, { mode: "npm-package", name: "evil", install_timeout_s: 20, entry_timeout_s: 4, fake_rate: 30 });
+  assert.deepEqual(run, { mode: "npm-package", name: "evil", install_timeout_s: 20, install_max_s: 20, entry_timeout_s: 4, fake_rate: 30 });
   assert.ok(new TextDecoder().decode(s.files.get("/root/.cr/canary.env")).includes(canaries.GITHUB_TOKEN));
   assert.equal(d.install, "completed");
   assert.equal(d.entry, "failed");

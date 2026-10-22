@@ -585,16 +585,21 @@ export class V2Store implements ScanStore {
   }
 
   /**
-   * One ad impression on this run's scan screen (v2.scan_runs.ads_shown). At most
-   * one every 25 s per run is counted, so the counter cannot outpace the slot's 30 s
-   * refresh floor. Returns whether it was counted.
+   * One ad impression in one slot of this run's scan page (v2.scan_ad_impressions):
+   * 'video', 'banner_1' to 'banner_3' or 'interstitial'. At most one per run and slot
+   * every 25 s is counted, so no slot's count can outpace its 30 s refresh. Returns
+   * whether it was counted.
    */
-  async recordAdImpression(runId: string): Promise<boolean> {
-    if (!UUID_RE.test(runId)) return false;
+  async recordAdImpression(runId: string, slot: AdSlotName): Promise<boolean> {
+    if (!UUID_RE.test(runId) || !AD_SLOTS.includes(slot)) return false;
     const rows = await run("ad impression", () =>
       this.db.query<{ id: string }>(
-        "update v2.scan_runs set ads_shown = ads_shown + 1, ads_last_at = now() where id = $1::uuid and (ads_last_at is null or ads_last_at < now() - interval '25 seconds') returning id::text as id",
-        [runId],
+        `insert into v2.scan_ad_impressions (run_id, slot)
+         select $1::uuid, $2
+          where exists (select 1 from v2.scan_runs where id = $1::uuid)
+            and not exists (select 1 from v2.scan_ad_impressions where run_id = $1::uuid and slot = $2 and at > now() - interval '25 seconds')
+         returning id::text as id`,
+        [runId, slot],
       ),
     );
     return rows.length > 0;
@@ -648,6 +653,10 @@ export function v2Executor(config: EngineConfig): SqlExecutor {
   if (bad) throw new EngineError("internal", bad);
   return postgresExecutor(config.databaseUrl);
 }
+
+/** The scan page's ad slots, counted separately (v2.scan_ad_impressions.slot). */
+export const AD_SLOTS = ["video", "banner_1", "banner_2", "banner_3", "interstitial"] as const;
+export type AdSlotName = (typeof AD_SLOTS)[number];
 
 export function createV2Store(config: EngineConfig): V2Store {
   return new V2Store(v2Executor(config));

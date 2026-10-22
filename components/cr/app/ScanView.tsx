@@ -20,7 +20,7 @@ import { plainLog, STAGE_WORD } from "@/lib/cr/plain-log";
 import { evidenceLines, notVerifiedBullets, plainTitle, reputationChips } from "@/lib/cr/result-format";
 import { useAppSession } from "./AppShell";
 import { VerdictGlyph } from "./Board";
-import { Interstitial, ScanAd } from "./Ads";
+import { BannerAd, Interstitial, ScanAd } from "./Ads";
 import { ContinueCard } from "./ContinueCard";
 import s from "./app.module.css";
 
@@ -270,13 +270,19 @@ export function ScanView({ runId, full = false }: { runId: string; full?: boolea
   const done = !!run?.report && run.status === "done" && (!paced || playDone);
   const failed = run?.status === "error" && !replay;
   const running = !done && !failed;
-  // The install hit its time limit, as far as the scan has played: the continue card asks.
-  // `?test_card=1` (never in production) asks as soon as the install starts, to test the
-  // card and the full scan on a repo whose install finishes inside the limit.
+  // The install reached its time limit, as far as the scan has played: the sandbox
+  // prints "install-at-limit" and holds the install for 15 s while the card asks, so a
+  // Yes keeps the same run installing. A stored or replayed run that timed out asks too.
+  // `?test_card=1` (never in production) asks as soon as the install starts, to test
+  // the card on a repo whose install finishes inside the limit.
   const testCard = params.get("test_card") === "1" && process.env.NEXT_PUBLIC_VERCEL_ENV !== "production";
   const installHitLimit = useMemo(
     () =>
-      visible.some((e) => e.type === "stage" && e.data.name === "detonate" && (testCard || (e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? "")))),
+      visible.some(
+        (e) =>
+          (e.type === "transcript" && /install-at-limit/.test(e.data.text)) ||
+          (e.type === "stage" && e.data.name === "detonate" && (testCard || (e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? "")))),
+      ),
     [visible, testCard],
   );
   // While the scan runs, a heartbeat every 10 s keeps a full scan's sandboxes alive
@@ -289,17 +295,26 @@ export function ScanView({ runId, full = false }: { runId: string; full?: boolea
     return () => clearInterval(id);
   }, [running, runId]);
   const subject = run?.subject ?? null;
+  const fullFired = useRef(false);
   useEffect(() => {
-    // Yes on the continue card: play back the stored full scan or run one (the server decides), as a new run page.
-    if (!full || !subject || !ready) return;
+    // Yes on the continue card (/app/scan/<id>/full): the running scan keeps installing,
+    // same run id. A run whose install already finished as a partial scan gets a full
+    // scan instead (a stored full one plays back, or one runs).
+    if (!full || !subject || !ready || fullFired.current) return;
+    fullFired.current = true;
     let off = false;
-    startScan(subject, session?.access_token ?? null, true)
-      .then(({ runId: id }) => !off && router.replace(`/app/scan/${id}`))
-      .catch((e: unknown) => !off && setToast(e instanceof Error ? e.message : "The full scan did not start."));
+    (async () => {
+      const r = await fetch(`/api/scan/${runId}/continue`, { method: "POST", headers: { "x-clauderabbit-client": "web" } }).catch(() => null);
+      const continued = r?.ok ? (((await r.json().catch(() => ({}))) as { continued?: number }).continued ?? 0) : 0;
+      if (off) return;
+      if (continued > 0 || run?.status === "running") return router.replace(`/app/scan/${runId}`);
+      const { runId: id } = await startScan(subject, session?.access_token ?? null, true);
+      if (!off) router.replace(`/app/scan/${id}`);
+    })().catch((e: unknown) => !off && setToast(e instanceof Error ? e.message : "The full scan did not start."));
     return () => {
       off = true;
     };
-  }, [full, subject, ready, session, router]);
+  }, [full, subject, ready, session, router, runId, run?.status]);
 
   useEffect(() => {
     if (!running || paced) return;
@@ -401,6 +416,8 @@ export function ScanView({ runId, full = false }: { runId: string; full?: boolea
                 </div>
               ))}
             </div>
+            {/* Under the progress, above the log: it never covers the bars, checks or log. */}
+            <BannerAd runId={runId} n={1} />
             <div role="log" aria-live="polite" style={{ display: "flex", flexDirection: "column", gap: 4, minHeight: 360 }}>
               {log.length === 0 && <div style={{ padding: "10px 14px", fontSize: 15, color: "var(--text2)" }}>Waiting for the first event…</div>}
               {log.map((e) => (
@@ -457,7 +474,7 @@ export function ScanView({ runId, full = false }: { runId: string; full?: boolea
         {/* The card outlives the running screen: its 15 s answer window runs on after the result opens. */}
         <ContinueCard runId={runId} show={installHitLimit && !full} />
         {/* Defined for the page's whole life, before Yes is clicked: GPT shows it on the navigation to /full. */}
-        <Interstitial />
+        <Interstitial runId={runId} />
         {running && (
           <>
             <ScanAd key={`${runId}-${replay ? "replay" : "live"}`} runId={runId} />
@@ -478,6 +495,8 @@ export function ScanView({ runId, full = false }: { runId: string; full?: boolea
                 );
               })}
             </div>
+            <BannerAd runId={runId} n={2} />
+            <BannerAd runId={runId} n={3} />
           </>
         )}
 

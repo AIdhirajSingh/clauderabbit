@@ -197,11 +197,16 @@ chmod 0600 "$CRDIR/canary.env" "$CRDIR/canary-patterns.txt"
 INSTALL_TIMEOUT=$(jq -r '.install_timeout_s // 20' "$IN/run.json")
 ENTRY_TIMEOUT=$(jq -r '.entry_timeout_s // 4' "$IN/run.json")
 FAKE_RATE=$(jq -r '.fake_rate // 30' "$IN/run.json")
+# The install may run past INSTALL_TIMEOUT only if the viewer asks (keep-installing),
+# and never past INSTALL_MAX, which the server sizes to fit the scan's budget.
+INSTALL_MAX=$(jq -r '.install_max_s // 0' "$IN/run.json")
+ASK_S=15
 MODE=$(jq -r '.mode' "$IN/run.json")
 PKG_NAME=$(jq -r '.name // ""' "$IN/run.json")
 SAFE_NAME_RE='^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$'
 case "$MODE" in npm-package|repo) ;; *) log "bad mode"; exit 2 ;; esac
-[[ "$INSTALL_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$ENTRY_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$FAKE_RATE" =~ ^[0-9]+$ ]] || { log "bad run.json"; exit 2; }
+[[ "$INSTALL_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$ENTRY_TIMEOUT" =~ ^[0-9]+$ ]] && [[ "$FAKE_RATE" =~ ^[0-9]+$ ]] && [[ "$INSTALL_MAX" =~ ^[0-9]+$ ]] || { log "bad run.json"; exit 2; }
+[ "$INSTALL_MAX" -gt "$INSTALL_TIMEOUT" ] || INSTALL_MAX=$INSTALL_TIMEOUT
 
 # ---- 5. decoys and canaries ------------------------------------------------------
 declare -A CANARY
@@ -399,10 +404,34 @@ if [ -n "$INSTALL_CMD" ]; then
   echo "install $(date +%s.%N)" >"$OUT/phase"
   START=$(now_ms)
   set +e
-  ( cd "$WORKDIR" && timeout --kill-after=2 "$INSTALL_TIMEOUT" \
+  ( cd "$WORKDIR" && exec timeout --kill-after=2 "$INSTALL_MAX" \
       strace -f --seccomp-bpf -qq -ttt -s 256 -e trace="$TRACE_SET" -o "$OUT/trace.install" -u "$CR_USER" -- \
-      env -i "${BASE_ENV[@]}" bash -c "$INSTALL_CMD" ) >"$OUT/install.out" 2>"$OUT/install.err"
+      env -i "${BASE_ENV[@]}" bash -c "$INSTALL_CMD" ) >"$OUT/install.out" 2>"$OUT/install.err" &
+  IPID=$!
+  # At INSTALL_TIMEOUT the install keeps running for up to ASK_S while the scan page
+  # asks "Keep installing?" (the marker line below reaches it live). The server's
+  # answer is /root/in/keep-installing (root-only; the repo's code cannot write it):
+  # present, the install runs on to completion or INSTALL_MAX; absent, it is stopped.
+  CUT=0
+  if [ "$INSTALL_MAX" -gt "$INSTALL_TIMEOUT" ]; then
+    ASKED=0
+    while kill -0 "$IPID" 2>/dev/null; do
+      EL=$(( ($(now_ms) - START) / 1000 ))
+      if [ "$EL" -ge "$INSTALL_TIMEOUT" ]; then
+        if [ "$ASKED" = 0 ]; then log "install-at-limit ${INSTALL_TIMEOUT} s: waiting ${ASK_S} s for keep-installing"; ASKED=1; fi
+        if [ -f "$IN/keep-installing" ]; then
+          log "keep-installing: the install continues, up to ${INSTALL_MAX} s"
+          check install_continued true "the viewer asked to keep installing at ${EL} s; limit ${INSTALL_MAX} s"
+          break
+        fi
+        if [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S )) ]; then CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break; fi
+      fi
+      sleep 0.5
+    done
+  fi
+  wait "$IPID"
   INSTALL_EXIT=$?
+  [ "$CUT" = 1 ] && INSTALL_EXIT=124
   if DS=$(grep -m1 '^cr-dev-scope ' "$OUT/install.out" 2>/dev/null); then
     read -r _ DEV_RUN DEV_SKIP <<<"$DS"
     check dev_scope true "install scripts run ($DEV_RUN packages), other code not executed ($DEV_SKIP packages)"

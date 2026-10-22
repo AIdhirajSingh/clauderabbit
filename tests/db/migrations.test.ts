@@ -98,7 +98,7 @@ after(async () => {
   await db.close();
 });
 
-test("the 2.0 set is ten v2 migrations with reverses; the destructive pair stays post-cutover", () => {
+test("the 2.0 set is eleven v2 migrations with reverses; the destructive pair stays post-cutover", () => {
   assert.deepEqual(newUp, [
     "20261016000000_v2_schema_role.sql",
     "20261016000001_v2_scan_runs_events.sql",
@@ -110,6 +110,7 @@ test("the 2.0 set is ten v2 migrations with reverses; the destructive pair stays
     "20261021000002_v2_exports.sql",
     "20261021000003_v2_drop_exports.sql",
     "20261022000001_v2_scan_economics.sql",
+    "20261022000002_v2_ad_impressions.sql",
   ]);
   for (const f of newUp) assert.ok(readFileSync(downFor(f), "utf8").length > 0, f);
   assert.deepEqual(postUp, ["20261016000004_drop_deep_queue.sql", "20261016000005_drop_dead_quota.sql"]);
@@ -138,7 +139,7 @@ test("public, auth, realtime and extensions catalogs are identical before and af
 
 test("every v2 table has RLS on and a policy only for the server role; the role is least privilege", async () => {
   const t = await db.query<{ relname: string; rls: boolean }>("select c.relname, c.relrowsecurity as rls from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'v2' and c.relkind = 'r' order by 1");
-  assert.deepEqual(t.rows.map((r) => r.relname), ["ad_settings", "cli_tokens", "oauth_clients", "oauth_codes", "owners", "reports", "scan_budget", "scan_events", "scan_rate_limit", "scan_runs", "user_scans"]);
+  assert.deepEqual(t.rows.map((r) => r.relname), ["ad_settings", "cli_tokens", "oauth_clients", "oauth_codes", "owners", "reports", "scan_ad_impressions", "scan_budget", "scan_events", "scan_rate_limit", "scan_runs", "user_scans"]);
   for (const r of t.rows) assert.equal(r.rls, true, r.relname);
   // Permissive policies grant to the server role only; the token tables carry a
   // restrictive always-false policy instead, so no v2 table is "RLS on, no policy".
@@ -338,5 +339,5 @@ test("down in reverse removes v2 and the role and leaves 1.0 identical; up again
   assert.equal(await catalogOf(UNTOUCHED), pre);
   for (const f of newUp) await apply(path.join(UP_DIR, f));
   const again = await db.query<{ n: number }>("select count(*)::int as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'v2' and c.relkind = 'r'");
-  assert.equal(again.rows[0]!.n, 11);
+  assert.equal(again.rows[0]!.n, 12);
 });
