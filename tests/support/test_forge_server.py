@@ -98,6 +98,12 @@ def main() -> int:
                 body=body,
             )
             d = forge.handle(req)
+            # Record before replying, as forge_addon.py does: a client that exits on the
+            # reply must never be able to outrun its own capture line (the cause of the
+            # ops-smoke and keyless e2e flakes under full-suite load).
+            record(proto="https", host=host, port=443, method=self.command, path=self.path, sni=sni,
+                   req_headers=req.headers, req_body=body, forged_kind=d.forged_kind, tls="intercepted",
+                   status=d.status, integrity=d.integrity)
             self.send_response(d.status)
             for k, v in d.headers.items():
                 self.send_header(k, v)
@@ -105,9 +111,6 @@ def main() -> int:
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(d.body)
-            record(proto="https", host=host, port=443, method=self.command, path=self.path, sni=sni,
-                   req_headers=req.headers, req_body=body, forged_kind=d.forged_kind, tls="intercepted",
-                   status=d.status, integrity=d.integrity)
 
         do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = _handle
 

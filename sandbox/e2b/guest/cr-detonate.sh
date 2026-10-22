@@ -392,6 +392,41 @@ else
   fi
 fi
 
+# ---- 6b. pinned package manager, on the real clock -------------------------------------
+# A repo that pins its package manager (package.json packageManager, served by
+# corepack or by pnpm's own version management) makes the install download that
+# version first, and under the sped-up clock that download's own timeout expires
+# in about a second. So the exact pinned version is fetched and activated here, as
+# cr, through the forge and fence, on the real clock, before the install: in an
+# empty folder holding only the validated pin, so none of the repo's files or code
+# (a .yarnrc.yml yarnPath, a .pnpmfile.cjs, an .npmrc) is read or run. Only a plain
+# registry version is accepted; a URL or path spec is never fetched.
+if [ "$ECO" = npm ]; then
+  PIN=$(jq -r '.packageManager // ""' /work/src/package.json 2>/dev/null || echo "")
+  if [[ "$PIN" =~ ^(npm|pnpm|yarn)@[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+sha(1|224|256|384|512)\.[0-9a-f]+)?$ ]]; then
+    PIN_PM=${PIN%%@*}
+    PREP_ENV=()
+    for kv in "${BASE_ENV[@]}"; do
+      case "$kv" in LD_PRELOAD=*|FAKETIME*|AWS_*|NPM_TOKEN=*|GITHUB_TOKEN=*|OPENAI_API_KEY=*) ;; *) PREP_ENV+=("$kv") ;; esac
+    done
+    PREP_DIR=$(runuser -u "$CR_USER" -- mktemp -d /tmp/cr-pm.XXXXXX)
+    jq -n --arg pm "$PIN" '{name:"cr-pm-prep",private:true,packageManager:$pm}' | runuser -u "$CR_USER" -- tee "$PREP_DIR/package.json" >/dev/null
+    case "$PIN_PM" in
+      pnpm) PREP_CMD="pnpm config get registry" ;;
+      *) PREP_CMD="$PIN_PM --version" ;;
+    esac
+    P0=$(now_ms)
+    set +e
+    PV=$(cd "$PREP_DIR" && timeout 90 runuser -u "$CR_USER" -- env -i "${PREP_ENV[@]}" bash -c "$PREP_CMD" 2>&1 | tail -n 3 | head -c 300)
+    PREP_EXIT=$?
+    set -e
+    rm -rf "$PREP_DIR"
+    check package_manager_ready "$([ "$PREP_EXIT" = 0 ] && echo true || echo false)" "$PIN fetched and activated on the real clock in $(( $(now_ms) - P0 )) ms: ${PV//$'\n'/ }"
+  elif [ -n "$PIN" ]; then
+    check package_manager_ready false "packageManager \"${PIN:0:80}\" is not a plain registry version; not fetched ahead"
+  fi
+fi
+
 # ---- 7-8. install phase -------------------------------------------------------------
 touch "$RUN/start.marker"
 sleep 0.01

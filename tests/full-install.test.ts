@@ -82,3 +82,15 @@ test("the test install limit is parsed only in range, and the route honours it o
   const route = readFileSync(new URL("../app/api/scan/route.ts", import.meta.url), "utf8");
   assert.match(route, /process\.env\.VERCEL_ENV === "preview" && parsed\.testInstallLimitS/);
 });
+
+test("a pinned package manager is fetched on the real clock before the install, from a folder holding only the pin", () => {
+  const sh = readFileSync(new URL("../sandbox/e2b/guest/cr-detonate.sh", import.meta.url), "utf8");
+  const prep = sh.indexOf("# ---- 6b. pinned package manager");
+  assert.ok(prep > 0 && prep < sh.indexOf("# ---- 7-8. install phase"), "before the install phase");
+  const block = sh.slice(prep, sh.indexOf("# ---- 7-8. install phase"));
+  assert.match(block, /\^\(npm\|pnpm\|yarn\)@\[0-9\]\+/, "plain registry versions only, never a URL");
+  assert.match(block, /LD_PRELOAD=\*\|FAKETIME\*/, "the fake clock is stripped");
+  assert.match(block, /AWS_\*\|NPM_TOKEN=\*\|GITHUB_TOKEN=\*\|OPENAI_API_KEY=\*/, "no canaries in its environment");
+  assert.match(block, /mktemp -d \/tmp\/cr-pm\./, "an empty folder, not the repo");
+  assert.match(block, /check package_manager_ready/);
+});
