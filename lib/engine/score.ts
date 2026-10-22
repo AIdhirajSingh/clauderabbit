@@ -65,7 +65,8 @@ export const BASE = 85;
 // 31: the scorer's registry hosts are the sandbox's (yarn and JSR registries were scored as unknown hosts).
 // 32: Go, Cargo and Python projects (also one or two folders down) are built and run in the sandbox.
 // 33: the Go module proxy's zip redirects pass the forge (under 32 they were forged and a Go build could fail).
-export const SCORE_RULES = 34; // 34: Go module paths with capitals (sent as %21) pass the forge
+// 34: Go module paths with capitals (sent as %21) pass the forge.
+export const SCORE_RULES = 35; // 35: above 80 only when the build completed and the program ran, in every language; otherwise a partial scan at 80 with one reason line
 // 30: points only from observed behaviour or an installed dependency's malware record; read-only findings under not verified
 // 29: JSR's npm registry is a registry; npm names may have capitals
 // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
@@ -136,7 +137,8 @@ export const CAP_DEPENDENCY_ONLY = 74;
 export const CAP_INSTALL_INCOMPLETE = 74;
 /** A repo with no install step: nothing ran, so the score rests on reading the code. Top of Low risk. */
 export const CAP_NOTHING_TO_RUN = 80;
-export const CAP_ENTRY_INCOMPLETE = 89;
+/** Install or build cut by its time limit, or a build with no program to run: the top of Low risk. */
+export const CAP_PARTIAL_RUN = 80;
 export const CAP_NOT_PROVEN = 89;
 /** Lowest score of the Caution band: where static-only findings stop. */
 export const STATIC_ONLY_FLOOR = 60;
@@ -358,8 +360,10 @@ export interface ScoreResult {
   notVerified: string[];
   /** Set when the repo's own code is clean and a dependency carries a known malicious record. */
   label?: string;
-  /** Install timed out or failed, or the entry point did not run: the score covers only what was observed. */
+  /** The build did not complete or the program did not run: the score covers only what was observed, capped at 80. */
   partial: boolean;
+  /** One plain line saying why the scan is partial. */
+  partialReason?: string;
 }
 
 const OS_NAMES: Record<string, string> = { darwin: "macOS", linux: "Linux", win32: "Windows", freebsd: "FreeBSD" };
@@ -683,21 +687,20 @@ export function computeScore(input: ScoreInput): ScoreResult {
   } else if (malicious.length > 0) {
     applyCap(CAP_MALICIOUS_DEP, "cap_malicious_dependency", `A known malicious dependency caps the score at ${CAP_MALICIOUS_DEP}.`);
   }
-  // Running out of time is not a bad signal: a phase that timed out (and an entry
-  // skipped only because install timed out) never lowers the score. What did not
-  // run is still stated as not verified. A failed phase still caps.
-  const installRan = input.install === "completed" || input.install === "timeout";
-  // A library usually has no runnable entry point: an entry that fails or is skipped
-  // is not a bad signal either. It is stated as not verified.
-  const entryRan = true;
+  // One rule for every language: a score above 80 needs the install or build to
+  // complete and the program to run (a program that ran and failed, or ran to its
+  // time limit, ran). Otherwise the scan is partial, capped at 80, with one reason line.
+  const installRan = input.install === "completed" && !input.archiveTruncated;
+  const entryRan = input.entry === "completed" || input.entry === "failed" || input.entry === "timeout";
+  const partialReason = installRan && entryRan ? null : partialReasonFor(input.install, input.entry, input.archiveTruncated);
   if (input.install !== "completed") notVerified.push(phaseText("Install", input.install));
   if (input.install === "none" && !input.archiveTruncated) {
-    applyCap(CAP_NOTHING_TO_RUN, "cap_nothing_to_run", `The repo has no install step, so nothing ran in the sandbox and the score rests on reading the code: capped at ${CAP_NOTHING_TO_RUN}.`);
-  } else if (!installRan || input.archiveTruncated) {
-    applyCap(CAP_INSTALL_INCOMPLETE, "cap_install_incomplete", `Install did not complete, so the score is capped at ${CAP_INSTALL_INCOMPLETE}.`);
+    applyCap(CAP_NOTHING_TO_RUN, "cap_nothing_to_run", `Partial scan: ${partialReason}. Nothing ran in the sandbox, so the score rests on reading the code: capped at ${CAP_NOTHING_TO_RUN}.`);
+  } else if (input.install === "failed" || input.install === "skipped" || input.archiveTruncated) {
+    applyCap(CAP_INSTALL_INCOMPLETE, "cap_install_incomplete", `Partial scan: ${partialReason}, so the score is capped at ${CAP_INSTALL_INCOMPLETE}.`);
     if (input.archiveTruncated) notVerified.push("Files past the archive size cap were not analysed.");
-  } else if (!entryRan) {
-    applyCap(CAP_ENTRY_INCOMPLETE, "cap_entry_incomplete", `The entry point did not complete, so the score is capped at ${CAP_ENTRY_INCOMPLETE}.`);
+  } else if (partialReason) {
+    applyCap(CAP_PARTIAL_RUN, "cap_partial_run", `Partial scan: ${partialReason}, so the score is capped at ${CAP_PARTIAL_RUN}.`);
   }
   if (input.entry !== "completed") notVerified.push(phaseText("Entry", input.entry));
   if (!input.coverage.scanners) notVerified.push("Static scanners (Semgrep, YARA, GuardDog) did not complete.");
@@ -734,7 +737,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   // entry point was cut by its time limit) is still marked partial. An entry that was
   // skipped because the repo has none, or that ran and failed, is not a cut scan; it
   // is stated as not verified.
-  const partial = (input.install !== "completed" && input.install !== "none") || input.entry === "timeout";
+  const partial = partialReason !== null;
   const patternFloor = Math.min(PARTIAL_SCAN_FLOOR, ceiling);
   // Not when a dependency has a malicious-package record or the docs are contradicted:
   // those are more than pattern hits.
@@ -754,7 +757,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
     score = TOP_BAND;
   }
   if (!proven) {
-    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs install and entry to run (a timeout counts as run), no behaviour or intel hits, no reachable high finding and full coverage.");
+    applyCap(CAP_NOT_PROVEN, "cap_not_proven", "A score of 90 or more needs the build to complete and the program to run, no behaviour or intel hits, no reachable high finding and full coverage.");
   }
 
   const unique = [...new Set(notVerified)];
@@ -769,5 +772,17 @@ export function computeScore(input: ScoreInput): ScoreResult {
     notVerified: unique,
     ...(label ? { label } : {}),
     partial,
+    ...(partialReason ? { partialReason } : {}),
   };
+}
+
+/** The one plain line a partial scan shows next to its "Partial scan" mark. */
+export function partialReasonFor(install: PhaseOutcome, entry: PhaseOutcome, archiveTruncated: boolean): string {
+  if (archiveTruncated) return "The repo was too large to read in full, so the program never ran";
+  if (install === "none") return "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt";
+  if (install === "timeout") return "Build ran out of time, so the program never ran";
+  if (install === "failed") return "Build failed, so the program never ran";
+  if (install === "skipped") return "Build did not start, so the program never ran";
+  if (entry === "skipped") return "Build finished, but there was no program to run";
+  return "The program did not run";
 }

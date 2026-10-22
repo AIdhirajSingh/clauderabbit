@@ -917,6 +917,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     summary: written.summary,
     luna_report: written.report,
     ...(result.partial ? { partial: true } : {}),
+    ...(result.partialReason ? { partial_reason: result.partialReason } : {}),
     ...(ran ? { ran } : {}),
     // A dependency danger with clean own code says so plainly, whatever the writer wrote.
     headline: result.label ? `${result.verdict}: ${result.label}` : written.headline,

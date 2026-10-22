@@ -409,12 +409,16 @@ else
     check package_manager true "go $("$GO_BIN/go" env GOVERSION 2>/dev/null || echo unknown)"
   elif [ -f "$WORKDIR/Cargo.toml" ]; then
     ECO=rust
-    # cargo stops making progress under the preloaded clock library (no output in 120 s
-    # on a one-file crate in the template smoke), so cargo and rustc run on the real clock;
-    # the built programs run on the sped-up clock below.
-    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins"
+    # cargo itself stops making progress under the preloaded clock library (no output in
+    # 120 s on a one-file crate), so cargo runs without it. The code crates run at build
+    # time does not: cargo's [env] table, given on the command line (above any config file
+    # in the repo) and forced over the inherited environment, puts the clock library into
+    # every build script and every rustc (which runs the proc macros). There the monotonic
+    # clock stays real, so cargo-style absolute timed waits keep their meaning; the wall
+    # clock and every sleep run on the sped-up clock. The template smoke checks a build script.
+    CARGO_CLOCK="--config 'env.LD_PRELOAD={value=\"$FAKETIME_LIB\",force=true}' --config 'env.FAKETIME_DONT_FAKE_MONOTONIC={value=\"1\",force=true}'"
+    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins $CARGO_CLOCK"
     [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="$INSTALL_CMD --locked"
-    check clock_scope false "cargo, rustc and the crates' build scripts ran on the real clock; the built programs ran on the sped-up clock"
     check package_manager true "$("$RUST_BIN/cargo" --version 2>/dev/null || echo cargo)"
   elif [ -f "$WORKDIR/pyproject.toml" ] || [ -f "$WORKDIR/setup.py" ] || [ -f "$WORKDIR/requirements.txt" ]; then
     ECO=python

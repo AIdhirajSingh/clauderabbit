@@ -94,7 +94,10 @@ smoke_repo() {
     printf 'package main\n\nimport (\n\t"fmt"\n\t"time"\n)\n\nfunc main() {\n\tw0, m0 := time.Now().Round(0), time.Now()\n\ttime.Sleep(time.Second)\n\tfmt.Printf("cr-smoke-go-ran wall_ms=%%d mono_ms=%%d\\n", time.Now().Round(0).Sub(w0).Milliseconds(), time.Since(m0).Milliseconds())\n}\n' >"$dir/main.go"
   else
     mkdir -p "$dir/src"
-    printf '[package]\nname = "crsmoke"\nversion = "0.1.0"\nedition = "2021"\n' >"$dir/Cargo.toml"
+    printf '[package]\nname = "crsmoke"\nversion = "0.1.0"\nedition = "2021"\nbuild = "build.rs"\n' >"$dir/Cargo.toml"
+    # A build script that reads the wall clock, sleeps one (sped-up) second and reads it
+    # again; real time comes from /proc/uptime, which no clock library changes.
+    printf 'use std::time::{Duration, SystemTime};\nfn up() -> f64 { std::fs::read_to_string("/proc/uptime").unwrap().split_whitespace().next().unwrap().parse().unwrap() }\nfn main() {\n    let (w0, u0) = (SystemTime::now(), up());\n    std::thread::sleep(Duration::from_secs(1));\n    println!("cargo:warning=cr-smoke-buildrs wall_ms={} real_ms={}", w0.elapsed().unwrap().as_millis(), ((up() - u0) * 1000.0) as u64);\n}\n' >"$dir/build.rs"
     printf 'use std::time::{Instant, SystemTime};\nfn main() {\n    let (w0, m0) = (SystemTime::now(), Instant::now());\n    std::thread::sleep(std::time::Duration::from_secs(1));\n    println!("cr-smoke-rust-ran wall_ms={} mono_ms={}", w0.elapsed().unwrap().as_millis(), m0.elapsed().as_millis());\n}\n' >"$dir/src/main.rs"
   fi
   tar -czf /root/in/target.tgz -C /tmp/cr-smoke repo
@@ -104,6 +107,18 @@ smoke_repo() {
   jq -e --arg e "$eco" '.ecosystem == $e and .install.status == "completed" and .entry.status == "completed"' "$OUT/result.json" >/dev/null \
     || fail "$eco: $(cat "$OUT/result.json") $(tail -c 2000 "$OUT/install.err") $(tail -c 1000 "$OUT/entry.err")"
   grep -q "cr-smoke-$eco-ran" "$OUT/entry.out" || fail "$eco: the built program did not run: $(tail -c 1000 "$OUT/entry.out")"
+  if [ "$eco" = rust ]; then
+    # The build script ran on the sped-up clock: one second on its wall clock, well under
+    # half a second of real time.
+    local bline bwall breal
+    bline=$(grep -h -m1 "cr-smoke-buildrs" "$OUT/install.out" "$OUT/install.err" 2>/dev/null || true)
+    bwall=$(sed -n 's/.*wall_ms=\([0-9]*\).*/\1/p' <<<"$bline"); breal=$(sed -n 's/.*real_ms=\([0-9]*\).*/\1/p' <<<"$bline")
+    if [ "${bwall:-0}" -ge 900 ] && [ "${bwall:-0}" -le 5000 ] && [ -n "$breal" ] && [ "$breal" -lt 500 ]; then
+      echo "cr-smoke: rust build script clock sped up: it saw ${bwall} ms wall in ${breal} ms of real time"
+    else
+      fail "rust: build script clock not sped up: ${bline:-no build script line} $(tail -c 1500 "$OUT/install.err")"
+    fi
+  fi
   # The sped-up clock reached the program: one second passed on both of its clocks
   # (wall and monotonic) while the whole entry phase took well under one real second.
   local line wall mono ems

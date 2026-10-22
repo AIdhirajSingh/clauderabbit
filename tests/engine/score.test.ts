@@ -139,14 +139,14 @@ const CASES: Array<{ name: string; in: Partial<ScoreInput>; score: number; verdi
     verdict: "No threats observed",
   },
   { name: "install failed caps at 74", in: { install: "failed" }, score: 74, verdict: "Caution" },
-  { name: "install timeout never lowers the score", in: { install: "timeout", entry: "skipped", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
+  { name: "install timeout: the program never ran, so a partial scan at 80", in: { install: "timeout", entry: "skipped", reputation: STRONG_REP }, score: 80, verdict: "Low risk" },
   { name: "entry timeout never lowers the score", in: { entry: "timeout", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "install skipped caps at 74", in: { install: "skipped", entry: "skipped" }, score: 74, verdict: "Caution" },
   { name: "archive truncated caps at 74", in: { archiveTruncated: true }, score: 74, verdict: "Caution" },
   { name: "lost forensics: not observed-clean, and without behaviour not High risk either (Caution 60)", in: { forensics: { coverage: "lost", gaps: [] }, reputation: STRONG_REP }, score: 60, verdict: "Caution" },
   { name: "lost forensics after an overrun: timeout plus lost caps at 59", in: { install: "timeout", entry: "skipped", forensics: { coverage: "lost", gaps: [] } }, score: 60, verdict: "Caution" },
   { name: "partial forensics caps at 74", in: { forensics: { coverage: "partial", gaps: ["capture.jsonl was cut at 8 MB."] }, reputation: STRONG_REP }, score: 74, verdict: "Caution" },
-  { name: "entry skipped (no runnable entry point) is neutral", in: { entry: "skipped", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
+  { name: "entry skipped (no program ran after the build): a partial scan at 80", in: { entry: "skipped", reputation: STRONG_REP }, score: 80, verdict: "Low risk" },
   { name: "entry failed (library entry) is neutral", in: { entry: "failed", reputation: STRONG_REP }, score: 90, verdict: "No threats observed" },
   { name: "scanner coverage missing blocks 90", in: { coverage: { scanners: false, osv: true, checks: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
   { name: "OSV coverage missing blocks 90", in: { coverage: { scanners: true, osv: false, checks: true }, reputation: STRONG_REP }, score: 89, verdict: "Low risk" },
@@ -207,14 +207,37 @@ test("score: every point taken off cites evidence", () => {
   assert.ok(!unquoted.breakdown.some((d) => d.code === "docs_contradicted_by_behaviour"));
 });
 
-test("score: an install timeout scores the same as a completed install and is stated as not verified", () => {
+test("score: a build that ran out of time is a partial scan at 80 with its reason line", () => {
   const done = computeScore(input({ reputation: STRONG_REP }));
+  assert.equal(done.score, 90);
+  assert.equal(done.partial, false);
+  assert.equal(done.partialReason, undefined);
   const timedOut = computeScore(input({ install: "timeout", entry: "skipped", reputation: STRONG_REP }));
-  assert.equal(timedOut.score, done.score);
+  assert.equal(timedOut.score, 80);
+  assert.equal(timedOut.partial, true);
+  assert.equal(timedOut.partialReason, "Build ran out of time, so the program never ran");
+  assert.ok(timedOut.breakdown.some((b) => b.code === "cap_partial_run" && /^Partial scan: Build ran out of time/.test(b.detail)));
   const text = timedOut.notVerified.join(" ");
   assert.match(text, /Install phase did not complete \(timeout\)/);
   assert.match(text, /Entry phase was skipped/);
-  assert.ok(!timedOut.breakdown.some((b) => b.code === "cap_install_incomplete" || b.code === "cap_entry_incomplete"));
+});
+
+test("score: above 80 needs the build to complete and the program to run, in every case", () => {
+  const cases: Array<[Partial<ScoreInput>, number, string | undefined]> = [
+    [{ install: "completed", entry: "completed" }, 90, undefined],
+    [{ install: "completed", entry: "failed" }, 90, undefined],
+    [{ install: "completed", entry: "timeout" }, 90, undefined],
+    [{ install: "completed", entry: "skipped" }, 80, "Build finished, but there was no program to run"],
+    [{ install: "timeout", entry: "skipped" }, 80, "Build ran out of time, so the program never ran"],
+    [{ install: "none", entry: "skipped" }, 80, "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt"],
+    [{ install: "failed", entry: "skipped" }, 74, "Build failed, so the program never ran"],
+  ];
+  for (const [over, score, reason] of cases) {
+    const r = computeScore(input({ ...over, reputation: STRONG_REP }));
+    assert.equal(r.score, score, JSON.stringify(over));
+    assert.equal(r.partial, reason !== undefined, JSON.stringify(over));
+    assert.equal(r.partialReason, reason, JSON.stringify(over));
+  }
 });
 
 for (const c of CASES) {
@@ -520,10 +543,11 @@ test("a partial scan with only pattern hits stays at Low risk and says it is par
   // Read only, never seen running: no points; the partial mark still shows.
   assert.ok(partial.score >= 80, String(partial.score));
   assert.ok(!partial.breakdown.some((d) => d.group === "static"));
-  // A complete scan with the same hits gets the same score, without the partial mark.
+  // A partial scan is capped at 80; a complete scan with the same hits is never lower.
+  assert.equal(partial.score, 80);
   const complete = computeScore(input({ staticFindings: hits }));
   assert.equal(complete.partial, false);
-  assert.equal(complete.score, partial.score);
+  assert.ok(complete.score >= partial.score);
   // A lost record caps lower; the floor never lifts past a cap that applied.
   const lost = computeScore(input({ install: "timeout", entry: "skipped", staticFindings: hits, forensics: { coverage: "lost", gaps: [] } }));
   assert.ok(lost.score <= CAP_FORENSICS_LOST + 1);
@@ -532,16 +556,17 @@ test("a partial scan with only pattern hits stays at Low risk and says it is par
   assert.ok(seen.score < 80);
 });
 
-test("a repo with no entry point is not a partial scan; an entry cut by its time limit is", () => {
-  assert.equal(computeScore(input({ install: "completed", entry: "skipped" })).partial, false);
+test("a build with no program to run is a partial scan; a program that ran and failed or hit its limit is not", () => {
+  assert.equal(computeScore(input({ install: "completed", entry: "skipped" })).partial, true);
   assert.equal(computeScore(input({ install: "completed", entry: "failed" })).partial, false);
-  assert.equal(computeScore(input({ install: "completed", entry: "timeout" })).partial, true);
+  assert.equal(computeScore(input({ install: "completed", entry: "timeout" })).partial, false);
   assert.ok(computeScore(input({ install: "completed", entry: "skipped" })).notVerified.some((l) => /Entry phase was skipped/.test(l)));
 });
 
-test("a repo with no install step is not a partial scan: capped at Low risk 80 with the reason", () => {
+test("a repo with no install step is a partial scan: capped at Low risk 80 with the reason", () => {
   const r = computeScore(input({ install: "none", entry: "skipped" }));
-  assert.equal(r.partial, false);
+  assert.equal(r.partial, true);
+  assert.match(r.partialReason ?? "", /^Nothing to build/);
   assert.equal(r.score, 80);
   assert.equal(r.verdict, "Low risk");
   assert.ok(r.breakdown.some((d) => d.code === "cap_nothing_to_run"));

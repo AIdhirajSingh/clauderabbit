@@ -446,6 +446,7 @@ export function ScanView({ runId, full = false }: { runId: string; full?: boolea
               {report.partial && <span style={{ display: "inline-flex", alignItems: "center", height: 32, padding: "0 12px", borderRadius: 999, background: "var(--muted)", color: "var(--text)", fontSize: 14, fontWeight: 600 }}>Partial scan</span>}
               <span style={{ fontSize: 14, color: "var(--text2)", marginBottom: 8, fontVariantNumeric: "tabular-nums" }}>{Math.max(1, Math.round(totalMs / 1000))} s</span>
             </div>
+            {report.partial && report.partial_reason && <span style={{ fontSize: 15, lineHeight: 1.45, color: "var(--text2)" }}>{report.partial_reason}.</span>}
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "20px 22px", borderRadius: 20, background: "var(--card)", boxShadow: "0 0 0 1px var(--border)" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>Report</span>
               {paragraphs.map((p, i) => <p key={i} style={{ margin: 0, fontSize: 16.5, lineHeight: 1.55 }}>{p}</p>)}
