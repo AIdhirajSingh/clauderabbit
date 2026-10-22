@@ -56,6 +56,13 @@ NPM_VERSION_RE = re.compile(r"^/((?:@[^/%]+(?:/|%2[fF]))?[^/@%][^/]*)/([0-9][0-9
 PYPI_SIMPLE_RE = re.compile(r"^/simple/([A-Za-z0-9._-]+)/?$")
 PYPI_JSON_RE = re.compile(r"^/pypi/([A-Za-z0-9._-]+)(?:/([^/]+))?/json/?$")
 PYPI_FILE_RE = re.compile(r"^/packages/[^?#]+/([^/?#]+)$")
+# Go module proxy (GOPROXY protocol): list, info, mod, zip and latest for an escaped
+# module path; the checksum database: lookup, latest and tiles.
+GO_PROXY_RE = re.compile(r"^/[A-Za-z0-9._~!/-]+/@(?:v/(?:list|[^/]+\.(info|mod|zip))|latest)$")
+GO_SUMDB_RE = re.compile(r"^/(?:latest|lookup/[A-Za-z0-9._~!/-]+@[^/]+|tile/[0-9]+/(?:data|[0-9]+)/[x0-9/]+(?:\.p/[0-9]+)?)$")
+# crates.io sparse index (config.json and the 1/, 2/, 3/x/ and ab/cd/ entry paths) and crate files.
+CRATES_INDEX_RE = re.compile(r"^/(?:config\.json|1/[a-z0-9_-]+|2/[a-z0-9_-]+|3/[a-z0-9_-]/[a-z0-9_-]+|[a-z0-9_-]{2}/[a-z0-9_-]{2}/[a-z0-9_-]+)$")
+CRATE_FILE_RE = re.compile(r"^/crates/([A-Za-z0-9_-]+)/(?:\1-[0-9][^/]*\.crate|[0-9][^/]*/download)$")
 HTML_HASH_RE = re.compile(r'href="([^"#]+)#sha256=([0-9a-fA-F]{64})"')
 
 
@@ -135,6 +142,17 @@ def registry_kind(policy: dict, host: str, method: str, path: str) -> Optional[s
         if PYPI_FILE_RE.match(p):
             return "pypi-file"
         return None
+    if h in regs.get("go_proxy", []):
+        m = GO_PROXY_RE.match(p)
+        if m:
+            return "go-zip" if m.group(1) == "zip" else "go-meta"
+        return None
+    if h in regs.get("go_sumdb", []):
+        return "go-sumdb" if GO_SUMDB_RE.match(p) else None
+    if h in regs.get("crates_index", []):
+        return "crates-index" if CRATES_INDEX_RE.match(p) else None
+    if h in regs.get("crates_files", []):
+        return "crate-file" if CRATE_FILE_RE.match(p) else None
     return None
 
 
@@ -256,6 +274,33 @@ def pypi_digests_from_index(body: bytes, base_url: str, content_type: str) -> di
     for href, sha in HTML_HASH_RE.findall(text):
         out[urllib.parse.urljoin(base_url, href).split("#", 1)[0]] = hex_to_sri("sha256", sha.lower())
     return out
+
+
+def crate_digests_from_index(body: bytes, dl: str = "https://static.crates.io/crates") -> dict:
+    """crate file URL -> SRI string from a sparse index entry (one JSON object per line)."""
+    out: dict = {}
+    for line in body.decode("utf-8", errors="replace").splitlines():
+        try:
+            v = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(v, dict):
+            continue
+        name, vers, cksum = v.get("name"), v.get("vers"), v.get("cksum")
+        if isinstance(name, str) and isinstance(vers, str) and isinstance(cksum, str) and re.fullmatch(r"[0-9a-fA-F]{64}", cksum):
+            sri = hex_to_sri("sha256", cksum.lower())
+            out[f"{dl}/{name}/{name}-{vers}.crate"] = sri
+            out[f"{dl}/{name}/{vers}/download"] = sri
+    return out
+
+
+def crate_index_path(name: str) -> str:
+    n = name.lower()
+    if len(n) <= 2:
+        return f"/{len(n)}/{n}"
+    if len(n) == 3:
+        return f"/3/{n[0]}/{n}"
+    return f"/{n[:2]}/{n[2:4]}/{n}"
 
 
 # ---- mirror ------------------------------------------------------------------
@@ -424,12 +469,29 @@ class Forge:
         kind = registry_kind(self.policy, req.host, req.method, req.path)
         if kind is None:
             return forged_reply(req)
-        if kind in ("npm-packument", "npm-version", "pypi-simple", "pypi-json"):
+        if kind in ("npm-packument", "npm-version", "pypi-simple", "pypi-json", "go-meta", "go-sumdb", "crates-index"):
             return self._metadata(req, kind)
+        if kind == "go-zip":
+            return self._go_zip(req)
         return self._blob(req, kind)
 
+    def _go_zip(self, req: Request) -> Decision:
+        """A module zip carries no digest in proxy metadata: the go command checks it
+        against go.sum and the checksum database (both fetched through this forge)."""
+        status, _headers, body = self.fetch(req.url, {"Accept": "*/*"})
+        if status != 200:
+            return Decision(502 if status >= 500 else status, {"Content-Type": "text/plain"}, b"registry unavailable", "registry", note=f"upstream {status}")
+        return Decision(200, {"Content-Type": "application/zip"}, body, "registry", integrity="client-checked")
+
     def _remember(self, kind: str, url: str, content_type: str, body: bytes, from_mirror: bool = False) -> None:
-        found = npm_digests_from_packument(body) if kind in ("npm-packument", "npm-version") else pypi_digests_from_index(body, url, content_type)
+        if kind in ("npm-packument", "npm-version"):
+            found = npm_digests_from_packument(body)
+        elif kind == "crates-index":
+            found = crate_digests_from_index(body)
+        elif kind in ("pypi-simple", "pypi-json"):
+            found = pypi_digests_from_index(body, url, content_type)
+        else:
+            found = {}
         with self._lock:
             self.digests.update(found)
             if from_mirror:
@@ -478,6 +540,20 @@ class Forge:
                 self._remember("npm-packument", meta_url, headers.get("content-type", "application/json"), body, from_mirror=True)
             else:
                 self._remember("npm-packument", meta_url, headers.get("content-type", "application/json"), body)
+        elif kind == "crate-file":
+            m = CRATE_FILE_RE.match(req.bare_path)
+            hosts = self.policy["registries"].get("crates_index", [])
+            if not m or not hosts:
+                return None
+            idx_url = f"https://{hosts[0]}{crate_index_path(m.group(1))}"
+            status, headers, body = self.fetch(idx_url, {"Accept": "*/*"})
+            if status != 200:
+                cached = self.mirror.get_meta(idx_url, "*/*")
+                if cached is None:
+                    return None
+                self._remember("crates-index", idx_url, cached[0], cached[1], from_mirror=True)
+            else:
+                self._remember("crates-index", idx_url, headers.get("content-type", "text/plain"), body)
         else:
             project = pypi_project_from_filename(req.bare_path.rsplit("/", 1)[-1])
             if not project:

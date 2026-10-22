@@ -61,7 +61,7 @@ test("e2b create options: detonation is registry-only, analysis has no internet"
     timeoutMs: 90_000,
     metadata: { runId: "r1", purpose: "detonate" },
     allowInternetAccess: true,
-    network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io", "pypi.org", "files.pythonhosted.org"], allowPublicTraffic: false },
+    network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "sum.golang.org", "index.crates.io", "static.crates.io"], allowPublicTraffic: false },
   });
   const a = e2bCreateOptions({ purpose: "analyze", runId: "r1", timeoutMs: 90_000, network: "none" }, "k");
   // No egress at all: every destination denied and nothing allowed, expressed as

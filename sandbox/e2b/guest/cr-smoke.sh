@@ -81,9 +81,38 @@ if timeout 2 runuser -u cr -- bash -c 'exec 3<>/dev/udp/192.0.2.1/9999; printf x
 jq -e '.udp >= 1' "$OUT/egress_drops.json" >/dev/null 2>&1 || [ "$(/opt/cr/bin/cr-drops.sh cr_udp_drop)" -ge 1 ] || fail "the fence did not count a dropped UDP send"
 echo "cr-smoke: PASS $(jq -c '{install:.install, entry:.entry, clock:.clock}' "$OUT/result.json")"
 
+# Go and Rust: a repo with one main package / one binary target and no dependencies,
+# built and run through the same harness (forge, fence, clock, trace). Each run
+# prints a marker the trace and the entry output must both show.
+smoke_repo() {
+  local eco=$1 dir=/tmp/cr-smoke/repo
+  rm -rf /tmp/cr-smoke && mkdir -p "$dir" /root/in
+  cp -p /tmp/ca-bundle.orig "$BUNDLE"
+  if [ "$eco" = go ]; then
+    printf 'module example.invalid/crsmoke\n\ngo 1.22\n' >"$dir/go.mod"
+    printf 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("cr-smoke-go-ran") }\n' >"$dir/main.go"
+  else
+    mkdir -p "$dir/src"
+    printf '[package]\nname = "crsmoke"\nversion = "0.1.0"\nedition = "2021"\n' >"$dir/Cargo.toml"
+    printf 'fn main() { println!("cr-smoke-rust-ran"); }\n' >"$dir/src/main.rs"
+  fi
+  tar -czf /root/in/target.tgz -C /tmp/cr-smoke repo
+  printf '{"mode":"repo","name":null,"install_timeout_s":120,"entry_timeout_s":8,"fake_rate":30}\n' >/root/in/run.json
+  : >/root/in/go
+  /opt/cr/bin/cr-detonate.sh || fail "$eco: cr-detonate.sh exited non-zero: $(cat "$OUT/checks.jsonl" 2>/dev/null)"
+  jq -e --arg e "$eco" '.ecosystem == $e and .install.status == "completed" and .entry.status == "completed"' "$OUT/result.json" >/dev/null \
+    || fail "$eco: $(cat "$OUT/result.json") $(tail -c 2000 "$OUT/install.err") $(tail -c 1000 "$OUT/entry.err")"
+  grep -q "cr-smoke-$eco-ran" "$OUT/entry.out" || fail "$eco: the built program did not run: $(tail -c 1000 "$OUT/entry.out")"
+  jq -s -e 'map(select(.name=="egress_contained" and .ok)) | length == 1' "$OUT/checks.jsonl" >/dev/null || fail "$eco: egress not contained"
+  echo "cr-smoke: PASS $eco $(jq -c '{install:.install, entry:.entry}' "$OUT/result.json")"
+}
+smoke_repo go
+smoke_repo rust
+
 # Restore a clean template: no fence, no CA, no smoke artifacts, empty cr home.
 nft flush ruleset
 cp -p /tmp/ca-bundle.orig "$BUNDLE"
 rm -rf /root/out /root/out.tgz /root/in /root/.cr /work /run/cr /etc/cr /tmp/cr-smoke /tmp/cr-smoke-result /tmp/ca-bundle.orig
 rm -rf /home/cr && install -d -o cr -g cr -m 0750 /home/cr
+rm -rf /work
 pkill -KILL -u 1001 || true

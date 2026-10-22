@@ -250,3 +250,61 @@ class JsrRegistryTests(unittest.TestCase):
         self.assertEqual(fc.registry_kind(POLICY, "npm.jsr.io", "GET", "/@jsr/std__path"), "npm-packument")
         self.assertIsNone(fc.registry_kind(POLICY, "npm.jsr.io", "POST", "/@jsr/std__path"))
         self.assertIsNone(fc.registry_kind(POLICY, "jsr.io.evil.example", "GET", "/@jsr/std__path"))
+
+
+CRATE = b"fake crate bytes"
+CRATE_SHA = hashlib.sha256(CRATE).hexdigest()
+
+
+class GoAndCratesRegistryTests(unittest.TestCase):
+    def test_go_proxy_and_sumdb_shapes(self):
+        k = lambda h, p, m="GET": fc.registry_kind(POLICY, h, m, p)  # noqa: E731
+        self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/list"), "go-meta")
+        self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.info"), "go-meta")
+        self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.mod"), "go-meta")
+        self.assertEqual(k("proxy.golang.org", "/github.com/!burnt!sushi/toml/@latest"), "go-meta")
+        self.assertEqual(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.zip"), "go-zip")
+        self.assertEqual(k("proxy.golang.org", "/github.com/docker/docker/@v/v28.0.0+incompatible.zip"), "go-zip")
+        self.assertEqual(k("sum.golang.org", "/lookup/github.com/google/uuid@v1.6.0"), "go-sumdb")
+        self.assertEqual(k("sum.golang.org", "/latest"), "go-sumdb")
+        self.assertEqual(k("sum.golang.org", "/tile/8/0/x123/456.p/12"), "go-sumdb")
+        self.assertEqual(k("sum.golang.org", "/tile/8/data/x001/234"), "go-sumdb")
+        self.assertIsNone(k("proxy.golang.org", "/github.com/google/uuid/@v/v1.6.0.zip", "POST"))
+        self.assertIsNone(k("proxy.golang.org", "/upload"))
+        self.assertIsNone(k("sum.golang.org", "/exfil?d=x"))
+        self.assertIsNone(k("proxy.golang.org.evil.example", "/github.com/google/uuid/@v/list"))
+
+    def test_crates_shapes(self):
+        k = lambda h, p: fc.registry_kind(POLICY, h, "GET", p)  # noqa: E731
+        self.assertEqual(k("index.crates.io", "/config.json"), "crates-index")
+        self.assertEqual(k("index.crates.io", "/se/rd/serde"), "crates-index")
+        self.assertEqual(k("index.crates.io", "/1/a"), "crates-index")
+        self.assertEqual(k("index.crates.io", "/3/s/syn"), "crates-index")
+        self.assertEqual(k("static.crates.io", "/crates/serde/1.0.200/download"), "crate-file")
+        self.assertEqual(k("static.crates.io", "/crates/serde/serde-1.0.200.crate"), "crate-file")
+        self.assertIsNone(k("static.crates.io", "/crates/serde/other-1.0.0.crate"))
+        self.assertIsNone(k("index.crates.io", "/api/v1/crates/new"))
+        self.assertIsNone(k("crates.io", "/api/v1/crates"))
+        self.assertEqual(fc.crate_index_path("serde"), "/se/rd/serde")
+        self.assertEqual(fc.crate_index_path("syn"), "/3/s/syn")
+        self.assertEqual(fc.crate_index_path("cc"), "/2/cc")
+
+    def test_crate_file_verified_against_index_checksum(self):
+        idx = json.dumps({"name": "demo", "vers": "1.0.0", "cksum": CRATE_SHA}).encode() + b"\n"
+        url = "https://static.crates.io/crates/demo/1.0.0/download"
+        up = FakeUpstream({"https://index.crates.io/de/mo/demo": (200, {"content-type": "text/plain"}, idx), url: (200, {}, CRATE)})
+        with tempfile.TemporaryDirectory() as d:
+            forge = fc.Forge(POLICY, fc.Mirror(d), up)
+            ok = forge.handle(req("GET", "static.crates.io", "/crates/demo/1.0.0/download"))
+            self.assertEqual((ok.status, ok.body, ok.integrity), (200, CRATE, "verified"))
+            up.routes[url] = (200, {}, b"tampered")
+            forge2 = fc.Forge(POLICY, fc.Mirror(os.path.join(d, "fresh")), up)
+            bad = forge2.handle(req("GET", "static.crates.io", "/crates/demo/1.0.0/download"))
+            self.assertEqual((bad.status, bad.integrity), (502, "mismatch"))
+
+    def test_go_zip_is_fetched_and_marked_client_checked(self):
+        url = "https://proxy.golang.org/example.com/m/@v/v1.0.0.zip"
+        up = FakeUpstream({url: (200, {}, b"PK zip")})
+        with tempfile.TemporaryDirectory() as d:
+            dec = fc.Forge(POLICY, fc.Mirror(d), up).handle(req("GET", "proxy.golang.org", "/example.com/m/@v/v1.0.0.zip"))
+            self.assertEqual((dec.status, dec.forged_kind, dec.integrity), (200, "registry", "client-checked"))

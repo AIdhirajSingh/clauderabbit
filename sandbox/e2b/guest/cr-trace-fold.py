@@ -28,7 +28,11 @@ import os
 import re
 import sys
 
-PM_BINS = {"node", "nodejs", "npm", "npx", "pnpm", "pnpx", "yarn", "yarnpkg", "corepack", "uv", "pip", "pip3"}
+PM_BINS = {"node", "nodejs", "npm", "npx", "pnpm", "pnpx", "yarn", "yarnpkg", "corepack", "uv", "pip", "pip3",
+           # Go and Cargo and the compilers and linkers they drive. A Cargo build script
+           # (build-script-build) and anything it starts is a script and is never folded.
+           "go", "compile", "link", "asm", "cgo", "buildid", "cargo", "rustc",
+           "cc", "gcc", "cc1", "as", "ld", "collect2", "x86_64-linux-gnu-gcc", "x86_64-linux-gnu-ld", "ld.bfd"}
 FOLD_CALLS = {"open", "openat", "creat", "unlink", "unlinkat", "rename", "renameat", "renameat2", "chmod", "fchmodat"}
 LINE_RE = re.compile(r"^(\d+)\s+[\d.]+\s+(\w+)\((.*)$")
 CHILD_RE = re.compile(r"\)\s+=\s+(\d+)\s*$")
@@ -38,7 +42,7 @@ RESUMED_RE = re.compile(r"^(\d+)\s+[\d.]+\s+<\.\.\. (\w+) resumed>(.*)$")
 
 
 def main(trace: str, home: str, out_json: str) -> int:
-    places = ("/work/", "/tmp/", home.rstrip("/") + "/.npm/", home.rstrip("/") + "/.cache/", home.rstrip("/") + "/.local/")
+    places = ("/work/", "/tmp/", home.rstrip("/") + "/.npm/", home.rstrip("/") + "/.cache/", home.rstrip("/") + "/.local/", home.rstrip("/") + "/go/", home.rstrip("/") + "/.cargo/")
     state: dict = {}
     first = None
     counts: dict = {}

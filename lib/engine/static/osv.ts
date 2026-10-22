@@ -135,6 +135,23 @@ export function depsFromUvPipList(json: string): DependencyRef[] {
   return [...out.values()];
 }
 
+/** `[{name, version}]` as the harness writes it for Go modules (`go list -m all`) and Cargo registry crates (`cargo metadata`). */
+export function depsFromNameVersionList(json: string, ecosystem: "Go" | "crates.io"): DependencyRef[] {
+  const out = new Map<string, DependencyRef>();
+  let list: unknown;
+  try {
+    list = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  for (const item of list) {
+    const v = item as { name?: unknown; version?: unknown };
+    if (typeof v.name === "string" && typeof v.version === "string") addDep(out, ecosystem, v.name, v.version);
+  }
+  return [...out.values()];
+}
+
 interface QueryBatchResponse {
   results?: Array<{ vulns?: Array<{ id?: string }>; next_page_token?: string }>;
 }

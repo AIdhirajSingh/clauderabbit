@@ -219,7 +219,7 @@ export type Verdict = "No threats observed" | "Low risk" | "Caution" | "High ris
 export type Band = "green" | "blue" | "yellow" | "red";
 
 export interface MaliciousDependency {
-  ecosystem: "npm" | "PyPI";
+  ecosystem: DependencyRef["ecosystem"];
   name: string;
   version: string;
   ids: string[];
@@ -239,7 +239,7 @@ export interface DependencyScope {
 }
 
 export interface DependencyRef {
-  ecosystem: "npm" | "PyPI";
+  ecosystem: "npm" | "PyPI" | "Go" | "crates.io";
   name: string;
   version: string;
 }

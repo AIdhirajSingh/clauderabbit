@@ -62,7 +62,8 @@ export const BASE = 85;
 // registry traffic; Malicious and High risk need sandbox behaviour.
 // 14: install surface (production tree, dev packages with install scripts only).
 // 15: the server's install plan decides which dev packages run (lib/engine/plan.ts).
-export const SCORE_RULES = 31; // 31: the scorer's registry hosts are the sandbox's (yarn and JSR registries were scored as unknown hosts)
+// 31: the scorer's registry hosts are the sandbox's (yarn and JSR registries were scored as unknown hosts).
+export const SCORE_RULES = 32; // 32: Go, Cargo and Python projects (also one or two folders down) are built and run in the sandbox
 // 30: points only from observed behaviour or an installed dependency's malware record; read-only findings under not verified
 // 29: JSR's npm registry is a registry; npm names may have capitals
 // 28: a repo with no install step is not a partial scan; capped at Low risk 80 with the reason
@@ -577,7 +578,7 @@ function reputationDeltas(r: ReputationSignals): { total: number; deltas: ScoreD
 }
 
 function phaseText(name: string, p: PhaseOutcome): string {
-  if (p === "none") return `${name}: the repo has no install step the sandbox runs (no package.json, pyproject.toml, setup.py or requirements.txt), so its code was read, not run.`;
+  if (p === "none") return `${name}: the repo has no install step the sandbox runs (no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt), so its code was read, not run.`;
   return p === "skipped" ? `${name} phase was skipped, so its behaviour was not observed.` : `${name} phase did not complete (${p}), so later behaviour was not observed.`;
 }
 

@@ -19,7 +19,7 @@ import { parseTarball, textOf } from "../archive";
 import { canaryEnvFile, canaryMatcher, canaryPatternsFile, parseCapture, summarizeCapture, type Canaries } from "../forensics/capture";
 import { parseStrace } from "../forensics/strace";
 import type { ForensicCoverage, PhaseOutcome } from "../score";
-import { depsFromNpmLs, depsFromUvPipList } from "../static/osv";
+import { depsFromNameVersionList, depsFromNpmLs, depsFromUvPipList } from "../static/osv";
 import type { CheckEventData, DependencyRef, FileEventData, ForgedCallData, ProcessEventData } from "../types";
 import { SALVAGE_BUDGET_MS } from "../config";
 import { bootSandbox, runOnBooted, type BootedSandbox, type CommandResult, type KillHooks, type SandboxProvider } from "./provider";
@@ -86,7 +86,7 @@ export interface DetonationResult {
   entry: PhaseOutcome;
   /** The entry command's exit code from the harness result; null when entry did not run or was not recorded. */
   entryExitCode?: number | null;
-  ecosystem: "npm" | "python" | "none";
+  ecosystem: "npm" | "python" | "go" | "rust" | "none";
   installCommand: string;
   forgedCalls: ForgedCallData[];
   files: FileEventData[];
@@ -164,7 +164,11 @@ export async function parseForensicBundle(
   const deps = f("deps.json");
   if (deps && deps.trim()) {
     try {
-      installedDeps = result.deps_kind === "uv-pip-list" ? depsFromUvPipList(deps) : depsFromNpmLs(deps);
+      installedDeps =
+        result.deps_kind === "uv-pip-list" ? depsFromUvPipList(deps)
+        : result.deps_kind === "go-modules" ? depsFromNameVersionList(deps, "Go")
+        : result.deps_kind === "cargo-registry" ? depsFromNameVersionList(deps, "crates.io")
+        : depsFromNpmLs(deps);
     } catch {
       installedDeps = null;
     }
@@ -185,7 +189,7 @@ export async function parseForensicBundle(
   if (num(ph.forge_ms) && num(ph.probe_ms)) timings["detonate.prepare.probe"] = Math.max(0, ph.probe_ms - ph.forge_ms);
   if (num(ph.contained_ms) && num(ph.inputs_ms)) timings["detonate.wait"] = Math.max(0, ph.inputs_ms - ph.contained_ms);
   if (num(ph.collect_start_ms) && num(result.total_ms)) timings["detonate.collect"] = Math.max(0, result.total_ms - ph.collect_start_ms);
-  const eco = result.ecosystem === "npm" || result.ecosystem === "python" ? result.ecosystem : "none";
+  const eco = result.ecosystem === "npm" || result.ecosystem === "python" || result.ecosystem === "go" || result.ecosystem === "rust" ? result.ecosystem : "none";
   const datagramEgress = [...new Set([...ti.datagrams, ...te.datagrams])].sort();
   let drops: { udp?: unknown; icmp?: unknown; other?: unknown } = {};
   try {

@@ -34,6 +34,8 @@ CR_USER=cr
 CR_UID=1001
 NODE_BIN=/opt/cr/node/bin
 UV_BIN=/opt/cr/tools/bin
+GO_BIN=/opt/cr/go/bin
+RUST_BIN=/opt/cr/rust/bin
 FAKETIME_LIB=/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1
 TRACE_SET=execve,execveat,open,openat,creat,unlink,unlinkat,rename,renameat,renameat2,connect,sendto,sendmsg,sendmmsg,chmod,fchmodat,chdir,clone,clone3,fork,vfork
 MAX_LOG=262144
@@ -250,7 +252,7 @@ install -d -o "$CR_USER" -g "$CR_USER" -m 0700 "$H/.config/pnpm"
 printf 'fetchTimeout: %s\n' "$FETCH_MS" | install -o "$CR_USER" -g "$CR_USER" -m 0600 /dev/stdin "$H/.config/pnpm/config.yaml"
 BASE_ENV=(
   HOME="$H" USER="$CR_USER" LOGNAME="$CR_USER" SHELL=/bin/bash LANG=C.UTF-8 TMPDIR=/tmp
-  PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin"
+  PATH="$NODE_BIN:$UV_BIN:$GO_BIN:$RUST_BIN:/usr/local/bin:/usr/bin:/bin"
   LD_PRELOAD="$FAKETIME_LIB" FAKETIME="+0 x$FAKE_RATE" FAKETIME_DONT_RESET=1 FAKETIME_NO_CACHE=1
   NODE_EXTRA_CA_CERTS=/etc/cr/ca.pem SSL_CERT_FILE=/etc/cr/ca.pem REQUESTS_CA_BUNDLE=/etc/cr/ca.pem UV_SYSTEM_CERTS=1
   NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-install npm_config_dangerously_allow_all_scripts=true npm_config_ignore_scripts=false
@@ -262,12 +264,22 @@ BASE_ENV=(
   COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack" COREPACK_ENABLE_STRICT=0
   npm_config_cafile=/etc/cr/ca.pem YARN_HTTPS_CA_FILE_PATH=/etc/cr/ca.pem YARN_ENABLE_TELEMETRY=0 YARN_ENABLE_GLOBAL_CACHE=0
   UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy
+  # Go: modules only from the module proxy, checked against go.sum and the checksum
+  # database (both through the forge); never a VCS fetch, never a toolchain download.
+  GOPATH="$H/go" GOMODCACHE="$H/go/pkg/mod" GOCACHE="$H/.cache/go-build" GOPROXY=https://proxy.golang.org
+  GOSUMDB=sum.golang.org GOTOOLCHAIN=local GOFLAGS=-buildvcs=false GOTELEMETRY=off
+  # Rust: crates from the sparse crates.io index, each checked against its index checksum
+  # by cargo. cargo's http timeout is scaled by the clock factor like npm's.
+  CARGO_HOME="$H/.cargo" CARGO_TARGET_DIR=/work/target CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+  CARGO_HTTP_TIMEOUT=$((30 * FAKE_RATE)) CARGO_HTTP_CAINFO=/etc/cr/ca.pem CARGO_NET_RETRY=1 CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
   AWS_ACCESS_KEY_ID="${CANARY[AWS_ACCESS_KEY_ID]}" AWS_SECRET_ACCESS_KEY="${CANARY[AWS_SECRET_ACCESS_KEY]}"
   NPM_TOKEN="${CANARY[NPM_TOKEN]}" GITHUB_TOKEN="${CANARY[GITHUB_TOKEN]}" OPENAI_API_KEY="${CANARY[OPENAI_API_KEY]}"
 )
 # Collection steps run as cr without the fake clock and without canaries.
-PLAIN_ENV=(HOME="$H" USER="$CR_USER" PATH="$NODE_BIN:$UV_BIN:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8
-  NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_cache="$H/.npm" UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never)
+PLAIN_ENV=(HOME="$H" USER="$CR_USER" PATH="$NODE_BIN:$UV_BIN:$GO_BIN:$RUST_BIN:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8
+  NPM_CONFIG_USERCONFIG=/etc/cr/npmrc-empty npm_config_cache="$H/.npm" UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never
+  GOPATH="$H/go" GOMODCACHE="$H/go/pkg/mod" GOCACHE="$H/.cache/go-build" GOPROXY=off GOFLAGS=-mod=mod GOTOOLCHAIN=local GOTELEMETRY=off
+  CARGO_HOME="$H/.cargo" CARGO_TARGET_DIR=/work/target CARGO_NET_OFFLINE=true)
 
 # ---- 6. extract as cr --------------------------------------------------------------
 install -m 0644 -o "$CR_USER" -g "$CR_USER" "$IN/target.tgz" /work/target.tgz
@@ -290,15 +302,28 @@ else
     check extract_complete false "repo extraction did not finish inside 90 s"
   fi
   WORKDIR=/work/src
-  if [ -f /work/src/package.json ]; then
+  # The project the harness builds: the repo root when it holds a manifest the sandbox
+  # supports, else the shallowest such manifest one or two folders down (first by path).
+  has_manifest() { [ -f "$1/package.json" ] || [ -f "$1/go.mod" ] || [ -f "$1/Cargo.toml" ] || [ -f "$1/pyproject.toml" ] || [ -f "$1/setup.py" ] || [ -f "$1/requirements.txt" ]; }
+  if ! has_manifest /work/src; then
+    SUB=$(cd /work/src && timeout 10 find . -mindepth 2 -maxdepth 3 \( -name node_modules -o -name vendor -o -name .git -o -name 'test*' -o -name 'example*' -o -name 'doc*' \) -prune -o \
+      -type f \( -name package.json -o -name go.mod -o -name Cargo.toml -o -name pyproject.toml -o -name setup.py -o -name requirements.txt \) -print 2>/dev/null \
+      | awk -F/ '{print NF "\t" $0}' | sort -t$'\t' -k1,1n -k2,2 | head -n 1 | cut -f2 || true)
+    SUB=${SUB#./}; SUB=${SUB%/*}
+    if [ -n "$SUB" ] && [[ "$SUB" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ ]] && [[ "$SUB" != *..* ]] && [ ! -L "/work/src/$SUB" ] && [ -d "/work/src/$SUB" ]; then
+      WORKDIR="/work/src/$SUB"
+      check project_dir true "no manifest at the repo root; building $SUB"
+    fi
+  fi
+  if [ -f "$WORKDIR/package.json" ]; then
     ECO=npm
     # The package manager the repo declares (packageManager, else its lockfile), run by
     # corepack at the version the repo pins, through the same forge and fence.
-    PM=$(jq -r '(.packageManager // "") | split("@")[0]' /work/src/package.json 2>/dev/null || echo "")
+    PM=$(jq -r '(.packageManager // "") | split("@")[0]' $WORKDIR/package.json 2>/dev/null || echo "")
     if [ -z "$PM" ]; then
-      if [ -f /work/src/pnpm-lock.yaml ]; then PM=pnpm
-      elif [ -f /work/src/yarn.lock ]; then PM=yarn
-      elif [ -f /work/src/bun.lock ] || [ -f /work/src/bun.lockb ]; then PM=bun
+      if [ -f $WORKDIR/pnpm-lock.yaml ]; then PM=pnpm
+      elif [ -f $WORKDIR/yarn.lock ]; then PM=yarn
+      elif [ -f $WORKDIR/bun.lock ] || [ -f $WORKDIR/bun.lockb ]; then PM=bun
       else PM=npm; fi
     fi
     # Install surface: production dependencies with their scripts, the repo's own scripts,
@@ -313,8 +338,8 @@ else
         PNPM_FLAGS="--prod --prefer-frozen-lockfile --config.minimum-release-age=0"
         INSTALL_CMD="pnpm install $PNPM_FLAGS"
         # pnpm-lock v6 to v8 mark build-script packages requiresBuild; v9 does not record it.
-        PDEV=$(grep -c '^  /' /work/src/pnpm-lock.yaml 2>/dev/null || echo 0)
-        if grep -q 'requiresBuild: true' /work/src/pnpm-lock.yaml 2>/dev/null; then
+        PDEV=$(grep -c '^  /' $WORKDIR/pnpm-lock.yaml 2>/dev/null || echo 0)
+        if grep -q 'requiresBuild: true' $WORKDIR/pnpm-lock.yaml 2>/dev/null; then
           check dev_scope true "pnpm lockfile marks build scripts; production install, dev build-script packages run by pnpm rebuild"
           INSTALL_CMD="$INSTALL_CMD && pnpm rebuild"
         else
@@ -330,7 +355,7 @@ else
           # The server's plan: the production tree, then only the dev packages with an install script.
           DEVS=$(jq -r '(.dev_scripts // [])[] | select(test("^(@[a-z0-9._~-]+/)?[a-z0-9._~-]+@[0-9A-Za-z.+-]+$"))' "$IN/run.json" | tr '\n' ' ')
           DN=$(jq -r '(.dev_scripts // []) | length' "$IN/run.json"); DT=$(jq -r '.dev_total' "$IN/run.json")
-          if [ -f /work/src/package-lock.json ] || [ -f /work/src/npm-shrinkwrap.json ]; then
+          if [ -f $WORKDIR/package-lock.json ] || [ -f $WORKDIR/npm-shrinkwrap.json ]; then
             BASE="npm ci --omit=dev --no-audit --no-fund"
           else
             # No lockfile: npm resolves only the production tree (devDependencies are planned above).
@@ -344,7 +369,7 @@ else
         if [ -z "${PLANNED:-}" ]; then
         # No lockfile: resolve the tree once from the registry (through the forge), no scripts.
         LOCK_STEP=""
-        if [ ! -f /work/src/package-lock.json ] && [ ! -f /work/src/npm-shrinkwrap.json ]; then
+        if [ ! -f $WORKDIR/package-lock.json ] && [ ! -f $WORKDIR/npm-shrinkwrap.json ]; then
           LOCK_STEP="npm install --package-lock-only --ignore-scripts --no-audit --no-fund && "
         fi
         # Production tree with every script, then only the dev packages that have an install script.
@@ -377,16 +402,27 @@ else
       esac
       check workspace_scope true "installing the root and $WS_N of $WS_TOTAL workspace packages ($PM)"
     fi
-  elif [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ] || [ -f /work/src/requirements.txt ]; then
+  elif [ -f "$WORKDIR/go.mod" ]; then
+    ECO=go
+    # Every main package of the module, built into /work/bin; run below.
+    INSTALL_CMD="install -d /work/bin && go build -o /work/bin/ ./..."
+    check package_manager true "go $("$GO_BIN/go" env GOVERSION 2>/dev/null || echo unknown)"
+    check clock_scope false "Go programs read the clock through the vDSO, not libc, so the sped-up clock reaches the build's C tools but not Go code"
+  elif [ -f "$WORKDIR/Cargo.toml" ]; then
+    ECO=rust
+    INSTALL_CMD="cargo build --bins"
+    [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="cargo build --bins --locked"
+    check package_manager true "$("$RUST_BIN/cargo" --version 2>/dev/null || echo cargo)"
+  elif [ -f "$WORKDIR/pyproject.toml" ] || [ -f "$WORKDIR/setup.py" ] || [ -f "$WORKDIR/requirements.txt" ]; then
     ECO=python
     INSTALL_CMD="uv venv --quiet /work/.venv --python /usr/bin/python3"
-    if [ -f /work/src/uv.lock ]; then
+    if [ -f "$WORKDIR/uv.lock" ] && [ -f "$WORKDIR/pyproject.toml" ]; then
       INSTALL_CMD="$INSTALL_CMD && UV_PROJECT_ENVIRONMENT=/work/.venv uv sync --frozen"
     else
-      if [ -f /work/src/requirements.txt ]; then
+      if [ -f "$WORKDIR/requirements.txt" ]; then
         INSTALL_CMD="$INSTALL_CMD && uv pip install --python /work/.venv/bin/python -r requirements.txt"
       fi
-      if [ -f /work/src/pyproject.toml ] || [ -f /work/src/setup.py ]; then
+      if [ -f "$WORKDIR/pyproject.toml" ] || [ -f "$WORKDIR/setup.py" ]; then
         INSTALL_CMD="$INSTALL_CMD && uv pip install --python /work/.venv/bin/python ."
       fi
     fi
@@ -403,7 +439,7 @@ fi
 # (a .yarnrc.yml yarnPath, a .pnpmfile.cjs, an .npmrc) is read or run. Only a plain
 # registry version is accepted; a URL or path spec is never fetched.
 if [ "$ECO" = npm ]; then
-  PIN=$(jq -r '.packageManager // ""' /work/src/package.json 2>/dev/null || echo "")
+  PIN=$(jq -r '.packageManager // ""' "$WORKDIR/package.json" 2>/dev/null || echo "")
   if [[ "$PIN" =~ ^(npm|pnpm|yarn)@[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+sha(1|224|256|384|512)\.[0-9a-f]+)?$ ]]; then
     PIN_PM=${PIN%%@*}
     PREP_ENV=()
@@ -509,7 +545,7 @@ if [ -n "$INSTALL_CMD" ]; then
   check registry_timing true "$RT"
   check disk_after_install true "free on /work and /tmp: $(df -h --output=avail,pcent /work /tmp 2>/dev/null | tail -n +2 | tr -s ' ' | paste -sd ';' -)"
 else
-  check install_manifest false "no package.json, pyproject.toml, setup.py or requirements.txt"
+  check install_manifest false "no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt"
 fi
 if [ "$ECO" = python ] && [ -d /work/.venv ]; then
   timeout 2 find /work/.venv -name '*.pth' -newer "$RUN/start.marker" -type f >"$OUT/pth.txt" 2>/dev/null || true
@@ -525,8 +561,8 @@ if [ "$INSTALL_STATUS" = completed ]; then
       MANI="/work/app/node_modules/$PKG_NAME/package.json"
       REQ="$PKG_NAME"
     else
-      MANI=/work/src/package.json
-      REQ=/work/src
+      MANI=$WORKDIR/package.json
+      REQ=$WORKDIR
     fi
     if [ -f "$MANI" ]; then
       BIN=$(jq -r 'if (.bin|type)=="string" then .bin elif (.bin|type)=="object" then (.bin|to_entries[0].value // "") else "" end' "$MANI")
@@ -568,6 +604,35 @@ if [ "$INSTALL_STATUS" = completed ]; then
         fi
       done
     fi
+    # __main__: a package with __main__.py runs as python -m; else a top-level script
+    # that guards a main block (main.py, app.py, then the first by name).
+    if [ ! -s "$ENTRY_SCRIPT" ] && [ -x /work/.venv/bin/python ]; then
+      MM=$(cd "$WORKDIR" && find . -maxdepth 2 -path ./.venv -prune -o -name __main__.py -type f -print 2>/dev/null | sort | head -n 1 || true)
+      MM=${MM#./}
+      if [[ "$MM" =~ ^([A-Za-z_][A-Za-z0-9_]*)/__main__\.py$ ]]; then
+        entry_line "/work/.venv/bin/python -m ${BASH_REMATCH[1]} --help || true"
+      elif [ "$MM" = __main__.py ]; then
+        entry_line "/work/.venv/bin/python . --help || true"
+      else
+        for PYF in main.py app.py $(cd "$WORKDIR" && ls -1 *.py 2>/dev/null | sort); do
+          if [[ "$PYF" =~ ^[A-Za-z0-9_.-]+\.py$ ]] && [ -f "$WORKDIR/$PYF" ] && [ ! -L "$WORKDIR/$PYF" ] && grep -qE '^if __name__ == .__main__.' "$WORKDIR/$PYF" 2>/dev/null; then
+            entry_line "/work/.venv/bin/python $PYF --help || true"; break
+          fi
+        done
+      fi
+    fi
+  elif [ "$ECO" = go ] || [ "$ECO" = rust ]; then
+    # The built executables (Go main packages in /work/bin, Cargo binary targets at the
+    # top of the target folder), each run with --help, at most three.
+    if [ "$ECO" = go ]; then BDIR=/work/bin; else BDIR=/work/target/debug; fi
+    N=0
+    while IFS= read -r -d '' EXE; do
+      B=${EXE##*/}
+      [[ "$B" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || continue
+      case "$B" in *.d|*.so|*.rlib|*.a) continue ;; esac
+      entry_line "'$BDIR/$B' --help || true"
+      N=$((N + 1)); [ "$N" -ge 3 ] && break
+    done < <(find "$BDIR" -maxdepth 1 -type f -perm -u+x -print0 2>/dev/null | sort -z)
   fi
 fi
 
@@ -607,7 +672,7 @@ if [ -s "$ENTRY_SCRIPT" ]; then
   esac
   log "entry $ENTRY_STATUS exit=$ENTRY_EXIT ms=$ENTRY_MS"
 elif [ "$INSTALL_STATUS" = completed ]; then
-  check entry_point false "no bin, main, exports, index.js, start script or importable module found"
+  check entry_point false "no bin, main, exports, index.js, start script, importable module, __main__, Go main package or Cargo binary found"
 fi
 pkill -KILL -u "$CR_UID" || true
 echo "collect $(date +%s.%N)" >"$OUT/phase"
@@ -621,6 +686,14 @@ if [ "$ECO" = npm ] && [ -d "$WORKDIR/node_modules" ]; then
 elif [ "$ECO" = python ] && [ -x /work/.venv/bin/python ]; then
   timeout 3 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" uv pip list --python /work/.venv/bin/python --format json >"$OUT/deps.json" 2>/dev/null || true
   DEPS_KIND=uv-pip-list
+elif [ "$ECO" = go ]; then
+  ( cd "$WORKDIR" && timeout 5 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" go list -m -f '{{if not .Main}}{{.Path}} {{.Version}}{{end}}' all ) 2>/dev/null \
+    | jq -R -s -c 'split("\n") | map(select(test("^[^ ]+ v[^ ]+$")) | split(" ") | {name: .[0], version: (.[1] | ltrimstr("v"))})' >"$OUT/deps.json" 2>/dev/null || true
+  DEPS_KIND=go-modules
+elif [ "$ECO" = rust ]; then
+  ( cd "$WORKDIR" && timeout 5 runuser -u "$CR_USER" -- env -i "${PLAIN_ENV[@]}" cargo metadata --format-version 1 --offline ) 2>/dev/null \
+    | jq -c '[.packages[] | select((.source // "") | startswith("registry+")) | {name, version}]' >"$OUT/deps.json" 2>/dev/null || true
+  DEPS_KIND=cargo-registry
 fi
 pkill -KILL -u "$CR_UID" || true
 
@@ -649,7 +722,7 @@ tr '\0' '\n' <"$RUN/written.0" | head -n 20000 >"$OUT/written.txt" || true
 # Every uid 1001 process is dead, so nothing can swap a file for a FIFO now; grep
 # skips devices and FIFOs anyway, and its timeout bounds a huge or sparse file
 # (a timeout is reported, and the scorer treats the record as cut).
-grep -z -v -E '^/(home/cr/\.npm|home/cr/\.cache)/|/node_modules/\.cache/|/\.venv/lib/' "$RUN/written.0" | head -z -n 10000 >"$RUN/check-files.0" || true
+grep -z -v -E '^/(home/cr/\.npm|home/cr/\.cache|home/cr/go/pkg/mod|home/cr/\.cargo/registry|work/target)/|/node_modules/\.cache/|/\.venv/lib/' "$RUN/written.0" | head -z -n 10000 >"$RUN/check-files.0" || true
 if [ -s "$RUN/check-files.0" ]; then
   set +e
   timeout 3 xargs -0 -r grep -l -s -D skip -F -f "$CRDIR/canary-patterns.txt" -- <"$RUN/check-files.0" >>"$OUT/canary_files.txt" 2>/dev/null

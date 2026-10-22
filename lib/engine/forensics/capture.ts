@@ -12,6 +12,7 @@
 
 import { randomBytes } from "node:crypto";
 import { gunzipSync } from "node:zlib";
+import { REGISTRY_ALLOW_OUT } from "../sandbox/provider";
 import type { ForgedCallData, Phase } from "../types";
 
 export interface CaptureRecord {
@@ -184,7 +185,7 @@ const PROTOS = new Set(["http", "https", "dns", "tcp"]);
 
 /** Registry traffic served by the forge's mirror or registry handler (never scored). */
 const REGISTRY_KINDS = new Set(["mirror", "registry"]);
-const REGISTRY_HOST_SET = new Set(["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io", "pypi.org", "files.pythonhosted.org"]);
+const REGISTRY_HOST_SET: ReadonlySet<string> = new Set(REGISTRY_ALLOW_OUT);
 
 /**
  * True when a call can move the score (lib/engine/score.ts deriveBehaviour):

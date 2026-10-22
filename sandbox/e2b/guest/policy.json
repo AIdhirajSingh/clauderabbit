@@ -3,7 +3,11 @@
   "registries": {
     "npm": ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io"],
     "pypi_index": ["pypi.org"],
-    "pypi_files": ["files.pythonhosted.org"]
+    "pypi_files": ["files.pythonhosted.org"],
+    "go_proxy": ["proxy.golang.org"],
+    "go_sumdb": ["sum.golang.org"],
+    "crates_index": ["index.crates.io"],
+    "crates_files": ["static.crates.io"]
   },
   "forge_ip_pool": "198.18.0.0/15",
   "max_body_capture": 65536,

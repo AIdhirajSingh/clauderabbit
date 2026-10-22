@@ -24,6 +24,8 @@ export const PINS = {
   ubuntu: "24.04",
   node: { version: "24.22.0", sha256: "cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008" },
   uv: { version: "0.13.1", sha256: "eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220" },
+  go: { version: "1.27.3", sha256: "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40" },
+  rust: { version: "1.99.1", sha256: "231fcae47ee950621374725b5fc3b5441d2fbda2955ac45dd7dc816d8876cfe7" },
   python: { mitmproxy: "12.2.3", semgrep: "1.181.0", guarddog: "3.2.0", yaraX: "1.21.0" },
 } as const;
 
@@ -50,6 +52,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const NODE_TARBALL = `node-v${PINS.node.version}-linux-x64.tar.xz`;
 const UV_TARBALL = "uv-x86_64-unknown-linux-gnu.tar.gz";
+const GO_TARBALL = `go${PINS.go.version}.linux-amd64.tar.gz`;
+const RUST_TARBALL = `rust-${PINS.rust.version}-x86_64-unknown-linux-gnu.tar.xz`;
 
 /** Rule files are copied one by one so the destination layout is exact. */
 export function ruleFiles(kind: "semgrep" | "yara", ext: string): string[] {
@@ -80,6 +84,25 @@ export function buildTemplate() {
         `cd /tmp && echo "${PINS.uv.sha256}  ${UV_TARBALL}" | sha256sum -c -`,
         `tar -xzf /tmp/${UV_TARBALL} -C /opt/cr/tools/bin --strip-components=1 && rm -f /tmp/${UV_TARBALL}`,
         "/opt/cr/tools/bin/uv --version | grep -q '^uv " + PINS.uv.version + "'",
+      ])
+      // Go and Rust toolchains for Go and Cargo projects, digest pinned (go.dev and
+      // static.rust-lang.org publish the same digests). Rust: rustc, cargo and the
+      // x86_64 standard library only; no rustup, so a repo's rust-toolchain file is not obeyed.
+      .runCmd([
+        "mkdir -p /opt/cr/go /opt/cr/rust",
+        `cd /tmp && curl -fsSLO https://go.dev/dl/${GO_TARBALL}`,
+        `cd /tmp && echo "${PINS.go.sha256}  ${GO_TARBALL}" | sha256sum -c -`,
+        `tar -xzf /tmp/${GO_TARBALL} -C /opt/cr/go --strip-components=1 && rm -f /tmp/${GO_TARBALL}`,
+        "/opt/cr/go/bin/go version | grep -q 'go" + PINS.go.version + " '",
+        `cd /tmp && curl -fsSLO https://static.rust-lang.org/dist/${RUST_TARBALL}`,
+        `cd /tmp && curl -fsSLO https://static.rust-lang.org/dist/${RUST_TARBALL}.sha256`,
+        `cd /tmp && echo "${PINS.rust.sha256}  ${RUST_TARBALL}" | sha256sum -c -`,
+        `cd /tmp && sha256sum -c ${RUST_TARBALL}.sha256`,
+        `cd /tmp && mkdir rust-dist && tar -xJf ${RUST_TARBALL} -C rust-dist --strip-components=1`,
+        "cd /tmp/rust-dist && ./install.sh --prefix=/opt/cr/rust --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu --disable-ldconfig >/dev/null",
+        `rm -rf /tmp/rust-dist /tmp/${RUST_TARBALL} /tmp/${RUST_TARBALL}.sha256`,
+        "/opt/cr/rust/bin/rustc --version | grep -q '^rustc " + PINS.rust.version + " '",
+        "/opt/cr/rust/bin/cargo --version | grep -q '^cargo '",
       ])
       .setEnvs({ UV_TOOL_DIR: "/opt/cr/tools/uv", UV_TOOL_BIN_DIR: "/opt/cr/tools/bin", UV_PYTHON_DOWNLOADS: "never" })
       .runCmd([
@@ -141,10 +164,10 @@ export function buildTemplate() {
         "dpkg-query -W -f='${Package}=${Version}\\n' " + APT_PACKAGES.join(" ") + " | jq -R -s 'split(\"\\n\") | map(select(length>0))' > /tmp/apt.json",
         "test -n \"$(PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/npm --version)\"",
         "jq -n --slurpfile apt /tmp/apt.json --arg node \"$(/opt/cr/node/bin/node --version)\" --arg npm \"$(PATH=/opt/cr/node/bin:$PATH /opt/cr/node/bin/npm --version)\" " +
-          "--arg uv \"$(/opt/cr/tools/bin/uv --version)\" --arg mitm \"$(/opt/cr/tools/bin/mitmdump --version | head -n1)\" " +
+          "--arg uv \"$(/opt/cr/tools/bin/uv --version)\" --arg go \"$(/opt/cr/go/bin/go version)\" --arg rustc \"$(/opt/cr/rust/bin/rustc --version)\" --arg mitm \"$(/opt/cr/tools/bin/mitmdump --version | head -n1)\" " +
           "--arg semgrep \"$(/opt/cr/tools/bin/semgrep --version)\" " +
           `--arg guarddog "$(${GUARDDOG_VERSION_CMD})" --arg yarax "$(${YARA_VERSION_CMD})" ` +
-          "'{apt:$apt[0], node:$node, npm:$npm, uv:$uv, mitmproxy:$mitm, semgrep:$semgrep, guarddog:$guarddog, yara_x:$yarax}' > /opt/cr/manifest.json",
+          "'{apt:$apt[0], node:$node, npm:$npm, uv:$uv, go:$go, rustc:$rustc, mitmproxy:$mitm, semgrep:$semgrep, guarddog:$guarddog, yara_x:$yarax}' > /opt/cr/manifest.json",
         "rm -f /tmp/apt.json",
       ])
       // No shared package cache: the forge's mirror starts empty in every scan VM and
