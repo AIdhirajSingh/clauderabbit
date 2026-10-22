@@ -147,3 +147,15 @@ Totals (newest scan per target and commit): `TOTALS scans=63 failed=0 partial=3 
   unknown host.
 - Not scoring rules, but found the same way: the written-file listing walks each place once and has 15 s; npm tarball
   caps fit the largest popular packages (next@16 is 43.7 MB, 192 MB unpacked).
+
+### After: fresh scans on the preview (score rules 31)
+
+| target | before | after | deductions left | time |
+|---|---|---|---|---|
+| react (`9ffcb46`) | Caution 60 | No threats observed 90 (Partial scan: install hit its 60 s limit) | none | 108 s |
+| lodash (`2b5e6f7`) | Caution 74 | No threats observed 90 | none (fsevents record under not verified) | 50 s |
+| bufferutil 4.1.0 | Caution 74 | No threats observed 90 | none | 14 s |
+| OpenJarvis (`8f81c02`) | Caution 60 | Low risk 87 (Partial scan: entry point cut by its time limit) | none: its 23 flagged locations were read, never seen doing anything, and are listed under not verified | 47 s |
+| fixture (`c15fb96`) | Malicious 0 | Malicious 0 | -70 canary left the sandbox, -35 decoy credential read, -25 forged call to a non-registry host, -40 flagged install code (counts: bad behaviour observed in the same run) | 25 s |
+
+OpenJarvis holds no finding that rests on observed behaviour: the sandbox saw no bad action, so nothing stays in points.
