@@ -409,18 +409,20 @@ else
     check package_manager true "go $("$GO_BIN/go" env GOVERSION 2>/dev/null || echo unknown)"
   elif [ -f "$WORKDIR/Cargo.toml" ]; then
     ECO=rust
-    # cargo itself stops making progress under the preloaded clock library (no output in
-    # 120 s on a one-file crate), so cargo runs without it. The code crates run at build
-    # time does not: cargo's [env] table, given on the command line (above any config file
-    # in the repo) and forced over the inherited environment, puts the clock library into
-    # every build script and every rustc (which runs the proc macros). There the monotonic
-    # clock stays real, so cargo-style absolute timed waits keep their meaning; the wall
-    # clock and every sleep run on the sped-up clock. The template smoke checks a build script.
-    # The table is a root-owned file (the command line takes no inline table); a config
-    # file given with --config has the command line's precedence.
-    printf '[env]\nLD_PRELOAD = { value = "%s", force = true }\nFAKETIME_DONT_FAKE_MONOTONIC = { value = "1", force = true }\n' "$FAKETIME_LIB" >/etc/cr/cargo-clock.toml
+    # cargo and rustc stop making progress under the preloaded clock library (no output in
+    # 120 s on a one-file crate, also with the monotonic clock left real), so both start
+    # without it. The code crates run at build time does not: cargo's [env] table, in a
+    # root-owned file given with --config (the command line's precedence, above any config
+    # file in the repo) and forced over the inherited environment, puts the clock library
+    # into every build script, and RUSTC_WRAPPER (the environment beats repo config) takes
+    # it out again for rustc alone. Proc macros run inside rustc, so they stay on the real
+    # clock (check clock_scope). The template smoke checks a build script.
+    printf '[env]\nLD_PRELOAD = { value = "%s", force = true }\n' "$FAKETIME_LIB" >/etc/cr/cargo-clock.toml
+    printf '#!/bin/sh\nunset LD_PRELOAD\nexec "$@"\n' >/etc/cr/cr-rustc
     chmod 0644 /etc/cr/cargo-clock.toml
-    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins --config /etc/cr/cargo-clock.toml"
+    chmod 0755 /etc/cr/cr-rustc
+    INSTALL_CMD="env -u LD_PRELOAD RUSTC_WRAPPER=/etc/cr/cr-rustc cargo build --bins --config /etc/cr/cargo-clock.toml"
+    check clock_scope false "build scripts and the built programs ran on the sped-up clock; proc macros run inside rustc, which runs on the real clock"
     [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="$INSTALL_CMD --locked"
     check package_manager true "$("$RUST_BIN/cargo" --version 2>/dev/null || echo cargo)"
   elif [ -f "$WORKDIR/pyproject.toml" ] || [ -f "$WORKDIR/setup.py" ] || [ -f "$WORKDIR/requirements.txt" ]; then
