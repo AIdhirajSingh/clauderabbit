@@ -65,8 +65,9 @@ export interface GithubRepoInfo {
   repoName: string;
   defaultBranch: string;
   description: string | null;
-  stars: number;
-  forks: number;
+  /** null when unknown (resolved without the API, see resolveViaGit). */
+  stars: number | null;
+  forks: number | null;
   createdAt: string | null;
   pushedAt: string | null;
   license: string | null;
@@ -124,6 +125,81 @@ interface GhRepo {
 
 export async function resolveGithub(spec: GithubTargetSpec, ctx: GithubContext): Promise<GithubResolution> {
   if (!validName(spec.owner, spec.repo)) throw new EngineError("invalid_target", "not a valid GitHub owner/repo");
+  try {
+    return await resolveViaApi(spec, ctx);
+  } catch (err) {
+    // The REST API is rate limited per IP without a token; git's own endpoint is not.
+    if (err instanceof EngineError && err.code === "rate_limited") return resolveViaGit(spec, ctx);
+    throw err;
+  }
+}
+
+/**
+ * Resolves a public repo's ref to a commit through git's smart HTTP endpoint
+ * (info/refs), which the REST API rate limit does not cover: HEAD and its default
+ * branch, a branch or tag, or a full commit SHA as given. A private or missing repo
+ * answers 401/404 there and is not_found. Repo metadata the API would give (stars,
+ * description, dates) is unknown on this path and left null.
+ */
+export async function resolveViaGit(spec: GithubTargetSpec, ctx: GithubContext): Promise<GithubResolution> {
+  const url = `https://github.com/${encodeURIComponent(spec.owner)}/${encodeURIComponent(spec.repo)}.git/info/refs?service=git-upload-pack`;
+  const res = await fetchWithDeadline(ctx.fetch, url, { headers: { "User-Agent": "git/2.45.0", "Git-Protocol": "version=1" } }, ctx.timeoutMs, ctx.signal);
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    await res.body?.cancel();
+    throw new EngineError("not_found", `${spec.owner}/${spec.repo} was not found on GitHub, or it is private`);
+  }
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new EngineError("upstream", `GitHub returned HTTP ${res.status} for ${spec.owner}/${spec.repo}`);
+  }
+  const refs = parseUploadPackRefs(await res.text());
+  const defaultBranch = refs.headTarget?.replace(/^refs\/heads\//, "") ?? "HEAD";
+  let ref = spec.ref ?? defaultBranch;
+  let sha: string | undefined;
+  if (spec.ref && SHA_RE.test(spec.ref.toLowerCase())) sha = spec.ref.toLowerCase();
+  else if (!spec.ref) sha = refs.head;
+  else sha = refs.byName.get(`refs/tags/${ref}^{}`) ?? refs.byName.get(`refs/tags/${ref}`) ?? refs.byName.get(`refs/heads/${ref}`) ?? refs.byName.get(ref);
+  if (!sha || !SHA_RE.test(sha)) throw new EngineError("not_found", `ref "${ref}" was not found on GitHub`);
+  if (!spec.ref) ref = defaultBranch;
+  return {
+    owner: spec.owner,
+    repo: spec.repo,
+    ref,
+    sha,
+    info: { ownerLogin: spec.owner, ownerType: "User", repoName: spec.repo, defaultBranch, description: null, stars: null, forks: null, createdAt: null, pushedAt: null, license: null, language: null },
+  };
+}
+
+/** The refs in a git-upload-pack info/refs advertisement (pkt-line format). */
+export function parseUploadPackRefs(body: string): { head?: string; headTarget?: string; byName: Map<string, string> } {
+  const byName = new Map<string, string>();
+  let head: string | undefined;
+  let headTarget: string | undefined;
+  let i = 0;
+  while (i + 4 <= body.length) {
+    const len = parseInt(body.slice(i, i + 4), 16);
+    if (Number.isNaN(len)) break;
+    if (len === 0) {
+      i += 4;
+      continue;
+    }
+    const line = body.slice(i + 4, i + len).replace(/\n$/, "");
+    i += len;
+    if (line.startsWith("#")) continue;
+    const [main, caps] = line.split("\0");
+    const m = /^([0-9a-f]{40}) (\S+)$/.exec(main ?? "");
+    if (!m) continue;
+    const [, sha, name] = m;
+    if (name === "HEAD") {
+      head = sha;
+      const sym = /symref=HEAD:(\S+)/.exec(caps ?? "");
+      if (sym) headTarget = sym[1];
+    } else byName.set(name!, sha!);
+  }
+  return { head, headTarget, byName };
+}
+
+async function resolveViaApi(spec: GithubTargetSpec, ctx: GithubContext): Promise<GithubResolution> {
   const base = `${GITHUB_API}/repos/${encodeURIComponent(spec.owner)}/${encodeURIComponent(spec.repo)}`;
   const res = await fetchWithDeadline(ctx.fetch, base, { headers: apiHeaders(ctx.token) }, ctx.timeoutMs, ctx.signal);
   if (!res.ok) await failFor(res, `${spec.owner}/${spec.repo}`);
