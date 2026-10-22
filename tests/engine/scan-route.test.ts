@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { POST, maxDuration, runtime } from "../../app/api/scan/route.ts";
-import { DEFAULT_DEADLINES } from "../../lib/engine/config.ts";
+import { DEFAULT_DEADLINES, fullInstallDeadlines } from "../../lib/engine/config.ts";
 
 const BASE_ENV = {
   NEXT_PUBLIC_SITE_URL: "https://clauderabbit.in",
@@ -37,10 +37,10 @@ function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T
 
 const req = (body: unknown, headers: Record<string, string> = {}) => new Request("https://clauderabbit.in/api/scan", { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
 
-test("route config: node runtime, maxDuration 300 covers the scan deadline", () => {
+test("route config: node runtime, maxDuration 800 covers the full-install scan deadline", () => {
   assert.equal(runtime, "nodejs");
-  assert.equal(maxDuration, 300);
-  assert.ok(maxDuration * 1000 > DEFAULT_DEADLINES.scanMs + 15_000);
+  assert.equal(maxDuration, 800);
+  assert.ok(maxDuration * 1000 > fullInstallDeadlines(DEFAULT_DEADLINES).scanMs + 15_000);
 });
 
 test("invalid target: 400 with an ad", async () => {

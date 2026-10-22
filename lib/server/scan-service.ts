@@ -13,7 +13,7 @@
 import { adFor, type AdTarget } from "../engine/ads";
 import { cacheHitLedger, type CostLedger } from "../engine/cost";
 import { identify, identityBackend, bearerToken, type Identity } from "../engine/auth";
-import { DEFAULT_SITE_URL, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
+import { DEFAULT_SITE_URL, fullInstallDeadlines, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
 import { runScan, type RunScanOptions } from "../engine/orchestrator";
 import { checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
@@ -32,7 +32,7 @@ export type FinalLine =
   | { type: "result"; outcome: "cached" | "fresh"; run_id: string; report: ReportPayload; report_url: string; ad: Ad; cost: CostLedger | null }
   | { type: "error"; code: ErrorCode; message: string; run_id: string | null; ad: Ad; signInUrl?: string; retryAfter?: number };
 
-export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null } | { ok: false; message: string };
+export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null; full?: boolean } | { ok: false; message: string };
 
 function s(v: unknown): string | undefined {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
@@ -45,6 +45,11 @@ function s(v: unknown): string | undefined {
  * `x-cr-operator-key`, and the orchestrator checks again).
  */
 export function parseScanBody(body: unknown): ParsedTarget {
+  const r = parseScanTarget(body);
+  return r.ok ? { ...r, full: (body as Record<string, unknown>).full === true } : r;
+}
+
+function parseScanTarget(body: unknown): ParsedTarget {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, message: "body must be a JSON object" };
   const b = body as Record<string, unknown>;
   const deviceRaw = s(b.deviceId);
@@ -230,12 +235,14 @@ export async function executeScan(
   ctx: CallerContext,
   target: ScanTarget,
   regenerate: boolean,
-  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal },
+  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean },
 ): Promise<FinalLine> {
-  const { config, store, caller } = ctx;
+  const { store, caller } = ctx;
+  const full = opts.full === true;
+  const config = full ? { ...ctx.config, deadlines: fullInstallDeadlines(ctx.config.deadlines) } : ctx.config;
   const ad = adForSurface(config, caller.surface, target);
   const deps = productionDeps(config, store);
-  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted });
+  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(full && opts.signal ? { stop: opts.signal } : {}) });
   const reportUrl = reportUrlFor(config.siteUrl, target);
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad };
   if (outcome.kind === "attached") {

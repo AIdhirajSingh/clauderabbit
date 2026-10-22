@@ -32,6 +32,12 @@ export interface ScanRequest {
   caller: ScanCaller;
   /** Operator-only: run a fresh scan over a cached report. */
   regenerate: boolean;
+  /**
+   * The viewer asked to keep installing a very large repo: the install runs to
+   * completion (lib/engine/config.ts fullInstallDeadlines) and a stored partial
+   * report is not served for it.
+   */
+  full?: boolean;
 }
 
 export type ErrorCode =

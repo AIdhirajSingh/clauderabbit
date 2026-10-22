@@ -58,10 +58,10 @@ function deviceId(): string | null {
  * first event, or the final line), or rejects with the
  * server's message.
  */
-export async function startScan(target: string, accessToken: string | null): Promise<{ runId: string }> {
+export async function startScan(target: string, accessToken: string | null, full = false): Promise<{ runId: string }> {
   const headers: Record<string, string> = { "Content-Type": "application/json", "x-clauderabbit-client": "web" };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-  const res = await fetch("/api/scan", { method: "POST", headers, body: JSON.stringify({ target, deviceId: deviceId() }) });
+  const res = await fetch("/api/scan", { method: "POST", headers, body: JSON.stringify({ target, deviceId: deviceId(), ...(full ? { full: true } : {}) }) });
   if (!res.ok || !res.body) {
     let msg = `Scan failed (${res.status}).`;
     try {

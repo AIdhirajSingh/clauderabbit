@@ -34,7 +34,7 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 800; // a full-install scan (lib/engine/config.ts fullInstallDeadlines) needs up to scanMs + 300 s
 
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extra } });
@@ -132,6 +132,7 @@ export async function POST(req: Request): Promise<Response> {
       let final: FinalLine;
       try {
         final = await executeScan(ctx, parsed.target, regenerate, {
+          full: parsed.full === true,
           onEvent,
           signal: req.signal,
           background,

@@ -119,6 +119,18 @@ export const DEFAULT_DEADLINES: EngineDeadlines = {
 };
 
 /**
+ * Deadlines for a full-install scan (the viewer pressed Yes on "Keep installing
+ * to scan it fully?"): the install gets FULL_INSTALL_EXTRA_MS more, and every
+ * deadline that must cover it (the detonation command, the VM, the scan) grows
+ * by the same amount. The route's maxDuration bounds the whole scan.
+ */
+export const FULL_INSTALL_EXTRA_MS = 300_000;
+export function fullInstallDeadlines(d: EngineDeadlines): EngineDeadlines {
+  const x = FULL_INSTALL_EXTRA_MS;
+  return { ...d, installMs: d.installMs + x, detonateTotalMs: d.detonateTotalMs + x, sandboxTimeoutMs: d.sandboxTimeoutMs + x, scanMs: d.scanMs + x };
+}
+
+/**
  * The detonation command deadline must cover install, entry and every harness
  * step, or an overrun erases the forensic bundle; the VM must outlive the
  * command plus the salvage; the scan deadline must cover the serial path.

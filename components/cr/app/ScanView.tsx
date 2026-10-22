@@ -13,14 +13,15 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { liveScan, subscribeLive } from "@/lib/cr/scan-client";
+import { liveScan, startScan, subscribeLive } from "@/lib/cr/scan-client";
 import type { ReportPayload, ScanEvent, StageName } from "@/lib/engine/types";
 import { TONE_STYLE, toneOf } from "@/lib/cr/verdict";
 import { plainLog, STAGE_WORD } from "@/lib/cr/plain-log";
 import { evidenceLines, notVerifiedBullets, plainTitle, reputationChips } from "@/lib/cr/result-format";
 import { useAppSession } from "./AppShell";
 import { VerdictGlyph } from "./Board";
-import { VideoAd } from "./Ads";
+import { ScanAd } from "./Ads";
+import { ContinueCard } from "./ContinueCard";
 import s from "./app.module.css";
 
 const STAGES = ["Fetching", "Installing", "Running", "Checking", "Scoring"] as const;
@@ -268,6 +269,21 @@ export function ScanView({ runId }: { runId: string }) {
   const done = !!run?.report && run.status === "done" && (!paced || playDone);
   const failed = run?.status === "error" && !replay;
   const running = !done && !failed;
+  // The install hit its time limit, as far as the scan has played: the continue card asks.
+  const installHitLimit = useMemo(() => visible.some((e) => e.type === "stage" && e.data.name === "detonate" && e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? "")), [visible]);
+  const full = params.get("full") === "1";
+  const subject = run?.subject ?? null;
+  useEffect(() => {
+    // Yes on the continue card: play back the stored full scan or run one (the server decides), as a new run page.
+    if (!full || !subject || !ready) return;
+    let off = false;
+    startScan(subject, session?.access_token ?? null, true)
+      .then(({ runId: id }) => !off && router.replace(`/app/scan/${id}`))
+      .catch((e: unknown) => !off && setToast(e instanceof Error ? e.message : "The full scan did not start."));
+    return () => {
+      off = true;
+    };
+  }, [full, subject, ready, session, router]);
 
   useEffect(() => {
     if (!running || paced) return;
@@ -424,7 +440,8 @@ export function ScanView({ runId }: { runId: string }) {
       <section className={s.col} style={{ flex: "1 1 420px", gap: 22 }}>
         {running && (
           <>
-            <VideoAd key={`${runId}-${replay ? "replay" : "live"}`} playKey={`${runId}-${replay ? "replay" : "live"}`} />
+            <ContinueCard runId={runId} show={installHitLimit && !full} />
+            <ScanAd key={`${runId}-${replay ? "replay" : "live"}`} runId={runId} />
             <div style={{ display: "flex", flexDirection: "column" }}>
               {CHECKS.map((c) => {
                 const ok = c.stages.every((n) => stageState.finished.has(n));

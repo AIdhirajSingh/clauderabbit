@@ -82,6 +82,11 @@ export interface RunScanOptions {
    */
   onEvent?: (e: ScanEvent) => void;
   /**
+   * Full-install scans only (ScanRequest.full): the viewer leaving stops the scan,
+   * because nothing is earning for it. Every other scan has no abort signal.
+   */
+  stop?: AbortSignal;
+  /**
    * When set, the work after the report is built (persist, budget charge, event
    * flush, run row) runs as this background task and `runScan` returns the
    * report at once. The caller keeps the process alive until the task settles
@@ -396,7 +401,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const cfg = deps.config;
   const startedAt = deps.now();
   const runId = (deps.newRunId ?? randomUUID)();
-  const outer = AbortSignal.timeout(cfg.deadlines.scanMs);
+  const outer = req.full && opts.stop ? AbortSignal.any([AbortSignal.timeout(cfg.deadlines.scanMs), opts.stop]) : AbortSignal.timeout(cfg.deadlines.scanMs);
   const g = gate(opts.onEvent);
   let claimed = false;
   let discard = false;
@@ -517,7 +522,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     emitStage("cache", "start");
     try {
       const found = await deps.store.findCached(resolved.subject, commitSha);
-      const hit = found && cachedCoverageComplete(found.report) ? found : null;
+      // A full-install request never gets a stored partial report: it plays back a stored full one or runs.
+      const hit = found && cachedCoverageComplete(found.report) && !(req.full && found.report?.partial) ? found : null;
       if (found && !hit) emitStage("cache", "done", "miss: the stored run for this sha has incomplete coverage or older scoring rules, so it runs again");
       if (hit) {
         g.drop();
@@ -717,7 +723,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
         tarball: bytes,
         prefetched: Boolean(fetched!.vm),
         canaries,
-        installTimeoutMs: vmSize === "large" ? LARGE_INSTALL_MS : cfg.deadlines.installMs,
+        installTimeoutMs: vmSize === "large" ? Math.max(LARGE_INSTALL_MS, cfg.deadlines.installMs) : cfg.deadlines.installMs,
         entryTimeoutMs: cfg.deadlines.entryMs,
         totalTimeoutMs: vmSize === "large" ? LARGE_DETONATE_MS : cfg.deadlines.detonateTotalMs,
         sandboxTimeoutMs: vmSize === "large" ? LARGE_SANDBOX_MS : cfg.deadlines.sandboxTimeoutMs,
