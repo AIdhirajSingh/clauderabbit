@@ -103,6 +103,11 @@ export function buildTemplate() {
         `cd / && rm -rf /tmp/rust-dist /tmp/${RUST_TARBALL} /tmp/${RUST_TARBALL}.sha256`,
         "/opt/cr/rust/bin/rustc --version | grep -q '^rustc " + PINS.rust.version + " '",
         "/opt/cr/rust/bin/cargo --version | grep -q '^cargo '",
+        // rustc stops making progress under the sandbox's preloaded clock library, so the
+        // rustc every build reaches (cargo's and a build script's own) drops it first.
+        "mv /opt/cr/rust/bin/rustc /opt/cr/rust/bin/rustc.real",
+        "printf '#!/bin/sh\\nunset LD_PRELOAD\\nexec /opt/cr/rust/bin/rustc.real \"$@\"\\n' >/opt/cr/rust/bin/rustc && chmod 0755 /opt/cr/rust/bin/rustc",
+        "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1 FAKETIME='+0 x30' /opt/cr/rust/bin/rustc --version | grep -q '^rustc " + PINS.rust.version + " '",
       ])
       // The sped-up clock in the Go runtime every scanned Go program is compiled with
       // (guest/cr-go-clock.py); the smoke detonation below checks it in a run.

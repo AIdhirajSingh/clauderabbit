@@ -203,6 +203,10 @@ FAKE_RATE=$(jq -r '.fake_rate // 30' "$IN/run.json")
 # and never past INSTALL_MAX, which the server sizes to fit the scan's budget.
 INSTALL_MAX=$(jq -r '.install_max_s // 0' "$IN/run.json")
 ASK_S=15
+# The viewer's answer travels page -> server -> E2B -> this VM, which took 17 to 24 s on
+# the preview; the install waits that much longer for it. An explicit No (or the card's
+# own 15 s running out) arrives as /root/in/stop-installing and ends the wait at once.
+DELIVER_S=30
 MODE=$(jq -r '.mode' "$IN/run.json")
 PKG_NAME=$(jq -r '.name // ""' "$IN/run.json")
 # npm names: lowercase today, but older packages (npm:Hello) have capitals.
@@ -411,17 +415,16 @@ else
     ECO=rust
     # cargo and rustc stop making progress under the preloaded clock library (no output in
     # 120 s on a one-file crate, also with the monotonic clock left real), so both start
-    # without it. The code crates run at build time does not: cargo's [env] table, in a
-    # root-owned file given with --config (the command line's precedence, above any config
-    # file in the repo) and forced over the inherited environment, puts the clock library
-    # into every build script, and RUSTC_WRAPPER (the environment beats repo config) takes
-    # it out again for rustc alone. Proc macros run inside rustc, so they stay on the real
-    # clock (check clock_scope). The template smoke checks a build script.
+    # without it: cargo here, and rustc everywhere (the template's rustc drops the library
+    # before it starts the compiler, also when a build script runs rustc itself). The code
+    # crates run at build time keeps it: cargo's [env] table, in a root-owned file given
+    # with --config (the command line's precedence, above any config file in the repo) and
+    # forced over the inherited environment, puts the clock library into every build
+    # script. Proc macros run inside rustc, so they stay on the real clock (check
+    # clock_scope). The template smoke checks a build script.
     printf '[env]\nLD_PRELOAD = { value = "%s", force = true }\n' "$FAKETIME_LIB" >/etc/cr/cargo-clock.toml
-    printf '#!/bin/sh\nunset LD_PRELOAD\nexec "$@"\n' >/etc/cr/cr-rustc
     chmod 0644 /etc/cr/cargo-clock.toml
-    chmod 0755 /etc/cr/cr-rustc
-    INSTALL_CMD="env -u LD_PRELOAD RUSTC_WRAPPER=/etc/cr/cr-rustc cargo build --bins --config /etc/cr/cargo-clock.toml"
+    INSTALL_CMD="env -u LD_PRELOAD cargo build --bins --config /etc/cr/cargo-clock.toml"
     check clock_scope false "build scripts and the built programs ran on the sped-up clock; proc macros run inside rustc, which runs on the real clock"
     [ -f "$WORKDIR/Cargo.lock" ] && INSTALL_CMD="$INSTALL_CMD --locked"
     check package_manager true "$("$RUST_BIN/cargo" --version 2>/dev/null || echo cargo)"
@@ -492,10 +495,11 @@ if [ -n "$INSTALL_CMD" ]; then
       strace -f --seccomp-bpf -qq -ttt -s 256 -e trace="$TRACE_SET" -o "$OUT/trace.install" -u "$CR_USER" -- \
       env -i "${BASE_ENV[@]}" bash -c "$INSTALL_CMD" ) >"$OUT/install.out" 2>"$OUT/install.err" &
   IPID=$!
-  # At INSTALL_TIMEOUT the install keeps running for up to ASK_S while the scan page
-  # asks "Keep installing?" (the marker line below reaches it live). The server's
-  # answer is /root/in/keep-installing (root-only; the repo's code cannot write it):
-  # present, the install runs on to completion or INSTALL_MAX; absent, it is stopped.
+  # At INSTALL_TIMEOUT the install keeps running while the scan page asks "Keep
+  # installing?" for ASK_S (the marker line below reaches it live), plus DELIVER_S for
+  # the answer to arrive. The server's answer is /root/in/keep-installing or
+  # /root/in/stop-installing (root-only; the repo's code cannot write either): Yes runs
+  # the install on to completion or INSTALL_MAX; No, or no answer, stops it.
   CUT=0
   if [ "$INSTALL_MAX" -gt "$INSTALL_TIMEOUT" ]; then
     ASKED=0
@@ -503,12 +507,16 @@ if [ -n "$INSTALL_CMD" ]; then
       EL=$(( ($(now_ms) - START) / 1000 ))
       if [ "$EL" -ge "$INSTALL_TIMEOUT" ]; then
         if [ "$ASKED" = 0 ]; then log "install-at-limit ${INSTALL_TIMEOUT} s: waiting ${ASK_S} s for keep-installing"; ASKED=1; fi
+        if [ -f "$IN/stop-installing" ]; then
+          log "stop-installing: the viewer answered No at ${EL} s"
+          CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break
+        fi
         if [ -f "$IN/keep-installing" ]; then
           log "keep-installing: the install continues, up to ${INSTALL_MAX} s"
           check install_continued true "the viewer asked to keep installing at ${EL} s; limit ${INSTALL_MAX} s"
           break
         fi
-        if [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S )) ]; then CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break; fi
+        if [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S + DELIVER_S )) ]; then CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break; fi
       fi
       sleep 0.5
     done
