@@ -52,6 +52,12 @@ export interface ReportRecord {
   ownerLogin: string;
   repoName: string;
   commitSha: string;
+  /**
+   * The request asked for the target's current version (no pinned commit or
+   * version), so this commit is what the target is now: stored as ref 'latest',
+   * which the danger board prefers over older commits scanned later.
+   */
+  current?: boolean;
   report: ReportPayload;
   /** Per-surface report fields: dependency list with OSV results, findings, stage chapters. */
   packages: unknown;
@@ -71,6 +77,8 @@ export interface ScanStore {
   readonly ownerCache: OwnerCache;
   /** Latest completed run for this subject and SHA, with its events. */
   findCached(subject: string, commitSha: string): Promise<CachedRun | null>;
+  /** Marks a stored report as its target's current version (v2.reports.ref = 'latest'); see ReportRecord.current. */
+  markCurrent?(ownerLogin: string, repoName: string, commitSha: string): Promise<void>;
   /** Insert a running row; when one is already running for the same key, return it instead. */
   claimRun(req: ClaimRequest): Promise<ClaimResult>;
   /** Append a batch of events (ordered by seq). */
@@ -466,6 +474,12 @@ export class V2Store implements ScanStore {
     return rows[0] ?? null;
   }
 
+  async markCurrent(ownerLogin: string, repoName: string, commitSha: string): Promise<void> {
+    await run("reports mark current", () =>
+      this.db.query("update v2.reports set ref = 'latest', updated_at = now() where owner_login = $1 and repo_name = $2 and commit_sha = $3", [ownerLogin, repoName, commitSha]),
+    );
+  }
+
   async findCached(subject: string, commitSha: string): Promise<CachedRun | null> {
     const runRow = await this.findLatestDoneRun(subject, commitSha);
     if (!runRow) return null;
@@ -527,11 +541,12 @@ export class V2Store implements ScanStore {
       this.db.query<{ id: string }>(
         `with saved as (
            insert into v2.reports (owner_login, repo_name, commit_sha, score, verdict, summary, scan_path, deep, cached,
-                                   stats_json, packages_json, risky_json, logs_json, forensics_json, run_id, score_breakdown, not_verified)
+                                   stats_json, packages_json, risky_json, logs_json, forensics_json, run_id, score_breakdown, not_verified, ref)
            values ($1, $2, $3, $4::int, $5, $6, 'run', true, false,
-                   $7::text::jsonb, $8::text::jsonb, $9::text::jsonb, $10::text::jsonb, $11::text::jsonb, $12::uuid, $13::text::jsonb, $14::text::jsonb)
+                   $7::text::jsonb, $8::text::jsonb, $9::text::jsonb, $10::text::jsonb, $11::text::jsonb, $12::uuid, $13::text::jsonb, $14::text::jsonb,
+                   case when $15::boolean then 'latest' end)
            on conflict (owner_login, repo_name, commit_sha) do update
-              set score = excluded.score, verdict = excluded.verdict, summary = excluded.summary,
+              set score = excluded.score, verdict = excluded.verdict, summary = excluded.summary, ref = coalesce(excluded.ref, v2.reports.ref),
                   stats_json = excluded.stats_json, packages_json = excluded.packages_json, risky_json = excluded.risky_json,
                   logs_json = excluded.logs_json, forensics_json = excluded.forensics_json, run_id = excluded.run_id,
                   score_breakdown = excluded.score_breakdown, not_verified = excluded.not_verified, cached = false
@@ -554,6 +569,7 @@ export class V2Store implements ScanStore {
           r.run_id,
           JSON.stringify(r.score_breakdown),
           JSON.stringify(r.not_verified),
+          record.current === true,
         ],
       ),
     );

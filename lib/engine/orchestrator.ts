@@ -523,6 +523,9 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     resolved.commitSha = fetched.commitSha;
   }
   const commitSha = resolved.commitSha!;
+  // The request asked for the target's current version, not a pinned commit or version.
+  const t = req.target;
+  const currentVersion = (t.kind === "github" && !t.ref) || (t.kind === "npm" && !t.version);
 
   if (req.regenerate && req.caller.operator) {
     emitStage("cache", "skipped", "operator regenerate");
@@ -534,6 +537,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       const hit = found && cachedCoverageComplete(found.report) && !(req.full && found.report?.partial) ? found : null;
       if (found && !hit) emitStage("cache", "done", "miss: the stored run for this sha has incomplete coverage or older scoring rules, so it runs again");
       if (hit) {
+        if (currentVersion) await deps.store.markCurrent?.(resolved.ownerLogin, resolved.repoName, commitSha).catch(() => undefined);
         g.drop();
         discard = true;
         await bus.close();
@@ -969,6 +973,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
           ownerLogin: resolved.ownerLogin,
           repoName: resolved.repoName,
           commitSha,
+          current: currentVersion,
           report,
           packages: report.packages,
           risky: [...staticFindings.filter((f) => f.reach !== "unreachable").slice(0, 100), ...checkFindings.slice(0, 36)],

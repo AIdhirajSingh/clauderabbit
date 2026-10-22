@@ -44,5 +44,5 @@ test("the store binds its JSON columns through text", () => {
   const store = readFileSync(path.join(ROOT, "lib", "engine", "store.ts"), "utf8");
   assert.match(store, /jsonb_to_recordset\(\$1::text::jsonb\)/);
   assert.match(store, /timings = \$5::text::jsonb, cost = \$6::text::jsonb/);
-  assert.match(store, /\$13::text::jsonb, \$14::text::jsonb\)/);
+  assert.match(store, /\$13::text::jsonb, \$14::text::jsonb,/);
 });

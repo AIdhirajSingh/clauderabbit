@@ -35,7 +35,9 @@ interface RawBoardRow {
 }
 
 /**
- * One row per scanned target, its latest scan, most dangerous first (score
+ * One row per scanned target, most dangerous first: the target's current version
+ * (the last scan that asked for it without pinning a commit or version, ref
+ * 'latest'), else its newest scan; then by score
  * ascending, then newest). Only real scans written by a run: tarball (operator)
  * runs and our own test fixture repos (lib/server/public-lists.ts) stay off the
  * board. `offset` paginates; `filter` narrows by the latest scan's verdict.
@@ -50,7 +52,8 @@ export async function listBoard(db: SqlExecutor, filter: BoardFilter, offset: nu
                     to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
                from v2.reports
               where owner_login <> 'tarball' and run_id is not null and repo_name !~* $4
-              order by owner_login, repo_name, created_at desc) latest
+              order by owner_login, repo_name, (ref is not distinct from 'latest') desc,
+                       case when ref is not distinct from 'latest' then updated_at else created_at end desc) latest
       where ($1::text[] is null or verdict = any($1::text[]))
       order by score asc, created_at_ts desc
       limit $2 offset $3`,
