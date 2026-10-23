@@ -31,10 +31,12 @@ export function sizeForRepo(files: number, bytes: number, truncated: boolean, he
   return truncated || heavyBuild || files > HUGE_REPO_FILES || bytes > HUGE_REPO_BYTES ? "large" : "small";
 }
 
-/** A tree path that marks a heavy build: a compiled build's manifest, or a large lockfile (root or up to two folders down). */
+/** A tree path that marks a heavy build: a compiled build's manifest, a make build at the root, or a large lockfile (root or up to two folders down). */
 export function isHeavyBuildPath(path: string, size: number): boolean {
   if (path.split("/").length > 3 || /(^|\/)(node_modules|vendor|test|tests|testdata|fixtures?|examples?|docs?)\//.test(path)) return false;
   const base = path.slice(path.lastIndexOf("/") + 1);
   if (base === "go.mod" || base === "Cargo.toml") return true;
+  // A make build at the repo root (C and C++ projects): the harness builds it with make.
+  if (!path.includes("/") && ["Makefile", "GNUmakefile", "makefile", "configure"].includes(base)) return true;
   return ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "uv.lock", "poetry.lock", "Cargo.lock"].includes(base) && size > HEAVY_LOCKFILE_BYTES;
 }

@@ -267,7 +267,10 @@ BASE_ENV=(
   npm_config_maxsockets=16 npm_config_network_concurrency=16 npm_config_dangerously_allow_all_builds=true
   COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$H/.cache/corepack" COREPACK_ENABLE_STRICT=0
   npm_config_cafile=/etc/cr/ca.pem YARN_HTTPS_CA_FILE_PATH=/etc/cr/ca.pem YARN_ENABLE_TELEMETRY=0 YARN_ENABLE_GLOBAL_CACHE=0
-  UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy
+  UV_CACHE_DIR="$H/.cache/uv" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1
+  # Hard links from uv's cache (same filesystem): a copy put every wheel on the disk twice,
+  # and a large ML install (torch with CUDA wheels) filled the 10 GB VM disk.
+  UV_LINK_MODE=hardlink
   # Go: modules only from the module proxy, checked against go.sum and the checksum
   # database (both through the forge); never a VCS fetch, never a toolchain download.
   GOPATH="$H/go" GOMODCACHE="$H/go/pkg/mod" GOCACHE="$H/.cache/go-build" GOPROXY=https://proxy.golang.org
@@ -308,7 +311,10 @@ else
   WORKDIR=/work/src
   # The project the harness builds: the repo root when it holds a manifest the sandbox
   # supports, else the shallowest such manifest one or two folders down (first by path).
-  has_manifest() { [ -f "$1/package.json" ] || [ -f "$1/go.mod" ] || [ -f "$1/Cargo.toml" ] || [ -f "$1/pyproject.toml" ] || [ -f "$1/setup.py" ] || [ -f "$1/requirements.txt" ]; }
+  # A C or C++ project built by make (a Makefile, or an autotools configure script) is a
+  # project too: its program is the executable the build produces.
+  has_manifest() { [ -f "$1/package.json" ] || [ -f "$1/go.mod" ] || [ -f "$1/Cargo.toml" ] || [ -f "$1/pyproject.toml" ] || [ -f "$1/setup.py" ] || [ -f "$1/requirements.txt" ] \
+    || [ -f "$1/Makefile" ] || [ -f "$1/makefile" ] || [ -f "$1/GNUmakefile" ] || [ -x "$1/configure" ]; }
   if ! has_manifest /work/src; then
     SUB=$(cd /work/src && timeout 10 find . -mindepth 2 -maxdepth 3 \( -name node_modules -o -name vendor -o -name .git -o -name 'test*' -o -name 'example*' -o -name 'doc*' \) -prune -o \
       -type f \( -name package.json -o -name go.mod -o -name Cargo.toml -o -name pyproject.toml -o -name setup.py -o -name requirements.txt \) -print 2>/dev/null \
@@ -441,6 +447,17 @@ else
         INSTALL_CMD="$INSTALL_CMD && uv pip install --python /work/.venv/bin/python ."
       fi
     fi
+  elif [ -f "$WORKDIR/Makefile" ] || [ -f "$WORKDIR/makefile" ] || [ -f "$WORKDIR/GNUmakefile" ] || [ -x "$WORKDIR/configure" ]; then
+    ECO=make
+    # The repo's own build: configure first when there is no Makefile yet, then make on
+    # every vCPU. make and the compiler run on the real clock (a compiler under the clock
+    # library makes no progress, as with cargo); the built programs run on the sped-up clock.
+    INSTALL_CMD="env -u LD_PRELOAD make -j$(nproc)"
+    if [ ! -f "$WORKDIR/Makefile" ] && [ ! -f "$WORKDIR/makefile" ] && [ ! -f "$WORKDIR/GNUmakefile" ]; then
+      INSTALL_CMD="env -u LD_PRELOAD ./configure && $INSTALL_CMD"
+    fi
+    check clock_scope false "make and the compiler ran on the real clock; the built programs ran on the sped-up clock"
+    check package_manager true "make ($(make --version 2>/dev/null | head -n 1 || echo unknown))"
   fi
 fi
 
@@ -521,6 +538,7 @@ if [ -n "$INSTALL_CMD" ]; then
         if [ "$ASKED" = 0 ]; then log "install-at-limit ${INSTALL_TIMEOUT} s: waiting ${ASK_S} s for keep-installing"; ASKED=1; fi
         if [ -f "$IN/stop-installing" ]; then
           log "stop-installing: the viewer answered No at ${EL} s"
+          check install_limit false "the viewer chose not to keep installing at the ${INSTALL_TIMEOUT} s install limit"
           CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break
         fi
         if [ -f "$IN/keep-installing" ]; then
@@ -528,7 +546,10 @@ if [ -n "$INSTALL_CMD" ]; then
           check install_continued true "the viewer asked to keep installing at ${EL} s; limit ${INSTALL_MAX} s"
           CONTINUING=1
         fi
-        if [ "$CONTINUING" = 0 ] && [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S + DELIVER_S )) ]; then CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break; fi
+        if [ "$CONTINUING" = 0 ] && [ "$EL" -ge $(( INSTALL_TIMEOUT + ASK_S + DELIVER_S )) ]; then
+          check install_limit false "the install reached the ${INSTALL_TIMEOUT} s install limit and nobody chose to keep installing"
+          CUT=1; kill -TERM "$IPID" 2>/dev/null; pkill -KILL -u "$CR_UID" || true; break
+        fi
       fi
       sleep 0.5
     done
@@ -614,6 +635,20 @@ if [ "$INSTALL_STATUS" = completed ]; then
         entry_line "npm start"
       fi
     fi
+    # A workspace whose root package has no entry: the bin of each workspace package the
+    # install plan selected (lib/engine/reach/graph.ts planWorkspace), at most three.
+    if [ "$MODE" = repo ] && [ ! -s "$ENTRY_SCRIPT" ] && [ -n "${WS_NAMES:-}" ]; then
+      N=0
+      while IFS= read -r -d '' PJ; do
+        NAME=$(jq -r '.name // ""' "$PJ" 2>/dev/null || echo "")
+        [ -n "$NAME" ] && [[ " $WS_NAMES " == *" $NAME "* ]] || continue
+        WBIN=$(jq -r 'if (.bin|type)=="string" then .bin elif (.bin|type)=="object" then (.bin|to_entries[0].value // "") else "" end' "$PJ")
+        if [ -n "$WBIN" ] && [[ "$WBIN" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$WBIN" != *..* ]]; then
+          entry_line "node '$(dirname "$PJ")/${WBIN#./}' --help || true"
+          N=$((N + 1)); [ "$N" -ge 3 ] && break
+        fi
+      done < <(find "$WORKDIR" -mindepth 2 -maxdepth 3 -name node_modules -prune -o -name package.json -type f -print0 2>/dev/null | sort -z)
+    fi
   elif [ "$ECO" = python ]; then
     SITE=$(ls -d /work/.venv/lib/python3*/site-packages 2>/dev/null | head -n1 || true)
     if [ -n "$SITE" ]; then
@@ -653,6 +688,20 @@ if [ "$INSTALL_STATUS" = completed ]; then
         done
       fi
     fi
+  elif [ "$ECO" = make ]; then
+    # The executables the build produced (ELF files newer than the extracted tarball, not
+    # libraries or objects, outside test and example folders), largest first, each run
+    # with --help, at most three.
+    N=0
+    while IFS= read -r REL; do
+      [[ "$REL" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]] && [[ "$REL" != *..* ]] || continue
+      [ -L "$WORKDIR/$REL" ] && continue
+      [ "$(head -c 4 "$WORKDIR/$REL" 2>/dev/null | od -An -c | tr -d ' \n')" = '177ELF' ] || continue
+      entry_line "'$WORKDIR/$REL' --help || true"
+      N=$((N + 1)); [ "$N" -ge 3 ] && break
+    done < <(cd "$WORKDIR" && find . -maxdepth 4 \( -name .git -o -name 'test*' -o -name 'example*' -o -name deps -o -name vendor \) -prune -o \
+      -type f -perm -u+x -newer /work/target.tgz ! -name '*.so' ! -name '*.so.*' ! -name '*.o' ! -name '*.a' ! -name '*.sh' ! -name '*.py' -printf '%s %P\n' 2>/dev/null \
+      | sort -k1,1nr | cut -d' ' -f2- | head -n 20)
   elif [ "$ECO" = go ] || [ "$ECO" = rust ]; then
     # The built executables (Go main packages in /work/bin, Cargo binary targets at the
     # top of the target folder), each run with --help, at most three.
@@ -704,7 +753,7 @@ if [ -s "$ENTRY_SCRIPT" ]; then
   esac
   log "entry $ENTRY_STATUS exit=$ENTRY_EXIT ms=$ENTRY_MS"
 elif [ "$INSTALL_STATUS" = completed ]; then
-  check entry_point false "no bin, main, exports, index.js, start script, importable module, __main__, Go main package or Cargo binary found"
+  check entry_point false "no bin, main, exports, index.js, start script, importable module, __main__, Go main package, Cargo binary or built executable found"
 fi
 pkill -KILL -u "$CR_UID" || true
 echo "collect $(date +%s.%N)" >"$OUT/phase"

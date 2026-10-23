@@ -229,7 +229,7 @@ test("score: above 80 needs the build to complete and the program to run, in eve
     [{ install: "completed", entry: "timeout" }, 90, undefined],
     [{ install: "completed", entry: "skipped" }, 80, "Build finished, but there was no program to run"],
     [{ install: "timeout", entry: "skipped" }, 80, "Build ran out of time, so the program never ran"],
-    [{ install: "none", entry: "skipped" }, 80, "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt"],
+    [{ install: "none", entry: "skipped" }, 80, "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py, requirements.txt or Makefile"],
     [{ install: "failed", entry: "skipped" }, 74, "Build failed, so the program never ran"],
   ];
   for (const [over, score, reason] of cases) {

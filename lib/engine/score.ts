@@ -368,6 +368,8 @@ export interface ScoreInput {
   reputation: ReputationSignals;
   /** Extra stage failures (deadline, scanner crash) to list under not_verified. */
   failedStages: string[];
+  /** Why the build did not finish, read from the run's record (lib/engine/build-cause.ts); null when unknown. */
+  buildCause?: string | null;
 }
 
 export interface ScoreResult {
@@ -605,7 +607,7 @@ function reputationDeltas(r: ReputationSignals): { total: number; deltas: ScoreD
 }
 
 function phaseText(name: string, p: PhaseOutcome): string {
-  if (p === "none") return `${name}: the repo has no install step the sandbox runs (no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt), so its code was read, not run.`;
+  if (p === "none") return `${name}: the repo has no install step the sandbox runs (no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py, requirements.txt or Makefile), so its code was read, not run.`;
   return p === "skipped" ? `${name} phase was skipped, so its behaviour was not observed.` : `${name} phase did not complete (${p}), so later behaviour was not observed.`;
 }
 
@@ -717,7 +719,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   // time limit, ran). Otherwise the scan is partial, capped at 80, with one reason line.
   const installRan = input.install === "completed" && !input.archiveTruncated;
   const entryRan = input.entry === "completed" || input.entry === "failed" || input.entry === "timeout";
-  const partialReason = installRan && entryRan ? null : partialReasonFor(input.install, input.entry, input.archiveTruncated);
+  const partialReason = installRan && entryRan ? null : partialReasonFor(input.install, input.entry, input.archiveTruncated, input.buildCause ?? null);
   if (input.install !== "completed") notVerified.push(phaseText("Install", input.install));
   if (input.install === "none" && !input.archiveTruncated) {
     applyCap(CAP_NOTHING_TO_RUN, "cap_nothing_to_run", `Partial scan: ${partialReason}. Nothing ran in the sandbox, so the score rests on reading the code: capped at ${CAP_NOTHING_TO_RUN}.`);
@@ -802,11 +804,12 @@ export function computeScore(input: ScoreInput): ScoreResult {
 }
 
 /** The one plain line a partial scan shows next to its "Partial scan" mark. */
-export function partialReasonFor(install: PhaseOutcome, entry: PhaseOutcome, archiveTruncated: boolean): string {
+export function partialReasonFor(install: PhaseOutcome, entry: PhaseOutcome, archiveTruncated: boolean, cause: string | null = null): string {
   if (archiveTruncated) return "The repo was too large to read in full, so the program never ran";
-  if (install === "none") return "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py or requirements.txt";
-  if (install === "timeout") return "Build ran out of time, so the program never ran";
-  if (install === "failed") return "Build failed, so the program never ran";
+  if (install === "none") return "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py, requirements.txt or Makefile";
+  const why = cause ? ` (${cause})` : "";
+  if (install === "timeout") return `Build ran out of time${why}, so the program never ran`;
+  if (install === "failed") return `Build failed${why}, so the program never ran`;
   if (install === "skipped") return "Build did not start, so the program never ran";
   if (entry === "skipped") return "Build finished, but there was no program to run";
   return "The program did not run";

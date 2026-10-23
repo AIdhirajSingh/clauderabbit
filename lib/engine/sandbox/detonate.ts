@@ -86,7 +86,7 @@ export interface DetonationResult {
   entry: PhaseOutcome;
   /** The entry command's exit code from the harness result; null when entry did not run or was not recorded. */
   entryExitCode?: number | null;
-  ecosystem: "npm" | "python" | "go" | "rust" | "none";
+  ecosystem: "npm" | "python" | "go" | "rust" | "make" | "none";
   installCommand: string;
   forgedCalls: ForgedCallData[];
   files: FileEventData[];
@@ -189,7 +189,7 @@ export async function parseForensicBundle(
   if (num(ph.forge_ms) && num(ph.probe_ms)) timings["detonate.prepare.probe"] = Math.max(0, ph.probe_ms - ph.forge_ms);
   if (num(ph.contained_ms) && num(ph.inputs_ms)) timings["detonate.wait"] = Math.max(0, ph.inputs_ms - ph.contained_ms);
   if (num(ph.collect_start_ms) && num(result.total_ms)) timings["detonate.collect"] = Math.max(0, result.total_ms - ph.collect_start_ms);
-  const eco = result.ecosystem === "npm" || result.ecosystem === "python" || result.ecosystem === "go" || result.ecosystem === "rust" ? result.ecosystem : "none";
+  const eco = result.ecosystem === "npm" || result.ecosystem === "python" || result.ecosystem === "go" || result.ecosystem === "rust" || result.ecosystem === "make" ? result.ecosystem : "none";
   const datagramEgress = [...new Set([...ti.datagrams, ...te.datagrams])].sort();
   let drops: { udp?: unknown; icmp?: unknown; other?: unknown } = {};
   try {

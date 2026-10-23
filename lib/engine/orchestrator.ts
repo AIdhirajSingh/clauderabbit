@@ -16,6 +16,7 @@
  * `finally`.
  */
 
+import { buildCause } from "./build-cause";
 import { randomUUID } from "node:crypto";
 import { ArchiveError, parseTarball, type ParsedArchive } from "./archive";
 import { HARNESS_OVERHEAD_MS, SALVAGE_BUDGET_MS, type EngineConfig } from "./config";
@@ -882,6 +883,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     capabilities: capabilitiesTagged,
     reputation: rep,
     failedStages,
+    buildCause: detonation ? buildCause({ install: detonation.install, checks: detonation.checks, installStderr: detonation.transcripts.install.stderr, forgedCalls: detonation.forgedCalls }) : null,
   });
   emitStage("score", "done", `${result.score} ${result.verdict}`);
 

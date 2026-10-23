@@ -108,3 +108,10 @@ test("the ledger prices the scan VM at its own size and adds the runner's second
   assert.equal(withRunner.runner?.usd, Math.round(120 * 0.000023 * 1e9) / 1e9);
   assert.equal(withRunner.total_usd, Math.round(((without.total_usd ?? 0) + withRunner.runner!.usd) * 1e9) / 1e9);
 });
+
+test("a make build at the repo root is a heavy build; a Makefile further down is not", async () => {
+  const { isHeavyBuildPath } = await import("../../lib/engine/sandbox/resources.ts");
+  for (const p of ["Makefile", "GNUmakefile", "makefile", "configure"]) assert.equal(isHeavyBuildPath(p, 100), true, p);
+  assert.equal(isHeavyBuildPath("src/Makefile", 100), false);
+  assert.equal(isHeavyBuildPath("deps/configure", 100), false);
+});
