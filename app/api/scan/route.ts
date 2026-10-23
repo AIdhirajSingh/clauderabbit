@@ -41,7 +41,7 @@ export const maxDuration = 300; // the most the Vercel plan allows; a full-insta
 const RELAY_MS = 270_000;
 
 /** On Vercel every scan runs in its own runner sandbox; an operator regenerate and local runs stay in this process. */
-function useRunner(regenerate: boolean): boolean {
+function runsOnRunner(regenerate: boolean): boolean {
   return Boolean(process.env.VERCEL_ENV) && process.env.CR_SCAN_RUNNER !== "off" && !regenerate;
 }
 
@@ -139,7 +139,7 @@ export async function POST(req: Request): Promise<Response> {
       const onEvent = (e: ScanEvent) => write(eventLine(e));
       let final: FinalLine;
       try {
-        if (useRunner(regenerate)) {
+        if (runsOnRunner(regenerate)) {
           // The scan runs in its own runner sandbox; this request only relays it while it lives.
           const r = await scanOnRunner(ctx.config, {
             target: parsed.target,

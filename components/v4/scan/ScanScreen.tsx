@@ -4,8 +4,9 @@
  * /app/scan/<runId> in the v4 design (project/term/Scan.dc.html): the stepper, the
  * "Inside the sandbox" diagram, the live timeline and the Jev and Luna panels, all
  * driven by the run's real events (the same fetch, live stream, Realtime, heartbeat,
- * replay and continue-card wiring as components/cr/app/ScanView.tsx). When the scan
- * finishes the result opens by itself on the same page, as ScanView does.
+ * replay and continue-card wiring as components/cr/app/ScanView.tsx). 200 ms after the
+ * last event shows (live or replay) the full report replaces this page, as Scan opens
+ * Report in the design; a direct load of a finished run goes to the report at once.
  */
 
 import Link from "next/link";
@@ -15,7 +16,6 @@ import { createClient } from "@/lib/supabase/client";
 import { liveScan, subscribeLive } from "@/lib/cr/scan-client";
 import type { ReportPayload, ScanEvent } from "@/lib/engine/types";
 import { toneOf } from "@/lib/cr/verdict";
-import { evidenceLines, notVerifiedBullets, plainTitle, reputationChips } from "@/lib/cr/result-format";
 import { ADS_ENABLED } from "@/lib/ads-enabled";
 import { Header } from "@/components/v4/Header";
 import { ContinueCard } from "@/components/cr/app/ContinueCard";
@@ -39,6 +39,10 @@ function shortSha(sha: string): string {
   return v.length > 24 ? `${v.slice(0, 24)}…` : v;
 }
 const subjectName = (s: string) => (s.startsWith("npm:") ? s.slice(4) : s);
+/** The public report for a run's target: /npm/<name> for npm, /<owner>/<repo> for GitHub. */
+const reportHref = (subject: string) => (subject.startsWith("npm:") ? `/npm/${subjectName(subject)}` : `/${subjectName(subject)}`);
+/** How long the finished scan stays on screen after its last event before the report opens. */
+const OPEN_REPORT_MS = 200;
 const W = "rgba(255,255,255,0.12)";
 const RED = "rgba(255,149,146,0.7)";
 const toneClass = (verdict: string) => ({ ok: "p-ok", warn: "p-warn", bad: "p-bad" })[toneOf(verdict)];
@@ -73,7 +77,7 @@ export function ScanScreen({ runId }: { runId: string }) {
   const [playBase, setPlayBase] = useState<number | null>(null);
   const [playDone, setPlayDone] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
-  const [toast, setToast] = useState("");
+  const [leaving, setLeaving] = useState(false);
   const baseRef = useRef<number | null>(null);
   const eventsRef = useRef<ScanEvent[]>([]);
   const runRef = useRef<RunReport | null>(null);
@@ -135,6 +139,12 @@ export function ScanScreen({ runId }: { runId: string }) {
     let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
     (async () => {
       const r = await loadRun();
+      // A direct load of a finished run (no replay, not started in this tab) opens its report with no playback.
+      if (!stop && r?.status === "done" && r.report && !replay && !startedHere) {
+        setLeaving(true);
+        router.replace(reportHref(r.subject));
+        return;
+      }
       await loadEvents();
       if (stop || !r || r.status !== "running" || replay) return;
       try {
@@ -162,7 +172,7 @@ export function ScanScreen({ runId }: { runId: string }) {
       if (poll) clearInterval(poll);
       if (supabase && channel) supabase.removeChannel(channel);
     };
-  }, [runId, replay, loadRun, loadEvents, addEvents]);
+  }, [runId, replay, startedHere, router, loadRun, loadEvents, addEvents]);
 
   useEffect(() => {
     eventsRef.current = events;
@@ -172,7 +182,7 @@ export function ScanScreen({ runId }: { runId: string }) {
   }, [run]);
 
   // Playback clock (same rules as ScanView): a paste-box scan plays against its live
-  // origin, a replay from when the stored events load; the result opens after the last event.
+  // origin, a replay from when the stored events load; it ends when the last event shows.
   useEffect(() => {
     if (!paced || playDone) return;
     const tick = (): boolean => {
@@ -190,7 +200,7 @@ export function ScanScreen({ runId }: { runId: string }) {
       const base = baseRef.current;
       const last = eventsRef.current[eventsRef.current.length - 1]?.t_ms ?? 0;
       const r = runRef.current;
-      if (base !== null && r?.report && r.status === "done" && (t - base) * speed >= last + 800) {
+      if (base !== null && r?.report && r.status === "done" && (t - base) * speed >= last) {
         setPlayDone(true);
         return true;
       }
@@ -208,11 +218,25 @@ export function ScanScreen({ runId }: { runId: string }) {
   const failed = run?.status === "error" && !replay;
   const running = !done && !failed;
 
+  // 200 ms after the last event shows, the full report replaces the finished scan (Back skips it).
+  const subject = run?.subject ?? null;
+  useEffect(() => {
+    if (!done || !subject) return;
+    const id = setTimeout(() => router.replace(reportHref(subject)), OPEN_REPORT_MS);
+    return () => clearTimeout(id);
+  }, [done, subject, router]);
+
+  // The large-repo prompt: live view only, while the run is running and the install still
+  // waits at its limit (no stage event has followed the one that hit it).
   const testCard = params.get("test_card") === "1" && process.env.NEXT_PUBLIC_VERCEL_ENV !== "production";
-  const installHitLimit = useMemo(
-    () => visible.some((e) => (e.type === "transcript" && /install-at-limit/.test(e.data.text)) || (e.type === "stage" && e.data.name === "detonate" && (testCard || (e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? ""))))),
-    [visible, testCard],
-  );
+  const installWaiting = useMemo(() => {
+    if (replay || run?.status !== "running") return false;
+    let at = -1;
+    visible.forEach((e, i) => {
+      if ((e.type === "transcript" && /install-at-limit/.test(e.data.text)) || (e.type === "stage" && e.data.name === "detonate" && (testCard || (e.data.status !== "start" && /install timeout/i.test(e.data.detail ?? ""))))) at = i;
+    });
+    return at >= 0 && !visible.slice(at + 1).some((e) => e.type === "stage");
+  }, [visible, testCard, replay, run?.status]);
 
   // Heartbeat every 10 s keeps a full scan's sandboxes alive while this tab watches.
   useEffect(() => {
@@ -263,19 +287,6 @@ export function ScanScreen({ runId }: { runId: string }) {
   const lunaShown = luna ? (done ? luna.text : luna.text.slice(0, lunaChars)) : "";
   const lunaTyping = !!luna && !done && lunaChars < luna.text.length;
 
-  const replayNow = () => router.push(`/app/scan/${runId}?replay=1&r=${Date.now()}`);
-  const share = async () => {
-    const url = `${location.origin}/app/scan/${runId}`;
-    try {
-      if (navigator.share) return void (await navigator.share({ title: `ClaudeRabbit: ${run ? subjectName(run.subject) : "scan"}`, url }));
-      await navigator.clipboard.writeText(url);
-      setToast("Link copied");
-    } catch {
-      setToast(url);
-    }
-    setTimeout(() => setToast(""), 2400);
-  };
-
   if (notFound) {
     return (
       <div style={{ minHeight: "100vh", background: "#000" }}>
@@ -288,12 +299,20 @@ export function ScanScreen({ runId }: { runId: string }) {
     );
   }
 
+  if (leaving) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#000" }}>
+        <Header />
+      </div>
+    );
+  }
+
   const title = done ? "Scan complete" : failed ? "Scan stopped" : "Scanning";
   const phase = done && report ? report.verdict : failed ? "Error" : phaseWord(st);
   const phaseClass = done && report ? toneClass(report.verdict) : failed ? "p-warn" : "p-info";
 
   return (
-    <div style={{ height: done ? "auto" : "100vh", minHeight: 860, background: "#000", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100vh", minHeight: 860, background: "#000", display: "flex", flexDirection: "column" }}>
       <Header />
       <div className="sw">
         {ADS_ENABLED && <aside className="side" aria-label="Sponsored"><BannerAd runId={runId} n={1} /></aside>}
@@ -314,9 +333,6 @@ export function ScanScreen({ runId }: { runId: string }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
               <span className="mono" style={{ fontSize: 15, fontVariantNumeric: "tabular-nums" }}>{clock(liveMs)}</span>
-              {run?.status === "done" && (
-                <button type="button" onClick={replayNow} className="btn btn-s btn-sm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 4l12 8-12 8z" /></svg> Watch how it happened</button>
-              )}
             </div>
           </div>
           {ADS_ENABLED && (
@@ -341,16 +357,19 @@ export function ScanScreen({ runId }: { runId: string }) {
             })}
           </div>
           </div>
+          {/* Under the stepper, aligned to its Install step (the third of six). */}
+          <div style={{ display: "flex" }}>
+            <span aria-hidden="true" style={{ flex: "0 1 33.333%" }} />
+            <div style={{ flex: "0 1 440px", minWidth: 280 }}>
+              <ContinueCard runId={runId} show={installWaiting} />
+            </div>
+          </div>
 
           {failed && <p className="body" style={{ marginTop: 16 }}>This scan stopped before it finished ({run?.error_code ?? "error"}). No score was given. <Link href="/app" style={{ color: "#F0F0F0", textDecoration: "underline" }}>New scan</Link></p>}
 
-          <ContinueCard runId={runId} show={installHitLimit} />
           {ADS_ENABLED && <Interstitial runId={runId} />}
 
-          {done && report ? (
-            <Result report={report} totalMs={totalMs} runId={runId} subject={run?.subject ?? report.target} onShare={share} onReplay={replayNow} />
-          ) : (
-            <>
+          <>
               <div className="card" style={{ flex: "none", marginTop: 16 }}>
                 <div className="card-h"><span className="card-t"><CardIcon d={IC.box} color="#4CCCE6" />Inside the sandbox</span><span className="faint" style={{ fontSize: 12 }}>live</span></div>
                 {/* Phones scroll the diagram sideways at its designed width instead of squeezing it. */}
@@ -437,86 +456,9 @@ export function ScanScreen({ runId }: { runId: string }) {
                   </div>
                 </div>
               </div>
-            </>
-          )}
+          </>
         </main>
         {ADS_ENABLED && <aside className="side" aria-label="Sponsored"><BannerAd runId={runId} n={3} /></aside>}
-      </div>
-      <div role="status" aria-live="polite" style={{ position: "fixed", left: 16, right: 16, bottom: 24, display: "flex", justifyContent: "center", pointerEvents: "none", zIndex: 60 }}>
-        {toast && <div className="chip in" style={{ height: 40, padding: "0 16px", background: "#0A0A0A" }}>{toast}</div>}
-      </div>
-    </div>
-  );
-}
-
-/** The finished result, in place on the same page (as ScanView does): every field from the stored report. */
-function Result({ report, totalMs, runId, subject, onShare, onReplay }: { report: NonNullable<RunReport["report"]>; totalMs: number; runId: string; subject: string; onShare: () => void; onReplay: () => void }) {
-  const pc = toneClass(report.verdict);
-  const color = TONE[pc] ?? "#F0F0F0";
-  const paragraphs = report.luna_report ? [report.luna_report.what_ran, report.luna_report.what_matters].filter(Boolean) : report.summary ? [report.summary] : [];
-  const deductions = (report.breakdown ?? []).filter((d) => d.points < 0 && d.group !== "reputation").sort((a, b) => a.points - b.points);
-  const nv = notVerifiedBullets(report.not_verified ?? []);
-  const chips = reputationChips(report.reputation_section?.facts ?? []);
-  const warnings = report.reputation_section?.warnings ?? [];
-  const name = subjectName(subject);
-  const reportHref = subject.startsWith("npm:") ? `/npm/${name}` : `/${name}`;
-  return (
-    <div className="in" style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }} data-run={runId}>
-      <div className="card" style={{ padding: 24, display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: "12px 18px" }}>
-        <span className="mono" style={{ fontSize: 64, lineHeight: 1, fontWeight: 500, color }}>{report.score}</span>
-        <span className={`pill ${pc}`} style={{ height: 28, fontSize: 14 }}>{report.verdict}</span>
-        {report.partial && <span className="pill p-mute" style={{ height: 28 }}>Partial scan</span>}
-        <span className="faint mono" style={{ fontSize: 13 }}>{Math.max(1, Math.round(totalMs / 1000))} s</span>
-        {report.partial && report.partial_reason && <p className="body" style={{ flexBasis: "100%" }}>{report.partial_reason}.</p>}
-      </div>
-      <div className="cols" style={{ marginTop: 0 }}>
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="card">
-            <div className="card-h"><span className="card-t"><CardIcon d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" color="#FF8DCC" />Report</span></div>
-            <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>{paragraphs.map((p, i) => <p key={i} className="body" style={{ color: "#F0F0F0" }}>{p}</p>)}</div>
-          </div>
-          <div className="card">
-            <div className="card-h"><span className="card-t">Points taken off</span></div>
-            <div style={{ padding: "4px 16px 8px" }}>
-              {deductions.length === 0 && <p className="body" style={{ padding: "10px 0" }}>None</p>}
-              {deductions.map((d, i) => {
-                const ev = evidenceLines(d.evidence);
-                return (
-                  <div key={`${d.code}-${i}`} style={{ display: "flex", gap: 14, padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-                    <span className="mono" style={{ width: 38, flex: "none", color: "#FF9592" }}>{d.points}</span>
-                    <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                      <span style={{ fontSize: 14 }}>{plainTitle(d.detail)}</span>
-                      {ev.lines.map((l, j) => <code key={j} className="mono faint" style={{ fontSize: 12, overflowWrap: "anywhere" }}>{l}</code>)}
-                      {ev.more > 0 && <span className="faint" style={{ fontSize: 12 }}>+{ev.more} more</span>}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-        <div className="rcol">
-          {nv.shown.length > 0 && (
-            <div className="card">
-              <div className="card-h"><span className="card-t">Not verified</span></div>
-              <ul className="body" style={{ margin: 0, padding: "12px 16px 12px 32px", fontSize: 14 }}>{[...nv.shown, ...nv.more].map((t, i) => <li key={i}>{t}</li>)}</ul>
-            </div>
-          )}
-          <div className="card">
-            <div className="card-h"><span className="card-t">Reputation <span className="faint" style={{ fontWeight: 400 }}>· shown separately</span></span></div>
-            <div style={{ padding: 16, display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {chips.length === 0 && warnings.length === 0 && <span className="faint" style={{ fontSize: 13 }}>No reputation facts were recorded for this scan.</span>}
-              {chips.map((c, i) => <span key={`f${i}`} className="chip">{c.text} <span className="faint" style={{ fontSize: 11 }}>{c.source}</span></span>)}
-              {warnings.map((w, i) => <span key={`w${i}`} className="chip" style={{ color: "#FFCA16" }}>{w}</span>)}
-            </div>
-          </div>
-        </div>
-      </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, paddingBottom: 24 }}>
-        <button type="button" onClick={onShare} className="btn btn-p btn-sm">Share</button>
-        <button type="button" onClick={onReplay} className="btn btn-s btn-sm">Watch how it happened</button>
-        <Link href={reportHref} className="btn btn-s btn-sm">Open the full report</Link>
-        <Link href="/app" className="btn btn-g btn-sm">New scan</Link>
       </div>
     </div>
   );

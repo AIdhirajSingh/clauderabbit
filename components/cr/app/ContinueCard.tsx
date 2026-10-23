@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * "This is a very large repo. Keep installing to scan it fully?" Shown when a
- * scan's install hits its time limit (a fresh scan, a stored one or a replay
- * alike). No, or no answer in ANSWER_MS, leaves the scan to finish as the
- * partial scan it is. Yes is a normal same-site link to a different path,
+ * "This is a very large repo. Keep installing to scan it fully?" Shown while
+ * `show` holds: the caller passes true only while a live scan's install waits at
+ * its time limit, and false once the run moves on or ends. No, or no answer in
+ * ANSWER_MS, leaves the scan to finish as the partial scan it is. Yes is a normal same-site link to a different path,
  * /app/scan/<id>/full: that navigation is what GPT's web interstitial (defined on
  * this page before the click) shows on, and the full page then plays back the
  * stored full scan or runs one.
@@ -15,33 +15,30 @@ import { useEffect, useRef, useState } from "react";
 export const ANSWER_MS = 15_000;
 
 export function ContinueCard({ runId, show }: { runId: string; show: boolean }) {
-  const [state, setState] = useState<"waiting" | "asking" | "no">("waiting");
+  const [answeredNo, setAnsweredNo] = useState(false);
+  const asking = show && !answeredNo;
   useEffect(() => {
-    if (!show || state !== "waiting") return;
-    setState("asking");
-  }, [show, state]);
-  useEffect(() => {
-    if (state !== "asking") return;
-    const t = setTimeout(() => setState("no"), ANSWER_MS);
+    if (!asking) return;
+    const t = setTimeout(() => setAnsweredNo(true), ANSWER_MS);
     return () => clearTimeout(t);
-  }, [state]);
+  }, [asking]);
   // No, or no answer in ANSWER_MS, tells a running install to stop now rather than
-  // wait out the answer's delivery window. On a stored scan or a replay it is a no-op.
+  // wait out the answer's delivery window.
   const told = useRef(false);
   useEffect(() => {
-    if (state !== "no" || told.current) return;
+    if (!answeredNo || told.current) return;
     told.current = true;
     void fetch(`/api/scan/${runId}/continue?answer=no`, { method: "POST", headers: { "x-clauderabbit-client": "web" }, keepalive: true }).catch(() => {});
-  }, [state, runId]);
-  if (state !== "asking") return null;
+  }, [answeredNo, runId]);
+  if (!asking) return null;
   return (
-    <div role="dialog" aria-label="Keep installing" style={{ display: "flex", flexDirection: "column", gap: 14, padding: "20px 22px", borderRadius: 22, border: "1px solid var(--border)", background: "var(--surface, var(--bg))" }}>
-      <span style={{ fontSize: 16, lineHeight: 1.45, color: "var(--text)" }}>This is a very large repo. Keep installing to scan it fully?</span>
+    <div role="dialog" aria-label="Keep installing" className="card in" style={{ marginTop: 12, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 14 }}>
+      <span style={{ fontSize: 15, lineHeight: 1.5, color: "#F0F0F0" }}>This is a very large repo. Keep installing to scan it fully?</span>
       <div style={{ display: "flex", gap: 10 }}>
-        <a href={`/app/scan/${runId}/full`} style={{ padding: "10px 22px", borderRadius: 999, background: "var(--text)", color: "var(--bg)", fontWeight: 600, fontSize: 15 }}>
+        <a href={`/app/scan/${runId}/full`} className="btn btn-p btn-sm">
           Yes
         </a>
-        <button type="button" onClick={() => setState("no")} style={{ padding: "10px 22px", borderRadius: 999, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", fontWeight: 600, fontSize: 15, cursor: "pointer" }}>
+        <button type="button" onClick={() => setAnsweredNo(true)} className="btn btn-s btn-sm">
           No
         </button>
       </div>

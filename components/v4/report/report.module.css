@@ -1,0 +1,165 @@
+/* Layout for the v4 public report: full-width hero, then two columns that stack at phone width. */
+
+.main {
+  width: 100%;
+  min-width: 0;
+  padding-top: 48px;
+  padding-bottom: 96px;
+}
+
+.mainAds {
+  flex: 1;
+  min-width: 0;
+  max-width: 1040px;
+  padding: 48px 0 96px;
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.cols {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.col > * {
+  min-width: 0;
+}
+
+.flow {
+  display: flex;
+  align-items: flex-start;
+  padding: 22px 0 18px;
+  gap: 0;
+}
+
+.flowStep {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.flowText {
+  flex: none;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.flowLine {
+  flex: 1;
+  min-width: 12px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.16);
+  margin: 0 8px;
+}
+
+.flowLabel {
+  margin-top: 10px;
+  min-width: 0;
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip {
+  height: auto;
+  min-height: 24px;
+  max-width: 100%;
+  padding: 2px 8px;
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.more > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 0 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  color: #a1a1a1;
+}
+
+.more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.more > summary:hover {
+  color: #f0f0f0;
+}
+
+.more[open] > summary {
+  display: none;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@media (max-width: 1080px) {
+  .cols {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .main {
+    padding-top: 32px;
+    padding-bottom: 64px;
+  }
+
+  .cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .flow {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .flowStep {
+    flex: none;
+    width: 100%;
+  }
+
+  .flowText {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1;
+  }
+
+  .flowLine {
+    display: none;
+  }
+
+  .flowLabel {
+    margin-top: 0;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
+}
