@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import sys
 
@@ -110,6 +111,9 @@ def main(trace: str, home: str, out_json: str) -> int:
     build_reads = places + ("/etc/ld.so.cache",)
     state: dict = {}
     starts: dict = {}
+    # Each process's working directory (the harness runs the install in /work/src or a folder
+    # below it; chdir and clone carry it on), so a relative path resolves before it is judged.
+    cwd: dict = {}
     first = None
     counts: dict = {}
     # pid -> call whose first half (with the path) was folded; its resumed half folds too.
@@ -129,11 +133,14 @@ def main(trace: str, home: str, out_json: str) -> int:
             if first is None:
                 first = pid
                 state[pid] = "harness"
+                cwd[pid] = "/work/src"
             # A process first seen before its parent's clone returned is treated as
             # a script (never folded) until the clone return names its parent.
             st = state.get(pid, "script")
             if call in ("clone", "clone3", "fork", "vfork"):
                 c = CHILD_RE.search(rest)
+                if c and pid in cwd and c.group(1) not in cwd:
+                    cwd[c.group(1)] = cwd[pid]
                 if c and c.group(1) not in state:
                     state[c.group(1)] = st
                 elif c and st == "build":
@@ -184,6 +191,10 @@ def main(trace: str, home: str, out_json: str) -> int:
                         counts[key] = counts.get(key, 0) + 1
                         folded += 1
                         continue
+            if m and call == "chdir" and pid in cwd and rest.rstrip().endswith("= 0"):
+                p = PATH_RE.search(rest)
+                if p:
+                    cwd[pid] = posixpath.normpath(posixpath.join(cwd[pid], p.group(1)))
             if st == "build" and m and call in BUILD_STARTS:
                 key = "build " + call
                 counts[key] = counts.get(key, 0) + 1
@@ -194,6 +205,10 @@ def main(trace: str, home: str, out_json: str) -> int:
             if st == "build" and call in FOLD_CALLS:
                 p = PATH_RE.search(rest)
                 path = p.group(1) if p else ""
+                # A path relative to the working directory (open, or openat on AT_FDCWD) resolves
+                # against it; one relative to another descriptor stays as it is (kept).
+                if path and not path.startswith("/") and pid in cwd and (call in ("open", "creat", "chmod", "unlink", "rename") or rest.startswith("AT_FDCWD")):
+                    path = posixpath.normpath(posixpath.join(cwd[pid], path))
                 writes = call not in ("open", "openat") or bool(WRITE_FLAGS.search(rest))
                 if path.startswith(build_tree if writes else build_reads):
                     parts = path.strip("/").split("/")

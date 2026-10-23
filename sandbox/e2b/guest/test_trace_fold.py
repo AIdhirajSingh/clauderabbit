@@ -138,5 +138,20 @@ class FoldTests(unittest.TestCase):
         self.assertLess(len(out), 700)
 
 
+    def test_relative_paths_resolve_against_the_working_directory(self):
+        trace = (
+            '500 1.0 execve("/usr/bin/make", ["make"], 0x1 /* 3 vars */) = 0\n'
+            '500 1.1 chdir("src") = 0\n'
+            '500 1.2 openat(AT_FDCWD, "server.h", O_RDONLY) = 3\n'
+            '500 1.3 openat(AT_FDCWD, "../deps/hiredis/sds.h", O_RDONLY) = 3\n'
+            '500 1.4 chdir("/home/cr") = 0\n'
+            '500 1.5 openat(AT_FDCWD, ".aws/credentials", O_RDONLY) = 3\n'
+        )
+        out, info = self._fold(trace)
+        self.assertNotIn("server.h", out)
+        self.assertNotIn("sds.h", out)
+        self.assertIn(".aws/credentials", out, "a relative read that resolves to the home directory stays")
+
+
 if __name__ == "__main__":
     unittest.main()
