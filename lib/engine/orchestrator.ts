@@ -561,8 +561,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   const t = req.target;
   const currentVersion = (t.kind === "github" && !t.ref) || (t.kind === "npm" && !t.version);
 
-  if (req.regenerate && req.caller.operator) {
-    emitStage("cache", "skipped", "operator regenerate");
+  if ((req.regenerate && req.caller.operator) || req.fresh) {
+    emitStage("cache", "skipped", req.fresh ? "fresh scan requested" : "operator regenerate");
   } else {
     emitStage("cache", "start");
     try {

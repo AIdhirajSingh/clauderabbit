@@ -33,6 +33,11 @@ export interface ScanRequest {
   /** Operator-only: run a fresh scan over a cached report. */
   regenerate: boolean;
   /**
+   * Run fresh even when a stored run exists (the proof driver's rescans). It adds no capacity beyond pasting a
+   * target nobody has scanned: the burst limit and the daily budget apply as to any fresh scan.
+   */
+  fresh?: boolean;
+  /**
    * The viewer asked to keep installing a very large repo: the install runs to
    * completion (lib/engine/config.ts fullInstallDeadlines) and a stored partial
    * report is not served for it.

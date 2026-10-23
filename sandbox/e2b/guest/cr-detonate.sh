@@ -856,6 +856,8 @@ if [ -f "$OUT/trace.install" ] && [ "$(stat -c %s "$OUT/trace.install")" -gt "$C
   SIZE=$(stat -c %s "$OUT/trace.install")
   if FOLD=$(timeout 30 python3 /opt/cr/bin/cr-trace-fold.py "$OUT/trace.install" "$H" "$OUT/trace.install.folded.json" 2>"$RUN/fold.err"); then
     check trace_folded true "trace.install ${SIZE} to $(stat -c %s "$OUT/trace.install") bytes: ${FOLD% *} package-manager file lines folded into counts, ${FOLD#* } lines kept"
+    # What the kept lines are, measured: count and bytes by syscall and by process, top 15 of each.
+    check trace_kept true "$(jq -r '"by call: " + ([.kept_by_call[] | "\(.[0]) \(.[1]) lines \(.[2]) B"] | join(", ")) + "; by process: " + ([.kept_by_proc[] | "\(.[0]) \(.[1]) lines \(.[2]) B"] | join(", "))' "$OUT/trace.install.folded.json" 2>/dev/null | head -c 1800)"
   else
     check trace_folded false "fold did not finish: $(head -c 200 "$RUN/fold.err")"
   fi

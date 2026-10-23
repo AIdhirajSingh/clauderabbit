@@ -114,6 +114,18 @@ def main(trace: str, home: str, out_json: str) -> int:
     # Each process's working directory (the harness runs the install in /work/src or a folder
     # below it; chdir and clone carry it on), so a relative path resolves before it is judged.
     cwd: dict = {}
+    # What stays, measured: count and bytes by syscall and by process name (its last exec).
+    pname: dict = {}
+    by_call: dict = {}
+    by_proc: dict = {}
+
+    def keep(line: str, pid: str | None, call: str | None) -> None:
+        n = len(line.encode("utf-8", "surrogateescape"))
+        for table, key in ((by_call, call or "(other)"), (by_proc, pname.get(pid, "?") if pid else "(other)")):
+            c = table.setdefault(key, [0, 0])
+            c[0] += 1
+            c[1] += n
+        dst.write(line)
     first = None
     counts: dict = {}
     # pid -> call whose first half (with the path) was folded; its resumed half folds too.
@@ -126,7 +138,7 @@ def main(trace: str, home: str, out_json: str) -> int:
             m = LINE_RE.match(line)
             r = None if m else RESUMED_RE.match(line)
             if not m and not r:
-                dst.write(line)
+                keep(line, None, None)
                 kept += 1
                 continue
             pid, call, rest = (m or r).group(1), (m or r).group(2), (m or r).group(3).rstrip("\n")
@@ -139,6 +151,8 @@ def main(trace: str, home: str, out_json: str) -> int:
             st = state.get(pid, "script")
             if call in ("clone", "clone3", "fork", "vfork"):
                 c = CHILD_RE.search(rest)
+                if c and c.group(1) not in pname and pid in pname:
+                    pname[c.group(1)] = pname[pid]
                 if c and pid in cwd and c.group(1) not in cwd:
                     cwd[c.group(1)] = cwd[pid]
                 if c and c.group(1) not in state:
@@ -152,6 +166,8 @@ def main(trace: str, home: str, out_json: str) -> int:
                 # `sh` already marks the process as a script.
                 e = EXEC_RE.match(rest if call == "execve" else rest.split(", ", 1)[-1])
                 base = os.path.basename(e.group(1)) if e else ""
+                if base and rest.rstrip().endswith("= 0"):
+                    pname[pid] = base
                 if st == "harness" and base in BUILD_BINS:
                     st = "build"
                 elif st == "harness" and base in PM_BINS:
@@ -220,12 +236,14 @@ def main(trace: str, home: str, out_json: str) -> int:
                     continue
             if m and call in ("execve", "execveat"):
                 line = cap_argv(line.rstrip("\n")) + "\n"
-            dst.write(line)
+            keep(line, pid, call)
             kept += 1
     os.replace(tmp, trace)
     top = sorted(counts.items(), key=lambda kv: -kv[1])
     with open(out_json, "w", encoding="utf-8") as f:
-        json.dump({"folded": folded, "kept": kept, "counts": dict(top[:200]), "groups": len(top)}, f)
+        top_k = lambda t: [[k, v[0], v[1]] for k, v in sorted(t.items(), key=lambda kv: -kv[1][1])[:15]]
+        json.dump({"folded": folded, "kept": kept, "counts": dict(top[:200]), "groups": len(top),
+                   "kept_by_call": top_k(by_call), "kept_by_proc": top_k(by_proc)}, f)
     print(f"{folded} {kept}")
     return 0
 

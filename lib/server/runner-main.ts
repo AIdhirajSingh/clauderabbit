@@ -26,6 +26,7 @@ interface RunnerRequest {
   target: ScanTarget;
   caller: ScanCaller;
   full: boolean;
+  fresh?: boolean;
   heartbeat: boolean;
   testInstallMs?: number;
 }
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
   const pending: Promise<void>[] = [];
   const final = await executeScan({ config, store, identity: null, caller: req.caller }, req.target, false, {
     ...(req.full ? { full: true } : {}),
+    ...(req.fresh ? { fresh: true } : {}),
     runId: req.runId,
     onEvent: (e) => out(eventLine(e)),
     background: (task) => void pending.push(task),

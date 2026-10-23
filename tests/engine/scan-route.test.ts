@@ -108,3 +108,12 @@ test("every response carries an ad: config error, replay by target, replay by ru
   assert.equal(r2.status, 400);
   assert.equal(((await r2.json()) as { ad?: { kind: string } }).ad?.kind, "house");
 });
+
+test("a body with fresh: true asks for a fresh scan; without it the stored run is served", async () => {
+  const { parseScanBody } = await import("../../lib/server/scan-service.ts");
+  const a = parseScanBody({ target: "npm:left-pad", fresh: true }) as { ok: true; fresh?: boolean };
+  assert.equal(a.ok, true);
+  assert.equal(a.fresh, true);
+  const b = parseScanBody({ target: "npm:left-pad" }) as { ok: true; fresh?: boolean };
+  assert.equal(b.fresh, undefined);
+});

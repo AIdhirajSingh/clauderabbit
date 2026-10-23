@@ -145,6 +145,7 @@ export async function POST(req: Request): Promise<Response> {
             target: parsed.target,
             caller: ctx.caller,
             full: parsed.full === true,
+            ...(parsed.fresh ? { fresh: true } : {}),
             ...(process.env.VERCEL_ENV === "preview" && parsed.testInstallLimitS ? { testInstallMs: parsed.testInstallLimitS * 1000 } : {}),
             onLine: (line) => write(`${line}\n`),
             relayUntil: startedAt + RELAY_MS,
@@ -159,6 +160,7 @@ export async function POST(req: Request): Promise<Response> {
         } else
         final = await executeScan(ctx, parsed.target, regenerate, {
           full: parsed.full === true,
+          ...(parsed.fresh ? { fresh: true } : {}),
           // Preview-only test hook (lib/server/scan-service.ts parseScanBody).
           ...(process.env.VERCEL_ENV === "preview" && parsed.testInstallLimitS ? { testInstallMs: parsed.testInstallLimitS * 1000 } : {}),
           onEvent,

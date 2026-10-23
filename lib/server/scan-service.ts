@@ -33,7 +33,7 @@ export type FinalLine =
   | { type: "result"; outcome: "cached" | "fresh"; run_id: string; report: ReportPayload; report_url: string; ad: Ad; cost: CostLedger | null }
   | { type: "error"; code: ErrorCode; message: string; run_id: string | null; ad: Ad; signInUrl?: string; retryAfter?: number };
 
-export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null; full?: boolean; testInstallLimitS?: number } | { ok: false; message: string };
+export type ParsedTarget = { ok: true; target: ScanTarget; regenerate: boolean; deviceId: string | null; full?: boolean; fresh?: boolean; testInstallLimitS?: number } | { ok: false; message: string };
 
 function s(v: unknown): string | undefined {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
@@ -53,7 +53,7 @@ export function parseScanBody(body: unknown): ParsedTarget {
   // install limit, to exercise "Keep installing?" on a repo that installs quickly.
   const t = b.test_install_limit_s;
   const testInstallLimitS = typeof t === "number" && Number.isInteger(t) && t >= 5 && t <= 59 ? t : undefined;
-  return { ...r, full: b.full === true, ...(testInstallLimitS ? { testInstallLimitS } : {}) };
+  return { ...r, full: b.full === true, ...(b.fresh === true ? { fresh: true } : {}), ...(testInstallLimitS ? { testInstallLimitS } : {}) };
 }
 
 function parseScanTarget(body: unknown): ParsedTarget {
@@ -252,7 +252,7 @@ export async function executeScan(
   ctx: CallerContext,
   target: ScanTarget,
   regenerate: boolean,
-  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean; testInstallMs?: number; runId?: string },
+  opts: Pick<RunScanOptions, "onEvent" | "background" | "onPersisted"> & { signal?: AbortSignal; full?: boolean; fresh?: boolean; testInstallMs?: number; runId?: string },
 ): Promise<FinalLine> {
   const { store, caller } = ctx;
   const full = opts.full === true;
@@ -261,7 +261,7 @@ export async function executeScan(
   const ad = adForSurface(config, caller.surface, target);
   const deps = { ...productionDeps(config, store), ...(opts.runId ? { newRunId: () => opts.runId! } : {}) };
   const beforeFresh = freshScanGate(store.db, caller);
-  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(beforeFresh ? { beforeFresh } : {}), ...(full && opts.signal ? { stop: opts.signal } : {}) });
+  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}), ...(opts.fresh ? { fresh: true } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(beforeFresh ? { beforeFresh } : {}), ...(full && opts.signal ? { stop: opts.signal } : {}) });
   const reportUrl = reportUrlFor(config.siteUrl, target);
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad, ...(outcome.code === "unauthorized" ? { signInUrl: `${config.siteUrl}/cli-auth` } : {}) };
   if (outcome.kind === "attached") {
