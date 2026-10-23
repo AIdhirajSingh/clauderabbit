@@ -62,8 +62,15 @@ function CardIcon({ d, color }: { d: string; color: string }) {
   );
 }
 
-export function ScanScreen({ runId }: { runId: string }) {
+/**
+ * `boot` is set while /app/scan/new starts the scan and no run id exists yet: nothing is
+ * fetched, the first step shows as active and the sandbox diagram shows Booting. `error`
+ * holds the reason the start failed.
+ */
+export function ScanScreen({ runId, boot }: { runId: string; boot?: { error: string | null } }) {
   const router = useRouter();
+  const booting = !!boot;
+  const bootErr = boot?.error ?? null;
   const params = useSearchParams();
   const replay = params.get("replay") === "1";
   const speed = replay ? Math.min(20, Math.max(1, Number(params.get("speed") ?? "4") || 4)) : 1;
@@ -111,7 +118,7 @@ export function ScanScreen({ runId }: { runId: string }) {
 
   // Live stream from this tab (started on /app), if any.
   useEffect(() => {
-    if (replay) return;
+    if (replay || booting) return;
     const l = liveScan(runId);
     if (!l) return;
     const sync = () => {
@@ -129,10 +136,11 @@ export function ScanScreen({ runId }: { runId: string }) {
     };
     sync();
     return subscribeLive(runId, sync);
-  }, [runId, replay, addEvents, loadRun, loadEvents]);
+  }, [runId, replay, booting, addEvents, loadRun, loadEvents]);
 
   // Stored state: the run, its events, and Realtime while it is running (reconnects pick up by seq).
   useEffect(() => {
+    if (booting) return;
     let stop = false;
     let poll: ReturnType<typeof setInterval> | null = null;
     let supabase: ReturnType<typeof createClient> | null = null;
@@ -172,7 +180,7 @@ export function ScanScreen({ runId }: { runId: string }) {
       if (poll) clearInterval(poll);
       if (supabase && channel) supabase.removeChannel(channel);
     };
-  }, [runId, replay, startedHere, router, loadRun, loadEvents, addEvents]);
+  }, [runId, replay, booting, startedHere, router, loadRun, loadEvents, addEvents]);
 
   useEffect(() => {
     eventsRef.current = events;
@@ -215,7 +223,7 @@ export function ScanScreen({ runId }: { runId: string }) {
   const playMs = paced && playBase !== null ? Math.max(0, (playNow - playBase) * speed) : null;
   const visible = useMemo(() => (paced ? (playMs === null ? [] : events.filter((e) => e.t_ms <= playMs)) : events), [paced, playMs, events]);
   const done = !!run?.report && run.status === "done" && (!paced || playDone);
-  const failed = run?.status === "error" && !replay;
+  const failed = (run?.status === "error" && !replay) || !!bootErr;
   const running = !done && !failed;
 
   // 200 ms after the last event shows, the full report replaces the finished scan (Back skips it).
@@ -240,12 +248,12 @@ export function ScanScreen({ runId }: { runId: string }) {
 
   // Heartbeat every 10 s keeps a full scan's sandboxes alive while this tab watches.
   useEffect(() => {
-    if (!running) return;
+    if (!running || booting) return;
     const beat = () => void fetch(`/api/scan/${runId}/heartbeat`, { method: "POST", headers: { "x-clauderabbit-client": "web" }, keepalive: true }).catch(() => {});
     beat();
     const id = setInterval(beat, 10_000);
     return () => clearInterval(id);
-  }, [running, runId]);
+  }, [running, booting, runId]);
 
   useEffect(() => {
     if (!running || paced) return;
@@ -258,7 +266,10 @@ export function ScanScreen({ runId }: { runId: string }) {
   const totalMs = report ? (report.timings?.total_ms ?? report.timings?.total ?? (run?.finished_at && run.started_at ? Date.parse(run.finished_at) - Date.parse(run.started_at) : lastT)) : lastT;
   const liveMs = done ? totalMs : playMs !== null ? playMs : paced ? 0 : run && running ? Math.max(lastT, clockNow - Date.parse(run.started_at)) : lastT;
 
-  const st = useMemo(() => steps(visible, done), [visible, done]);
+  const st = useMemo(() => {
+    const s = steps(visible, done);
+    return booting && !bootErr ? s.map((x, i) => (i === 0 ? { ...x, state: "active" as const } : x)) : s;
+  }, [visible, done, booting, bootErr]);
   const rows = useMemo(() => timeline(visible), [visible]);
   const jev = useMemo(() => jevRows(visible), [visible]);
   const decoyPids = useMemo(() => new Set(visible.flatMap((e) => (e.type === "file" && e.data.op === "read_decoy" ? [e.data.pid] : []))), [visible]);
@@ -328,7 +339,7 @@ export function ScanScreen({ runId }: { runId: string }) {
               </span>
               <div style={{ minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ fontSize: 18, fontWeight: 500, letterSpacing: "-0.02em" }}>{title}</span><span className={`pill ${phaseClass}`}>{phase}</span></div>
-                <div className="mono dim" style={{ marginTop: 2, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run ? `${run.subject.startsWith("npm:") ? "npm" : "github.com"}/${subjectName(run.subject)} · ${shortSha(run.commit_sha)}` : "Starting…"}</div>
+                <div className="mono dim" role={booting ? "status" : undefined} style={{ marginTop: 2, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run ? `${run.subject.startsWith("npm:") ? "npm" : "github.com"}/${subjectName(run.subject)} · ${shortSha(run.commit_sha)}` : booting ? (bootErr ? "Could not start" : "Starting a fresh machine…") : "Starting…"}</div>
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -365,7 +376,8 @@ export function ScanScreen({ runId }: { runId: string }) {
             </div>
           </div>
 
-          {failed && <p className="body" style={{ marginTop: 16 }}>This scan stopped before it finished ({run?.error_code ?? "error"}). No score was given. <Link href="/app" style={{ color: "#F0F0F0", textDecoration: "underline" }}>New scan</Link></p>}
+          {bootErr && <p className="body" role="alert" style={{ marginTop: 16 }}>{bootErr} No score was given. <Link href="/app" style={{ color: "#F0F0F0", textDecoration: "underline" }}>Back to scan</Link></p>}
+          {failed && !bootErr && <p className="body" style={{ marginTop: 16 }}>This scan stopped before it finished ({run?.error_code ?? "error"}). No score was given. <Link href="/app" style={{ color: "#F0F0F0", textDecoration: "underline" }}>New scan</Link></p>}
 
           {ADS_ENABLED && <Interstitial runId={runId} />}
 

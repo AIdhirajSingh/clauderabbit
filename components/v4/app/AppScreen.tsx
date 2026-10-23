@@ -2,15 +2,14 @@
 
 /**
  * /app (project/term/App.dc.html, idle view): the paste box and the danger board.
- * Every row, score, verdict and time comes from /api/board; a scan starts through
- * lib/cr/scan-client.ts startScan and opens /app/scan/<runId>.
+ * Every row, score, verdict and time comes from /api/board; a scan opens /app/scan/new?t=<target>
+ * at once, and that screen starts it through lib/cr/scan-client.ts startScan.
  */
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
-import { startScan } from "@/lib/cr/scan-client";
 import { displayName, toneOf, type Tone } from "@/lib/cr/verdict";
 
 interface Row { run_id: string | null; owner_login: string; repo_name: string; commit_sha: string; score: number; verdict: string; finding: string; created_at: string }
@@ -106,8 +105,6 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
     };
   }, []);
   const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [pending, setPending] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -121,15 +118,11 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
 
   useEffect(() => {
     if (supabase === undefined) return;
-    if (!supabase) {
-      queueMicrotask(() => setAuthReady(true));
-      return;
-    }
+    if (!supabase) return;
     supabase.auth
       .getSession()
       .then(({ data }) => setSession(data.session))
-      .catch(() => {})
-      .finally(() => setAuthReady(true));
+      .catch(() => {});
     const { data } = supabase.auth.onAuthStateChange((_e, sess) => setSession(sess));
     return () => data.subscription.unsubscribe();
   }, [supabase]);
@@ -209,7 +202,7 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
     };
   }, [supabase]);
 
-  const go = async (raw: string = query) => {
+  const go = (raw: string = query) => {
     if (busy) return;
     const target = normalizeTarget(raw);
     if (!target) {
@@ -217,41 +210,28 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
       return;
     }
     setBusy(true);
-    setMsg({ text: "Starting a fresh machine…", bad: false });
-    try {
-      const { runId } = await startScan(target, session?.access_token ?? null);
-      router.push(`/app/scan/${runId}`);
-    } catch (err) {
-      setMsg({ text: err instanceof Error ? err.message : "Scan failed. Try again.", bad: true });
-      setBusy(false);
-    }
+    setMsg(null);
+    // The scan screen opens before any server reply and starts the scan itself.
+    router.push(`/app/scan/new?t=${encodeURIComponent(target)}`);
   };
-  // ?scan=<target>: fill the paste box now, start the scan once auth has settled (a signed-in token goes with it).
-  const onParam = useCallback((t: string) => {
-    setQuery(t);
-    setPending(t);
-  }, []);
+  // ?scan=<target>: fill the paste box and open the scan screen the same way.
   const goRef = useRef(go);
   useEffect(() => {
     goRef.current = go;
   });
-  useEffect(() => {
-    if (pending === null || !authReady) return;
-    const t = pending;
-    // Starting the scan is the external sync; the one-shot flag is cleared with it.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPending(null);
-    void goRef.current(t);
-  }, [pending, authReady]);
+  const onParam = useCallback((t: string) => {
+    setQuery(t);
+    goRef.current(t);
+  }, []);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    void go();
+    go();
   };
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      void go();
+      go();
     }
   };
 
@@ -273,7 +253,6 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
                   id="target"
                   className="mono"
                   type="text"
-                  placeholder="github.com/owner/repo or express"
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); if (msg?.bad) setMsg(null); }}
                   onKeyDown={onKey}
