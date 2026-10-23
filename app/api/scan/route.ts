@@ -30,6 +30,7 @@ import {
   serverConfig,
   statusFor,
   surfaceFromHeader,
+  probeStored,
   type FinalLine,
 } from "@/lib/server/scan-service";
 
@@ -139,7 +140,13 @@ export async function POST(req: Request): Promise<Response> {
       const onEvent = (e: ScanEvent) => write(eventLine(e));
       let final: FinalLine;
       try {
-        if (runsOnRunner(regenerate)) {
+        // A stored run replays from here at once; only a miss starts a runner sandbox (about 10 s to create).
+        const probe = runsOnRunner(regenerate) && !parsed.fresh && parsed.full !== true
+          ? await probeStored(ctx, parsed.target, onEvent)
+          : null;
+        if (probe) {
+          final = probe;
+        } else if (runsOnRunner(regenerate)) {
           // The scan runs in its own runner sandbox; this request only relays it while it lives.
           const r = await scanOnRunner(ctx.config, {
             target: parsed.target,

@@ -338,6 +338,8 @@ export interface ReportPayload {
 export type ScanOutcome =
   | { kind: "cached" | "fresh"; runId: string; report: ReportPayload }
   | { kind: "attached"; runId: string }
+  /** RunScanOptions.cacheOnly: no stored run serves this request; nothing was claimed or booted. */
+  | { kind: "miss" }
   | { kind: "error"; runId: string | null; code: ErrorCode; message: string };
 
 /** Typed engine error carrying the API error code. */

@@ -100,6 +100,12 @@ export interface RunScanOptions {
    * Called on a cache miss, before any VM boots: a fresh scan starts only when it answers allowed. The CLI and MCP
    * surfaces pass their per-key daily quota here; a stored result never reaches it, so cached reports stay free.
    */
+  /**
+   * Stop after the stored-run lookup: a hit is served as usual, a miss returns { kind: "miss" } before any run is
+   * claimed or any VM boots. The web route asks this in the request itself, so a stored run replays at once and only
+   * a miss starts a runner sandbox.
+   */
+  cacheOnly?: boolean;
   beforeFresh?: () => Promise<{ allowed: true } | { allowed: false; message: string; code?: "unauthorized" | "rate_limited" }>;
 }
 
@@ -589,6 +595,13 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       emitStage("cache", "error", errMessage(err));
       check("cache_lookup", false, errMessage(err));
     }
+  }
+
+  if (opts.cacheOnly) {
+    g.drop();
+    discard = true;
+    await bus.close();
+    return { kind: "miss" };
   }
 
   // Cache miss: boot both VMs now (when the budget allows), then claim the run while the

@@ -8,6 +8,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { ScanBoot } from "@/components/v4/scan/ScanBoot";
 import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { displayName, toneOf, type Tone } from "@/lib/cr/verdict";
@@ -237,6 +238,8 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
 
   return (
     <main style={{ maxWidth: 1240, margin: "0 auto", padding: "48px clamp(20px,3vw,40px) 96px" }}>
+      {/* The scan screen's boot state covers the page the moment a scan is asked for, before the route changes. */}
+      {busy && <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "#000", overflow: "auto" }}><ScanBoot /></div>}
       <Suspense fallback={null}><ScanParam onTarget={onParam} /></Suspense>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 24, alignItems: "flex-start", justifyContent: "center" }}>
         <div style={{ flex: "999 1 640px", minWidth: 0, display: "flex", flexDirection: "column", gap: 32 }}>

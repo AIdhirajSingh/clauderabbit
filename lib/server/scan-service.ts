@@ -263,6 +263,7 @@ export async function executeScan(
   const beforeFresh = freshScanGate(store.db, caller);
   const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}), ...(opts.fresh ? { fresh: true } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(beforeFresh ? { beforeFresh } : {}), ...(full && opts.signal ? { stop: opts.signal } : {}) });
   const reportUrl = reportUrlFor(config.siteUrl, target);
+  if (outcome.kind === "miss") return { type: "error", code: "internal", message: "no stored run", run_id: null, ad };
   if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad, ...(outcome.code === "unauthorized" ? { signInUrl: `${config.siteUrl}/cli-auth` } : {}) };
   if (outcome.kind === "attached") {
     const followed = await followRun(store, outcome.runId, { deadlineMs: config.deadlines.scanMs + 15_000, now: deps.now, onEvent: opts.onEvent, signal: opts.signal });
@@ -275,6 +276,19 @@ export async function executeScan(
   const cost = outcome.kind === "fresh" ? (outcome.report.cost ?? null) : cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx });
   await recordUserScan(store, caller.userId, outcome.runId);
   return { type: "result", outcome: outcome.kind, run_id: outcome.runId, report: outcome.report, report_url: reportUrl, ad, cost };
+}
+
+/**
+ * The stored run for this target, served from the request itself: its events replay through onEvent and its final
+ * line comes back. Null when there is none (nothing was claimed or booted), so the caller starts a fresh scan.
+ */
+export async function probeStored(ctx: CallerContext, target: ScanTarget, onEvent: (e: ScanEvent) => void): Promise<FinalLine | null> {
+  const { store, caller, config } = ctx;
+  const deps = productionDeps(config, store);
+  const outcome = await runScan({ target, caller, regenerate: false }, deps, { onEvent: (e) => { if (e.replayed) onEvent(e); }, cacheOnly: true });
+  if (outcome.kind !== "cached") return null;
+  await recordUserScan(store, caller.userId, outcome.runId);
+  return { type: "result", outcome: "cached", run_id: outcome.runId, report: outcome.report, report_url: reportUrlFor(config.siteUrl, target), ad: adForSurface(config, caller.surface, target), cost: cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx }) };
 }
 
 /** HTTP status for a pre-stream error code. */
