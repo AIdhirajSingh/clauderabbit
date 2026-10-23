@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
-import { ScanScreen } from "@/components/v4/scan/ScanScreen";
+import { ScanScreenClient } from "@/components/v4/scan/ScanScreenClient";
 
 export const metadata: Metadata = {
   title: { absolute: "Live scan · ClaudeRabbit" },
@@ -14,9 +13,5 @@ export default async function ScanPage({ params, searchParams }: { params: Promi
   // Watch how it happened links to ?replay=1&r=<click time>. A new key mounts a fresh
   // view on every click, so the replay starts from 0.0 s every time.
   const viewKey = sp.replay === "1" ? `replay-${sp.r ?? "0"}` : "live";
-  return (
-    <Suspense>
-      <ScanScreen key={viewKey} runId={id} />
-    </Suspense>
-  );
+  return <ScanScreenClient key={viewKey} runId={id} />;
 }

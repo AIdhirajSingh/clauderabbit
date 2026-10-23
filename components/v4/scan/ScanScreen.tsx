@@ -324,7 +324,8 @@ export function ScanScreen({ runId }: { runId: string }) {
               <div className="adi adi-d adi-m"><BannerAd runId={runId} n={2} /></div>
             </>
           )}
-          <div style={{ display: "flex", alignItems: "center", gap: 0, marginTop: 14 }}>
+          <div style={{ overflowX: "auto", marginTop: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 0, minWidth: 600 }}>
             {st.map((s, i) => {
               const last = i === st.length - 1;
               return (
@@ -339,6 +340,7 @@ export function ScanScreen({ runId }: { runId: string }) {
               );
             })}
           </div>
+          </div>
 
           {failed && <p className="body" style={{ marginTop: 16 }}>This scan stopped before it finished ({run?.error_code ?? "error"}). No score was given. <Link href="/app" style={{ color: "#F0F0F0", textDecoration: "underline" }}>New scan</Link></p>}
 
@@ -351,7 +353,9 @@ export function ScanScreen({ runId }: { runId: string }) {
             <>
               <div className="card" style={{ flex: "none", marginTop: 16 }}>
                 <div className="card-h"><span className="card-t"><CardIcon d={IC.box} color="#4CCCE6" />Inside the sandbox</span><span className="faint" style={{ fontSize: 12 }}>live</span></div>
-                <div style={{ position: "relative", height: 236, margin: "0 18px" }}>
+                {/* Phones scroll the diagram sideways at its designed width instead of squeezing it. */}
+                <div style={{ overflowX: "auto" }}>
+                <div style={{ position: "relative", height: 236, margin: "0 18px", minWidth: 720 }}>
                   <div style={{ position: "absolute", left: "0%", width: "11%", top: 82, height: 72, borderRadius: 14, border: `1px solid ${run ? "rgba(76,204,230,0.6)" : W}`, background: "#0A0A0A", padding: 12, display: "flex", flexDirection: "column", justifyContent: "center", gap: 4, transition: "border-color .3s" }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}><Ico d={IC.git} color="#A1A1A1" /> Repository</span>
                     <span className="mono faint" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{repoName}</span>
@@ -392,6 +396,7 @@ export function ScanScreen({ runId }: { runId: string }) {
                     <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}><Ico d="M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" color="#8A8A8A" size={14} /> Internet</span>
                     <span className="faint" style={{ fontSize: 11 }}>{egressFailed ? "containment check failed" : "never reached"}</span>
                   </div>
+                </div>
                 </div>
               </div>
               <div className="cols">
