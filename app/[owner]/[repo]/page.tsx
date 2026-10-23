@@ -35,7 +35,7 @@ export async function generateMetadata({ params }: RouteParams): Promise<Metadat
   const title = `${repo} · ClaudeRabbit security report`;
   const description = report
     ? reportDescription(`${owner}/${repo}`, report.payload)
-    : `Security report for ${owner}/${repo}. ClaudeRabbit reads the code and runs it in a throwaway sandbox to return an honest 0–100 score.`;
+    : `Security report for ${owner}/${repo}. ClaudeRabbit reads the code and runs it in a throwaway sandbox to return a 0–100 score with the evidence.`;
   const url = `${SITE_URL}/${owner}/${repo}`;
   return {
     title: { absolute: title },
