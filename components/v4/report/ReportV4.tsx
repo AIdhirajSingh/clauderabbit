@@ -15,6 +15,7 @@ import { AdSlot } from "@/components/ads/AdSlot";
 import type { Ad as WebAd } from "@/lib/engine/types";
 import type { V2Report } from "./data";
 import { plainEvidence, plainJev, type PlainEvidence } from "./plain";
+import { ColumnBalance } from "./ColumnBalance";
 import s from "./report.module.css";
 
 const BAND_GA: Record<Band, string> = { green: "ga-green", blue: "ga-blue", yellow: "ga-amber", red: "ga-red" };
@@ -397,6 +398,7 @@ export function ReportV4({ report, sourceLabel, ad, newScanHref }: ReportV4Props
           {repCard}
         </div>
       </div>
+      <ColumnBalance cols={s.cols ?? ""} />
     </>
   );
 
