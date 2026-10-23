@@ -10,7 +10,8 @@ import { GoogleButton } from "@/components/v4/login/GoogleButton";
  */
 
 export const metadata: Metadata = {
-  title: "Sign in to ClaudeRabbit",
+  title: { absolute: "Sign in · ClaudeRabbit" },
+  description: "Sign in to ClaudeRabbit with Google to keep your scan history. Scanning works without an account.",
   robots: { index: false, follow: true },
   alternates: { canonical: "/login" },
 };

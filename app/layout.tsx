@@ -91,7 +91,34 @@ export const metadata: Metadata = {
   description:
     "ClaudeRabbit is a free, open-source security product protecting the open-source community from malware. We clone any public GitHub repo into an isolated sandbox, run it, and return one honest safety score.",
   alternates: { canonical: siteUrl },
+  applicationName: "ClaudeRabbit",
+  openGraph: { siteName: "ClaudeRabbit", type: "website", locale: "en_US" },
+  twitter: { card: "summary_large_image" },
 };
+
+/** Site-wide JSON-LD: the product (SoftwareApplication) and who makes it (Organization). Static, no user text. */
+const SITE_JSON_LD = JSON.stringify([
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "ClaudeRabbit",
+    url: siteUrl,
+    applicationCategory: "SecurityApplication",
+    operatingSystem: "Web, macOS, Linux, Windows",
+    description: "Open-source supply-chain security scanner: it installs and runs a GitHub repo or npm package in a disposable, isolated VM and returns a 0 to 100 safety score with the evidence.",
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    license: "https://opensource.org/licenses/MIT",
+    codeRepository: "https://github.com/AIdhirajSingh/clauderabbit",
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "ClaudeRabbit",
+    url: siteUrl,
+    logo: `${siteUrl}/icon.svg`,
+    sameAs: ["https://github.com/AIdhirajSingh/clauderabbit", "https://www.npmjs.com/package/clauderabbit"],
+  },
+]).replace(/</g, "\\u003c");
 
 
 /**
@@ -125,7 +152,10 @@ export default async function RootLayout({
         <meta name="color-scheme" content="dark" />
         <meta name="theme-color" content="#000000" />
       </head>
-      <body>{children}</body>
+      <body>
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: SITE_JSON_LD }} />
+        {children}
+      </body>
     </html>
   );
 }

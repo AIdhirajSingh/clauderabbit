@@ -7,11 +7,16 @@ import { Gate } from "@/components/v4/gate/Gate";
  * The scanning platform itself lives at `/app`. Every score shown here is a real stored report.
  */
 
+const TITLE = "ClaudeRabbit · open-source supply-chain security scanner";
+const DESCRIPTION =
+  "ClaudeRabbit is a security audit tool that scans open-source repositories and packages to protect the developer and builder community from malware. It is live, free and open source.";
+
 export const metadata: Metadata = {
-  title: "ClaudeRabbit",
-  description:
-    "ClaudeRabbit is a security audit tool that scans open-source repositories and packages to protect the developer and builder community from malware. It is live, free and open source.",
+  title: { absolute: TITLE },
+  description: DESCRIPTION,
   alternates: { canonical: "/" },
+  openGraph: { title: TITLE, description: DESCRIPTION, url: "/", type: "website", siteName: "ClaudeRabbit" },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION },
 };
 
 export default async function HomePage() {
