@@ -8,9 +8,8 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { Session } from "@supabase/supabase-js";
-import { createClient } from "@/lib/supabase/client";
+import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { startScan } from "@/lib/cr/scan-client";
 import { displayName, toneOf, type Tone } from "@/lib/cr/verdict";
 
@@ -88,12 +87,23 @@ function ScanParam({ onTarget }: { onTarget: (target: string) => void }) {
 
 export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: number | null } | null }) {
   const router = useRouter();
-  const supabase = useMemo(() => {
-    try {
-      return createClient();
-    } catch {
-      return null;
-    }
+  // The Supabase client loads after first paint (its bundle stays off the critical path); undefined while loading.
+  const [supabase, setSupabase] = useState<SupabaseClient | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    import("@/lib/supabase/client")
+      .then((m) => {
+        if (!live) return;
+        try {
+          setSupabase(m.createClient());
+        } catch {
+          setSupabase(null);
+        }
+      })
+      .catch(() => live && setSupabase(null));
+    return () => {
+      live = false;
+    };
   }, []);
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -110,6 +120,7 @@ export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: n
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    if (supabase === undefined) return;
     if (!supabase) {
       queueMicrotask(() => setAuthReady(true));
       return;
