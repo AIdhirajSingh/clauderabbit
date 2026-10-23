@@ -42,6 +42,8 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 const geist = localFont({
   src: [{ path: "./fonts/geist-latin.woff2", weight: "300 700", style: "normal" }],
   display: "swap",
+  // Legacy pages only (privacy, terms, OAuth); the v4 screens never use it, so it is not preloaded.
+  preload: false,
   variable: "--font-geist",
   // Metric-matched sans fallback so text paints instantly with no layout shift.
   adjustFontFallback: "Arial",
@@ -55,7 +57,8 @@ const geist = localFont({
  */
 const figtree = localFont({
   src: [{ path: "./fonts/figtree-latin.woff2", weight: "300 900", style: "normal" }],
-  display: "swap",
+  // `optional`, as for the serif below: v4's LCP is Figtree text, and a late swap re-marks LCP on slow mobile.
+  display: "optional",
   variable: "--font-figtree",
   adjustFontFallback: "Arial",
 });
@@ -66,7 +69,7 @@ const geistMono = localFont({
     { path: "./fonts/geist-mono-latin-400.woff2", weight: "400", style: "normal" },
     { path: "./fonts/geist-mono-latin-500.woff2", weight: "500", style: "normal" },
   ],
-  display: "swap",
+  display: "optional",
   variable: "--font-geist-mono",
   adjustFontFallback: false,
 });
@@ -80,6 +83,7 @@ const instrumentSerif = localFont({
   // first load the metric-matched fallback owns the paint (identical layout, no shift)
   // rather than a late swap that re-marks LCP at ~2.7s. See the block comment above.
   display: "optional",
+  preload: false,
   variable: "--font-instrument-serif",
   // Metric-matched serif fallback (mirrors what next/font/google generated before).
   adjustFontFallback: "Times New Roman",

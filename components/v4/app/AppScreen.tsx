@@ -86,7 +86,7 @@ function ScanParam({ onTarget }: { onTarget: (target: string) => void }) {
   return null;
 }
 
-export function AppScreen() {
+export function AppScreen({ initial = null }: { initial?: { rows: Row[]; next: number | null } | null }) {
   const router = useRouter();
   const supabase = useMemo(() => {
     try {
@@ -101,8 +101,9 @@ export function AppScreen() {
   const [query, setQuery] = useState("");
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [rows, setRows] = useState<Row[] | null>(null);
-  const [next, setNext] = useState<number | null>(0);
+  // The first page comes rendered from the server (no layout shift); the client then refreshes it.
+  const [rows, setRows] = useState<Row[] | null>(initial?.rows ?? null);
+  const [next, setNext] = useState<number | null>(initial ? initial.next : 0);
   const [loadErr, setLoadErr] = useState(false);
   const loading = useRef(false);
   const sentinel = useRef<HTMLDivElement | null>(null);
