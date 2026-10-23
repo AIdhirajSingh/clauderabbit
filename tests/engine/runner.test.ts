@@ -31,3 +31,8 @@ test("the runner gets only the keys a scan needs, as process environment, never 
   // Web scans are heartbeat-kept: a closed tab stops the runner within HEARTBEAT_GRACE_MS.
   assert.match(src, /timeoutMs: heartbeat \? HEARTBEAT_GRACE_MS : RUNNER_UNATTENDED_MS/);
 });
+
+test("the runner gets the cache cutoff, since findCached runs there", async () => {
+  const { RUNNER_ENV_NAMES } = await import("../../lib/server/runner.ts");
+  assert.ok((RUNNER_ENV_NAMES as readonly string[]).includes("CR_FRESH_SINCE"));
+});

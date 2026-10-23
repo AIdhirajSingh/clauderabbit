@@ -41,6 +41,8 @@ export const RUNNER_ENV_NAMES = [
   "CR_MODEL_REASONING_EFFORT", "CR_DAILY_MODEL_TOKENS_CAP", "CR_DAILY_SANDBOX_SECONDS_CAP", "CR_USD_INR", "NEXT_PUBLIC_SITE_URL",
   "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "NEXT_PUBLIC_ADSENSE_CLIENT_ID", "NEXT_PUBLIC_ADSENSE_SLOT_ID",
   "NEXT_PUBLIC_ADSENSE_TEST", "VERCEL_ENV", "VERCEL_REGION",
+  // The cache cutoff (lib/engine/store.ts freshSince): findCached runs on the runner, so it needs it too.
+  "CR_FRESH_SINCE",
 ] as const;
 
 export interface RunnerStart {
