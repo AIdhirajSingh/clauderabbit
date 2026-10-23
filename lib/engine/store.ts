@@ -384,6 +384,17 @@ const iso = (col: string) => `to_char(${col} at time zone 'utc', 'YYYY-MM-DD"T"H
  * ScanStore on schema v2, as the cr_v2_server role. Server-only. Reads the
  * replay surfaces need are methods here too.
  */
+/**
+ * CR_FRESH_SINCE, an ISO time: stored runs that finished before it are not served from the cache and the danger
+ * board rescans their targets (lib/server/board-refresh.ts). Unset or unparsable: no cutoff.
+ */
+export function freshSince(env: Record<string, string | undefined> = process.env): string | null {
+  const v = env.CR_FRESH_SINCE?.trim();
+  if (!v) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
 export class V2Store implements ScanStore {
   readonly db: SqlExecutor;
   private readonly now: () => number;
@@ -441,15 +452,16 @@ export class V2Store implements ScanStore {
     },
   };
 
-  async findLatestDoneRun(subject: string, commitSha: string): Promise<DoneRunRow | null> {
+  async findLatestDoneRun(subject: string, commitSha: string, notBefore: string | null = null): Promise<DoneRunRow | null> {
     const rows = await run("scan_runs read", () =>
       this.db.query<DoneRunRow>(
         `select id::text as id, subject, model_id, template, timings, cost, report_id::text as report_id
            from v2.scan_runs
           where subject = $1 and commit_sha = $2 and status = 'done' and report_id is not null
+            and ($3::timestamptz is null or finished_at >= $3::timestamptz)
           order by finished_at desc nulls last, started_at desc
           limit 1`,
-        [subject, commitSha],
+        [subject, commitSha, notBefore],
       ),
     );
     return rows[0] ?? null;
@@ -483,7 +495,8 @@ export class V2Store implements ScanStore {
   }
 
   async findCached(subject: string, commitSha: string): Promise<CachedRun | null> {
-    const runRow = await this.findLatestDoneRun(subject, commitSha);
+    // Runs finished before CR_FRESH_SINCE (the production launch of 2.0) are never served as a cache hit.
+    const runRow = await this.findLatestDoneRun(subject, commitSha, freshSince());
     if (!runRow) return null;
     const rows = await run("reports read", () =>
       this.db.query<StoredReportRow>(

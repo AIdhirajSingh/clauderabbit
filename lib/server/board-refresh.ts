@@ -1,6 +1,6 @@
 /**
  * Keeps the danger board on the current scoring rules. A board row whose shown
- * scan was scored under an older SCORE_RULES is stale; on a board read the server
+ * scan was scored under an older SCORE_RULES, or finished before CR_FRESH_SINCE, is stale; on a board read the server
  * rescans stale targets in the background (after the response), at their current
  * version, at most BOARD_REFRESH_CONCURRENCY scans running at once across the
  * whole service. Until a target's new scan lands the board shows its last result.
@@ -9,13 +9,14 @@
 
 import type { SqlExecutor } from "@/lib/engine/db";
 import { SCORE_RULES } from "@/lib/engine/score";
+import { freshSince } from "@/lib/engine/store";
 import type { ScanTarget } from "@/lib/engine/types";
 import { TEST_FIXTURE_REPO_RE } from "./public-lists";
 
 export const BOARD_REFRESH_CONCURRENCY = 5;
 
 /** The board's targets whose shown scan is under older rules and not being scanned now, oldest rules first. */
-export async function staleBoardSubjects(db: SqlExecutor, rules = SCORE_RULES, limit = BOARD_REFRESH_CONCURRENCY): Promise<string[]> {
+export async function staleBoardSubjects(db: SqlExecutor, rules = SCORE_RULES, limit = BOARD_REFRESH_CONCURRENCY, since: string | null = freshSince()): Promise<string[]> {
   const rows = await db.query<{ subject: string }>(
     `with latest as (
        select distinct on (owner_login, repo_name) run_id, stats_json->>'score_rules' as rules
@@ -25,11 +26,11 @@ export async function staleBoardSubjects(db: SqlExecutor, rules = SCORE_RULES, l
                  case when ref is not distinct from 'latest' then updated_at else created_at end desc)
      select sr.subject
        from latest l join v2.scan_runs sr on sr.id = l.run_id
-      where coalesce(l.rules, '') <> $1::text
+      where (coalesce(l.rules, '') <> $1::text or ($4::timestamptz is not null and coalesce(sr.finished_at, sr.started_at) < $4::timestamptz))
         and not exists (select 1 from v2.scan_runs x where x.subject = sr.subject and x.status = 'running')
       order by coalesce(nullif(l.rules, '')::int, 0) asc, sr.subject
       limit $2`,
-    [String(rules), limit, TEST_FIXTURE_REPO_RE],
+    [String(rules), limit, TEST_FIXTURE_REPO_RE, since],
   );
   return rows.map((r) => r.subject);
 }

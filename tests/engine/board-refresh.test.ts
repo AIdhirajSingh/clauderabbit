@@ -53,3 +53,16 @@ test("at most 5 scans at once, and subjects map to current-version targets", () 
   assert.deepEqual(targetForSubject("supabase/supabase"), { kind: "github", owner: "supabase", repo: "supabase" });
   assert.equal(targetForSubject("tarball:x; rm -rf /"), null);
 });
+
+test("CR_FRESH_SINCE: runs before the production launch are stale on the board and never a cache hit", async () => {
+  const { freshSince } = await import("../../lib/engine/store.ts");
+  const { staleBoardSubjects } = await import("../../lib/server/board-refresh.ts");
+  assert.equal(freshSince({}), null);
+  assert.equal(freshSince({ CR_FRESH_SINCE: "not a time" }), null);
+  assert.equal(freshSince({ CR_FRESH_SINCE: "2026-10-23T12:40:00Z" }), "2026-10-23T12:40:00.000Z");
+  const seen: { sql: string; params: unknown[] }[] = [];
+  const db = { query: async (sql: string, params: unknown[]) => { seen.push({ sql, params }); return [{ subject: "npm:left-pad" }]; } } as never;
+  assert.deepEqual(await staleBoardSubjects(db, 36, 5, "2026-10-23T12:40:00.000Z"), ["npm:left-pad"]);
+  assert.equal(seen[0]!.params[3], "2026-10-23T12:40:00.000Z");
+  assert.match(seen[0]!.sql, /coalesce\(sr\.finished_at, sr\.started_at\) < \$4::timestamptz/);
+});
