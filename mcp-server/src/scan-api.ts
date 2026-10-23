@@ -196,8 +196,6 @@ export function formatResponse(r: ScanResponse): string {
     const lines = [`ClaudeRabbit scan failed (${r.code}): ${r.message}`];
     if (r.signInUrl) lines.push(`Sign in at ${r.signInUrl}, then run \`clauderabbit login\`.`);
     if (r.retryAfter) lines.push(`Retry in ${r.retryAfter} s.`);
-    const ad = adText(r.ad);
-    if (ad) lines.push("", ad);
     return lines.join("\n") + "\n";
   }
   const p = r.report;
@@ -211,21 +209,21 @@ export function formatResponse(r: ScanResponse): string {
     lines.push("", `${title}:`);
     for (const i of items.slice(0, 12)) lines.push(`  - ${i}`);
   };
+  const deductions = (p.breakdown ?? []).filter((d) => d.points !== 0).map((d) => `${d.points > 0 ? "+" : ""}${d.points} ${d.detail}`);
+  group("Points taken off", deductions.length ? deductions : ["none"]);
   group("Observed when the code ran", p.evidence?.behaviour ?? []);
   group("Found in the code", p.evidence?.code ?? []);
   group("Reputation (separate from code and behaviour)", p.evidence?.reputation ?? []);
   lines.push("", "Not verified:");
   const nv = p.not_verified?.length ? p.not_verified : ["The server sent no not-verified list; treat every unobserved path as unverified."];
   for (const i of nv) lines.push(`  - ${i}`);
-  lines.push("", `Report: ${r.reportUrl}`);
-  const ad = adText(r.ad);
-  if (ad) lines.push("", ad);
+  lines.push("", `Full report: ${r.reportUrl}`);
   return lines.join("\n") + "\n";
 }
 
 /** JSON form for `--json` and MCP structured content. */
 export function toStructured(r: ScanResponse): Record<string, unknown> {
-  if (!r.ok) return { ok: false, code: r.code, message: r.message, ...(r.signInUrl ? { signInUrl: r.signInUrl } : {}), ...(r.ad ? { ad: r.ad } : {}) };
+  if (!r.ok) return { ok: false, code: r.code, message: r.message, ...(r.signInUrl ? { signInUrl: r.signInUrl } : {}) };
   const p = r.report;
   return {
     ok: true,
@@ -241,7 +239,7 @@ export function toStructured(r: ScanResponse): Record<string, unknown> {
     evidence: p.evidence,
     notVerified: p.not_verified,
     breakdown: p.breakdown,
+    deductions: (p.breakdown ?? []).filter((d) => d.points !== 0).map((d) => ({ points: d.points, detail: d.detail })),
     reportUrl: r.reportUrl,
-    ad: r.ad,
   };
 }

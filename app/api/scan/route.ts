@@ -95,10 +95,8 @@ export async function POST(req: Request): Promise<Response> {
   const store = createV2Store(config);
   const ctx = await callerFrom(req.headers, surface, parsed.deviceId, config, store);
 
-  // CLI and stdio MCP require a signed-in ClaudeRabbit account; the web never does.
-  if ((surface === "cli" || surface === "mcp") && !ctx.identity) {
-    return preStreamError("unauthorized", "sign in first: run `clauderabbit login`", ad, { signInUrl: `${config.siteUrl}/cli-auth` });
-  }
+  // CLI and stdio MCP: stored reports are free without an account; a fresh scan needs a signed-in key
+  // (lib/server/scan-service.ts executeScan, before any VM boots) and counts against its daily quota.
   if (parsed.target.kind === "tarball" && !ctx.caller.operator) return preStreamError("unauthorized", "tarball targets need the operator key", ad);
 
   const rl = await rateLimitFor(ctx);

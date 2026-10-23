@@ -95,6 +95,11 @@ export interface RunScanOptions {
   background?: (task: Promise<void>) => void;
   /** Called once the report row is saved, with the persisted owner and repo (cache invalidation). */
   onPersisted?: (saved: { ownerLogin: string; repoName: string; kind: TargetKind }) => void;
+  /**
+   * Called on a cache miss, before any VM boots: a fresh scan starts only when it answers allowed. The CLI and MCP
+   * surfaces pass their per-key daily quota here; a stored result never reaches it, so cached reports stay free.
+   */
+  beforeFresh?: () => Promise<{ allowed: true } | { allowed: false; message: string; code?: "unauthorized" | "rate_limited" }>;
 }
 
 /**
@@ -594,7 +599,8 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     check("vm_size", false, `tree size unavailable (${errMessage(treeR.reason)}); 1 vCPU`);
   }
   const underBudget = budgetR.status === "fulfilled" && budgetR.value === true;
-  if (underBudget) bootVms();
+  const quota = opts.beforeFresh ? await opts.beforeFresh().catch((err: unknown) => ({ allowed: false as const, code: "rate_limited" as const, message: `the daily quota check failed (${errMessage(err)})` })) : { allowed: true as const };
+  if (underBudget && quota.allowed) bootVms();
   // A GitHub repo of any size is fetched and mapped inside the VMs when the provider
   // can switch egress (E2B); otherwise (test providers) the function fetches it.
   const vmCapable = oneVm() && detVm !== null;
@@ -628,6 +634,10 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   if (!underBudget) {
     check("daily_budget", false, "today's sandbox or model budget is spent; cached reports still serve");
     return fail(new EngineError("budget_exhausted", "the daily scan budget is spent; retry tomorrow or open a cached report"), null);
+  }
+  if (!quota.allowed) {
+    check("daily_quota", false, quota.message);
+    return fail(new EngineError(quota.code ?? "rate_limited", quota.message), null);
   }
 
   // ---- fetch, verify, reach ---------------------------------------------------------

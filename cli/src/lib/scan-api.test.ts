@@ -60,15 +60,16 @@ test("postScan sends the token, client header and body, and parses split NDJSON"
   const text = formatResponse(r);
   assert.match(text, /Verdict: Malicious {3}Score: 12\/100/);
   assert.match(text, /Not verified:\n {2}- Behaviour outside/);
-  assert.match(text, /Report: https:\/\/clauderabbit\.in\/acme\/lib/);
-  assert.match(text, /\[Sponsored\] Show this scan on acme\/lib/);
+  assert.match(text, /Full report: https:\/\/clauderabbit\.in\/acme\/lib/);
+  assert.doesNotMatch(text, /Sponsored/);
+  assert.match(text, /Points taken off:/);
   assert.doesNotMatch(text, /\bSafe\b/);
   const json = toStructured(r);
   assert.deepEqual(json.notVerified, REPORT.not_verified);
-  assert.deepEqual(json.ad, AD);
+  assert.equal(json.ad, undefined);
 });
 
-test("a 401 carries signInUrl and the ad through to the output", async () => {
+test("a 401 carries signInUrl through to the output, with no ad", async () => {
   const fakeFetch = (async () => new Response(JSON.stringify({ type: "error", code: "unauthorized", message: "sign in first", signInUrl: "https://clauderabbit.in/cli-auth", ad: AD }), { status: 401 })) as unknown as typeof fetch;
   const r = await postScan({ siteUrl: "https://clauderabbit.in", scanTimeoutMs: 5000 }, { ecosystem: "npm", package: "left-pad" }, "cr_cli_x", "mcp", undefined, fakeFetch);
   assert.equal(r.ok, false);
@@ -77,7 +78,7 @@ test("a 401 carries signInUrl and the ad through to the output", async () => {
   assert.equal(r.signInUrl, "https://clauderabbit.in/cli-auth");
   const text = formatResponse(r);
   assert.match(text, /Sign in at https:\/\/clauderabbit\.in\/cli-auth/);
-  assert.match(text, /\[Sponsored\]/);
+  assert.doesNotMatch(text, /Sponsored/);
 });
 
 test("protectionBypass is sent only as x-vercel-protection-bypass, and only when set", async () => {

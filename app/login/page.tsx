@@ -1,68 +1,33 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Mark } from "@/components/cr/Logo";
-import { Orbit } from "@/components/cr/Orbit";
-import { GoogleButton } from "@/components/cr/login/GoogleButton";
-import s from "@/components/cr/login/login.module.css";
+import { BrandMark } from "@/components/v4/BrandMark";
+import { Header } from "@/components/v4/Header";
+import { GoogleButton } from "@/components/v4/login/GoogleButton";
 
 /**
- * `/login` — sign in or sign up, ported from the Claude Design export
- * p3/Login.dc.html. Signing in is optional: it only saves scan history.
+ * `/login` — sign in or sign up (Claude Design export project/term/Login.dc.html). Google only.
+ * Signing in is optional: it only saves scan history, so "Not now" goes straight to /app.
  */
 
 export const metadata: Metadata = {
   title: "Sign in to ClaudeRabbit",
   robots: { index: false, follow: true },
+  alternates: { canonical: "/login" },
 };
 
 export default function LoginPage() {
   return (
-    <div className={s.l}>
-      <div className={s.top}>
-        <Link href="/" className={`${s.press} ${s.ghost} ${s.back}`}>
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M14.5 5.5L8 12l6.5 6.5" />
-          </svg>
-          Back
-        </Link>
-        <Link href="/app" className={`${s.press} ${s.ghost} ${s.notNow}`}>
-          Not now
-        </Link>
-      </div>
-
-      <main className={s.stage}>
-        <div className={s.side}>
-          <Orbit />
-          <p className={s.tagline}>Cybersecurity for builders.</p>
-        </div>
-        <div className={s.card}>
-          <span className={s.markTile}>
-            <Mark size={44} />
-          </span>
-          <h1 className={s.h1}>Sign in or sign up</h1>
-          <p className={s.sub}>Your scans are saved to your account.</p>
+    <div style={{ minHeight: "100vh", background: "#000", display: "flex", flexDirection: "column" }}>
+      <Header />
+      <main style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "48px 20px" }}>
+        <div style={{ width: "100%", maxWidth: "380px", textAlign: "center" }}>
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <BrandMark size={48} glyph={32} radius={13} idPrefix="lg" />
+          </div>
+          <h1 style={{ margin: "24px 0 0", fontSize: "28px", fontWeight: 500, letterSpacing: "-0.03em" }}>Sign in or sign up</h1>
+          <p className="dim" style={{ margin: "8px 0 0", fontSize: "15px" }}>Scanning works without an account.</p>
           <GoogleButton />
-          <p className={s.legal}>
-            By continuing you agree to the{" "}
-            <Link href="/terms" className={s.legalLink}>
-              Terms
-            </Link>{" "}
-            and{" "}
-            <Link href="/privacy" className={s.legalLink}>
-              Privacy Policy
-            </Link>
-            .
-          </p>
+          <Link href="/app" className="btn btn-g btn-sm" style={{ marginTop: "8px", color: "#A1A1A1" }}>Not now</Link>
         </div>
       </main>
     </div>

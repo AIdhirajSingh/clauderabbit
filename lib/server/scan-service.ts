@@ -16,10 +16,11 @@ import { identify, identityBackend, bearerToken, type Identity } from "../engine
 import { DEFAULT_SITE_URL, fullInstallDeadlines, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
 import { runScan, type RunScanOptions } from "../engine/orchestrator";
-import { checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
+import { checkDailyQuota, checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
 import { parseGithubTarget } from "../engine/resolve/github";
 import { isValidNpmName, parseNpmTarget } from "../engine/resolve/npm";
 import { validateOperatorTarball } from "../engine/resolve/tarball";
+import type { SqlExecutor } from "../engine/db";
 import type { V2Store } from "../engine/store";
 import type { Ad, ErrorCode, ReportPayload, ScanCaller, ScanEvent, ScanTarget, Surface } from "../engine/types";
 
@@ -236,6 +237,16 @@ export async function recordUserScan(store: Pick<V2Store, "recordUserScan">, use
   }
 }
 
+/**
+ * The gate a CLI or MCP cache miss passes before any VM boots: a signed-in key within its daily quota. The web and
+ * the operator have none; stored reports never reach it.
+ */
+export function freshScanGate(db: SqlExecutor, caller: ScanCaller): (() => Promise<{ allowed: true } | { allowed: false; message: string; code?: "unauthorized" | "rate_limited" }>) | undefined {
+  if (caller.surface === "web" || caller.operator) return undefined;
+  if (!caller.userId) return async () => ({ allowed: false, code: "unauthorized", message: "a fresh scan needs a ClaudeRabbit account: run `clauderabbit login`; stored reports are free" });
+  return () => checkDailyQuota(db, caller);
+}
+
 /** Run one scan end to end on the production pipeline and produce the final line. */
 export async function executeScan(
   ctx: CallerContext,
@@ -249,9 +260,10 @@ export async function executeScan(
   const config = full ? { ...base, deadlines: fullInstallDeadlines(base.deadlines), heartbeatSandboxes: true } : base;
   const ad = adForSurface(config, caller.surface, target);
   const deps = { ...productionDeps(config, store), ...(opts.runId ? { newRunId: () => opts.runId! } : {}) };
-  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(full && opts.signal ? { stop: opts.signal } : {}) });
+  const beforeFresh = freshScanGate(store.db, caller);
+  const outcome = await runScan({ target, caller, regenerate: regenerate && caller.operator, ...(full ? { full } : {}) }, deps, { onEvent: opts.onEvent, background: opts.background, onPersisted: opts.onPersisted, ...(beforeFresh ? { beforeFresh } : {}), ...(full && opts.signal ? { stop: opts.signal } : {}) });
   const reportUrl = reportUrlFor(config.siteUrl, target);
-  if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad };
+  if (outcome.kind === "error") return { type: "error", code: outcome.code, message: outcome.message, run_id: outcome.runId, ad, ...(outcome.code === "unauthorized" ? { signInUrl: `${config.siteUrl}/cli-auth` } : {}) };
   if (outcome.kind === "attached") {
     const followed = await followRun(store, outcome.runId, { deadlineMs: config.deadlines.scanMs + 15_000, now: deps.now, onEvent: opts.onEvent, signal: opts.signal });
     // The joined run's cost belongs to the request that started it; this request spent nothing.

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { headers } from "next/headers";
 import "./globals.css";
+import "@/components/v4/v4.css";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
@@ -59,6 +60,17 @@ const figtree = localFont({
   adjustFontFallback: "Arial",
 });
 
+/** Geist Mono, the v4 design's mono face (@fontsource/geist-mono 5.2.7, latin 400 and 500), self-hosted like the faces above. */
+const geistMono = localFont({
+  src: [
+    { path: "./fonts/geist-mono-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/geist-mono-latin-500.woff2", weight: "500", style: "normal" },
+  ],
+  display: "swap",
+  variable: "--font-geist-mono",
+  adjustFontFallback: false,
+});
+
 const instrumentSerif = localFont({
   src: [
     { path: "./fonts/instrument-serif-latin.woff2", weight: "400", style: "normal" },
@@ -92,14 +104,14 @@ export const metadata: Metadata = {
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  // Light theme only (2.0). Reading the nonce header keeps every page rendered per request, which the CSP nonce needs.
+  // Dark only (the v4 design). Reading the nonce header keeps every page rendered per request, which the CSP nonce needs.
   await headers();
   return (
     <html
       lang="en"
-      data-theme="light"
+      data-theme="dark"
       data-scroll-behavior="smooth"
-      className={`${figtree.variable} ${geist.variable} ${instrumentSerif.variable}`}
+      className={`${figtree.variable} ${geistMono.variable} ${geist.variable} ${instrumentSerif.variable}`}
       suppressHydrationWarning
     >
       <head>
@@ -110,7 +122,8 @@ export default async function RootLayout({
           request. The font-family CSS variables set on <html> above are
           consumed by globals.css.
         */}
-        <meta name="color-scheme" content="light" />
+        <meta name="color-scheme" content="dark" />
+        <meta name="theme-color" content="#000000" />
       </head>
       <body>{children}</body>
     </html>

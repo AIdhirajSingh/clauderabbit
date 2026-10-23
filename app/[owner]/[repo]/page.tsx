@@ -1,37 +1,24 @@
 /**
- * Public, server-rendered safety report — the SEO surface (PRD Task #13).
+ * Public, server-rendered safety report for a GitHub repo, the SEO surface: the v4 report screen
+ * (project/term/Report.dc.html) driven by the latest 2.0 report and its run's observed events.
  *
- * `/[owner]/[repo]` renders the most recent report for that repo straight from
- * the live `reports` table via the anon Supabase server client (RLS exposes
- * report reads publicly). It reuses the SAME presentational `ReportBody` the SPA
- * uses, so the layout conforms to design.md and stays identical across surfaces.
+ * Only a 2.0 (schema v2) report renders here. A repo with no 2.0 report (an old 1.0 link, or never scanned)
+ * redirects to `/app?scan=https://github.com/<owner>/<repo>`, which starts the scan on the App screen.
  *
- * Caching: the page renders per request because the CSP nonce (proxy.ts) must be
- * fresh on every response; the report data is cached for 10 minutes in Next's
- * data cache and expired the moment a fresh scan saves its report
- * (lib/server/report-cache.ts).
- *
- * Rails (CLAUDE.md): the verdict is run through `enforceVerdict` so a bare
- * "Safe" can never render; reputation and code/behavior panels stay separate
- * (that separation is structural in `ReportBody`).
+ * Rails (CLAUDE.md): the verdict word is the engine's own five-word set, never a bare "Safe"; reputation sits in
+ * its own card, apart from the code and behaviour cards.
  */
 
 import { cache } from "react";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { buildReportView, logColor } from "@/lib/report-view";
-import { cachedLatestReport } from "@/lib/server/report-cache";
+import { redirect } from "next/navigation";
 import { safeJsonLd } from "@/lib/json-ld";
-import { ReportBody } from "@/components/spa/components/ReportBody";
-import { AdSlot } from "@/components/ads/AdSlot";
 import { webAdFor } from "@/lib/ads-web";
-import { RabbitMark } from "@/components/spa/components/glyphs";
-import type { Report } from "@/lib/types";
-import { notFound } from "next/navigation";
-import { hidesLegacyRoutes } from "@/lib/server/preview-scope";
-
-// Rendered per request (the CSP nonce, see proxy.ts); the report data itself is
-// cached for 10 minutes and expired by a fresh scan (lib/server/report-cache.ts).
+import { ADS_ENABLED } from "@/lib/ads-enabled";
+import { Header } from "@/components/v4/Header";
+import { ReportV4 } from "@/components/v4/report/ReportV4";
+import { latestV2Report, type V2Report } from "@/components/v4/report/data";
+import { reportDescription } from "@/components/v4/report/meta";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 
@@ -39,337 +26,58 @@ interface RouteParams {
   params: Promise<{ owner: string; repo: string }>;
 }
 
-/**
- * Latest report for (owner, repo), wrapped in React's `cache` so
- * `generateMetadata` and the page component share a single DB round-trip per
- * request. `cachedLatestReport` (data cache, see lib/server/report-cache.ts) reads the 2.0 report from schema v2 first and falls
- * back to the 1.0 public report; both reshape through `reportRowToReport`, the
- * same path the SPA's /api/report read uses (no SSR-vs-client drift). Returns
- * null on miss/error.
- */
-const getLatestReport = cache(async function getLatestReport(
-  owner: string,
-  repo: string,
-): Promise<Report | null> {
-  return cachedLatestReport(owner, repo);
-});
+/** One read per request, shared by generateMetadata and the page. */
+const getReport = cache((owner: string, repo: string): Promise<V2Report | null> => latestV2Report(owner, repo));
 
 export async function generateMetadata({ params }: RouteParams): Promise<Metadata> {
-  if (hidesLegacyRoutes()) notFound();
   const { owner, repo } = await params;
-  const slug = `${owner}/${repo}`;
-  const report = await getLatestReport(owner, repo);
-  // Derive the view so the meta uses the SAME reconciled summary + enforced
-  // verdict the page renders — a sandbox-run report never advertises "not executed
-  // in a sandbox" in search results (honesty rail), matching the on-page prose.
-  const view = report ? buildReportView(report) : null;
-
-  const title = `${slug} — ClaudeRabbit safety report`;
-  const description = view
-    ? `${view.verdict} · ${view.score}/100. ${view.summary}`.slice(0, 300)
-    : `Safety report for ${slug}. ClaudeRabbit reads the code and runs unknown repos in an isolated sandbox to return an honest 0–100 safety score.`;
-  const url = `${SITE_URL}/${slug}`;
-
+  const report = await getReport(owner, repo);
+  const title = `${repo} · ClaudeRabbit security report`;
+  const description = report
+    ? reportDescription(`${owner}/${repo}`, report.payload)
+    : `Security report for ${owner}/${repo}. ClaudeRabbit reads the code and runs it in a throwaway sandbox to return an honest 0–100 score.`;
+  const url = `${SITE_URL}/${owner}/${repo}`;
   return {
-    title,
+    title: { absolute: title },
     description,
     alternates: { canonical: url },
-    // SEO: a repo that has NOT been scanned yet renders a thin "not scanned" page — do
-    // NOT let search engines index that (a soft-404 / thin-content signal). Only a REAL
-    // report is indexable; the not-scanned page stays `follow` so its links are still
-    // crawled. Once the repo is scanned this page carries a real report and is indexed.
-    ...(report ? {} : { robots: { index: false, follow: true } }),
-    openGraph: {
-      title,
-      description,
-      url,
-      siteName: "ClaudeRabbit",
-      type: "article",
-    },
-    twitter: {
-      card: "summary_large_image",
-      title,
-      description,
-    },
+    robots: report ? { index: true, follow: true } : { index: false, follow: true },
+    openGraph: { title, description, url, siteName: "ClaudeRabbit", type: "article" },
+    twitter: { card: "summary_large_image", title, description },
   };
 }
 
-/**
- * schema.org structured data for the report — a `Review` of the repository, with
- * the 0–100 score as the rating and the one-word verdict as its alternate name.
- * This is what lets the accumulating report database surface as rich results in
- * search (the SEO asset). The rating is the SAME enforced score the page shows, so
- * the structured data can never advertise a verdict the on-page report doesn't.
- */
-function ReportJsonLd({ view }: { view: ReturnType<typeof buildReportView> }) {
-  const slug = `${view.owner}/${view.name}`;
-  // npm reports persist with owner="npm" and (for unscoped packages) render via
-  // this route too. Reference the npm package, NOT a fabricated github.com repo —
-  // a github `codeRepository` for an npm target would be an untrue claim (the
-  // package artifact, not a GitHub repo, is what was scanned).
-  const itemReviewed =
-    view.owner === "npm"
-      ? {
-          "@type": "SoftwareSourceCode",
-          name: view.name,
-          url: `https://www.npmjs.com/package/${view.name}`,
-        }
-      : {
-          "@type": "SoftwareSourceCode",
-          name: slug,
-          codeRepository: `https://github.com/${slug}`,
-          url: `${SITE_URL}/${slug}`,
-        };
+/** schema.org Review of the repository; the rating is the same engine score the page shows. */
+function ReportJsonLd({ owner, repo, report }: { owner: string; repo: string; report: V2Report }) {
+  const slug = `${owner}/${repo}`;
   const ld = {
     "@context": "https://schema.org",
     "@type": "Review",
-    name: `${slug} — ClaudeRabbit safety report`,
-    reviewBody: view.summary,
-    itemReviewed,
-    reviewRating: {
-      "@type": "Rating",
-      ratingValue: view.score,
-      bestRating: 100,
-      worstRating: 0,
-      alternateName: view.verdict,
-    },
+    name: `${repo} · ClaudeRabbit security report`,
+    reviewBody: report.payload.summary,
+    itemReviewed: { "@type": "SoftwareSourceCode", name: slug, codeRepository: `https://github.com/${slug}`, url: `${SITE_URL}/${slug}` },
+    reviewRating: { "@type": "Rating", ratingValue: report.payload.score, bestRating: 100, worstRating: 0, alternateName: report.payload.verdict },
     author: { "@type": "Organization", name: "ClaudeRabbit", url: SITE_URL },
   };
-  // `view.summary` (→ `ld.reviewBody`) is LLM-generated and can echo
-  // attacker-influenced text (repo name/README, or a sandbox-captured hostname).
-  // `JSON.stringify` does NOT escape `<`/`>`, so a summary containing
-  // `</script>…` would break out of this inline script and execute — stored XSS
-  // on a public, SEO-indexed page. `safeJsonLd` escapes those bytes so the
-  // breakout can't survive HTML tokenization, while the JSON-LD stays valid for
-  // Google's parser (it decodes `<` back to `<`).
-  return (
-    <script
-      type="application/ld+json"
-      dangerouslySetInnerHTML={{ __html: safeJsonLd(ld) }}
-    />
-  );
+  // The summary is model-written and can echo attacker text; safeJsonLd escapes `<` so it cannot close the script.
+  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd(ld) }} />;
 }
 
 export default async function ReportPage({ params }: RouteParams) {
-  if (hidesLegacyRoutes()) notFound();
   const { owner, repo } = await params;
-  const report = await getLatestReport(owner, repo);
-
-  if (!report) {
-    return <NotScanned owner={owner} repo={repo} />;
-  }
-
-  const view = buildReportView(report);
-  const clean = !view._hasRisky;
+  const report = await getReport(owner, repo);
+  if (!report) redirect(`/app?scan=${encodeURIComponent(`https://github.com/${owner}/${repo}`)}`);
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "var(--bg)",
-        color: "var(--t2)",
-        position: "relative",
-        overflowX: "hidden",
-      }}
-    >
-      <ReportJsonLd view={view} />
-      <ServerNav />
-      <ReportBody
-        r={view}
-        clean={clean}
-        logsCta={<ServerLogs report={report} />}
-        footer={
-          <>
-            <AdSlot ad={webAdFor({ kind: "github", name: `${view.owner}/${view.name}` })} />
-          <div style={{ textAlign: "center", marginTop: 32, fontSize: 12, color: "var(--t4)" }}>
-            Auto-published at {SITE_URL.replace(/^https?:\/\//, "")}/{view.owner}/{view.name} · re-checked when the repo changes
-          </div>
-          </>
-        }
+    <div style={{ minHeight: "100vh", background: "#000" }}>
+      <ReportJsonLd owner={owner} repo={repo} report={report} />
+      <Header />
+      <ReportV4
+        report={report}
+        sourceLabel={`github.com/${owner}/${repo}`}
+        ad={ADS_ENABLED ? webAdFor({ kind: "github", name: `${owner}/${repo}` }) : null}
+        newScanHref="/app"
       />
-      <ServerFooter />
-    </main>
-  );
-}
-
-/** Lean server nav: wordmark home link (the SPA chrome is client-only). */
-function ServerNav() {
-  return (
-    <nav
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "18px 24px",
-        borderBottom: "1px solid var(--line)",
-      }}
-    >
-      <Link
-        href="/"
-        style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}
-      >
-        <RabbitMark size={26} />
-        <span className="serif" style={{ fontSize: 19, color: "var(--t1)", letterSpacing: "-0.01em" }}>
-          ClaudeRabbit
-        </span>
-      </Link>
-      <Link
-        href="/"
-        style={{
-          fontSize: 13,
-          color: "var(--t2)",
-          textDecoration: "none",
-          border: "1px solid var(--line2)",
-          padding: "8px 15px",
-          borderRadius: 11,
-          background: "var(--s1)",
-        }}
-      >
-        Scan a repo
-      </Link>
-    </nav>
-  );
-}
-
-/** Inline end-to-end logs section (the SPA's logs overlay, rendered statically). */
-function ServerLogs({ report }: { report: Report }) {
-  if (report.logs.length === 0) return null;
-  return (
-    <section
-      style={{
-        border: "1px solid var(--line)",
-        borderRadius: 20,
-        padding: "26px",
-        background: "var(--s1)",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 20 }}>
-        <span style={{ fontSize: 11, color: "var(--t4)", letterSpacing: "0.16em", textTransform: "uppercase" }}>
-          End-to-end logs
-        </span>
-      </div>
-      {report.logs.map((l, i) => {
-        const color = logColor(l.kind);
-        return (
-          <div key={`${l.ch}-${i}`} style={{ marginBottom: i === report.logs.length - 1 ? 0 : 26 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 12 }}>
-              <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, boxShadow: `0 0 8px ${color}` }} />
-              <span style={{ fontSize: 15, fontWeight: 600, color: "var(--t1)", letterSpacing: "-0.01em" }}>{l.ch}</span>
-            </div>
-            <div
-              style={{
-                borderLeft: "1px solid var(--line2)",
-                paddingLeft: 22,
-                marginLeft: 4,
-                display: "flex",
-                flexDirection: "column",
-                gap: 9,
-              }}
-            >
-              {l.lines.map((ln) => (
-                <div
-                  key={ln}
-                  className="tnum"
-                  style={{ display: "flex", alignItems: "flex-start", gap: 11, fontSize: 14, color: "var(--t2)", lineHeight: 1.55 }}
-                >
-                  <span style={{ color, flexShrink: 0 }}>›</span>
-                  <span>{ln}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </section>
-  );
-}
-
-/** Lean server footer line. */
-function ServerFooter() {
-  return (
-    <footer
-      style={{
-        borderTop: "1px solid var(--line)",
-        padding: "26px 24px",
-        textAlign: "center",
-        fontSize: 12.5,
-        color: "var(--t4)",
-      }}
-    >
-      ClaudeRabbit — a free, open-source security product, protecting the open-source community from malware.
-    </footer>
-  );
-}
-
-/**
- * Clean "not yet scanned" state — never a dead end. Links home with the repo
- * prefilled (`?repo=owner/repo`) so the scan box can pick it up.
- */
-function NotScanned({ owner, repo }: { owner: string; repo: string }) {
-  const slug = `${owner}/${repo}`;
-  const scanHref = `/?repo=${encodeURIComponent(slug)}`;
-  return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "var(--bg)",
-        color: "var(--t2)",
-        position: "relative",
-      }}
-    >
-      <ServerNav />
-      <div
-        style={{
-          maxWidth: 560,
-          margin: "0 auto",
-          padding: "120px 24px",
-          textAlign: "center",
-        }}
-      >
-        <div
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: "50%",
-            border: "1px solid var(--line2)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            margin: "0 auto 24px",
-            background: "var(--s1)",
-          }}
-        >
-          <RabbitMark size={28} />
-        </div>
-        <h1 className="serif" style={{ fontSize: 32, color: "var(--t1)", margin: "0 0 14px", letterSpacing: "-0.01em" }}>
-          {slug}
-        </h1>
-        <p style={{ fontSize: 16, color: "var(--t3)", lineHeight: 1.6, margin: "0 0 30px", textWrap: "pretty" }}>
-          This repository has not been scanned yet. Run a free safety scan to
-          generate its public report — ClaudeRabbit reads the code and, when
-          warranted, runs it in an isolated sandbox.
-        </p>
-        <Link
-          href={scanHref}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 9,
-            background: "var(--ink)",
-            color: "var(--ink-fg)",
-            border: "none",
-            fontSize: 14,
-            fontWeight: 600,
-            padding: "13px 26px",
-            borderRadius: 13,
-            textDecoration: "none",
-            boxShadow: "inset 0 1px 0 var(--inkhi)",
-          }}
-        >
-          Scan {slug}
-        </Link>
-      </div>
-      <ServerFooter />
-    </main>
+    </div>
   );
 }

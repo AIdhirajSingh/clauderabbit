@@ -63,15 +63,24 @@ test("missing server keys: 503 naming the env vars, with an ad", async () => {
   });
 });
 
-test("CLI without a sign-in: 401 with signInUrl and the house ad", async () => {
-  await withEnv(BASE_ENV, async () => {
-    const res = await POST(req({ target: "npm:left-pad" }, { "x-clauderabbit-client": "cli" }));
-    assert.equal(res.status, 401);
-    const body = (await res.json()) as { signInUrl: string; ad: { kind: string; url: string } };
-    assert.equal(body.signInUrl, "https://clauderabbit.in/cli-auth");
-    assert.equal(body.ad.kind, "house");
-    assert.equal(body.ad.url, "https://clauderabbit.in/badge/npm/left-pad");
-  });
+test("CLI and MCP without a sign-in: stored reports are free, a fresh scan is refused before any VM", async () => {
+  const { freshScanGate } = await import("../../lib/server/scan-service.ts");
+  const calls: unknown[][] = [];
+  const db = { query: async (_sql: string, params: unknown[]) => { calls.push(params); return [{ allowed: true, current_count: 1, retry_after: 0 }]; } } as never;
+  const base = { ip: "203.0.113.9", deviceId: null, operator: false };
+  assert.equal(freshScanGate(db, { ...base, surface: "web", userId: null }), undefined, "the web has no gate");
+  assert.equal(freshScanGate(db, { ...base, surface: "cli", userId: null, operator: true }), undefined, "the operator has no gate");
+  const anon = await freshScanGate(db, { ...base, surface: "cli", userId: null })!();
+  assert.deepEqual(anon.allowed, false);
+  assert.equal(!anon.allowed && anon.code, "unauthorized");
+  assert.equal(calls.length, 0, "an anonymous refusal counts nothing");
+  const signed = await freshScanGate(db, { ...base, surface: "mcp", userId: "u1" })!();
+  assert.equal(signed.allowed, true);
+  assert.deepEqual(calls[0], ["daily:user:u1", 25, 86400]);
+  const full = { query: async () => [{ allowed: false, current_count: 26, retry_after: 7200 }] } as never;
+  const over = await freshScanGate(full, { ...base, surface: "cli", userId: "u1" })!();
+  assert.equal(over.allowed, false);
+  assert.match(!over.allowed ? over.message : "", /25 fresh scans for today; stored reports are still free/);
 });
 
 test("web surface gets the AdSense payload with adtest on when the IDs are set", async () => {

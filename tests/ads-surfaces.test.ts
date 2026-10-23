@@ -19,18 +19,19 @@ const report = {
   not_verified: ["Owner account history"],
 };
 
-test("CLI and MCP carry ClaudeRabbit's own house ad even when the web AdSense ids are set, and never a Google ad", () => {
+test("CLI and MCP print no ad at all, even when the web AdSense ids are set", () => {
   const adsense = { clientId: "ca-pub-1234567890123456", slotId: "1234567890", adtest: "on" as const };
   for (const surface of ["cli", "mcp", "mcp-remote"] as const) {
     const ad = adFor(surface, { siteUrl: "https://clauderabbit.in", adsense, target: { kind: "github", name: "octo/cat" } });
     assert.equal(ad.kind, "house");
     const r = { ok: true as const, outcome: "fresh" as const, runId: "r1", report: report as never, reportUrl: "https://clauderabbit.in/octo/cat", ad };
     for (const text of [cliFormat(r), mcpFormat(r)]) {
-      assert.match(text, /\[Sponsored\] Show this scan on octo\/cat: .* https:\/\/clauderabbit\.in\/badge\/octo\/cat/);
+      assert.doesNotMatch(text, /Sponsored|badge\/octo\/cat/);
       assert.match(text, /Not verified:/);
       assert.doesNotMatch(text, GOOGLE_AD_RE);
     }
     assert.doesNotMatch(JSON.stringify(cliStructured(r)), GOOGLE_AD_RE);
+    assert.equal(cliStructured(r).ad, undefined);
   }
 });
 

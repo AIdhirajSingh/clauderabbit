@@ -1,6 +1,7 @@
 /**
  * Burst rate-limit floor for scan requests (DESIGN.md section 4, CLAUDE.md V1
- * scope). There is no daily quota; this only stops a request flood. Counter
+ * scope), and the per-key daily quota on fresh CLI and MCP scans (`checkDailyQuota`).
+ * The web app has no daily quota; stored results are free everywhere. Counter
  * state lives in Postgres (`v2.check_scan_rate_limit`, migration
  * 20261016000002), so it holds across serverless instances.
  */
@@ -90,4 +91,22 @@ export async function checkRateLimit(db: SqlExecutor, caller: { userId: string |
   } catch (err) {
     return down(err instanceof Error ? err.message : String(err));
   }
+}
+
+/** Fresh CLI and MCP scans a signed-in key may start per day (stored results never count). */
+export const DAILY_FRESH_SCANS_PER_KEY = 25;
+export const DAILY_QUOTA_WINDOW_SECONDS = 86_400;
+
+/**
+ * Count one fresh CLI or MCP scan against the caller's key for the day, on the same Postgres counter as the burst
+ * limit (bucket `daily:user:<id>`). Fails closed: a counter that cannot answer starts no fresh scan.
+ */
+export async function checkDailyQuota(db: SqlExecutor, caller: { userId: string | null; ip: string | null }): Promise<{ allowed: true } | { allowed: false; message: string }> {
+  const key = caller.userId ? `daily:user:${caller.userId}` : caller.ip ? `daily:ip:${caller.ip}` : "daily:anon";
+  const rows = await db.query<RpcRow>("select allowed, current_count, retry_after from v2.check_scan_rate_limit($1, $2::int, $3::int)", [key, DAILY_FRESH_SCANS_PER_KEY, DAILY_QUOTA_WINDOW_SECONDS]);
+  const row = rows[0];
+  if (!row || typeof row.allowed !== "boolean") return { allowed: false, message: "the daily quota counter returned no row" };
+  if (row.allowed) return { allowed: true };
+  const hours = Math.max(1, Math.ceil((Number(row.retry_after) || DAILY_QUOTA_WINDOW_SECONDS) / 3600));
+  return { allowed: false, message: `this key has used its ${DAILY_FRESH_SCANS_PER_KEY} fresh scans for today; stored reports are still free, and fresh scans open again in about ${hours} h` };
 }

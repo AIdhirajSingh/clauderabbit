@@ -282,7 +282,7 @@ test("OAuth PKCE S256 check", () => {
   assert.equal(pkceMatches("short", challenge), false);
 });
 
-test("remote MCP text: verdict, score, evidence groups, not verified, URL, ad; never a bare Safe", () => {
+test("remote MCP text: verdict, score, points taken off, evidence groups, not verified, URL, no ad; never a bare Safe", () => {
   const ad: Ad = { kind: "house", placement: "scan_result", id: "house-badge-v1", label: "Sponsored", headline: "Show this scan on acme/lib", body: "Add the badge.", url: "https://clauderabbit.in/badge/acme/lib" };
   const text = finalLineText({ type: "result", outcome: "fresh", run_id: PAYLOAD.run_id, report: PAYLOAD, report_url: "https://clauderabbit.in/acme/lib", ad, cost: null });
   assert.match(text, /Verdict: Malicious \(score 12\/100\)/);
@@ -290,11 +290,11 @@ test("remote MCP text: verdict, score, evidence groups, not verified, URL, ad; n
   assert.match(text, /Reputation signals \(separate from code and behaviour\):/);
   assert.match(text, /Not verified:\n- Behaviour outside/);
   assert.match(text, /Full report: https:\/\/clauderabbit\.in\/acme\/lib/);
-  assert.match(text, /\[Sponsored\] Show this scan on acme\/lib/);
+  assert.doesNotMatch(text, /Sponsored/);
   assert.doesNotMatch(text, /\bSafe\b/);
   const err = finalLineText({ type: "error", code: "unauthorized", message: "sign in first", run_id: null, ad, signInUrl: "https://clauderabbit.in/cli-auth" });
   assert.match(err, /Sign in: https:\/\/clauderabbit\.in\/cli-auth/);
-  assert.match(err, /\[Sponsored\]/);
+  assert.doesNotMatch(err, /Sponsored/);
 });
 
 test("oauth code grant: redirect_uri required when it was registered, client_id must match, verifier must match", async () => {

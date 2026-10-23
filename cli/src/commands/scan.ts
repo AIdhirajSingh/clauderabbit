@@ -5,11 +5,11 @@
  * `${CLAUDE_RABBIT_SITE_URL}/api/scan` with the saved sign-in token, prints a
  * line per stage as the server runs it, then the verdict, score, evidence
  * (behaviour, code and reputation kept apart), what was not verified, the
- * report URL and the ad. Exit code 0 when a report came back, 1 otherwise.
+ * full report URL. No ads. Exit code 0 when a report came back, 1 otherwise.
  */
 
 import chalk from "chalk";
-import { ensureLoggedIn } from "../lib/auth.js";
+import { ensureLoggedIn, readToken } from "../lib/auth.js";
 import { loadConfig, normaliseSiteUrl, type ClaudeRabbitConfig } from "../lib/env.js";
 import { resolveTarget } from "../lib/resolve.js";
 import { formatResponse, postScan, stageLine, toStructured, type ScanTarget } from "../lib/scan-api.js";
@@ -49,12 +49,9 @@ export async function runScanCommand(rawTarget: string, opts: ScanCliOptions): P
     return fail((err as Error).message);
   }
 
-  let token: string;
-  try {
-    token = await ensureLoggedIn(config);
-  } catch (err) {
-    return fail(`Sign-in failed: ${(err as Error).message}`);
-  }
+  // Stored reports are free without an account; the saved sign-in token (when present) goes with every request,
+  // and sign-in starts only when the server says a fresh scan needs it.
+  let token: string | null = readToken();
 
   let resolved;
   try {
@@ -77,10 +74,19 @@ export async function runScanCommand(rawTarget: string, opts: ScanCliOptions): P
     const label = target.ecosystem === "npm" ? `npm:${target.package}${target.version ? `@${target.version}` : ""}` : `${target.owner}/${target.repo}${target.ref ? `@${target.ref}` : ""}`;
     process.stderr.write(`Scanning ${label}\n`);
   }
-  const result = await postScan(config, target, token, "cli", progress ? (e) => {
+  const onEvent = progress ? (e: Parameters<NonNullable<Parameters<typeof postScan>[4]>>[0]) => {
     const line = stageLine(e);
     if (line) process.stderr.write(`${opts.color ? chalk.dim(line) : line}\n`);
-  } : undefined);
+  } : undefined;
+  let result = await postScan(config, target, token, "cli", onEvent);
+  if (!result.ok && result.code === "unauthorized" && !token && process.stdin.isTTY) {
+    try {
+      token = await ensureLoggedIn(config);
+    } catch (err) {
+      return fail(`Sign-in failed: ${(err as Error).message}`);
+    }
+    result = await postScan(config, target, token, "cli", onEvent);
+  }
 
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(toStructured(result), null, 2)}\n`);
