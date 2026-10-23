@@ -76,8 +76,9 @@ class FoldTests(unittest.TestCase):
         trace = (
             '200 1.0 execve("/usr/bin/env", ["env"], 0x1 /* 3 vars */) = 0\n'
             '200 1.1 execve("/usr/bin/make", ["make", "-j4"], 0x1 /* 3 vars */) = 0\n'
-            '200 1.2 clone(child_stack=NULL, flags=SIGCHLD) = 201\n'
+            '200 1.2 clone(child_stack=NULL, flags=SIGCHLD <unfinished ...>\n'
             '201 1.3 execve("/bin/sh", ["sh", "-c", "cc -c a.c"], 0x1 /* 3 vars */) = 0\n'
+            '200 1.35 <... clone resumed>) = 201\n'
             '201 1.4 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3\n'
             '201 1.5 openat(AT_FDCWD, "/usr/include/stdio.h", O_RDONLY) = 3\n'
             '201 1.6 openat(AT_FDCWD, "/work/src/src/a.o", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 4\n'

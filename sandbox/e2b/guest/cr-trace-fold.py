@@ -85,6 +85,10 @@ def main(trace: str, home: str, out_json: str) -> int:
                 c = CHILD_RE.search(rest)
                 if c and c.group(1) not in state:
                     state[c.group(1)] = st
+                elif c and st == "build":
+                    # A child of the build is the build, also when its first lines (a recipe's
+                    # exec of sh) came before this clone returned and marked it a script.
+                    state[c.group(1)] = "build"
             elif call in ("execve", "execveat") and m:
                 # Any exec attempt counts, finished or not: a failed PATH probe for
                 # `sh` already marks the process as a script.
