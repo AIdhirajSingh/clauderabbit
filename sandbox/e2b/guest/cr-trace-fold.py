@@ -40,6 +40,18 @@ PM_BINS = {"node", "nodejs", "npm", "npx", "pnpm", "pnpx", "yarn", "yarnpkg", "c
            "go", "compile", "link", "asm", "cgo", "buildid", "cargo", "rustc",
            "cc", "gcc", "cc1", "as", "ld", "collect2", "x86_64-linux-gnu-gcc", "x86_64-linux-gnu-ld", "ld.bfd"}
 BUILD_BINS = {"make", "gmake", "ninja", "cmake", "configure"}
+# Inside the build, starts of these toolchain binaries (and the build's own recipe shells)
+# fold into a count per binary after the first SAMPLE_STARTS kept in full.
+TOOL_BINS = {"cc", "gcc", "g++", "c++", "clang", "clang++", "cc1", "cc1plus", "as", "ld", "ld.bfd", "ld.gold", "collect2",
+             "ar", "ranlib", "strip", "pkg-config", "make", "gmake", "x86_64-linux-gnu-gcc", "x86_64-linux-gnu-g++",
+             "x86_64-linux-gnu-ld", "x86_64-linux-gnu-ar", "x86_64-linux-gnu-as"}
+SHELLS = {"sh", "bash", "dash"}
+# A recipe shell whose command line names a network tool, a decoder or an interpreter is kept.
+RISKY_CMD = re.compile(r"\b(curl|wget|nc|ncat|netcat|socat|base64|xxd|openssl|python[0-9.]*|node|perl|ruby|php|ssh|scp)\b")
+SAMPLE_STARTS = 20
+# The build's process bookkeeping: which process starts which, and where it runs.
+BUILD_STARTS = ("clone", "clone3", "fork", "vfork", "chdir")
+ARGV_CAP = 512
 WRITE_FLAGS = re.compile(r"O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND")
 FOLD_CALLS = {"open", "openat", "creat", "unlink", "unlinkat", "rename", "renameat", "renameat2", "chmod", "fchmodat"}
 LINE_RE = re.compile(r"^(\d+)\s+[\d.]+\s+(\w+)\((.*)$")
@@ -47,6 +59,44 @@ CHILD_RE = re.compile(r"\)\s+=\s+(\d+)\s*$")
 EXEC_RE = re.compile(r'^"([^"]*)"')
 PATH_RE = re.compile(r'"([^"]*)"')
 RESUMED_RE = re.compile(r"^(\d+)\s+[\d.]+\s+<\.\.\. (\w+) resumed>(.*)$")
+
+
+def cap_argv(line: str) -> str:
+    """Cut an exec line's argv array to ARGV_CAP bytes of whole strings, then `...` and the original size."""
+    i = line.find(", [")
+    if i < 0:
+        return line
+    j, k, depth, inq, esc = i + 2, i + 2, 0, False, False
+    while k < len(line):
+        ch = line[k]
+        if inq:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                inq = False
+        elif ch == '"':
+            inq = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    arr = line[j:k + 1]
+    if len(arr.encode("utf-8", "surrogateescape")) <= ARGV_CAP:
+        return line
+    items = re.findall(r'"(?:[^"\\]|\\.)*"', arr)
+    kept, size = [], 0
+    for it in items:
+        if size + len(it) > ARGV_CAP:
+            break
+        kept.append(it)
+        size += len(it) + 2
+    note = '"[argv cut: %d bytes]"' % len(arr.encode("utf-8", "surrogateescape"))
+    return line[:j] + "[" + ", ".join(kept + [note]) + ", ...]" + line[k + 1:]
 
 
 def main(trace: str, home: str, out_json: str) -> int:
@@ -59,6 +109,7 @@ def main(trace: str, home: str, out_json: str) -> int:
     build_tree = ("/work/", "/tmp/", home.rstrip("/") + "/.cache/")
     build_reads = places + ("/etc/ld.so.cache",)
     state: dict = {}
+    starts: dict = {}
     first = None
     counts: dict = {}
     # pid -> call whose first half (with the path) was folded; its resumed half folds too.
@@ -105,7 +156,7 @@ def main(trace: str, home: str, out_json: str) -> int:
                 # The second half of a split call (a busy multi-threaded tool, such as a
                 # compiler, splits most of them): folded with its first half for the
                 # package manager's own file calls, kept for everything else.
-                if st in ("pm", "build") and call in FOLD_CALLS and pid in pm_unfinished and pm_unfinished.pop(pid) == call:
+                if st in ("pm", "build") and (call in FOLD_CALLS or (st == "build" and call in BUILD_STARTS)) and pid in pm_unfinished and pm_unfinished.pop(pid) == call:
                     folded += 1
                     continue
                 dst.write(line)
@@ -122,6 +173,24 @@ def main(trace: str, home: str, out_json: str) -> int:
                     if "<unfinished" in rest:
                         pm_unfinished[pid] = call
                     continue
+            if st == "build" and m and call in ("execve", "execveat"):
+                e = EXEC_RE.match(rest if call == "execve" else rest.split(", ", 1)[-1])
+                base = os.path.basename(e.group(1)) if e else ""
+                if base in TOOL_BINS or (base in SHELLS and not RISKY_CMD.search(rest)):
+                    n = starts.get(base, 0) + 1
+                    starts[base] = n
+                    if n > SAMPLE_STARTS:
+                        key = "build start " + base
+                        counts[key] = counts.get(key, 0) + 1
+                        folded += 1
+                        continue
+            if st == "build" and m and call in BUILD_STARTS:
+                key = "build " + call
+                counts[key] = counts.get(key, 0) + 1
+                folded += 1
+                if "<unfinished" in rest:
+                    pm_unfinished[pid] = call
+                continue
             if st == "build" and call in FOLD_CALLS:
                 p = PATH_RE.search(rest)
                 path = p.group(1) if p else ""
@@ -134,6 +203,8 @@ def main(trace: str, home: str, out_json: str) -> int:
                     if "<unfinished" in rest:
                         pm_unfinished[pid] = call
                     continue
+            if m and call in ("execve", "execveat"):
+                line = cap_argv(line.rstrip("\n")) + "\n"
             dst.write(line)
             kept += 1
     os.replace(tmp, trace)
