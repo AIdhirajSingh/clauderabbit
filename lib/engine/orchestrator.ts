@@ -560,6 +560,12 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   // The request asked for the target's current version, not a pinned commit or version.
   const t = req.target;
   const currentVersion = (t.kind === "github" && !t.ref) || (t.kind === "npm" && !t.version);
+  // The repo's tree size (it picks the VM size) is asked for now, alongside the stored-run lookup, so a miss
+  // boots its VM without waiting on GitHub a second time. A hit costs one unused GitHub API call.
+  const treeP = resolved.kind === "github"
+    ? githubTreeSize(resolved.github!.owner, resolved.github!.repo, resolved.github!.sha, { fetch: deps.fetch, token: deps.config.githubToken, timeoutMs: 3_000, signal: outer })
+    : Promise.resolve(null);
+  treeP.catch(() => undefined);
 
   if ((req.regenerate && req.caller.operator) || req.fresh) {
     emitStage("cache", "skipped", req.fresh ? "fresh scan requested" : "operator regenerate");
@@ -587,12 +593,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
 
   // Cache miss: boot both VMs now (when the budget allows), then claim the run while the
   // tarball downloads. No VM starts for a cache hit or over budget.
-  const [budgetR, treeR] = await Promise.allSettled([
-    budgetP,
-    resolved.kind === "github"
-      ? githubTreeSize(resolved.github!.owner, resolved.github!.repo, resolved.github!.sha, { fetch: deps.fetch, token: deps.config.githubToken, timeoutMs: 3_000, signal: outer })
-      : Promise.resolve(null),
-  ]);
+  const [budgetR, treeR] = await Promise.allSettled([budgetP, treeP]);
   if (treeR.status === "fulfilled" && treeR.value) {
     vmSize = sizeForRepo(treeR.value.files, treeR.value.bytes, treeR.value.truncated, Boolean(treeR.value.heavyBuild));
     check("vm_size", true, `${treeR.value.files} files, ${treeR.value.bytes} bytes${treeR.value.truncated ? " (tree truncated)" : ""}${treeR.value.heavyBuild ? `, heavy build (${treeR.value.heavyBuild})` : ""}: ${SANDBOX_SIZES[vmSize].cpuCount} vCPU`);
