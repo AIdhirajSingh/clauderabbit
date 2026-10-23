@@ -17,6 +17,12 @@ manager, and so is every thread or child it starts. A package-manager process
 that execs anything else (a lifecycle script runs as `sh -c ...`) is a script,
 and so is everything it starts. Nothing a script does is folded.
 
+A build tool the harness starts (make, ninja, cmake, a configure script) and everything
+it starts is the build: its recipes run through sh, so it stays the build through any
+exec. The build's reads of the build tree and the toolchains, and its writes inside the
+build tree, fold; its execs, connects, sends, writes anywhere else and reads of any other
+path (a home directory, /proc, /etc beyond the loader cache) stay line by line.
+
 The trace is rewritten in place only when the fold finished; on any error the
 original stays and the harness cap applies as before.
 """
@@ -33,6 +39,8 @@ PM_BINS = {"node", "nodejs", "npm", "npx", "pnpm", "pnpx", "yarn", "yarnpkg", "c
            # (build-script-build) and anything it starts is a script and is never folded.
            "go", "compile", "link", "asm", "cgo", "buildid", "cargo", "rustc",
            "cc", "gcc", "cc1", "as", "ld", "collect2", "x86_64-linux-gnu-gcc", "x86_64-linux-gnu-ld", "ld.bfd"}
+BUILD_BINS = {"make", "gmake", "ninja", "cmake", "configure"}
+WRITE_FLAGS = re.compile(r"O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND")
 FOLD_CALLS = {"open", "openat", "creat", "unlink", "unlinkat", "rename", "renameat", "renameat2", "chmod", "fchmodat"}
 LINE_RE = re.compile(r"^(\d+)\s+[\d.]+\s+(\w+)\((.*)$")
 CHILD_RE = re.compile(r"\)\s+=\s+(\d+)\s*$")
@@ -47,6 +55,9 @@ def main(trace: str, home: str, out_json: str) -> int:
     # thousand packages read them hundreds of thousands of times and the trace was cut.
     places = ("/work/", "/tmp/", home.rstrip("/") + "/.npm/", home.rstrip("/") + "/.cache/", home.rstrip("/") + "/.local/", home.rstrip("/") + "/go/", home.rstrip("/") + "/.cargo/",
               "/opt/cr/go/", "/opt/cr/rust/", "/opt/cr/node/", "/usr/", "/lib/", "/lib64/")
+    # Where a build writes without it being behaviour: its own tree and scratch places.
+    build_tree = ("/work/", "/tmp/", home.rstrip("/") + "/.cache/")
+    build_reads = places + ("/etc/ld.so.cache",)
     state: dict = {}
     first = None
     counts: dict = {}
@@ -79,7 +90,9 @@ def main(trace: str, home: str, out_json: str) -> int:
                 # `sh` already marks the process as a script.
                 e = EXEC_RE.match(rest if call == "execve" else rest.split(", ", 1)[-1])
                 base = os.path.basename(e.group(1)) if e else ""
-                if st == "harness" and base in PM_BINS:
+                if st == "harness" and base in BUILD_BINS:
+                    st = "build"
+                elif st == "harness" and base in PM_BINS:
                     st = "pm"
                 elif st == "pm" and base not in PM_BINS:
                     st = "script"
@@ -88,7 +101,7 @@ def main(trace: str, home: str, out_json: str) -> int:
                 # The second half of a split call (a busy multi-threaded tool, such as a
                 # compiler, splits most of them): folded with its first half for the
                 # package manager's own file calls, kept for everything else.
-                if st == "pm" and call in FOLD_CALLS and pid in pm_unfinished and pm_unfinished.pop(pid) == call:
+                if st in ("pm", "build") and call in FOLD_CALLS and pid in pm_unfinished and pm_unfinished.pop(pid) == call:
                     folded += 1
                     continue
                 dst.write(line)
@@ -100,6 +113,18 @@ def main(trace: str, home: str, out_json: str) -> int:
                 if path.startswith(places):
                     parts = path.strip("/").split("/")
                     key = call + " /" + "/".join(parts[:3])
+                    counts[key] = counts.get(key, 0) + 1
+                    folded += 1
+                    if "<unfinished" in rest:
+                        pm_unfinished[pid] = call
+                    continue
+            if st == "build" and call in FOLD_CALLS:
+                p = PATH_RE.search(rest)
+                path = p.group(1) if p else ""
+                writes = call not in ("open", "openat") or bool(WRITE_FLAGS.search(rest))
+                if path.startswith(build_tree if writes else build_reads):
+                    parts = path.strip("/").split("/")
+                    key = "build " + call + " /" + "/".join(parts[:3])
                     counts[key] = counts.get(key, 0) + 1
                     folded += 1
                     if "<unfinished" in rest:

@@ -294,3 +294,25 @@ test("workspace plan: a short package name inside other words of a root script i
   }));
   assert.deepEqual(g.workspace?.selected, ["common"]);
 });
+
+test("a workspace whose root has no entry runs up to three public packages with a bin, then a main", async () => {
+  const { planWorkspace } = await import("../../lib/engine/reach/graph.ts");
+  const enc = new TextEncoder();
+  const j = (o: unknown) => enc.encode(JSON.stringify(o));
+  const files = new Map<string, Uint8Array>([
+    ["package.json", j({ name: "root", private: true, scripts: { postinstall: "simple-git-hooks" } })],
+    ["pnpm-workspace.yaml", enc.encode("packages:\n  - packages/*\n  - playground/**\n")],
+    ["packages/vite/package.json", j({ name: "vite", bin: { vite: "bin/vite.js" }, dependencies: { rollup: "4" } })],
+    ["packages/create-vite/package.json", j({ name: "create-vite", bin: "index.js" })],
+    ["packages/plugin-legacy/package.json", j({ name: "@vitejs/plugin-legacy", main: "dist/index.cjs" })],
+    ["packages/plugin-react/package.json", j({ name: "@vitejs/plugin-react", main: "dist/index.cjs" })],
+    ["playground/alias/package.json", j({ name: "@vitejs/test-alias", private: true, main: "index.js" })],
+  ]);
+  const plan = planWorkspace(files, (p) => (files.has(p) ? new TextDecoder().decode(files.get(p)!) : null))!;
+  assert.deepEqual(plan.selected, ["@vitejs/plugin-legacy", "create-vite", "vite"]);
+  assert.equal(plan.total, 5);
+  // A root with its own entry keeps the old plan.
+  files.set("package.json", j({ name: "root", main: "index.js" }));
+  const plan2 = planWorkspace(files, (p) => (files.has(p) ? new TextDecoder().decode(files.get(p)!) : null))!;
+  assert.deepEqual(plan2.selected, []);
+});

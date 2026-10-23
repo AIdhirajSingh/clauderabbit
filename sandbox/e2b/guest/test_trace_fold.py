@@ -72,6 +72,36 @@ class FoldTests(unittest.TestCase):
         self.assertIn("/usr/lib/secret", out, "a script's split call stays, both halves")
         self.assertEqual(out.count("openat resumed"), 1)
 
+    def test_make_build_folds_its_noise_and_keeps_behaviour(self):
+        trace = (
+            '200 1.0 execve("/usr/bin/env", ["env"], 0x1 /* 3 vars */) = 0\n'
+            '200 1.1 execve("/usr/bin/make", ["make", "-j4"], 0x1 /* 3 vars */) = 0\n'
+            '200 1.2 clone(child_stack=NULL, flags=SIGCHLD) = 201\n'
+            '201 1.3 execve("/bin/sh", ["sh", "-c", "cc -c a.c"], 0x1 /* 3 vars */) = 0\n'
+            '201 1.4 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3\n'
+            '201 1.5 openat(AT_FDCWD, "/usr/include/stdio.h", O_RDONLY) = 3\n'
+            '201 1.6 openat(AT_FDCWD, "/work/src/src/a.o", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 4\n'
+            '201 1.7 openat(AT_FDCWD, "/home/cr/.aws/credentials", O_RDONLY) = 5\n'
+            '201 1.8 openat(AT_FDCWD, "/home/cr/.bashrc", O_WRONLY|O_APPEND) = 6\n'
+            '201 1.9 openat(AT_FDCWD, "/usr/lib/libx.so", O_WRONLY|O_CREAT, 0644) = 7\n'
+            '201 2.0 connect(9, {sa_family=AF_INET, sin_port=htons(443)}, 16) = 0\n'
+            '201 2.1 execve("/usr/bin/curl", ["curl", "http://x"], 0x1 /* 3 vars */) = 0\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            t, j = os.path.join(d, "trace.install"), os.path.join(d, "folded.json")
+            with open(t, "w") as f:
+                f.write(trace)
+            subprocess.run([sys.executable, FOLD, t, "/home/cr", j], check=True, capture_output=True)
+            with open(t) as f:
+                out = f.read()
+            with open(j) as f:
+                info = json.load(f)
+        self.assertEqual(info["folded"], 3, "the loader cache, a header read and an object write in the tree")
+        for gone in ("ld.so.cache", "stdio.h", "a.o"):
+            self.assertNotIn(gone, out)
+        for kept in (".aws/credentials", ".bashrc", "/usr/lib/libx.so", "connect(", "/usr/bin/curl", '"sh", "-c"'):
+            self.assertIn(kept, out)
+
 
 if __name__ == "__main__":
     unittest.main()

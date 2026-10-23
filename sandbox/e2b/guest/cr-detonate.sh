@@ -635,16 +635,21 @@ if [ "$INSTALL_STATUS" = completed ]; then
         entry_line "npm start"
       fi
     fi
-    # A workspace whose root package has no entry: the bin of each workspace package the
-    # install plan selected (lib/engine/reach/graph.ts planWorkspace), at most three.
+    # A workspace whose root package has no entry: each workspace package the install plan
+    # selected (lib/engine/reach/graph.ts planWorkspace), its bin, else its main, at most three.
     if [ "$MODE" = repo ] && [ ! -s "$ENTRY_SCRIPT" ] && [ -n "${WS_NAMES:-}" ]; then
       N=0
       while IFS= read -r -d '' PJ; do
         NAME=$(jq -r '.name // ""' "$PJ" 2>/dev/null || echo "")
         [ -n "$NAME" ] && [[ " $WS_NAMES " == *" $NAME "* ]] || continue
         WBIN=$(jq -r 'if (.bin|type)=="string" then .bin elif (.bin|type)=="object" then (.bin|to_entries[0].value // "") else "" end' "$PJ")
+        WDIR=$(dirname "$PJ")
         if [ -n "$WBIN" ] && [[ "$WBIN" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$WBIN" != *..* ]]; then
-          entry_line "node '$(dirname "$PJ")/${WBIN#./}' --help || true"
+          entry_line "node '$WDIR/${WBIN#./}' --help || true"
+          N=$((N + 1)); [ "$N" -ge 3 ] && break
+        elif [ "$(jq -r 'if (.main // .exports) != null then "1" else "0" end' "$PJ")" = 1 ]; then
+          # A package with a main or exports and no bin: loaded the way a user's code loads it.
+          entry_line "node -e \"require('$WDIR')\" || node --input-type=module -e \"await import('$NAME')\" || true"
           N=$((N + 1)); [ "$N" -ge 3 ] && break
         fi
       done < <(find "$WORKDIR" -mindepth 2 -maxdepth 3 -name node_modules -prune -o -name package.json -type f -print0 2>/dev/null | sort -z)

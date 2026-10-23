@@ -64,6 +64,8 @@ export interface WorkspacePlan {
 }
 
 const INSTALL_HOOK_NAMES = ["preinstall", "install", "postinstall"];
+/** Workspace packages the plan runs when the root package has no entry of its own. */
+export const RUNNABLE_PICK = 3;
 
 function globToRe(glob: string): RegExp {
   const g = glob.trim().replace(/^\.\//, "").replace(/\/+$/, "");
@@ -76,7 +78,7 @@ function globToRe(glob: string): RegExp {
 
 /** The workspace install plan from the manifests alone; null when the repo is not a JS workspace. */
 export function planWorkspace(files: Map<string, Uint8Array>, read: (p: string) => string | null): WorkspacePlan | null {
-  let root: { name?: string; workspaces?: string[] | { packages?: string[] }; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; scripts?: Record<string, string> } | null = null;
+  let root: { name?: string; workspaces?: string[] | { packages?: string[] }; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; scripts?: Record<string, string>; bin?: unknown; main?: unknown; exports?: unknown; module?: unknown } | null = null;
   try {
     root = JSON.parse(read("package.json") ?? "");
   } catch {
@@ -95,18 +97,20 @@ export function planWorkspace(files: Map<string, Uint8Array>, read: (p: string) 
   patterns = patterns.filter((x) => typeof x === "string" && !x.startsWith("!"));
   if (patterns.length === 0) return null;
   const res = patterns.map(globToRe);
-  type Pkg = { name: string; dir: string; deps: string[]; hasHook: boolean };
+  type Pkg = { name: string; dir: string; deps: string[]; hasHook: boolean; runnable: 0 | 1 | 2 };
   const pkgs = new Map<string, Pkg>();
   for (const path of files.keys()) {
     if (!path.endsWith("/package.json") || path.includes("node_modules/")) continue;
     const dir = path.slice(0, -"/package.json".length);
     if (!res.some((r) => r.test(dir))) continue;
     try {
-      const pj = JSON.parse(read(path) ?? "") as { name?: string; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string>; scripts?: Record<string, string> };
+      const pj = JSON.parse(read(path) ?? "") as { name?: string; private?: boolean; bin?: unknown; main?: unknown; exports?: unknown; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string>; scripts?: Record<string, string> };
       if (typeof pj.name !== "string" || !pj.name) continue;
       const deps = Object.keys({ ...pj.dependencies, ...pj.optionalDependencies, ...pj.peerDependencies });
       const hasHook = INSTALL_HOOK_NAMES.some((h) => typeof pj.scripts?.[h] === "string" && pj.scripts[h]!.trim() !== "");
-      pkgs.set(pj.name, { name: pj.name, dir, deps, hasHook });
+      // 2: a public package with a bin, 1: a public package with a main or exports, 0: neither (or private).
+      const runnable = pj.private === true ? 0 : pj.bin ? 2 : pj.main || pj.exports ? 1 : 0;
+      pkgs.set(pj.name, { name: pj.name, dir, deps, hasHook, runnable });
     } catch {
       continue;
     }
@@ -123,6 +127,15 @@ export function planWorkspace(files: Map<string, Uint8Array>, read: (p: string) 
     const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\/@-]/g, "\\$&");
     const named = (x: string) => new RegExp(`(^|[\\s'"=:,(])(?:\\./)?${esc(x)}(?=$|[\\s'"/,;:)\\]&|.]|\\.\\.\\.)`).test(rootScripts);
     if (rootScripts && (named(p.name) || named(p.dir))) want.add(p.name);
+  }
+  // A root package with no entry of its own (no bin, main, exports or start script) runs nothing, so the plan
+  // also takes the workspace packages that can run: up to three public packages with a bin, then with a main or
+  // exports, shallowest first.
+  const rootRuns = Boolean(root.bin || root.main || root.exports || root.module || root.scripts?.start);
+  if (!rootRuns) {
+    const runnable = [...pkgs.values()].filter((p) => p.runnable > 0)
+      .sort((a, b) => b.runnable - a.runnable || a.dir.split("/").length - b.dir.split("/").length || a.dir.localeCompare(b.dir));
+    for (const p of runnable.slice(0, RUNNABLE_PICK)) want.add(p.name);
   }
   const queue = [...want];
   while (queue.length) {
