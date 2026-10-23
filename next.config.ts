@@ -10,8 +10,11 @@ const nextConfig: NextConfig = {
   // render-blocking <link> for the whole stylesheet — a real Lighthouse LCP
   // finding on the homepage (two small render-blocking CSS chunks costing
   // ~460ms of simulated-mobile LCP). Requires the `critters` devDependency.
+  // inlineCss puts the App Router's stylesheet in the HTML itself (style-src already allows inline styles), so the
+  // first paint waits on no CSS request: the v4 hero text is the mobile LCP element.
   experimental: {
     optimizeCss: true,
+    inlineCss: true,
   },
   // Pin the workspace root to THIS project so Turbopack doesn't infer it from a
   // parent lockfile (the git-worktree layout has a lockfile above us). Absolute
