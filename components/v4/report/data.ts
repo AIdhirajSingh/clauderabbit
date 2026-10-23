@@ -77,9 +77,29 @@ async function readStrict(owner: string, repo: string): Promise<V2Report | null>
   return { owner, repo, createdAt: row.updated_at, payload, events };
 }
 
+/**
+ * The shown report's identity (its run and save time), read uncached on every request. A scan that runs on the
+ * runner sandbox cannot expire this server's data cache, so the cached read below is keyed on it: a newer saved
+ * report is a new cache entry and shows at once.
+ */
+async function latestKey(owner: string, repo: string): Promise<string> {
+  const db = v2DbOrNull();
+  if (!db) return "none";
+  const rows = await db.query<{ k: string }>(
+    `select coalesce(r.run_id::text, '') || '@' || r.updated_at::text as k from v2.reports r
+      where r.owner_login = $1 and r.repo_name = $2
+      order by (r.ref is not distinct from 'latest') desc,
+               case when r.ref is not distinct from 'latest' then r.updated_at else r.created_at end desc
+      limit 1`,
+    [owner, repo],
+  );
+  return rows[0]?.k ?? "none";
+}
+
 export async function latestV2Report(owner: string, repo: string): Promise<V2Report | null> {
   try {
-    return await unstable_cache(() => readStrict(owner, repo), ["latest-v2-report-v4", owner, repo], {
+    const key = await latestKey(owner, repo);
+    return await unstable_cache(() => readStrict(owner, repo), ["latest-v2-report-v4", owner, repo, key], {
       revalidate: REPORT_CACHE_SECONDS,
       tags: [reportTag(owner, repo)],
     })();
