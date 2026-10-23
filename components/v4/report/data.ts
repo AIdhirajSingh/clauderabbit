@@ -28,7 +28,9 @@ select r.id::text as id, r.commit_sha, r.score, r.verdict, r.summary, r.stats_js
   from v2.reports r
   left join v2.scan_runs s on s.id = r.run_id
  where r.owner_login = $1 and r.repo_name = $2
- order by r.created_at desc
+ -- The same pick as the danger board (lib/server/board-v2.ts): the current version first, by its latest scan.
+ order by (r.ref is not distinct from 'latest') desc,
+          case when r.ref is not distinct from 'latest' then r.updated_at else r.created_at end desc
  limit 1`;
 
 /** Only the event kinds the report shows; the raw stdout of a build can be large and is not rendered. */
