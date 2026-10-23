@@ -29,8 +29,8 @@ const SEG = ["#FF9592", "#F08A96", "#E5A0A8", "#C9878F", "#B07A82"];
 const NETWORK_CAP = 6;
 const TIMELINE_CAP = 6;
 const EVIDENCE_CAP = 4;
-const NV_CAP = 4;
-const JEV_CAP = 4;
+const NV_CAP = 2;
+const JEV_CAP = 2;
 
 const P = {
   key: "M15 7a4 4 0 11-3.9 5H4v3h3v3h3v-3h1.1A4 4 0 0115 7z",
