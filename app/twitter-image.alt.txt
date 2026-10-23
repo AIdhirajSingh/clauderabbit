@@ -1,0 +1,1 @@
+ClaudeRabbit: the mark, the headline ClaudeRabbit and the line "ClaudeRabbit is a security audit tool that scans open-source repositories and packages to protect the developer and builder community from malware."

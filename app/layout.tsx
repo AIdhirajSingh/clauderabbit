@@ -96,6 +96,18 @@ export const metadata: Metadata = {
     "ClaudeRabbit is a free, open-source security product protecting the open-source community from malware. We clone any public GitHub repo into an isolated sandbox, run it, and return one honest safety score.",
   alternates: { canonical: siteUrl },
   applicationName: "ClaudeRabbit",
+  // app/favicon.ico, app/icon.svg and the Open Graph images are file conventions; the PNG app icons live in public/
+  // (all built from the canvas mark by scripts/build-brand-assets.mjs).
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  manifest: "/manifest.webmanifest",
   openGraph: { siteName: "ClaudeRabbit", type: "website", locale: "en_US" },
   twitter: { card: "summary_large_image" },
 };
