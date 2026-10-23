@@ -21,7 +21,9 @@ select r.owner_login, r.repo_name, r.commit_sha, r.score, r.verdict, r.cached, r
   from v2.reports r
   left join v2.owners o on o.github_login = r.owner_login
  where r.owner_login = $1 and r.repo_name = $2
- order by r.created_at desc
+ -- The danger board's pick (lib/server/board-v2.ts): the current version first, by its latest scan.
+ order by (r.ref is not distinct from 'latest') desc,
+          case when r.ref is not distinct from 'latest' then r.updated_at else r.created_at end desc
  limit 1`;
 
 /** Latest v2 report for owner/repo, or null. Throws on a database error. */
@@ -32,7 +34,7 @@ export async function fetchV2Report(db: SqlExecutor, owner: string, repo: string
 
 /** Latest v2 score for owner/repo, or null. Throws on a database error. */
 export async function fetchV2Score(db: SqlExecutor, owner: string, repo: string): Promise<number | null> {
-  const rows = await db.query<{ score: number }>("select score from v2.reports where owner_login = $1 and repo_name = $2 order by created_at desc limit 1", [owner, repo]);
+  const rows = await db.query<{ score: number }>(`select score from v2.reports where owner_login = $1 and repo_name = $2 order by (ref is not distinct from 'latest') desc, case when ref is not distinct from 'latest' then updated_at else created_at end desc limit 1`, [owner, repo]);
   return typeof rows[0]?.score === "number" ? rows[0].score : null;
 }
 
