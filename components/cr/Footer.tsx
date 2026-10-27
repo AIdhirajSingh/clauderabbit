@@ -15,7 +15,6 @@ const EXT = { target: "_blank", rel: "noopener noreferrer" } as const;
 const PRODUCTS: { id: string; name: string }[] = [
   { id: "pockit", name: "Pockit" },
   { id: "clauderabbit", name: "ClaudeRabbit" },
-  { id: "output", name: "Output" },
   { id: "treye", name: "Treye" },
   { id: "createvve", name: "Createvve" },
   { id: "caitailyst", name: "Caitailyst" },
