@@ -16,6 +16,7 @@ const PRODUCTS: { id: string; name: string }[] = [
   { id: "pockit", name: "Pockit" },
   { id: "clauderabbit", name: "ClaudeRabbit" },
   { id: "treye", name: "Treye" },
+  { id: "returngift", name: "Return Gift" },
   { id: "createvve", name: "Createvve" },
   { id: "caitailyst", name: "Caitailyst" },
 ];
