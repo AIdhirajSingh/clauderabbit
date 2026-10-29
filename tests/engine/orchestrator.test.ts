@@ -177,3 +177,30 @@ test("static analysis VM (Semgrep, GuardDog, YARA) runs concurrently with the de
   assert.deepEqual([...provider.killed].sort(), ["analyze-vm", "detonate-vm"]);
   assert.equal(provider.live.size, 0);
 });
+
+test("a report that could not be saved ends the run as error, never 'done' without a report", async () => {
+  // Live class of bug, 2026-10-29: a run marked done whose report row never landed left
+  // every reader of the run waiting on a report that did not exist.
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { MockSandboxProvider } = await import("../support/mock-sandbox.ts");
+  class FailingSaveStore extends MemoryStore {
+    override async saveReport(): Promise<void> {
+      throw new Error("reports insert: connection reset");
+    }
+  }
+  const tmp = mkdtempSync(join(tmpdir(), "cr-orch-"));
+  try {
+    const store = new FailingSaveStore();
+    const d: EngineDeps = { jev: new StandInJev(), luna: new StandInModel(), sandbox: new MockSandboxProvider(tmp), store, fetch: ff.fetch, now: () => Date.now(), config: loadEngineConfig({}), newRunId: () => "00000000-0000-4000-8000-0000000000b1" };
+    const out = await runScan(req, d);
+    assert.equal(out.kind, "fresh");
+    const run = store.runs.get("00000000-0000-4000-8000-0000000000b1")!;
+    assert.equal(run.status, "error");
+    assert.equal(run.errorCode, "internal");
+    assert.equal(store.reports.size, 0);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

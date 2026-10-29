@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { loadEngineConfig } from "../engine/config";
 import { eventLine, ndjsonLine } from "../engine/events";
-import { createV2Store } from "../engine/store";
+import { abandonRun, createV2Store } from "../engine/store";
 import type { ScanCaller, ScanTarget } from "../engine/types";
 import { executeScan } from "./scan-service";
 
@@ -31,8 +31,11 @@ interface RunnerRequest {
   testInstallMs?: number;
 }
 
+let request: RunnerRequest | null = null;
+
 async function main(): Promise<void> {
   const req = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as RunnerRequest;
+  request = req;
   const base = loadEngineConfig(process.env);
   const deadlines = req.testInstallMs ? { ...base.deadlines, installMs: req.testInstallMs } : base.deadlines;
   const config = { ...base, deadlines, runner: true, runnerStartedAt: req.createdAt, heartbeatSandboxes: req.heartbeat };
@@ -60,8 +63,16 @@ async function main(): Promise<void> {
 
 main().then(
   () => process.exit(0),
-  (err: unknown) => {
-    process.stdout.write(`${JSON.stringify({ type: "final", final: { type: "error", code: "internal", message: err instanceof Error ? err.message.slice(0, 300) : "runner failed", run_id: null, ad: null } })}\n`);
+  async (err: unknown) => {
+    // A throw after the run was claimed must not leave it 'running': end it, then report.
+    if (request) {
+      try {
+        await abandonRun(createV2Store(loadEngineConfig(process.env)).db, request.runId, "internal");
+      } catch {
+        // The stale-run sweep ends it.
+      }
+    }
+    process.stdout.write(`${JSON.stringify({ type: "final", final: { type: "error", code: "internal", message: err instanceof Error ? err.message.slice(0, 300) : "runner failed", run_id: request?.runId ?? null, ad: null } })}\n`);
     process.exit(1);
   },
 );

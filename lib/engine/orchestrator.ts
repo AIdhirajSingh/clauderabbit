@@ -1017,6 +1017,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
   // ---- persist ----------------------------------------------------------------------------------------
   const finish = async (): Promise<void> => {
     emitStage("persist", "start");
+    let saved = false;
     const save = (async () => {
       try {
         await deps.store.saveReport({
@@ -1033,6 +1034,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
           logs: Object.entries(timings).map(([name, ms]) => ({ name, ms })),
           stats: { files: archive.files.size, forged_calls: detonation?.forgedCalls.length ?? 0, processes: detonation?.processes.length ?? 0 },
         });
+        saved = true;
         emitStage("persist", "done");
         try {
           opts.onPersisted?.({ ownerLogin: resolved.ownerLogin, repoName: resolved.repoName, kind: resolved.kind });
@@ -1053,9 +1055,11 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
     await Promise.all([save, charge]);
     await bus.close();
     try {
-      await deps.store.finishRun(runId, { status: "done", timings, cost });
+      // A run is done only with its report row: if the save failed, readers of this run
+      // would wait on a report that does not exist, so it ends as an error instead.
+      await deps.store.finishRun(runId, saved ? { status: "done", timings, cost } : { status: "error", errorCode: "internal", timings, cost });
     } catch (err) {
-      // The report row is already written; a stale running row expires (expire_stale_runs).
+      // A row left running expires (expire_stale_runs) and reads as ended.
       void err;
     }
   };
