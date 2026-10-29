@@ -32,16 +32,10 @@ You should see a version number printed, like `0.1.7` (or newer). If instead you
 your terminal's `PATH` doesn't include npm's global bin folder — closing and reopening your
 terminal usually fixes this.
 
-**Log in.** The CLI needs a (free) ClaudeRabbit account so it can save your scan history — scanning
-itself is always free and unlimited:
-
-```bash
-clauderabbit login
-```
-
-This opens your browser to a ClaudeRabbit sign-in page. Sign in with Google or email, and the
-terminal will print `Signed in.` once it's done. You only need to do this once — the CLI remembers
-you until you run `clauderabbit logout`.
+No account is needed: you can scan straight away. Anonymous fresh scans are rate limited (at most
+6 running at once across the service; per client IP, 10 fresh scans per hour and 30 per day).
+Stored reports always come back at once and never count. Over a limit you get a `rate_limited`
+error that tells you why and when to retry.
 
 ---
 
@@ -105,8 +99,8 @@ clauderabbit scan expressjs/express --json
 ## 3. Install the MCP server (for AI coding agents)
 
 The MCP server lets an AI agent — Claude Desktop, or any MCP-compatible tool — call ClaudeRabbit
-itself, so it can check a dependency before cloning or installing it. It reuses the same sign-in
-as the CLI, so if you already ran `clauderabbit login` above, you're already signed in for this too.
+itself, so it can check a dependency before cloning or installing it. Like the CLI, it needs no
+account.
 
 Wire it into **Claude Desktop** with one command:
 
@@ -146,13 +140,12 @@ done step 3 first; this works on its own.
    ```
    https://clauderabbit.in/mcp
    ```
-5. Confirm/save. Claude will redirect you through a ClaudeRabbit sign-in page (this is the same
-   account as the CLI/Desktop MCP, so if you've already signed in elsewhere, this can be
-   instant) — approve the connection.
+5. Leave authentication set to none (no sign-in) and click save. There is no ClaudeRabbit
+   account to connect.
 
 **Confirm it's connected**: back in Settings → Connectors, the ClaudeRabbit entry should show as
-connected/enabled (no red error state). If you don't see it listed as active, repeat step 3–5 —
-a failed OAuth handshake is the most common cause and simply retrying resolves it.
+connected/enabled (no red error state). If you don't see it listed as active, repeat steps 3–5 and check the URL
+was pasted exactly.
 
 **Run a scan from inside a Claude chat**: once connected, just ask, in plain language. It scans
 both GitHub repos and npm packages — for example:

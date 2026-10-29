@@ -40,13 +40,8 @@ npm link           # get the `clauderabbit` command globally from this checkout
 clauderabbit scan expressjs/express
 ```
 
-Requires Node.js >= 18 (uses the built-in `fetch`). No API key is ever needed, but a signed-in
-ClaudeRabbit account is required to use this CLI (and the [MCP server](../mcp-server)). That is
-a product/access decision, not a reflection of the scan data being sensitive; report pages stay
-public either way. The first command that needs one triggers `clauderabbit login`
-automatically (opens your browser); the session is then saved to
-`~/.clauderabbit/credentials.json` and reused silently until you `logout`; see
-[`login` / `logout`](#login---token-token--logout). The only server setting is the site URL;
+Requires Node.js >= 18 (uses the built-in `fetch`). No API key and no account are needed for
+this CLI (or the [MCP server](../mcp-server)): install it and scan. Anonymous fresh scans are rate limited: at most 6 run at once across the service, and each client IP gets 10 fresh scans per hour and 30 per day. Stored (cached) reports always come back at once and never count. Over a limit `scan` returns a `rate_limited` error with the reason and when to retry. The only server setting is the site URL;
 override it for a fork with `CLAUDE_RABBIT_SITE_URL` (see [Configuration](#configuration)).
 
 ## Commands
@@ -118,22 +113,6 @@ Finds your real `claude_desktop_config.json` and adds the ClaudeRabbit MCP serve
 - **Tells you exactly what happened**, which file it found (and how), whether the entry
   was added or updated, and reminds you to restart Claude Desktop to pick it up.
 
-### `login [--token <token>]` / `logout`
-
-```
-clauderabbit login
-clauderabbit login --token <token>
-clauderabbit logout
-```
-
-The CLI (and the MCP server) require a signed-in ClaudeRabbit account, a product/access
-decision, not a reflection of the scan data being sensitive (reports stay public). `login`
-opens your browser to sign in and saves the session to `~/.clauderabbit/credentials.json`;
-every later command reuses it silently until you `logout`. Any command that needs a session
-(`scan`, the MCP server) will trigger this sign-in flow automatically the first time if you
-haven't run `login` yet. `--token` skips the browser and saves a token
-issued elsewhere (e.g. the link the MCP server prints when called signed out).
-
 ## JSON output schema
 
 `clauderabbit scan <target> --json` prints a single JSON object to **stdout**. Progress lines
@@ -165,7 +144,7 @@ A successful scan object (the fields come from the `/api/scan` result line):
 }
 ```
 
-On error the object is `{ "ok": false, "code": string, "message": string, "signInUrl"?: string,
+On error the object is `{ "ok": false, "code": string, "message": string,
 "ad"?: object }` (or `{ "ok": false, "error": string, "target": string }` when the target
 string itself does not parse), so a consumer always gets parseable JSON.
 
@@ -224,8 +203,8 @@ npm run dev         # watch mode
   detection: an npm name is passed through to the API, which scans the real published artifact.
 - `src/commands/scan.ts`, the `scan` command.
 - `src/index.ts`, arg parsing and command dispatch.
-- `src/lib/auth.ts`, the shared login flow (`login`/`logout`/`ensureLoggedIn`), persisted to
-  `~/.clauderabbit/credentials.json` (shared with `mcp-server/`).
+- `src/lib/auth.ts`, the optional saved-token store at `~/.clauderabbit/credentials.json`
+  (shared with `mcp-server/`); scanning never needs a token.
 - `src/lib/claude-desktop-config.ts`, locates the real `claude_desktop_config.json`
   (classic path or, on Windows, the MSIX/Store package path) and merges an entry into it.
 - `src/commands/mcp-install.ts`, the `mcp install` command.

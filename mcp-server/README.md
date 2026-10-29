@@ -41,28 +41,16 @@ The server needs no configuration: it calls ClaudeRabbit's production site by de
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.in` | API base (`/api/scan`), and the base of the report link and sign-in link in tool output. |
+| `CLAUDE_RABBIT_SITE_URL` | `https://clauderabbit.in` | API base (`/api/scan`), and the base of the report link in tool output. |
 | `CLAUDE_RABBIT_SCAN_TIMEOUT_MS` | built-in | How long `scan` will wait for a fresh (uncached) scan to finish streaming before giving up. |
 
-No API key is ever required, but a **signed-in ClaudeRabbit account is required to call the
-tool**, a real product/access decision, not because the scan data is sensitive (report pages
-stay public either way). Called signed out, `scan` returns a clear, clickable sign-in link
-instead of a confusing error or a silent failure, see [Sign-in](#sign-in) below.
+No API key and no account are ever required: add the server and call `scan`.
 
-## Sign-in
+## Limits
 
-`scan` checks for a session at `~/.clauderabbit/credentials.json` (the same file the
-[CLI](../cli) writes to `login`/`logout`, sign in once with either tool and both work).
-Called without one, it returns an `isError` result whose text gives you the exact command
-to run:
-
-```
-Sign in required. Visit https://clauderabbit.in/cli-auth to sign in, then run:
-  clauderabbit login --token <token>
-```
-
-Once signed in, it doesn't re-prompt on later calls, the session persists until
-`clauderabbit logout` is run.
+Anonymous fresh scans are rate limited: at most 6 run at once across the service, and each client IP gets 10 fresh scans per hour and 30 per day. Stored (cached) reports always come back at once and never count. Over a limit the tool returns a `rate_limited` error with the reason and when to retry.
+These limits apply the same way to this stdio server and to the remote connector at
+`https://clauderabbit.in/mcp`.
 
 ## Adding this server to an MCP client
 
@@ -120,10 +108,9 @@ Any client that supports stdio MCP servers uses the same shape: a `command` of `
 
 For clients that connect over HTTP instead of spawning a local process (e.g. a claude.ai
 custom connector), the same `scan` tool is also served remotely at `https://clauderabbit.in/mcp`
-(Streamable HTTP, OAuth 2.1 with PKCE for sign-in, no separate setup needed, the connector's
-own "Connect" flow handles login). It accepts the same targets as the stdio tool, a GitHub repo
+(Streamable HTTP, no sign-in and no authentication, no separate setup needed). It accepts the same targets as the stdio tool, a GitHub repo
 (`owner` + `repo`) or an npm package (`package`). Add it in claude.ai under Settings → Connectors
-→ Add custom connector, using that URL.
+→ Add custom connector: paste that URL, leave authentication set to none, and save.
 
 ## Running standalone / testing
 
@@ -133,10 +120,6 @@ Run the server directly (it will sit waiting for JSON-RPC frames on stdin, this 
 npm start
 # or: node dist/index.js
 ```
-
-`scan` requires a signed-in session (see [Sign-in](#sign-in)), run `clauderabbit login`
-(from the [CLI](../cli)) at least once first, since it writes the same
-`~/.clauderabbit/credentials.json` this server reads.
 
 To exercise `scan` end-to-end against the **real, live, deployed ClaudeRabbit API** without wiring up a full MCP client, use the built-in smoke test. It spins up this exact server and a real MCP `Client` connected over an in-memory transport (the same code paths as stdio), then calls the tool twice for real:
 
@@ -150,15 +133,15 @@ The first call scans a tiny, extremely common, long-lived package at its default
 ## Architecture notes
 
 - `src/env.ts`: configuration (site URL and timeout); never reads a secret key.
-- `src/scan-api.ts`: the only module that makes scan HTTP calls (a copy of the CLI's `src/lib/scan-api.ts`). Posts to `/api/scan` with the saved `cr_cli_` token and `x-clauderabbit-client: mcp`, reads the NDJSON event stream, and renders the verdict, score, evidence groups, `not_verified`, the report URL and the ad.
+- `src/scan-api.ts`: the only module that makes scan HTTP calls (a copy of the CLI's `src/lib/scan-api.ts`). Posts to `/api/scan` with `x-clauderabbit-client: mcp` (plus a saved `cr_cli_` token only if one exists), reads the NDJSON event stream, and renders the verdict, score, evidence groups, `not_verified`, the report URL and the ad.
 - `src/tools/scan.ts`: the one MCP tool definition and handler. Detects whether the input is a GitHub repo (`owner`/`repo`) or an npm package (`package`, via a small local DETECT-only parser; the scan engine re-validates authoritatively), then returns what `scan-api.ts` returns.
-- `src/auth.ts`, reads the shared `~/.clauderabbit/credentials.json` session (written by the
-  [CLI](../cli)'s `login`) and builds the sign-in-required tool result when it's missing.
+- `src/auth.ts`, reads an optional saved token from the shared `~/.clauderabbit/credentials.json`;
+  scanning works without one.
 - `src/index.ts`, stdio server entrypoint.
 - `src/test/smoke.ts`, live end-to-end verification harness (see above).
 
 The Next.js app's `app/mcp/route.ts` (in the main repo) serves the same `scan` tool remotely over
-Streamable HTTP with OAuth 2.1, see [Remote (Streamable HTTP)](#remote-streamable-http--claudeai-custom-connector)
+Streamable HTTP with no sign-in, see [Remote (Streamable HTTP)](#remote-streamable-http--claudeai-custom-connector)
 above. It reuses this package's tool logic conceptually but is a separate deployment (it runs
 on Vercel, not as a local stdio process), so its code lives in the main app, not here.
 
