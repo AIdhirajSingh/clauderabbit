@@ -8,7 +8,7 @@
  * engine kills it in `finally` (see `withSandbox`).
  */
 
-import { CommandExitError, Sandbox } from "e2b";
+import { CommandExitError, NotFoundError, Sandbox, SandboxNotRunningError } from "e2b";
 import { HEARTBEAT_GRACE_MS } from "../config";
 import { SANDBOX_SIZES } from "./resources";
 import { REGISTRY_ALLOW_OUT, type CommandResult, type RunOptions, type SandboxCreateOptions, type SandboxProvider, type SandboxSession } from "./provider";
@@ -24,16 +24,18 @@ export interface E2BProviderOptions {
  * Extends every heartbeat-kept VM of a run by HEARTBEAT_GRACE_MS. Returns how many
  * were extended. Called by POST /api/scan/<id>/heartbeat.
  */
-export async function extendRunSandboxes(apiKey: string, runId: string, graceMs: number): Promise<number> {
-  const pages = Sandbox.list({ apiKey, query: { metadata: { runId, heartbeat: "1" } } });
-  let n = 0;
-  while (pages.hasNext) {
-    for (const s of await pages.nextItems()) {
-      await Sandbox.setTimeout(s.sandboxId, graceMs, { apiKey });
-      n += 1;
-    }
-  }
-  return n;
+export async function extendRunSandboxes(apiKey: string, runId: string, graceMs: number, sdk: Pick<typeof Sandbox, "list" | "setTimeout"> = Sandbox): Promise<number> {
+  // Running sandboxes only, each extended on its own: a scan VM that ended between the
+  // list and its setTimeout (NotFound) must not fail the heartbeat or stop the runner and
+  // the other VMs from being extended, or the runner times out mid-scan.
+  const pages = sdk.list({ apiKey, query: { metadata: { runId, heartbeat: "1" }, state: ["running"] } });
+  const ids: string[] = [];
+  while (pages.hasNext) for (const s of await pages.nextItems()) ids.push(s.sandboxId);
+  const results = await Promise.allSettled(ids.map((id) => sdk.setTimeout(id, graceMs, { apiKey })));
+  const failed = results.flatMap((r) => (r.status === "rejected" && !(r.reason instanceof NotFoundError || r.reason instanceof SandboxNotRunningError) ? [r.reason] : []));
+  // Anything but an ended sandbox (auth, E2B down) is a real failure the caller reports.
+  if (failed.length > 0) throw failed[0];
+  return results.filter((r) => r.status === "fulfilled").length;
 }
 
 /** How many of a run's sandboxes (runner and scan VMs) are still running. Extends nothing. */
