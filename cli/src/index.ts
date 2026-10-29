@@ -135,12 +135,13 @@ async function main(argv: string[]): Promise<number> {
   const { flags, positionals } = parseArgs(argv);
   const command = positionals[0];
 
-  if (!command || command === "help" || flags.help || flags.h) {
-    process.stdout.write(HELP);
-    return 0;
-  }
+  // Version first: `clauderabbit --version` has no command, and must not fall through to the help.
   if (command === "version" || flags.version || flags.v) {
     process.stdout.write(`${VERSION}\n`);
+    return 0;
+  }
+  if (!command || command === "help" || flags.help || flags.h) {
+    process.stdout.write(HELP);
     return 0;
   }
 
