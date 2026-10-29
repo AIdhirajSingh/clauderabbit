@@ -626,7 +626,20 @@ if [ "$INSTALL_STATUS" = completed ]; then
         entry_line "node '$PKG_DIR/${BIN#./}' --help || true"
       fi
       if [ -f "$PKG_DIR/index.js" ] || [ "$HAS_ENTRY" = 1 ]; then
-        if [ "$TYPE" = module ]; then
+        if [ "$TYPE" = module ] && [ "$MODE" = repo ]; then
+          # ESM cannot import a directory (ERR_UNSUPPORTED_DIR_IMPORT). With "exports", import the
+          # package by its own name from its folder (self-reference), which resolves "exports" as
+          # Node does; without it, import the module/main/index.js file.
+          SELF=$(jq -r '.name // ""' "$MANI")
+          if [ "$(jq -r 'if .exports != null then "1" else "0" end' "$MANI")" = 1 ] && [[ "$SELF" =~ $SAFE_NAME_RE ]]; then
+            entry_line "( cd '$PKG_DIR' && node --input-type=module -e \"await import('$SELF')\" )"
+          else
+            MAINF=$(jq -r '(.module // .main // "index.js") | if type == "string" then . else "index.js" end' "$MANI")
+            if [[ "$MAINF" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$MAINF" != *..* ]]; then
+              entry_line "node --input-type=module -e \"await import('$PKG_DIR/${MAINF#./}')\""
+            fi
+          fi
+        elif [ "$TYPE" = module ]; then
           entry_line "node --input-type=module -e \"await import('$REQ')\""
         else
           entry_line "node -e \"require('$REQ')\" || node --input-type=module -e \"await import('$REQ')\""
