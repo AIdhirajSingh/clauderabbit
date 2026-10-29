@@ -17,6 +17,7 @@ import { Header } from "@/components/v4/Header";
 import { ReportV4 } from "@/components/v4/report/ReportV4";
 import { latestV2Report, type V2Report } from "@/components/v4/report/data";
 import { reportDescription } from "@/components/v4/report/meta";
+import { packageName } from "./package-name";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:2311";
 const NPM_OWNER = "npm";
@@ -26,9 +27,6 @@ interface RouteParams {
 }
 
 /** ["@babel", "core"] -> "@babel/core". */
-function packageName(segments: string[] | undefined): string {
-  return (segments ?? []).join("/");
-}
 
 const getReport = cache((pkg: string): Promise<V2Report | null> => latestV2Report(NPM_OWNER, pkg));
 
