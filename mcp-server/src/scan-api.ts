@@ -109,7 +109,7 @@ export function requestBody(target: ScanTarget): Record<string, string> {
 export async function postScan(
   config: ScanApiConfig,
   target: ScanTarget,
-  token: string,
+  token: string | null,
   client: "cli" | "mcp",
   onEvent?: (e: AnyEvent) => void,
   fetchImpl: typeof fetch = fetch,
@@ -124,7 +124,7 @@ export async function postScan(
         headers: {
           "Content-Type": "application/json",
           Accept: "application/x-ndjson",
-          Authorization: `Bearer ${token}`,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "x-clauderabbit-client": client,
           ...(config.protectionBypass ? { "x-vercel-protection-bypass": config.protectionBypass } : {}),
         },

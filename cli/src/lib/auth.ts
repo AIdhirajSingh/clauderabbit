@@ -223,11 +223,3 @@ export function login(config: ClaudeRabbitConfig, timeoutMs = 5 * 60_000, open: 
     });
   });
 }
-
-/** Ensure a token is available, logging in interactively if none is saved yet. */
-export async function ensureLoggedIn(config: ClaudeRabbitConfig): Promise<string> {
-  const existing = readToken();
-  if (existing) return existing;
-  process.stderr.write("Not signed in — starting sign-in…\n");
-  return login(config);
-}

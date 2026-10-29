@@ -26,21 +26,3 @@ export function readToken(): string | null {
     return null;
   }
 }
-
-/** The honest "not signed in" tool response — never a silent failure. */
-export function signInRequiredResult(siteUrl: string) {
-  const signInUrl = `${siteUrl.replace(/\/+$/, "")}/cli-auth`;
-  return {
-    isError: true,
-    content: [
-      {
-        type: "text" as const,
-        text:
-          `Sign in required. Visit ${signInUrl} to sign in, then run ` +
-          `\`clauderabbit login --token <token>\` (or \`clauderabbit login\` if the ` +
-          `CLI is installed) to connect — both this MCP server and the CLI share the ` +
-          `same saved sign-in, so you only need to do this once.`,
-      },
-    ],
-  };
-}
