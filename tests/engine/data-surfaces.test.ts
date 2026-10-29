@@ -323,3 +323,11 @@ test("a report scored under the current rules survives the store and is still a 
   assert.equal(cachedCoverageComplete(back), true, "read back from the database it must still serve as a hit");
   assert.equal(cachedCoverageComplete({ ...back, score_rules: SCORE_RULES - 1 }), false, "older rules score again");
 });
+
+test("remote MCP text lists score raises apart from the points taken off", () => {
+  const ad: Ad = { kind: "house", placement: "scan_result", id: "house-badge-v1", label: "Sponsored", headline: "h", body: "b", url: "https://clauderabbit.in/badge/acme/lib" };
+  const report = { ...PAYLOAD, score: 90, breakdown: [{ group: "reputation", code: "downloads", points: 2, detail: "many downloads" }, { group: "behaviour", code: "clean_run", points: 3, detail: "lifted to 90" }] } as typeof PAYLOAD;
+  const text = finalLineText({ type: "result", outcome: "fresh", run_id: PAYLOAD.run_id, report, report_url: "https://clauderabbit.in/acme/lib", ad, cost: null });
+  assert.doesNotMatch(text, /Points taken off:\n- \+/);
+  assert.match(text, /Points added:\n- \+2 many downloads\n- \+3 lifted to 90/);
+});

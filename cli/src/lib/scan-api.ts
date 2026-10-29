@@ -157,7 +157,16 @@ export async function postScan(
     let buffer = "";
     let final: ScanResponse | null = null;
     for (;;) {
-      const { value, done } = await reader.read();
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        // The connection dropped mid-scan. The run carries on server-side; say so instead of crashing.
+        if (final) break;
+        const why = controller.signal.aborted ? `no result within ${Math.round(config.scanTimeoutMs / 1000)} s` : `the connection closed before the result (${(err as Error).message})`;
+        return { ok: false, status: res.status, code: "stream", message: `${why}; the scan may still finish, so run the same command again in a minute to get its stored report` };
+      }
+      const { value, done } = chunk;
       buffer += done ? decoder.decode() + "\n" : decoder.decode(value, { stream: true });
       const { lines, rest } = splitLines(buffer);
       buffer = rest;
@@ -209,8 +218,11 @@ export function formatResponse(r: ScanResponse): string {
     lines.push("", `${title}:`);
     for (const i of items.slice(0, 12)) lines.push(`  - ${i}`);
   };
-  const deductions = (p.breakdown ?? []).filter((d) => d.points !== 0).map((d) => `${d.points > 0 ? "+" : ""}${d.points} ${d.detail}`);
+  // Deductions and the rules that raised the score are listed apart: a "+3" is not a point taken off.
+  const deductions = (p.breakdown ?? []).filter((d) => d.points < 0).map((d) => `${d.points} ${d.detail}`);
+  const raises = (p.breakdown ?? []).filter((d) => d.points > 0).map((d) => `+${d.points} ${d.detail}`);
   group("Points taken off", deductions.length ? deductions : ["none"]);
+  group("Points added", raises);
   group("Observed when the code ran", p.evidence?.behaviour ?? []);
   group("Found in the code", p.evidence?.code ?? []);
   group("Reputation (separate from code and behaviour)", p.evidence?.reputation ?? []);
