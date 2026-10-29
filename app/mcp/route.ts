@@ -1,9 +1,10 @@
 /**
  * Remote MCP server over Streamable HTTP at `/mcp` for claude.ai custom
  * connectors (DESIGN.md section 8.2). Stateless: a fresh server and transport
- * per request. The caller signs in through the OAuth flow
- * (`/.well-known/oauth-authorization-server`, `/oauth/authorize`,
- * `/oauth/token`) and presents the resulting `cr_cli_` bearer. The `scan`
+ * per request. No sign-in: the endpoint answers without a token and publishes
+ * no OAuth discovery, so a connector adds it with "No sign-in". A fresh scan
+ * without an account is held to the anonymous limits (lib/engine/ratelimit.ts);
+ * a `cr_cli_` bearer, when sent, still attaches its account. The `scan`
  * tool runs the same engine pipeline as `/api/scan` in-process with
  * `caller.surface = "mcp-remote"` and returns verdict, score, `not_verified`,
  * report URL and the ad as text.
@@ -11,7 +12,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { bearerToken, verifyCliToken } from "@/lib/engine/auth";
 import { EngineError, type ScanTarget } from "@/lib/engine/types";
 import { createV2Store, type V2Store } from "@/lib/engine/store";
 import { finalLineStructured, finalLineText } from "@/lib/server/report-text";
@@ -23,29 +23,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // Same ceiling as /api/scan: every scan runs the code in a fresh E2B sandbox in this request.
 export const maxDuration = 300;
-
-function siteOrigin(req: Request): string {
-  return process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || new URL(req.url).origin;
-}
-
-async function verifyToken(store: V2Store, token: string): Promise<string | null> {
-  try {
-    return await verifyCliToken(store.db, token);
-  } catch {
-    return null;
-  }
-}
-
-function unauthorized(req: Request): Response {
-  const origin = siteOrigin(req);
-  return new Response(JSON.stringify({ error: "unauthorized" }), {
-    status: 401,
-    headers: {
-      "Content-Type": "application/json",
-      "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
-    },
-  });
-}
 
 function buildServer(req: Request, store: V2Store): McpServer {
   const server = new McpServer({ name: "clauderabbit-mcp-remote", version: "2.0.0" });
@@ -73,7 +50,7 @@ function buildServer(req: Request, store: V2Store): McpServer {
       let final: FinalLine;
       const rl = await rateLimitFor(ctx);
       if (rl && !rl.allowed) {
-        final = { type: "error", code: "rate_limited", message: `too many scans from this account; retry in ${rl.retryAfter} s`, run_id: null, ad: adForSurface(config, "mcp-remote", target), retryAfter: rl.retryAfter };
+        final = { type: "error", code: "rate_limited", message: `too many scans from this source; retry in ${rl.retryAfter} s`, run_id: null, ad: adForSurface(config, "mcp-remote", target), retryAfter: rl.retryAfter };
       } else {
         try {
           final = await executeScan(ctx, target, false, { signal: req.signal, onPersisted: ({ ownerLogin, repoName }) => invalidateReport(ownerLogin, repoName) });
@@ -105,10 +82,6 @@ function storeOrNull(): V2Store | null {
 async function handle(req: Request): Promise<Response> {
   const store = storeOrNull();
   if (!store) return new Response(JSON.stringify({ error: "server_not_configured" }), { status: 503, headers: { "Content-Type": "application/json" } });
-  const token = bearerToken(req.headers.get("Authorization"));
-  const userId = token ? await verifyToken(store, token) : null;
-  if (!userId) return unauthorized(req);
-
   const server = buildServer(req, store);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — a fresh server+transport per request, safe for serverless
@@ -146,12 +119,7 @@ export async function DELETE(req: Request): Promise<Response> {
   return handle(req);
 }
 
-/** Protocol discovery: some clients HEAD the endpoint before ever POSTing. */
-export async function HEAD(req: Request): Promise<Response> {
-  const store = storeOrNull();
-  if (!store) return new Response(null, { status: 503 });
-  const token = bearerToken(req.headers.get("Authorization"));
-  const userId = token ? await verifyToken(store, token) : null;
-  if (!userId) return unauthorized(req);
-  return new Response(null, { status: 200 });
+/** Protocol discovery: some clients HEAD the endpoint before ever POSTing. No sign-in is needed. */
+export async function HEAD(): Promise<Response> {
+  return new Response(null, { status: storeOrNull() ? 200 : 503 });
 }

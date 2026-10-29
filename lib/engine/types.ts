@@ -25,6 +25,11 @@ export interface ScanCaller {
   deviceId: string | null;
   /** True when a valid CR_OPERATOR_KEY header was presented. */
   operator: boolean;
+  /**
+   * Set only by /api/scan after it ran the anonymous fresh-scan limits itself, before booting the runner sandbox,
+   * so the runner does not count the same scan twice. Never read from a client.
+   */
+  anonGateChecked?: boolean;
 }
 
 export interface ScanRequest {

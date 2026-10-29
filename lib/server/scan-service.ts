@@ -16,7 +16,7 @@ import { identify, identityBackend, bearerToken, type Identity } from "../engine
 import { DEFAULT_SITE_URL, fullInstallDeadlines, isOperatorKey, loadEngineConfig, missingKeys, type EngineConfig } from "../engine/config";
 import { productionDeps } from "../engine/deps";
 import { runScan, type RunScanOptions } from "../engine/orchestrator";
-import { checkDailyQuota, checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
+import { checkAnonymousFresh, checkDailyQuota, checkRateLimit, clientIp, type HeaderSource, type RateLimitDecision } from "../engine/ratelimit";
 import { parseGithubTarget } from "../engine/resolve/github";
 import { isValidNpmName, parseNpmTarget } from "../engine/resolve/npm";
 import { validateOperatorTarball } from "../engine/resolve/tarball";
@@ -238,13 +238,19 @@ export async function recordUserScan(store: Pick<V2Store, "recordUserScan">, use
 }
 
 /**
- * The gate a CLI or MCP cache miss passes before any VM boots: a signed-in key within its daily quota. The web and
- * the operator have none; stored reports never reach it.
+ * The gate a CLI or MCP cache miss passes before any VM boots. No account is needed: an anonymous caller passes the
+ * anonymous limits (lib/engine/ratelimit.ts checkAnonymousFresh), a signed-in key its daily quota. The web and the
+ * operator have none; stored reports never reach it.
  */
 export function freshScanGate(db: SqlExecutor, caller: ScanCaller): (() => Promise<{ allowed: true } | { allowed: false; message: string; code?: "unauthorized" | "rate_limited" }>) | undefined {
   if (caller.surface === "web" || caller.operator) return undefined;
-  if (!caller.userId) return async () => ({ allowed: false, code: "unauthorized", message: "a fresh scan needs a ClaudeRabbit account: run `clauderabbit login`; stored reports are free" });
+  if (!caller.userId) return caller.anonGateChecked ? undefined : () => checkAnonymousFresh(db, caller);
   return () => checkDailyQuota(db, caller);
+}
+
+/** True when a fresh scan by this caller is held to the anonymous limits. */
+export function needsAnonymousGate(caller: ScanCaller): boolean {
+  return caller.surface !== "web" && !caller.operator && !caller.userId && !caller.anonGateChecked;
 }
 
 /** Run one scan end to end on the production pipeline and produce the final line. */
