@@ -81,6 +81,20 @@ export interface WriterContext {
   verdict: Verdict;
   /** What the sandbox run let us observe. Anything but "observed" forbids clean-sounding behaviour claims. */
   sandbox?: SandboxObservation;
+  /** The entry phase's real result. Anything but "completed" forbids saying the entry completed or had full coverage. */
+  entry?: string;
+}
+
+/** Claims only a completed entry phase can make. */
+export const ENTRY_COMPLETED_PATTERNS: RegExp[] = [
+  /full coverage/i,
+  /entry(?: point)?(?: phase)? (?:completed|finished|succeeded)/i,
+  /install and (?:the )?entry(?: point)? (?:both )?(?:completed|finished|succeeded)/i,
+];
+
+function entryClaims(text: string, ctx: WriterContext): string[] {
+  if (!ctx.entry || ctx.entry === "completed") return [];
+  return ENTRY_COMPLETED_PATTERNS.filter((re) => re.test(text)).map((re) => `claims the entry completed but it was ${ctx.entry}: ${re.source}`);
 }
 
 /**
@@ -127,6 +141,7 @@ export function validateWriterOutput(out: Pick<WriterOutput, "headline" | "summa
     for (const re of OBSERVED_ONLY_PATTERNS) if (re.test(both)) reasons.push(`claims observed behaviour but the sandbox run was not observed: ${re.source}`);
     if (!/not observed|was not observed|were not observed/i.test(both)) reasons.push("must state that sandbox behaviour was not observed");
   }
+  reasons.push(...entryClaims(both, ctx));
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
@@ -185,6 +200,7 @@ export function validateLunaReport(report: LunaReport, ctx: WriterContext): { ok
     for (const re of OBSERVED_ONLY_PATTERNS) if (re.test(both)) reasons.push(`claims observed behaviour but the sandbox run was not observed: ${re.source}`);
     if (!/not observed/i.test(both)) reasons.push("must state that sandbox behaviour was not observed");
   }
+  reasons.push(...entryClaims(both, ctx));
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
@@ -200,6 +216,8 @@ export interface WriterInput {
   statedPurpose: string | null;
   /** Defaults to "not_observed" so a caller that forgets it can never get clean-sounding text. */
   sandbox?: SandboxObservation;
+  /** The entry phase's real result (completed, failed, timeout, skipped, none). */
+  entry?: string;
 }
 
 /** Routes every report call to the same OpenAI prompt cache (the instructions and schema are the shared prefix). */
@@ -251,6 +269,7 @@ export const WRITER_SYSTEM = [
   "- breakdown: each entry has a group, a code, the points it moved and evidence strings. Negative points pulled the score down. Describe the largest negative entries first. An entry with group cap explains why the score stopped at a ceiling; say which ceiling applied and why in one short clause.",
   "- not_verified: the coverage limits of this run. Always end the summary with them, starting 'Not verified:' and naming at least the first two.",
   "- sandbox_observation: observed means install and the entry point ran and the forensic record is complete; partial means part of the record was cut; not_observed means the run produced no usable record.",
+  "- entry_phase: completed, failed (the entry point ran and exited with an error, for example a library with nothing to run), timeout, skipped or none. Say the entry point completed, or that the run had full coverage, only when entry_phase is completed; otherwise state what it did.",
   "- jev answers: one item per question. 'about' names the file, the code window and rule, or the surface the question covered; 'answer' is the choice (malicious, suspicious, benign, unclear) or true/false for a signal; 'probability' is Jev's probability for that answer. Mention malicious and suspicious answers on reachable files by file name. Mention unclear answers only as part of what was not verified. Benign answers need no sentence of their own.",
   "- stated purpose: the package's own description. Use it only to say what the package claims to be, never as evidence of what it does.",
   "",
@@ -279,6 +298,7 @@ export function writerInputText(input: WriterInput): string {
     })),
     not_verified: input.notVerified,
     sandbox_observation: input.sandbox ?? "not_observed",
+    entry_phase: input.entry ?? "unknown",
   };
   const answers = input.checkAnswers.slice(0, 60).map((a) => ({ check: a.check, about: a.subject, answer: a.answer, probability: a.probability === null ? null : Math.round(a.probability * 100) / 100 }));
   const blocks = [JSON.stringify(facts, null, 1)];
@@ -453,7 +473,7 @@ export interface WriterResult extends WriterOutput {
 export async function writeReport(model: ModelAdapter, input: WriterInput, signal: AbortSignal): Promise<WriterResult> {
   const rejections: string[][] = [];
   const errors: string[] = [];
-  const ctx: WriterContext = { score: input.score, verdict: input.verdict, sandbox: input.sandbox ?? "not_observed" };
+  const ctx: WriterContext = { score: input.score, verdict: input.verdict, sandbox: input.sandbox ?? "not_observed", ...(input.entry ? { entry: input.entry } : {}) };
   let usage: ModelUsage = { ...ZERO_USAGE };
   let calls = 0;
   if (!signal.aborted) {

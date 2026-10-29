@@ -780,7 +780,7 @@ export function computeScore(input: ScoreInput): ScoreResult {
   if (proven && score < TOP_BAND && !breakdown.some((d) => d.points < 0)) {
     // Fully observed and nothing taken off: the code evidence alone earns the top
     // band, whatever the reputation group says.
-    breakdown.push({ group: "cap", code: "proven_clean", points: TOP_BAND - score, detail: `Install and entry ran with full coverage and no deduction, so the score is lifted to ${TOP_BAND}.` });
+    breakdown.push({ group: "cap", code: "proven_clean", points: TOP_BAND - score, detail: `${provenRunText(input.entry)} with a complete record and no deduction, so the score is lifted to ${TOP_BAND}.` });
     score = TOP_BAND;
   }
   if (!proven) {
@@ -804,6 +804,17 @@ export function computeScore(input: ScoreInput): ScoreResult {
 }
 
 /** The one plain line a partial scan shows next to its "Partial scan" mark. */
+/**
+ * What a proven run actually did, for the proven_clean line: an entry that ran and
+ * failed, or ran to its time limit, counts as run (see entryRan) but did not complete,
+ * and the line must not say it did.
+ */
+export function provenRunText(entry: PhaseOutcome): string {
+  if (entry === "completed") return "Install and the entry point completed";
+  if (entry === "timeout") return "Install completed and the entry point ran until its time limit";
+  return "Install completed and the entry point ran but exited with an error";
+}
+
 export function partialReasonFor(install: PhaseOutcome, entry: PhaseOutcome, archiveTruncated: boolean, cause: string | null = null): string {
   if (archiveTruncated) return "The repo was too large to read in full, so the program never ran";
   if (install === "none") return "Nothing to build: no package.json, go.mod, Cargo.toml, pyproject.toml, setup.py, requirements.txt or Makefile";

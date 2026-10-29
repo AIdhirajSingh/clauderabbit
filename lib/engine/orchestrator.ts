@@ -913,6 +913,7 @@ export async function runScan(req: ScanRequest, deps: EngineDeps, opts: RunScanO
       notVerified: result.notVerified,
       checkAnswers,
       sandbox: sandboxObservation(detonation),
+      ...(detonation ? { entry: detonation.entry } : {}),
       statedPurpose: statedPurpose(archive.files),
     },
     deadline(cfg.deadlines.writerMs, outer),
