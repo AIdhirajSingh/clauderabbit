@@ -36,7 +36,7 @@ test("ads go through GPT test units; no IMA in the scan screen", () => {
 test("full scans run on heartbeat-kept VMs: 30 s without a heartbeat stops them", () => {
   const e2b = readFileSync(new URL("../lib/engine/sandbox/e2b.ts", import.meta.url), "utf8");
   assert.match(e2b, /timeoutMs: HEARTBEAT_GRACE_MS, metadata: \{ \.\.\.base\.metadata, heartbeat: "1" \}/);
-  assert.match(e2b, /Sandbox\.setTimeout\(s\.sandboxId, graceMs, \{ apiKey \}\)/);
+  assert.match(e2b, /sdk\.setTimeout\(id, graceMs, \{ apiKey \}\)/);
   const view = readFileSync(new URL("../components/cr/app/ScanView.tsx", import.meta.url), "utf8");
   assert.match(view, /setInterval\(beat, 10_000\)/);
   assert.match(view, /NEXT_PUBLIC_VERCEL_ENV !== "production"/, "the test card flag never works in production");
