@@ -461,6 +461,20 @@ else
   fi
 fi
 
+# ---- 6a. Yarn 2+ settings ----------------------------------------------------------------
+# Yarn 2+ reads every YARN_* variable as a setting and stops with "Unrecognized or legacy
+# configuration settings found: networkTimeout" on one it does not know. YARN_NETWORK_TIMEOUT
+# is Yarn 1's; Yarn 2+ takes YARN_HTTP_TIMEOUT (set above). So a Yarn 2+ repo (a yarn@2+
+# pin, or a Berry lockfile) runs without it.
+if [ "$ECO" = npm ] && [ "${PM:-}" = yarn ]; then
+  YPIN=$(jq -r '.packageManager // ""' "$WORKDIR/package.json" 2>/dev/null || echo "")
+  if [[ "$YPIN" =~ ^yarn@([2-9]|[1-9][0-9]+)\. ]] || grep -q '^__metadata:' "$WORKDIR/yarn.lock" 2>/dev/null; then
+    YENV=()
+    for kv in "${BASE_ENV[@]}"; do [[ "$kv" == YARN_NETWORK_TIMEOUT=* ]] || YENV+=("$kv"); done
+    BASE_ENV=("${YENV[@]}")
+  fi
+fi
+
 # ---- 6b. pinned package manager, on the real clock -------------------------------------
 # A repo that pins its package manager (package.json packageManager, served by
 # corepack or by pnpm's own version management) makes the install download that
