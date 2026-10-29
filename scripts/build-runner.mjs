@@ -2,8 +2,8 @@
 /**
  * Bundle the scan runner (lib/server/runner-main.ts) into one ESM file for Node 24 and
  * wrap it as lib/server/runner-bundle.generated.mjs (default export: the code), which
- * lib/server/runner.ts uploads to each runner sandbox. Run by `vercel-build` before
- * `next build`. The bundle holds code only, never a key.
+ * lib/server/runner.ts uploads to each runner sandbox. Run by `build` and `vercel-build`
+ * before `next build`. The bundle holds code only, never a key.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";

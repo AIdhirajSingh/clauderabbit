@@ -6,7 +6,7 @@
   "description": "ClaudeRabbit: paste a public GitHub repo or npm package and get a 0-100 safety score. Every scan installs and runs the code in a throwaway E2B sandbox behind a forge that answers every outbound call.",
   "scripts": {
     "dev": "next dev -p 2311",
-    "build": "next build",
+    "build": "node scripts/build-runner.mjs && next build",
     "vercel-build": "node sandbox/e2b/build.ts --vercel-hook && node sandbox/e2b/delete-retired-templates.ts && node scripts/build-runner.mjs && next build",
     "start": "next start -p 2311",
     "lint": "eslint",
