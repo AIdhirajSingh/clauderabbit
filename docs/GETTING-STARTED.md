@@ -33,7 +33,7 @@ your terminal's `PATH` doesn't include npm's global bin folder — closing and r
 terminal usually fixes this.
 
 No account is needed: you can scan straight away. Anonymous fresh scans are rate limited (at most
-6 running at once across the service; per client IP, 10 fresh scans per hour and 30 per day).
+6 running at once and 6 starting per minute across the service; per client IP, 10 fresh scans per hour and 30 per day).
 Stored reports always come back at once and never count. Over a limit you get a `rate_limited`
 error that tells you why and when to retry.
 

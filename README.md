@@ -86,7 +86,7 @@ Streamable HTTP at `clauderabbit.in/mcp` for claude.ai custom connectors). Wire 
 Desktop with `clauderabbit mcp install` (installed as part of the CLI above).
 
 Both the CLI and the MCP server call the same public scan API the website uses and need no
-account: install and scan. Anonymous fresh scans are rate limited (at most 6 running at once across
+account: install and scan. Anonymous fresh scans are rate limited (at most 6 running at once and 6 starting per minute across
 the service; per client IP, 10 fresh scans per hour and 30 per day); stored reports always come back
 at once and never count. See [cli/README.md](cli/README.md) and
 [mcp-server/README.md](mcp-server/README.md) for the full command/tool reference, or

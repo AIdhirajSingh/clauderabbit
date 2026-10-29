@@ -41,7 +41,7 @@ clauderabbit scan expressjs/express
 ```
 
 Requires Node.js >= 18 (uses the built-in `fetch`). No API key and no account are needed for
-this CLI (or the [MCP server](../mcp-server)): install it and scan. Anonymous fresh scans are rate limited: at most 6 run at once across the service, and each client IP gets 10 fresh scans per hour and 30 per day. Stored (cached) reports always come back at once and never count. Over a limit `scan` returns a `rate_limited` error with the reason and when to retry. The only server setting is the site URL;
+this CLI (or the [MCP server](../mcp-server)): install it and scan. Anonymous fresh scans are rate limited: at most 6 run at once and 6 start per minute across the service, and each client IP gets 10 fresh scans per hour and 30 per day. Stored (cached) reports always come back at once and never count. Over a limit `scan` returns a `rate_limited` error with the reason and when to retry. The only server setting is the site URL;
 override it for a fork with `CLAUDE_RABBIT_SITE_URL` (see [Configuration](#configuration)).
 
 ## Commands

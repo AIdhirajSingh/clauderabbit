@@ -48,7 +48,7 @@ No API key and no account are ever required: add the server and call `scan`.
 
 ## Limits
 
-Anonymous fresh scans are rate limited: at most 6 run at once across the service, and each client IP gets 10 fresh scans per hour and 30 per day. Stored (cached) reports always come back at once and never count. Over a limit the tool returns a `rate_limited` error with the reason and when to retry.
+Anonymous fresh scans are rate limited: at most 6 run at once and 6 start per minute across the service, and each client IP gets 10 fresh scans per hour and 30 per day. Stored (cached) reports always come back at once and never count. Over a limit the tool returns a `rate_limited` error with the reason and when to retry.
 These limits apply the same way to this stdio server and to the remote connector at
 `https://clauderabbit.in/mcp`.
 

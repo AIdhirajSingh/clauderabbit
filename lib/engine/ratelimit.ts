@@ -113,12 +113,19 @@ export async function checkDailyQuota(db: SqlExecutor, caller: { userId: string 
 
 /**
  * Anonymous fresh scans (CLI, stdio MCP and remote MCP with no token). Scanning needs no account, so these limits
- * are what keeps sandbox and model spend bounded: at most ANON_FRESH_CONCURRENT anonymous runs at once, and per
- * client IP ANON_FRESH_PER_IP_HOUR fresh scans an hour and ANON_FRESH_PER_IP_DAY a day. Stored reports never count.
+ * are what keeps sandbox and model spend bounded: at most ANON_FRESH_CONCURRENT anonymous runs at once and
+ * ANON_FRESH_GLOBAL_PER_MINUTE anonymous starts a minute across the service, and per client IP
+ * ANON_FRESH_PER_IP_HOUR fresh scans an hour and ANON_FRESH_PER_IP_DAY a day. Stored reports never count.
  */
 export const ANON_FRESH_CONCURRENT = 6;
 export const ANON_FRESH_PER_IP_HOUR = 10;
 export const ANON_FRESH_PER_IP_DAY = 30;
+/**
+ * Anonymous fresh scans that may start across the service per minute. A run is only counted as running once its
+ * runner claims it (about 10 s after the request), so the running count alone lets a burst through; this atomic
+ * counter does not.
+ */
+export const ANON_FRESH_GLOBAL_PER_MINUTE = 6;
 /** Runs older than this are not counted as running (a runner sandbox lives at most 30 minutes). */
 const RUNNING_WINDOW_MINUTES = 35;
 
@@ -138,15 +145,20 @@ export async function checkAnonymousFresh(db: SqlExecutor, caller: { ip: string 
       return refuse(`${ANON_FRESH_CONCURRENT} scans without an account are already running; stored reports are still served at once, and a fresh scan can start again in about a minute`, 60);
     }
     const ip = caller.ip ?? "unknown";
+    // Per-IP first, so a client over its own limit never uses up the shared per-minute slots.
     for (const [key, limit, window, label] of [
       [`anon-fresh:hour:${ip}`, ANON_FRESH_PER_IP_HOUR, 3600, "an hour"],
       [`anon-fresh:day:${ip}`, ANON_FRESH_PER_IP_DAY, 86_400, "a day"],
+      ["anon-fresh:global", ANON_FRESH_GLOBAL_PER_MINUTE, 60, "the whole service this minute"],
     ] as const) {
       const rows = await db.query<RpcRow>("select allowed, current_count, retry_after from v2.check_scan_rate_limit($1, $2::int, $3::int)", [key, limit, window]);
       const row = rows[0];
       if (!row || typeof row.allowed !== "boolean") return refuse("the scan limit counter did not answer, so no fresh scan was started; stored reports are still served", 60);
       if (!row.allowed) {
         const wait = Math.max(1, Number(row.retry_after) || window);
+        if (key === "anon-fresh:global") {
+          return refuse(`${limit} fresh scans without an account already started in the last minute; stored reports are still served at once, and a fresh scan can start again in about ${wait} s`, wait);
+        }
         return refuse(`this network has used its ${limit} fresh scans for ${label}; stored reports are still served at once, and fresh scans open again in about ${wait >= 3600 ? `${Math.ceil(wait / 3600)} h` : `${Math.ceil(wait / 60)} min`}`, wait);
       }
     }
