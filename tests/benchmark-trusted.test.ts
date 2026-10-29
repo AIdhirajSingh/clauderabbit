@@ -31,3 +31,24 @@ test("the scorer's registry hosts are the sandbox's: a registry the forge passes
   for (const h of REGISTRY_ALLOW_OUT) assert.ok(REGISTRY_HOSTS.has(h), h);
   for (const h of ["registry.yarnpkg.com", "npm.jsr.io"]) assert.ok(REGISTRY_HOSTS.has(h), h);
 });
+
+test("repo.yarnpkg.com (corepack's Yarn 2+ download) is in the outer fence, exact host only, and its reads are never behaviour", async () => {
+  const { REGISTRY_ALLOW_OUT } = await import("../lib/engine/sandbox/provider.ts");
+  const { deriveBehaviour } = await import("../lib/engine/score.ts");
+  const allow: readonly string[] = REGISTRY_ALLOW_OUT;
+  assert.ok(allow.includes("repo.yarnpkg.com"));
+  assert.ok(!allow.some((h) => h.includes("*") || h === "yarnpkg.com" || h.endsWith(".repo.yarnpkg.com")), "no wildcard or parent domain");
+  const policy = JSON.parse(readFileSync(new URL("../sandbox/e2b/guest/policy.json", import.meta.url), "utf8")) as { registries: Record<string, string[]> };
+  assert.deepEqual(policy.registries.yarn_repo, ["repo.yarnpkg.com"]);
+  const call = (method: string, path: string, forged_kind: string) => ({
+    t: 1, phase: "install", proto: "https", host: "repo.yarnpkg.com", port: 443, method, path, sni: "repo.yarnpkg.com",
+    req_headers: {}, req_bytes: 0, req_body_b64: "", forged_kind, tls: "intercepted", canary_hits: [] as string[],
+  });
+  const reads = deriveBehaviour({
+    forgedCalls: [call("GET", "/4.5.0/packages/yarnpkg-cli/bin/yarn.js", "registry"), call("GET", "/tags", "registry")] as never,
+    files: [], processes: [], canaryInFiles: [],
+  });
+  assert.deepEqual(reads.nonDistributionHosts, []);
+  const write = deriveBehaviour({ forgedCalls: [call("POST", "/tags", "json")] as never, files: [], processes: [], canaryInFiles: [] });
+  assert.deepEqual(write.nonDistributionHosts, ["repo.yarnpkg.com"], "a write to the host still counts");
+});

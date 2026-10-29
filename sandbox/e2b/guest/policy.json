@@ -2,6 +2,7 @@
   "version": 1,
   "registries": {
     "npm": ["registry.npmjs.org", "registry.yarnpkg.com", "npm.jsr.io"],
+    "yarn_repo": ["repo.yarnpkg.com"],
     "pypi_index": ["pypi.org"],
     "pypi_files": ["files.pythonhosted.org"],
     "go_proxy": ["proxy.golang.org"],
