@@ -21,6 +21,7 @@ import { Header } from "@/components/v4/Header";
 import { ContinueCard } from "@/components/cr/app/ContinueCard";
 import { BannerAd, Interstitial } from "@/components/cr/app/Ads";
 import { IC, PLUMBING_HOST, TONE, clock, fileChips, fmtBytes, jevRows, lunaText, phaseWord, processes, steps, timeline, vmCpu } from "./derive";
+import { isStored, scanTitle } from "./scan-title";
 
 interface RunReport {
   run_id: string;
@@ -318,7 +319,8 @@ export function ScanScreen({ runId, boot }: { runId: string; boot?: { error: str
     );
   }
 
-  const title = done ? "Scan complete" : failed ? "Scan stopped" : "Scanning";
+  const stored = isStored(replay, events);
+  const title = scanTitle({ done, failed, stored });
   const phase = done && report ? report.verdict : failed ? "Error" : phaseWord(st);
   const phaseClass = done && report ? toneClass(report.verdict) : failed ? "p-warn" : "p-info";
 
@@ -338,7 +340,7 @@ export function ScanScreen({ runId, boot }: { runId: string; boot?: { error: str
                 )}
               </span>
               <div style={{ minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ fontSize: 18, fontWeight: 500, letterSpacing: "-0.02em" }}>{title}</span><span className={`pill ${phaseClass}`}>{phase}</span></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}><span style={{ fontSize: 18, fontWeight: 500, letterSpacing: "-0.02em" }}>{title}</span><span className={`pill ${phaseClass}`}>{phase}</span>{stored ? <span className="pill p-info">Stored result</span> : null}</div>
                 <div className="mono dim" role={booting ? "status" : undefined} style={{ marginTop: 2, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run ? `${run.subject.startsWith("npm:") ? "npm" : "github.com"}/${subjectName(run.subject)} · ${shortSha(run.commit_sha)}` : booting ? (bootErr ? "Could not start" : "Starting a fresh machine…") : "Starting…"}</div>
               </div>
             </div>

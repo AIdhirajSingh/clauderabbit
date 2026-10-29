@@ -6,9 +6,14 @@
 
 import type { FinalLine } from "./scan-service";
 
-/** Each score rule that moved the score, as "-70 detail" (or "+3 detail"), from the report's own breakdown. */
+/** Each score rule that took points off, as "-70 detail", from the report's own breakdown. */
 export function deductionLines(r: { breakdown?: Array<{ points: number; detail: string }> }): string[] {
-  return (r.breakdown ?? []).filter((d) => d.points !== 0).map((d) => `${d.points > 0 ? "+" : ""}${d.points} ${d.detail}`);
+  return (r.breakdown ?? []).filter((d) => d.points < 0).map((d) => `${d.points} ${d.detail}`);
+}
+
+/** Each score rule that raised the score, as "+3 detail". Listed apart from the deductions. */
+export function raiseLines(r: { breakdown?: Array<{ points: number; detail: string }> }): string[] {
+  return (r.breakdown ?? []).filter((d) => d.points > 0).map((d) => `+${d.points} ${d.detail}`);
 }
 
 export function finalLineText(final: FinalLine): string {
@@ -29,6 +34,7 @@ export function finalLineText(final: FinalLine): string {
     for (const i of items.slice(0, 12)) lines.push(`- ${i}`);
   };
   section("Points taken off", deductionLines(r));
+  section("Points added", raiseLines(r));
   section("Observed when the code ran (behaviour)", r.evidence.behaviour);
   section("Found in the code (static scanners and Jev checks)", r.evidence.code);
   section("Reputation signals (separate from code and behaviour)", r.evidence.reputation);

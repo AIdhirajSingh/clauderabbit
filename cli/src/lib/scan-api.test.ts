@@ -98,3 +98,24 @@ test("a stream that ends without a final line is an error, not a report", async 
   const r = await postScan({ siteUrl: "https://clauderabbit.in", scanTimeoutMs: 5000 }, { ecosystem: "npm", package: "x" }, "t", "cli", undefined, fakeFetch);
   assert.equal(r.ok, false);
 });
+
+test("raises are listed under Points added, never under Points taken off", () => {
+  const report = { ...REPORT, score: 90, breakdown: [{ group: "reputation", code: "downloads", points: 2, detail: "many downloads" }, { group: "behaviour", code: "clean_run", points: 3, detail: "lifted to 90" }] } as EngineReport;
+  const text = formatResponse({ ok: true, outcome: "fresh", runId: REPORT.run_id, report, reportUrl: "https://clauderabbit.in/acme/lib", ad: AD });
+  assert.match(text, /Points taken off:\n {2}- none/);
+  assert.match(text, /Points added:\n {2}- \+2 many downloads\n {2}- \+3 lifted to 90/);
+});
+
+test("a stream that drops mid-scan is a clean error, not a crash", async () => {
+  const event = JSON.stringify({ type: "event", event: { run_id: REPORT.run_id, seq: 0, t_ms: 1, type: "stage", data: { name: "resolve", status: "start" } } }) + "\n";
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(event));
+      c.error(new TypeError("terminated"));
+    },
+  });
+  const fakeFetch = (async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
+  const r = await postScan({ siteUrl: "https://clauderabbit.in", scanTimeoutMs: 5000 }, { ecosystem: "npm", package: "left-pad" }, "cr_cli_x", "cli", undefined, fakeFetch);
+  assert.equal(r.ok, false);
+  assert.ok(!r.ok && r.code === "stream" && /connection closed before the result \(terminated\)/.test(r.message));
+});

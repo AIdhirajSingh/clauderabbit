@@ -46,7 +46,8 @@ REGISTRY_KINDS = ("mirror", "registry")
 # scored; probe and collect records belong to the harness itself.
 PHASES = ("install", "entry", "probe", "collect")
 
-NPM_TARBALL_RE = re.compile(r"^/((?:@[^/]+/)?[^/@][^/]*)/-/([^/]+\.tgz)$")
+# A scoped tarball's scope separator may come encoded: Yarn 2+ asks for /@scope%2fname/-/name-1.0.0.tgz.
+NPM_TARBALL_RE = re.compile(r"^/((?:@[^/%]+(?:/|%2[fF]))?[^/@%][^/%]*)/-/([^/]+\.tgz)$")
 # JSR's npm-compatible registry (npm.jsr.io) serves tarballs at /~/<n>/@jsr/<scope>__<name>/<version>.tgz.
 JSR_TARBALL_RE = re.compile(r"^/~/[0-9]+/(@jsr/[^/]+)/([^/]+\.tgz)$")
 NPM_PACKUMENT_RE = re.compile(r"^/((?:@[^/%]+(?:/|%2[fF]))?[^/@%][^/]*)$")
