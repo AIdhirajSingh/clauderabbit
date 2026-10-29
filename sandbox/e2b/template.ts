@@ -21,7 +21,10 @@ import { GUARDDOG_VERSION_CMD, SEMGREP_VERSION_CMD, YARA_VERSION_CMD } from "../
 export const TEMPLATE_NAME_DEFAULT = "clauderabbit-detonate";
 
 export const PINS = {
-  ubuntu: "24.04",
+  // Ubuntu 24.04 from the ECR Public mirror of the Docker Official Image, pinned by digest
+  // (the same index digest Docker Hub serves for ubuntu:24.04). E2B's builder is refused
+  // anonymous pulls of ubuntu:24.04 from Docker Hub.
+  ubuntu: "public.ecr.aws/docker/library/ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852",
   node: { version: "24.22.0", sha256: "cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008" },
   uv: { version: "0.13.1", sha256: "eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220" },
   go: { version: "1.27.3", sha256: "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40" },
@@ -73,7 +76,7 @@ export function ruleFiles(kind: "semgrep" | "yara", ext: string): string[] {
 export function buildTemplate() {
   return (
     Template({ fileContextPath: here })
-      .fromUbuntuImage(PINS.ubuntu)
+      .fromImage(PINS.ubuntu)
       .setUser("root")
       .aptInstall(APT_PACKAGES, { noInstallRecommends: true })
       .runCmd([
