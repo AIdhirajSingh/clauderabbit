@@ -14,7 +14,7 @@
 import { after } from "next/server";
 import { eventLine, ndjsonLine } from "@/lib/engine/events";
 import { EngineError, type Ad, type ScanEvent } from "@/lib/engine/types";
-import { createV2Store } from "@/lib/engine/store";
+import { abandonRun, createV2Store } from "@/lib/engine/store";
 import { invalidateReport } from "@/lib/server/report-cache";
 import { scanOnRunner } from "@/lib/server/runner";
 import {
@@ -157,13 +157,17 @@ export async function POST(req: Request): Promise<Response> {
             onLine: (line) => write(`${line}\n`),
             relayUntil: startedAt + RELAY_MS,
           });
-          if (!r.final) {
+          if (!r.final && r.ended) {
+            // The runner stopped without its final line (its sandbox timed out or crashed): end the
+            // run now so it never reads as 'running', and tell this client why.
+            await abandonRun(store.db, r.runId, "timeout").catch((e) => console.error("abandon run failed:", e instanceof Error ? e.message : e));
+            final = { type: "error", code: "timeout", message: "The scan sandbox stopped before the scan finished, so there is no result. Scan again to retry.", run_id: r.runId, ad };
+          } else if (!r.final) {
             // Still running: the page follows the run from Supabase (stored events, Realtime).
             open = false;
             controller.close();
             return;
-          }
-          final = r.final;
+          } else final = r.final;
         } else
         final = await executeScan(ctx, parsed.target, regenerate, {
           full: parsed.full === true,

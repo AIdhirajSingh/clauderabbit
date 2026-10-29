@@ -395,6 +395,40 @@ export function freshSince(env: Record<string, string | undefined> = process.env
   return Number.isFinite(t) ? new Date(t).toISOString() : null;
 }
 
+/**
+ * The longest any run may stay 'running': its runner sandbox lives at most 30 minutes
+ * (lib/server/runner.ts RUNNER_UNATTENDED_MS), plus five minutes to write its rows.
+ */
+export const RUN_MAX_MS = 35 * 60_000;
+
+/**
+ * End runs that can no longer finish, so no run reads as 'running' forever:
+ * - 'stale' after five quiet minutes (no event). Quiet, not since start: on its runner a
+ *   scan may build for longer after a Yes, writing events as it goes. Last activity is the
+ *   start plus the latest event's t_ms.
+ * - 'timeout' once it is older than RUN_MAX_MS, whatever it last wrote.
+ * Neither writes a report, so an ended run is never scored. With a run id, only that run.
+ */
+export async function expireStaleRuns(db: SqlExecutor, runId?: string): Promise<void> {
+  await db.query(
+    `update v2.scan_runs r
+        set status = 'error',
+            error_code = case when r.started_at < now() - make_interval(secs => $2::double precision) then 'timeout' else 'stale' end,
+            finished_at = now()
+      where r.status = 'running'
+        and ($1::uuid is null or r.id = $1::uuid)
+        and (r.started_at < now() - make_interval(secs => $2::double precision)
+             or r.started_at + make_interval(secs => coalesce((select max(e.t_ms) from v2.scan_events e where e.run_id = r.id), 0) / 1000.0)
+                < now() - interval '5 minutes')`,
+    [runId ?? null, RUN_MAX_MS / 1000],
+  );
+}
+
+/** End one run that its runner left 'running' (the runner stopped without a final line). No-op once it has ended. */
+export async function abandonRun(db: SqlExecutor, runId: string, errorCode: ErrorCode): Promise<void> {
+  await db.query("update v2.scan_runs set status = 'error', error_code = $2, finished_at = now() where id = $1::uuid and status = 'running'", [runId, errorCode]);
+}
+
 export class V2Store implements ScanStore {
   readonly db: SqlExecutor;
   private readonly now: () => number;
@@ -514,18 +548,7 @@ export class V2Store implements ScanStore {
   }
 
   async claimRun(req: ClaimRequest): Promise<ClaimResult> {
-    // A run is stale after five quiet minutes (no event), not five minutes after it started:
-    // on its runner a scan may build for longer after a Yes, writing events as it goes.
-    // Last activity is the start plus the latest event's t_ms.
-    await run("expire_stale_runs", () =>
-      this.db.query(
-        `update v2.scan_runs r
-            set status = 'error', error_code = 'stale', finished_at = now()
-          where r.status = 'running'
-            and r.started_at + make_interval(secs => coalesce((select max(e.t_ms) from v2.scan_events e where e.run_id = r.id), 0) / 1000.0)
-                < now() - interval '5 minutes'`,
-      ),
-    );
+    await run("expire_stale_runs", () => expireStaleRuns(this.db));
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         await this.db.query(

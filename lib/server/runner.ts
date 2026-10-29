@@ -57,7 +57,11 @@ export interface RunnerStart {
   relayUntil: number;
 }
 
-export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promise<{ runId: string; final: FinalLine | null }> {
+/**
+ * `ended`: the runner's process (or its whole sandbox) stopped while this request relayed it.
+ * With no `final`, the scan died without closing its run; the caller ends it.
+ */
+export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promise<{ runId: string; final: FinalLine | null; ended: boolean }> {
   // @ts-ignore generated at build time by scripts/build-runner.mjs (package.json vercel-build)
   const code = (await import("./runner-bundle.generated.mjs")).default as string;
   const { Sandbox } = await import("e2b");
@@ -87,6 +91,7 @@ export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promis
   }
   let buf = "";
   let final: FinalLine | null = null;
+  let ended = false;
   let done: () => void = () => {};
   const finished = new Promise<void>((r) => (done = r));
   const onStdout = (chunk: string) => {
@@ -109,7 +114,15 @@ export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promis
     }
   };
   const cmd = await sbx.commands.run(`cd ${RUNNER_DIR} && exec ${NODE} runner.mjs request.json`, { background: true, envs, onStdout, timeoutMs: 0 });
-  void cmd.wait().then(done, done);
+  const exit = () => {
+    ended = true;
+    done();
+  };
+  void cmd.wait().then(exit, exit);
   await Promise.race([finished, new Promise<void>((r) => setTimeout(r, Math.max(0, s.relayUntil - Date.now())))]);
-  return { runId, final };
+  if (ended && !final) {
+    // The runner died without its final line (sandbox timeout, crash): remove what is left of it now.
+    await Sandbox.kill(sbx.sandboxId, { apiKey: config.e2bApiKey! }).catch(() => {});
+  }
+  return { runId, final, ended };
 }

@@ -5,7 +5,7 @@
  */
 
 import type { SqlExecutor } from "@/lib/engine/db";
-import { payloadFromRows, type StoredReportRow } from "@/lib/engine/store";
+import { expireStaleRuns, payloadFromRows, type StoredReportRow } from "@/lib/engine/store";
 import type { ReportPayload, ScoreDelta } from "@/lib/engine/types";
 import { FILTER_VERDICTS, topFinding, type BoardFilter } from "@/lib/cr/verdict";
 import { TEST_FIXTURE_REPO_RE } from "./public-lists";
@@ -86,6 +86,8 @@ export interface RunReport {
 
 /** The run and, when it finished, the report this run wrote (never a later run's row). */
 export async function loadRunReport(db: SqlExecutor, runId: string): Promise<RunReport | null> {
+  // A run whose runner died reads as ended, not 'running', even when no new scan sweeps it.
+  await expireStaleRuns(db, runId);
   const runs = await db.query<{
     id: string; subject: string; commit_sha: string; status: "running" | "done" | "error"; error_code: string | null;
     started_at: string; finished_at: string | null; model_id: string | null; template: string | null; timings: unknown; cost: unknown;
