@@ -240,6 +240,21 @@ class DnsAndCaptureTests(unittest.TestCase):
             self.assertEqual(fc.read_phase(p), "install")
 
 
+class YarnScopedTarballTests(unittest.TestCase):
+    """Yarn 2+ asks for a scoped tarball with the scope separator encoded: /@scope%2fname/-/name-1.0.0.tgz."""
+
+    def test_encoded_scope_tarball_is_a_registry_tarball(self):
+        for host in ("registry.yarnpkg.com", "registry.npmjs.org"):
+            for path in ("/@babel%2fcore/-/core-7.29.7.tgz", "/@babel%2Fcore/-/core-7.29.7.tgz", "/@babel/core/-/core-7.29.7.tgz"):
+                self.assertEqual(fc.registry_kind(POLICY, host, "GET", path), "npm-tarball", (host, path))
+                self.assertEqual(fc.npm_name_from_path(path), "@babel/core", path)
+
+    def test_unscoped_and_malformed_paths_unchanged(self):
+        self.assertEqual(fc.registry_kind(POLICY, "registry.yarnpkg.com", "GET", "/globby/-/globby-16.2.4.tgz"), "npm-tarball")
+        self.assertIsNone(fc.registry_kind(POLICY, "registry.yarnpkg.com", "GET", "/@babel%2f/-/x-1.0.0.tgz"))
+        self.assertIsNone(fc.registry_kind(POLICY, "registry.yarnpkg.com", "GET", "/@babel%2fcore%2fx/-/x-1.0.0.tgz"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
