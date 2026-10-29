@@ -85,13 +85,13 @@ stdio so an agent can check a dependency before it ever clones it (also served r
 Streamable HTTP at `clauderabbit.in/mcp` for claude.ai custom connectors). Wire it into Claude
 Desktop with `clauderabbit mcp install` (installed as part of the CLI above).
 
-Both the CLI and the MCP server call the same public scan API the website uses and require a
-signed-in ClaudeRabbit account (a real product/access decision, not because the data is sensitive -
-report pages stay public either way); the first call opens your browser to sign in once, then stays
-silent until you log out. See [cli/README.md](cli/README.md) and
+Both the CLI and the MCP server call the same public scan API the website uses and need no
+account: install and scan. Anonymous fresh scans are rate limited (at most 6 running at once and 6 starting per minute across
+the service; per client IP, 10 fresh scans per hour and 30 per day); stored reports always come back
+at once and never count. See [cli/README.md](cli/README.md) and
 [mcp-server/README.md](mcp-server/README.md) for the full command/tool reference, or
 **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** for a full beginner's walkthrough (install →
-log in → scan → wire up the MCP server → connect claude.ai Custom Connectors → update).
+scan → wire up the MCP server → connect claude.ai Custom Connectors → update).
 
 ## How it works
 
@@ -174,7 +174,7 @@ lib/                     report view, types, supabase clients, scan client
 sandbox/e2b/             the E2B template, its build script, the in-VM harness and the forge (the moat)
 supabase/migrations/     schema + RLS (reverse files in supabase/migrations-down/)
 tests/                   engine tests, keyless e2e, fixtures (our own phone-home fixture), labeled set
-cli/                     the clauderabbit CLI (scan, mcp install, login/logout)
+cli/                     the clauderabbit CLI (scan, mcp install)
 mcp-server/              MCP server (one cache-aware scan tool over stdio for AI coding tools)
 docs/                    north star, UX, INFRASTRUCTURE, COST, 2.0 design, run records
 design.md                the shipped Claude Design spec (source of truth for the UI + reports)

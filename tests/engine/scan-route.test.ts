@@ -72,7 +72,7 @@ test("CLI and MCP need no sign-in: an anonymous fresh scan passes the anonymous 
   assert.equal(freshScanGate(db, { ...base, surface: "cli", userId: null, operator: true }), undefined, "the operator has no gate");
   const anon = await freshScanGate(db, { ...base, surface: "cli", userId: null })!();
   assert.equal(anon.allowed, true, "an anonymous CLI scan is allowed");
-  assert.deepEqual(calls.slice(1), ["anon-fresh:hour:203.0.113.9", "anon-fresh:day:203.0.113.9"]);
+  assert.deepEqual(calls.slice(1), ["anon-fresh:hour:203.0.113.9", "anon-fresh:day:203.0.113.9", "anon-fresh:global"]);
   assert.equal(freshScanGate(db, { ...base, surface: "mcp-remote", userId: null, anonGateChecked: true }), undefined, "a scan the route already gated is not counted twice");
   assert.equal(needsAnonymousGate({ ...base, surface: "cli", userId: null }), true);
   assert.equal(needsAnonymousGate({ ...base, surface: "cli", userId: "u1" }), false);
@@ -99,6 +99,11 @@ test("anonymous limits: a concurrency cap, then per-IP hour and day counters, ea
   assert.equal(!h.allowed && h.code, "rate_limited");
   assert.equal(!h.allowed && h.retryAfter, 1800);
   assert.match(!h.allowed ? h.message : "", new RegExp(`its ${ANON_FRESH_PER_IP_HOUR} fresh scans for an hour; .* about 30 min`));
+  // A burst: the per-IP counters allow it, the service-wide per-minute counter does not.
+  const burst = { query: async (sql: string, params: unknown[] = []) => (sql.includes("count(*)") ? [{ n: 0 }] : params[0] === "anon-fresh:global" ? [{ allowed: false, current_count: 7, retry_after: 40 }] : [{ allowed: true, current_count: 1, retry_after: 0 }]) } as never;
+  const g = await checkAnonymousFresh(burst, { ip: "203.0.113.9" });
+  assert.equal(g.allowed, false);
+  assert.match(!g.allowed ? g.message : "", /already started in the last minute; .* about 40 s/);
   const broken = { query: async () => { throw new Error("db down"); } } as never;
   const x = await checkAnonymousFresh(broken, { ip: null });
   assert.equal(x.allowed, false, "fails closed");

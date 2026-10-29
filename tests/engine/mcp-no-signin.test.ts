@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { HEAD, POST } from "../../app/mcp/route.ts";
+import { GET as wellKnownGet } from "../../app/.well-known/[...path]/route.ts";
 
 const BASE_ENV = {
   NEXT_PUBLIC_SITE_URL: "https://clauderabbit.in",
@@ -51,4 +52,10 @@ test("no OAuth discovery is published, so a connector offers no sign-in", () => 
   for (const p of ["app/.well-known/oauth-authorization-server", "app/.well-known/oauth-protected-resource"]) {
     assert.equal(existsSync(path.join(root, p)), false, p);
   }
+});
+
+test("every /.well-known path is a plain 404, never a redirect to a page", async () => {
+  const res = wellKnownGet();
+  assert.equal(res.status, 404);
+  assert.equal(res.headers.get("content-type"), "application/json");
 });
