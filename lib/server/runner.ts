@@ -62,6 +62,8 @@ export interface RunnerStart {
  * With no `final`, the scan died without closing its run; the caller ends it.
  */
 export async function scanOnRunner(config: EngineConfig, s: RunnerStart): Promise<{ runId: string; final: FinalLine | null; ended: boolean }> {
+  // The bundle exists only after a build, so a type error here comes and goes; @ts-expect-error would fail when it is present.
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore generated at build time by scripts/build-runner.mjs (package.json vercel-build)
   const code = (await import("./runner-bundle.generated.mjs")).default as string;
   const { Sandbox } = await import("e2b");

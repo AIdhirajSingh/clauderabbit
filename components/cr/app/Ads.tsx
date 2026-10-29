@@ -181,6 +181,8 @@ export function BannerAd({ runId, n }: { runId: string; n: 1 | 2 | 3 }) {
   const [phone, setPhone] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 767px)");
+    // The media query is only readable after mount (the server render has no window), so the first read is here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPhone(mq.matches);
     const on = () => setPhone(mq.matches);
     mq.addEventListener("change", on);
@@ -200,6 +202,8 @@ export function BannerAd({ runId, n }: { runId: string; n: 1 | 2 | 3 }) {
 /** GPT web interstitial for the scan page, defined before any link on it is clicked. */
 export function Interstitial({ runId }: { runId: string }) {
   const runIdRef = useRef(runId);
+  // The latest run id for the GPT callbacks below, which outlive this render; nothing renders from it.
+  // eslint-disable-next-line react-hooks/refs
   runIdRef.current = runId;
   useEffect(() => {
     let slot: Gt = null;

@@ -140,9 +140,11 @@ export async function POST(req: Request): Promise<Response> {
       const onEvent = (e: ScanEvent) => write(eventLine(e));
       let final: FinalLine;
       try {
-        // A stored run replays from here at once; only a miss starts a runner sandbox (about 10 s to create).
-        const probe = runsOnRunner(regenerate) && !parsed.fresh && parsed.full !== true
-          ? await probeStored(ctx, parsed.target, onEvent)
+        // A stored run replays from here at once, and a missing target (or private repo) answers not_found from
+        // here; only an existing target with no stored run starts a runner sandbox (about 10 s to create). A fresh
+        // or full-install scan skips the stored-run lookup but still gets the existence check.
+        const probe = runsOnRunner(regenerate)
+          ? await probeStored(ctx, parsed.target, onEvent, { lookupCache: !parsed.fresh && parsed.full !== true })
           : null;
         if (probe) {
           final = probe;

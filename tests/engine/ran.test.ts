@@ -149,3 +149,13 @@ test("a partial scan's reason line is stored and read back with it (stored scans
   assert.equal(back.partial_reason, "Build ran out of time, so the program never ran");
   assert.equal(roundTrip(BASE).partial_reason, undefined);
 });
+
+test("packageManagerOf reads a grouped or fallback install command, as the harness writes for workspaces", async () => {
+  const { packageManagerOf } = await import("../../lib/engine/ran.ts");
+  assert.equal(packageManagerOf("(yarn workspaces focus --production . a b || yarn install)"), "yarn");
+  assert.equal(packageManagerOf("( pnpm install --prod )"), "pnpm");
+  assert.equal(packageManagerOf("npm ci --omit=dev && npm install --no-save x"), "npm");
+  assert.equal(packageManagerOf("pip3 install ."), "pip");
+  assert.equal(packageManagerOf(""), null);
+  assert.equal(packageManagerOf("sh -c 'curl x'"), null);
+});

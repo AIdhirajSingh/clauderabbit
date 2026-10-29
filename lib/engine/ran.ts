@@ -18,7 +18,8 @@ const MAX_COMMAND_CHARS = 300;
 
 /** The package manager the harness's install command invoked, or null when it ran none. */
 export function packageManagerOf(installCommand: string): string | null {
-  const first = installCommand.trim().split(/\s+/)[0] ?? "";
+  // The harness groups a workspace install with its fallback: "(yarn workspaces focus ... || yarn install)".
+  const first = installCommand.trim().replace(/^\(\s*/, "").split(/\s+/)[0] ?? "";
   return PACKAGE_MANAGERS.has(first) ? (first === "pip3" ? "pip" : first) : null;
 }
 

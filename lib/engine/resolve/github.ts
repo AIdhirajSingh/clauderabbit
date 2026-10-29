@@ -147,7 +147,7 @@ export async function resolveViaGit(spec: GithubTargetSpec, ctx: GithubContext):
   const res = await fetchWithDeadline(ctx.fetch, url, { headers: { "User-Agent": "git/2.45.0", "Git-Protocol": "version=1" } }, ctx.timeoutMs, ctx.signal);
   if (res.status === 401 || res.status === 404) {
     await res.body?.cancel();
-    throw new EngineError("not_found", `${spec.owner}/${spec.repo} was not found on GitHub, or it is private`);
+    throw new EngineError("not_found", `${spec.owner}/${spec.repo} was not found on GitHub, or it is private; only public repositories can be scanned`);
   }
   if (res.status === 403 || res.status === 429) {
     await res.body?.cancel();
@@ -207,6 +207,11 @@ export function parseUploadPackRefs(body: string): { head?: string; headTarget?:
 async function resolveViaApi(spec: GithubTargetSpec, ctx: GithubContext): Promise<GithubResolution> {
   const base = `${GITHUB_API}/repos/${encodeURIComponent(spec.owner)}/${encodeURIComponent(spec.repo)}`;
   const res = await fetchWithDeadline(ctx.fetch, base, { headers: apiHeaders(ctx.token) }, ctx.timeoutMs, ctx.signal);
+  if (res.status === 404) {
+    // The API answers 404 for a private repo too, so the message names both.
+    await res.body?.cancel();
+    throw new EngineError("not_found", `${spec.owner}/${spec.repo} was not found on GitHub, or it is private; only public repositories can be scanned`);
+  }
   if (!res.ok) await failFor(res, `${spec.owner}/${spec.repo}`);
   const repo = (await res.json()) as GhRepo;
   if (repo.private || (repo.visibility !== undefined && repo.visibility !== "public")) {

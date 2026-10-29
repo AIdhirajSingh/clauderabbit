@@ -9,7 +9,8 @@
  * so signing in once with either tool connects both.
  */
 
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { exec } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -115,32 +116,85 @@ export function renderPage(ok: boolean): string {
 </html>`;
 }
 
+/** Read a small urlencoded request body; anything over 4 KB is refused. */
+function readForm(req: IncomingMessage): Promise<URLSearchParams | null> {
+  return new Promise((resolve) => {
+    let body = "";
+    let tooBig = false;
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => {
+      body += chunk;
+      if (body.length > 4096) {
+        tooBig = true;
+        req.destroy();
+      }
+    });
+    req.on("end", () => resolve(tooBig ? null : new URLSearchParams(body)));
+    req.on("error", () => resolve(null));
+  });
+}
+
+function sameState(a: string | null, b: string): boolean {
+  if (!a || a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+const PAGE_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store",
+  "Referrer-Policy": "no-referrer",
+};
+
 /**
  * Interactive login: starts a short-lived local callback server, opens
- * `${siteUrl}/cli-auth?port=<n>` in the browser, and waits for the browser
- * (redirected there by that page once sign-in completes) to hand back a
- * token. Saves it and resolves with it. Rejects on timeout or if the local
- * server can't bind.
+ * `${siteUrl}/cli-auth?port=<n>&state=<s>` in the browser, and waits for the
+ * page to hand back a token.
+ *
+ * The token never travels in a URL. The page submits it in the body of a
+ * form POST to `http://127.0.0.1:<n>/callback` together with `state`, a
+ * random value only this process and that page know (so no other page can
+ * plant a token here). The server answers with a 303 to `/done`, so the
+ * address bar, history and any screenshot show only `/done`. A GET to
+ * `/callback`, a wrong state, or a malformed token is refused.
  */
-export function login(config: ClaudeRabbitConfig, timeoutMs = 5 * 60_000): Promise<string> {
+export function login(config: ClaudeRabbitConfig, timeoutMs = 5 * 60_000, open: (url: string) => void = openBrowser): Promise<string> {
+  const state = randomBytes(24).toString("hex");
   return new Promise((resolve, reject) => {
+    let outcome: boolean | null = null;
+    const finish = () => {
+      clearTimeout(timer);
+      // Let the /done page load before the server goes away.
+      setTimeout(() => server.close(), 3000).unref();
+    };
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      if (url.pathname !== "/callback") {
-        res.writeHead(404).end();
+      if (url.pathname === "/done" && req.method === "GET") {
+        res.writeHead(200, PAGE_HEADERS).end(renderPage(outcome === true));
         return;
       }
-      const token = url.searchParams.get("token");
-      const valid = !!token && token.startsWith("cr_cli_");
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(renderPage(valid));
-      server.close();
-      clearTimeout(timer);
-      if (!valid) {
-        reject(new Error("Sign-in did not return a valid token."));
+      if (url.pathname !== "/callback" || req.method !== "POST" || outcome !== null) {
+        res.writeHead(url.pathname === "/callback" ? 405 : 404, { "Cache-Control": "no-store" }).end();
         return;
       }
-      saveToken(token as string);
-      resolve(token as string);
+      void readForm(req).then((form) => {
+        const token = form?.get("token") ?? null;
+        const okState = sameState(form?.get("state") ?? null, state);
+        const valid = okState && !!token && /^cr_cli_[0-9a-f]{64}$/.test(token);
+        if (!okState) {
+          // A request without our state is not the sign-in we started: refuse it and keep waiting.
+          res.writeHead(403, PAGE_HEADERS).end(renderPage(false));
+          return;
+        }
+        outcome = valid;
+        res.writeHead(303, { Location: "/done", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }).end();
+        finish();
+        if (!valid) {
+          reject(new Error("Sign-in did not return a valid token."));
+          return;
+        }
+        saveToken(token as string);
+        resolve(token as string);
+      });
     });
 
     const timer = setTimeout(() => {
@@ -163,9 +217,9 @@ export function login(config: ClaudeRabbitConfig, timeoutMs = 5 * 60_000): Promi
         reject(new Error("Could not start the local sign-in callback server."));
         return;
       }
-      const loginUrl = `${config.siteUrl}/cli-auth?port=${port}`;
+      const loginUrl = `${config.siteUrl}/cli-auth?port=${port}&state=${state}`;
       process.stderr.write(`Opening your browser to sign in:\n  ${loginUrl}\n`);
-      openBrowser(loginUrl);
+      open(loginUrl);
     });
   });
 }
