@@ -124,17 +124,17 @@ function licenseOf(v: unknown): string | null {
 }
 
 /** Choose the manifest for an exact version or a dist-tag (default `latest`). */
-export function pickVersion(pack: Packument, requested: string | undefined): string {
+export function pickVersion(pack: Packument, requested: string | undefined, name?: string): string {
   const versions = pack.versions ?? {};
   const wanted = requested ?? "latest";
   if (Object.prototype.hasOwnProperty.call(versions, wanted)) return wanted;
   const tagged = pack["dist-tags"]?.[wanted];
   if (tagged && Object.prototype.hasOwnProperty.call(versions, tagged)) return tagged;
-  throw new EngineError("not_found", `version or dist-tag "${wanted}" is not published`);
+  throw new EngineError("not_found", name ? `npm package "${name}" has no published version or dist-tag "${wanted}"` : `version or dist-tag "${wanted}" is not published`);
 }
 
 export function summarizePackument(pack: Packument, name: string, requested: string | undefined): NpmResolution {
-  const version = pickVersion(pack, requested);
+  const version = pickVersion(pack, requested, name);
   const m = pack.versions![version]!;
   const tarballUrl = m.dist?.tarball ?? "";
   const scripts: Record<string, string> = {};

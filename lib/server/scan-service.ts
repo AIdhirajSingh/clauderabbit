@@ -279,13 +279,27 @@ export async function executeScan(
 }
 
 /**
- * The stored run for this target, served from the request itself: its events replay through onEvent and its final
- * line comes back. Null when there is none (nothing was claimed or booted), so the caller starts a fresh scan.
+ * Error codes that mean the target itself is missing (or is a private repo an anonymous check cannot tell from a
+ * missing one). The probe answers these from the request itself, so no runner sandbox is created for a target that
+ * does not exist. Every other resolve failure (rate limit, upstream, timeout) falls through to the runner.
  */
-export async function probeStored(ctx: CallerContext, target: ScanTarget, onEvent: (e: ScanEvent) => void): Promise<FinalLine | null> {
+const TARGET_MISSING: ReadonlySet<ErrorCode> = new Set<ErrorCode>(["not_found", "private_repo"]);
+
+/**
+ * The stored run for this target, served from the request itself: its events replay through onEvent and its final
+ * line comes back. The same pass checks that the target exists: a missing GitHub repo, ref, npm package or npm
+ * version (or a private repo) comes back as its error line, with no run claimed and nothing booted. Null when there
+ * is no stored run and the target exists, or when the existence check itself failed (a rate limit or network error
+ * is never reported as missing), so the caller starts a fresh scan. `lookupCache: false` (a fresh or full-install
+ * scan) runs only the existence check.
+ */
+export async function probeStored(ctx: CallerContext, target: ScanTarget, onEvent: (e: ScanEvent) => void, opts: { lookupCache?: boolean } = {}): Promise<FinalLine | null> {
   const { store, caller, config } = ctx;
   const deps = productionDeps(config, store);
-  const outcome = await runScan({ target, caller, regenerate: false }, deps, { onEvent: (e) => { if (e.replayed) onEvent(e); }, cacheOnly: true });
+  const outcome = await runScan({ target, caller, regenerate: false, ...(opts.lookupCache === false ? { fresh: true } : {}) }, deps, { onEvent: (e) => { if (e.replayed) onEvent(e); }, cacheOnly: true });
+  if (outcome.kind === "error" && TARGET_MISSING.has(outcome.code)) {
+    return { type: "error", code: outcome.code, message: outcome.message, run_id: null, ad: adForSurface(config, caller.surface, target) };
+  }
   if (outcome.kind !== "cached") return null;
   await recordUserScan(store, caller.userId, outcome.runId);
   return { type: "result", outcome: "cached", run_id: outcome.runId, report: outcome.report, report_url: reportUrlFor(config.siteUrl, target), ad: adForSurface(config, caller.surface, target), cost: cacheHitLedger({ jevModel: config.jevModelId, lunaModel: config.modelId, fx: config.fx }) };
