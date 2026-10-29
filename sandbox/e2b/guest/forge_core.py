@@ -66,6 +66,10 @@ GO_SUMDB_RE = re.compile(r"^/(?:latest|lookup/[A-Za-z0-9._~!%/-]+@[^/]+|tile/[0-
 # crates.io sparse index (config.json and the 1/, 2/, 3/x/ and ab/cd/ entry paths) and crate files.
 CRATES_INDEX_RE = re.compile(r"^/(?:config\.json|1/[a-z0-9_-]+|2/[a-z0-9_-]+|3/[a-z0-9_-]/[a-z0-9_-]+|[a-z0-9_-]{2}/[a-z0-9_-]{2}/[a-z0-9_-]+)$")
 CRATE_FILE_RE = re.compile(r"^/crates/([A-Za-z0-9_-]+)/(?:\1-[0-9][^/]*\.crate|[0-9][^/]*/download)$")
+# repo.yarnpkg.com: where corepack downloads Yarn 2+ (the yarn.js bundle of an exact
+# version) and the tag list it resolves a tag against. Read-only shapes; corepack checks
+# the bundle against the packageManager hash itself.
+YARN_RELEASE_RE = re.compile(r"^/(?:tags|[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?/packages/yarnpkg-cli/bin/yarn\.js)$")
 HTML_HASH_RE = re.compile(r'href="([^"#]+)#sha256=([0-9a-fA-F]{64})"')
 
 
@@ -122,11 +126,14 @@ def normalize_headers(pairs) -> dict:
 
 def registry_kind(policy: dict, host: str, method: str, path: str) -> Optional[str]:
     """Return the registry request kind, or None when the request is forged."""
-    if method.upper() != "GET":
-        return None
+    m = method.upper()
     h = host.lower().rstrip(".")
     p = path.split("?", 1)[0].split("#", 1)[0]
     regs = policy["registries"]
+    if h in regs.get("yarn_repo", []):
+        return "yarn-release" if m in ("GET", "HEAD") and YARN_RELEASE_RE.match(p) else None
+    if m != "GET":
+        return None
     if h in regs.get("npm", []):
         if NPM_TARBALL_RE.match(p) or JSR_TARBALL_RE.match(p):
             return "npm-tarball"
@@ -477,16 +484,19 @@ class Forge:
         if kind in ("npm-packument", "npm-version", "pypi-simple", "pypi-json", "go-meta", "go-sumdb", "crates-index"):
             return self._metadata(req, kind)
         if kind == "go-zip":
-            return self._go_zip(req)
+            return self._client_checked(req, "application/zip")
+        if kind == "yarn-release":
+            return self._client_checked(req, "application/javascript")
         return self._blob(req, kind)
 
-    def _go_zip(self, req: Request) -> Decision:
-        """A module zip carries no digest in proxy metadata: the go command checks it
-        against go.sum and the checksum database (both fetched through this forge)."""
+    def _client_checked(self, req: Request, ctype: str) -> Decision:
+        """Bytes whose digest is not in registry metadata, checked by the client: a Go
+        module zip against go.sum and the checksum database (both fetched through this
+        forge), a Yarn bundle by corepack against the packageManager hash."""
         status, _headers, body = self.fetch(req.url, {"Accept": "*/*"})
         if status != 200:
             return Decision(502 if status >= 500 else status, {"Content-Type": "text/plain"}, b"registry unavailable", "registry", note=f"upstream {status}")
-        return Decision(200, {"Content-Type": "application/zip"}, body, "registry", integrity="client-checked")
+        return Decision(200, {"Content-Type": ctype}, body, "registry", integrity="client-checked")
 
     def _remember(self, kind: str, url: str, content_type: str, body: bytes, from_mirror: bool = False) -> None:
         if kind in ("npm-packument", "npm-version"):

@@ -315,3 +315,53 @@ class GoAndCratesRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             dec = fc.Forge(POLICY, fc.Mirror(d), up).handle(req("GET", "proxy.golang.org", "/example.com/m/@v/v1.0.0.zip"))
             self.assertEqual((dec.status, dec.forged_kind, dec.integrity), (200, "registry", "client-checked"))
+
+
+YARN_JS = b"#!/usr/bin/env node\n/* yarn berry bundle */\n"
+YARN_URL = "https://repo.yarnpkg.com/4.5.0/packages/yarnpkg-cli/bin/yarn.js"
+
+
+class YarnRepoTests(unittest.TestCase):
+    """repo.yarnpkg.com is where corepack fetches Yarn 2+ (the yarn.js bundle of a pinned
+    version, and /tags to resolve a tag). Read-only (GET/HEAD), exact host, those shapes only."""
+
+    def test_release_and_tags_pass_on_get_and_head(self):
+        for m in ("GET", "HEAD", "get", "head"):
+            self.assertEqual(fc.registry_kind(POLICY, "repo.yarnpkg.com", m, "/4.5.0/packages/yarnpkg-cli/bin/yarn.js"), "yarn-release", m)
+            self.assertEqual(fc.registry_kind(POLICY, "repo.yarnpkg.com", m, "/4.0.0-rc.53/packages/yarnpkg-cli/bin/yarn.js"), "yarn-release", m)
+            self.assertEqual(fc.registry_kind(POLICY, "repo.yarnpkg.com", m, "/tags"), "yarn-release", m)
+        self.assertEqual(fc.registry_kind(POLICY, "REPO.yarnpkg.com.", "GET", "/tags"), "yarn-release")
+
+    def test_writes_are_forged(self):
+        for m in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT"):
+            self.assertIsNone(fc.registry_kind(POLICY, "repo.yarnpkg.com", m, "/4.5.0/packages/yarnpkg-cli/bin/yarn.js"), m)
+            self.assertIsNone(fc.registry_kind(POLICY, "repo.yarnpkg.com", m, "/tags"), m)
+
+    def test_exact_host_only(self):
+        for h in ("cdn.repo.yarnpkg.com", "evil.repo.yarnpkg.com", "repo.yarnpkg.com.evil.example", "yarnpkg.com", "repo-yarnpkg.com"):
+            self.assertIsNone(fc.registry_kind(POLICY, h, "GET", "/tags"), h)
+            self.assertIsNone(fc.registry_kind(POLICY, h, "GET", "/4.5.0/packages/yarnpkg-cli/bin/yarn.js"), h)
+
+    def test_other_paths_on_the_host_are_forged(self):
+        for p in ("/", "/exfil", "/4.5.0/packages/yarnpkg-cli/bin/yarn.js/../../x", "/latest/packages/yarnpkg-cli/bin/yarn.js",
+                  "/4.5.0/packages/plugin-x/bin/x.js", "/tags/extra", "/left-pad", "/left-pad/-/left-pad-1.3.0.tgz"):
+            self.assertIsNone(fc.registry_kind(POLICY, "repo.yarnpkg.com", "GET", p), p)
+
+    def test_head_stays_forged_on_every_other_registry(self):
+        self.assertIsNone(fc.registry_kind(POLICY, "registry.npmjs.org", "HEAD", "/left-pad"))
+        self.assertIsNone(fc.registry_kind(POLICY, "registry.yarnpkg.com", "HEAD", "/left-pad"))
+        self.assertIsNone(fc.registry_kind(POLICY, "pypi.org", "HEAD", "/simple/six/"))
+
+    def test_forge_serves_upstream_bytes_unchanged_for_the_client_to_check(self):
+        up = FakeUpstream({YARN_URL: (200, {"content-type": "application/javascript"}, YARN_JS)})
+        d = fc.Forge(POLICY, fc.Mirror(tempfile.mkdtemp()), up).handle(req("GET", "repo.yarnpkg.com", "/4.5.0/packages/yarnpkg-cli/bin/yarn.js"))
+        self.assertEqual((d.status, d.body, d.forged_kind, d.integrity), (200, YARN_JS, "registry", "client-checked"))
+        self.assertEqual(up.calls, [YARN_URL])
+        down = fc.Forge(POLICY, fc.Mirror(tempfile.mkdtemp()), FakeUpstream({})).handle(req("GET", "repo.yarnpkg.com", "/9.9.9/packages/yarnpkg-cli/bin/yarn.js"))
+        self.assertEqual(down.status, 404)
+
+    def test_write_to_the_host_is_forged_without_upstream(self):
+        up = FakeUpstream({})
+        d = fc.Forge(POLICY, fc.Mirror(tempfile.mkdtemp()), up).handle(req("POST", "repo.yarnpkg.com", "/tags", body=b"secret"))
+        self.assertEqual(d.forged_kind, "json")
+        self.assertEqual(up.calls, [])
