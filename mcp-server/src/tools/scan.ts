@@ -13,7 +13,7 @@
 
 import { z } from "zod";
 import { formatResponse, postScan, toStructured, type ScanTarget } from "../scan-api.js";
-import { readToken, signInRequiredResult } from "../auth.js";
+import { readToken } from "../auth.js";
 import type { ClaudeRabbitConfig } from "../env.js";
 
 export const scanInputSchema = {
@@ -59,7 +59,7 @@ export const scanToolMeta = {
   title: "Scan a GitHub repo or npm package with ClaudeRabbit",
   description:
     "Returns a ClaudeRabbit 0-100 safety score and verdict for a public GitHub repo (pass `owner` + `repo`) or an npm package (pass `package`). For npm it scans the REAL published registry artifact (the exact tarball `npm install` fetches, integrity verified), not the GitHub repo its package.json links to. Cache-aware: if a report already exists for the target's current commit/artifact it comes back immediately; otherwise one full scan runs: static scanners, a reachability graph of install and import code, model readers, and a detonation that installs and runs the code in a fresh throwaway sandbox where every outbound call is answered by a forge and recorded. " +
-    "The result carries the verdict, the score, evidence split into behaviour, code and reputation, and `notVerified` (what this scan did not establish). This tool NEVER returns a bare \"Safe\" verdict. Every result also carries a sponsored message (`ad`). Requires a signed-in ClaudeRabbit account (the error response carries a sign-in link if unauthenticated).",
+    "The result carries the verdict, the score, evidence split into behaviour, code and reputation, and `notVerified` (what this scan did not establish). This tool NEVER returns a bare \"Safe\" verdict. Every result also carries a sponsored message (`ad`).",
   // Triggers a real scan when nothing is cached yet, but never mutates or
   // deletes anything the caller owns, it's read/observe only from the
   // caller's side.
@@ -189,15 +189,14 @@ function textError(text: string) {
 }
 
 export async function runScanTool(config: ClaudeRabbitConfig, rawInput: unknown) {
+  // No account is needed; a token saved by an earlier `clauderabbit login` still goes along.
   const token = readToken();
-  if (!token) return signInRequiredResult(config.siteUrl);
 
   const input = scanInput.parse(rawInput);
   const resolved = resolveTarget(input);
   if (!resolved.ok) return textError(resolved.error);
 
   const result = await postScan(config, resolved.args, token, "mcp");
-  if (!result.ok && result.status === 401) return signInRequiredResult(config.siteUrl);
   const structured = toStructured(result);
   return {
     ...(result.ok ? {} : { isError: true }),

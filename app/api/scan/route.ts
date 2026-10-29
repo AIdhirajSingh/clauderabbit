@@ -16,6 +16,7 @@ import { eventLine, ndjsonLine } from "@/lib/engine/events";
 import { EngineError, type Ad, type ScanEvent } from "@/lib/engine/types";
 import { abandonRun, createV2Store } from "@/lib/engine/store";
 import { invalidateReport } from "@/lib/server/report-cache";
+import { checkAnonymousFresh } from "@/lib/engine/ratelimit";
 import { scanOnRunner } from "@/lib/server/runner";
 import {
   MAX_BODY_BYTES,
@@ -24,6 +25,7 @@ import {
   callerFrom,
   executeScan,
   missingServerKeys,
+  needsAnonymousGate,
   parseScanBody,
   rateLimitFor,
   realtimeChannel,
@@ -96,8 +98,9 @@ export async function POST(req: Request): Promise<Response> {
   const store = createV2Store(config);
   const ctx = await callerFrom(req.headers, surface, parsed.deviceId, config, store);
 
-  // CLI and stdio MCP: stored reports are free without an account; a fresh scan needs a signed-in key
-  // (lib/server/scan-service.ts executeScan, before any VM boots) and counts against its daily quota.
+  // CLI and stdio MCP need no account. A fresh scan without one is held to the anonymous limits (per-IP counts and
+  // a cap on running anonymous scans, lib/engine/ratelimit.ts), checked before any sandbox boots; a token, when
+  // sent, still attaches the account and its daily quota.
   if (parsed.target.kind === "tarball" && !ctx.caller.operator) return preStreamError("unauthorized", "tarball targets need the operator key", ad);
 
   const rl = await rateLimitFor(ctx);
@@ -146,13 +149,17 @@ export async function POST(req: Request): Promise<Response> {
         const probe = runsOnRunner(regenerate)
           ? await probeStored(ctx, parsed.target, onEvent, { lookupCache: !parsed.fresh && parsed.full !== true })
           : null;
+        // A fresh scan with no account passes the anonymous limits here, before the runner sandbox boots.
+        const anonGate = !probe && runsOnRunner(regenerate) && needsAnonymousGate(ctx.caller) ? await checkAnonymousFresh(store.db, ctx.caller) : null;
         if (probe) {
           final = probe;
+        } else if (anonGate && !anonGate.allowed) {
+          final = { type: "error", code: anonGate.code, message: anonGate.message, run_id: null, ad, retryAfter: anonGate.retryAfter };
         } else if (runsOnRunner(regenerate)) {
           // The scan runs in its own runner sandbox; this request only relays it while it lives.
           const r = await scanOnRunner(ctx.config, {
             target: parsed.target,
-            caller: ctx.caller,
+            caller: anonGate ? { ...ctx.caller, anonGateChecked: true } : ctx.caller,
             full: parsed.full === true,
             ...(parsed.fresh ? { fresh: true } : {}),
             ...(process.env.VERCEL_ENV === "preview" && parsed.testInstallLimitS ? { testInstallMs: parsed.testInstallLimitS * 1000 } : {}),

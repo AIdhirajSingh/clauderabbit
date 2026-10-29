@@ -9,7 +9,7 @@
  */
 
 import chalk from "chalk";
-import { ensureLoggedIn, readToken } from "../lib/auth.js";
+import { readToken } from "../lib/auth.js";
 import { loadConfig, normaliseSiteUrl, type ClaudeRabbitConfig } from "../lib/env.js";
 import { resolveTarget } from "../lib/resolve.js";
 import { formatResponse, postScan, stageLine, toStructured, type ScanTarget } from "../lib/scan-api.js";
@@ -49,9 +49,8 @@ export async function runScanCommand(rawTarget: string, opts: ScanCliOptions): P
     return fail((err as Error).message);
   }
 
-  // Stored reports are free without an account; the saved sign-in token (when present) goes with every request,
-  // and sign-in starts only when the server says a fresh scan needs it.
-  let token: string | null = readToken();
+  // No account is needed. A token saved by an earlier `clauderabbit login`, if there is one, still goes along.
+  const token: string | null = readToken();
 
   let resolved;
   try {
@@ -78,15 +77,7 @@ export async function runScanCommand(rawTarget: string, opts: ScanCliOptions): P
     const line = stageLine(e);
     if (line) process.stderr.write(`${opts.color ? chalk.dim(line) : line}\n`);
   } : undefined;
-  let result = await postScan(config, target, token, "cli", onEvent);
-  if (!result.ok && result.code === "unauthorized" && !token && process.stdin.isTTY) {
-    try {
-      token = await ensureLoggedIn(config);
-    } catch (err) {
-      return fail(`Sign-in failed: ${(err as Error).message}`);
-    }
-    result = await postScan(config, target, token, "cli", onEvent);
-  }
+  const result = await postScan(config, target, token, "cli", onEvent);
 
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(toStructured(result), null, 2)}\n`);

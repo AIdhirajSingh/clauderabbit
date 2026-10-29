@@ -479,7 +479,7 @@ export function HomeScreen() {
             [
               {
                 title: "MCP server",
-                body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key, but a free ClaudeRabbit account is required.",
+                body: "Give any MCP-compatible AI coding tool — Claude Code, Claude Desktop, and others — a safety check before it installs or runs anything. One cache-aware scan tool: already-scanned repos return instantly, new ones get a real scan. No API key and no account needed.",
                 cmds: [
                   { label: "Claude Code / Claude Desktop — local, stdio", value: "clauderabbit mcp install" },
                   {

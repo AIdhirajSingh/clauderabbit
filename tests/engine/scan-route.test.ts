@@ -63,24 +63,46 @@ test("missing server keys: 503 naming the env vars, with an ad", async () => {
   });
 });
 
-test("CLI and MCP without a sign-in: stored reports are free, a fresh scan is refused before any VM", async () => {
-  const { freshScanGate } = await import("../../lib/server/scan-service.ts");
-  const calls: unknown[][] = [];
-  const db = { query: async (_sql: string, params: unknown[]) => { calls.push(params); return [{ allowed: true, current_count: 1, retry_after: 0 }]; } } as never;
+test("CLI and MCP need no sign-in: an anonymous fresh scan passes the anonymous limits, a token keeps its quota", async () => {
+  const { freshScanGate, needsAnonymousGate } = await import("../../lib/server/scan-service.ts");
+  const calls: string[] = [];
+  const db = { query: async (sql: string, params: unknown[] = []) => { calls.push(String(params[0] ?? sql.slice(0, 30))); return sql.includes("count(*)") ? [{ n: 0 }] : [{ allowed: true, current_count: 1, retry_after: 0 }]; } } as never;
   const base = { ip: "203.0.113.9", deviceId: null, operator: false };
   assert.equal(freshScanGate(db, { ...base, surface: "web", userId: null }), undefined, "the web has no gate");
   assert.equal(freshScanGate(db, { ...base, surface: "cli", userId: null, operator: true }), undefined, "the operator has no gate");
   const anon = await freshScanGate(db, { ...base, surface: "cli", userId: null })!();
-  assert.deepEqual(anon.allowed, false);
-  assert.equal(!anon.allowed && anon.code, "unauthorized");
-  assert.equal(calls.length, 0, "an anonymous refusal counts nothing");
+  assert.equal(anon.allowed, true, "an anonymous CLI scan is allowed");
+  assert.deepEqual(calls.slice(1), ["anon-fresh:hour:203.0.113.9", "anon-fresh:day:203.0.113.9"]);
+  assert.equal(freshScanGate(db, { ...base, surface: "mcp-remote", userId: null, anonGateChecked: true }), undefined, "a scan the route already gated is not counted twice");
+  assert.equal(needsAnonymousGate({ ...base, surface: "cli", userId: null }), true);
+  assert.equal(needsAnonymousGate({ ...base, surface: "cli", userId: "u1" }), false);
+  assert.equal(needsAnonymousGate({ ...base, surface: "web", userId: null }), false);
+  calls.length = 0;
   const signed = await freshScanGate(db, { ...base, surface: "mcp", userId: "u1" })!();
   assert.equal(signed.allowed, true);
-  assert.deepEqual(calls[0], ["daily:user:u1", 25, 86400]);
+  assert.deepEqual(calls, ["daily:user:u1"]);
   const full = { query: async () => [{ allowed: false, current_count: 26, retry_after: 7200 }] } as never;
   const over = await freshScanGate(full, { ...base, surface: "cli", userId: "u1" })!();
   assert.equal(over.allowed, false);
   assert.match(!over.allowed ? over.message : "", /25 fresh scans for today; stored reports are still free/);
+});
+
+test("anonymous limits: a concurrency cap, then per-IP hour and day counters, each with a clear message; fails closed", async () => {
+  const { checkAnonymousFresh, ANON_FRESH_CONCURRENT, ANON_FRESH_PER_IP_HOUR } = await import("../../lib/engine/ratelimit.ts");
+  const busy = { query: async () => [{ n: ANON_FRESH_CONCURRENT }] } as never;
+  const b = await checkAnonymousFresh(busy, { ip: "203.0.113.9" });
+  assert.equal(b.allowed, false);
+  assert.match(!b.allowed ? b.message : "", /already running; stored reports are still served/);
+  const hourFull = { query: async (sql: string) => (sql.includes("count(*)") ? [{ n: 0 }] : [{ allowed: false, current_count: 11, retry_after: 1800 }]) } as never;
+  const h = await checkAnonymousFresh(hourFull, { ip: "203.0.113.9" });
+  assert.equal(h.allowed, false);
+  assert.equal(!h.allowed && h.code, "rate_limited");
+  assert.equal(!h.allowed && h.retryAfter, 1800);
+  assert.match(!h.allowed ? h.message : "", new RegExp(`its ${ANON_FRESH_PER_IP_HOUR} fresh scans for an hour; .* about 30 min`));
+  const broken = { query: async () => { throw new Error("db down"); } } as never;
+  const x = await checkAnonymousFresh(broken, { ip: null });
+  assert.equal(x.allowed, false, "fails closed");
+  assert.match(!x.allowed ? x.message : "", /no fresh scan was started/);
 });
 
 test("web surface gets the AdSense payload with adtest on when the IDs are set", async () => {

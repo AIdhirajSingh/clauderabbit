@@ -7,7 +7,8 @@
  *                                                     already scanned, else a
  *                                                     real scan runs)
  *   mcp install
- *   login | logout
+ *   login | logout   (optional, not in the help: no command needs an account;
+ *                     a saved token only attaches scans to an account)
  *   help | --help | -h
  *   version | --version | -v
  *
@@ -87,8 +88,8 @@ function wantsColor(flags: Record<string, string | boolean>): boolean {
 }
 
 const HELP =`clauderabbit — scan a public GitHub repo or npm package for a 0-100 safety
-score before you install or clone it. Requires a signed-in ClaudeRabbit account
-(opens your browser the first time). Never states a bare "Safe".
+score before you install or clone it. No account needed. Never states a bare
+"Safe".
 
 USAGE
   clauderabbit <command> [options]
@@ -113,14 +114,6 @@ COMMANDS
       claude_desktop_config.json — finds the real file (including Windows'
       MSIX/Store dual-path, not just the commonly-documented classic one)
       and appends the entry, leaving every other server/setting untouched.
-
-  login [--token <token>]
-      Sign in (opens your browser). Saved to ~/.clauderabbit/credentials.json
-      and reused silently on every future run until \`logout\`. --token skips
-      the browser and saves a token issued elsewhere (e.g. by the MCP
-      server's sign-in link).
-  logout
-      Forget the saved sign-in.
 
   help | version
 
