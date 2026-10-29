@@ -152,3 +152,8 @@ test("the root layout renders per request for the nonce and carries no executabl
   assert.match(proxySrc, /headers\.set\("content-security-policy", csp\)/, "Next.js reads the nonce from the request CSP header");
   assert.match(proxySrc, /res\.headers\.set\("Content-Security-Policy", csp\)/);
 });
+
+test("only /cli-auth may submit a form to the CLI's loopback listener", () => {
+  assert.deepEqual(directive(pageContentSecurityPolicy(makeNonce()), "form-action"), ["'self'"]);
+  assert.deepEqual(directive(pageContentSecurityPolicy(makeNonce(), { cliCallback: true }), "form-action"), ["'self'", "http://127.0.0.1:*"]);
+});

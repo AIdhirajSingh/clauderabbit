@@ -28,7 +28,7 @@ import { makeNonce, pageContentSecurityPolicy } from "./lib/csp";
 
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   const nonce = makeNonce();
-  const csp = pageContentSecurityPolicy(nonce, { dev: process.env.NODE_ENV === "development", vercelToolbar: process.env.VERCEL_ENV === "preview" });
+  const csp = pageContentSecurityPolicy(nonce, { dev: process.env.NODE_ENV === "development", vercelToolbar: process.env.VERCEL_ENV === "preview", cliCallback: request.nextUrl.pathname === "/cli-auth" });
 
   // Rebuilt from request.headers each time, so cookies refreshed below are carried too.
   const forward = (): NextResponse => {

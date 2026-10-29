@@ -78,7 +78,12 @@ export function makeNonce(): string {
 
 const NONCE_RE = /^[A-Za-z0-9+/_-]{16,64}={0,2}$/;
 
-export function pageContentSecurityPolicy(nonce: string, opts: { dev?: boolean; vercelToolbar?: boolean } = {}): string {
+/**
+ * `cliCallback` is for `/cli-auth` only: that page hands the CLI its token in
+ * a form POST to the CLI's own loopback listener, so its form-action also
+ * names `http://127.0.0.1:*`. Every other page keeps `form-action 'self'`.
+ */
+export function pageContentSecurityPolicy(nonce: string, opts: { dev?: boolean; vercelToolbar?: boolean; cliCallback?: boolean } = {}): string {
   const tb = opts.vercelToolbar ? VERCEL_TOOLBAR : { frame: [], connect: [], style: [], font: [] };
   if (!NONCE_RE.test(nonce)) throw new Error("invalid CSP nonce");
   const script = [`'nonce-${nonce}'`, "'strict-dynamic'", "https:", "'unsafe-inline'", ...(opts.dev ? ["'unsafe-eval'"] : [])];
@@ -86,7 +91,7 @@ export function pageContentSecurityPolicy(nonce: string, opts: { dev?: boolean; 
     "default-src 'self'",
     "base-uri 'none'",
     "object-src 'none'",
-    "form-action 'self'",
+    opts.cliCallback ? "form-action 'self' http://127.0.0.1:*" : "form-action 'self'",
     "frame-ancestors 'none'",
     `script-src ${script.join(" ")}`,
     `style-src 'self' 'unsafe-inline' ${[...GOOGLE_ADS_STYLE_SOURCES, ...tb.style].join(" ")}`,

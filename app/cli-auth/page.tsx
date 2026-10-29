@@ -11,10 +11,13 @@
  * mints a one-time-use CLI bearer token via the `issue_cli_token` RPC.
  *
  * Two modes, both real:
- *   - `?port=<n>` — the interactive `clauderabbit login` flow. The CLI is
- *     already listening on that local port, so we redirect the browser
- *     straight there with the token; the CLI's own server receives and
- *     saves it, and this tab can close itself with zero manual steps.
+ *   - `?port=<n>&state=<s>` — the interactive `clauderabbit login` flow. The
+ *     CLI is already listening on that local port. The token goes there in
+ *     the BODY of a top-level form POST (with the CLI's one-time `state`),
+ *     never in a URL: a token in a query string sits in the address bar,
+ *     browser history and every screenshot. The CLI answers with a 303 to
+ *     `/done`, so history holds only that. Without a valid `state` (an older
+ *     CLI) the page falls back to the manual path below.
  *     (An earlier version of this tried handing the token over via a
  *     background `fetch(..., {mode:"no-cors"})` to avoid navigating away —
  *     that's blocked outright by Chrome's Private Network Access policy for
@@ -28,7 +31,8 @@
  *     show the issued token on-screen once, with the exact command to paste
  *     it into (`clauderabbit login --token <token>`).
  *
- * Security: `port`, when present, is validated as a bare 1-65535 integer and
+ * Security: the page also replaces its own URL with a bare `/cli-auth`, so
+ * the port and state do not linger in history either. `port`, when present, is validated as a bare 1-65535 integer and
  * used ONLY to build a hardcoded `http://127.0.0.1:<port>/callback` target —
  * never a client-supplied URL. Accepting an arbitrary redirect target here
  * would hand any page that can open this URL a way to steal a freshly issued
@@ -40,27 +44,27 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { RabbitMark } from "@/components/spa/components/glyphs";
 import { LoginForm } from "@/components/spa/components/LoginForm";
+import { parsePort, parseState, postToCli } from "./handoff";
 
 type Stage = "checking" | "needs-login" | "email-sent" | "issuing" | "connected" | "token-ready" | "error";
-
-function parsePort(raw: string | null): number | null {
-  if (!raw || !/^\d{1,5}$/.test(raw)) return null;
-  const n = Number.parseInt(raw, 10);
-  return n > 0 && n <= 65535 ? n : null;
-}
 
 export default function CliAuthPage() {
   const [stage, setStage] = useState<Stage>("checking");
   const [error, setError] = useState<string>("");
   const portRef = useRef<number | null>(null);
+  const stateRef = useRef<string | null>(null);
   const [email, setEmail] = useState("");
   const [token, setToken] = useState<string>("");
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const p = parsePort(params.get("port"));
+    const st = parseState(params.get("state"));
+    const p = st ? parsePort(params.get("port")) : null;
     portRef.current = p;
+    stateRef.current = st;
+    // Keep the port and state out of history; the refs carry them from here.
+    if (window.location.search) window.history.replaceState(null, "", "/cli-auth");
 
     const supabase = createClient();
     void supabase.auth.getSession().then(({ data }) => {
@@ -89,7 +93,7 @@ export default function CliAuthPage() {
       }
       if (localPort) {
         setStage("connected");
-        window.location.href = `http://127.0.0.1:${localPort}/callback?token=${encodeURIComponent(data)}`;
+        postToCli(document, localPort, stateRef.current as string, data);
       } else {
         setToken(data);
         setStage("token-ready");
@@ -98,7 +102,7 @@ export default function CliAuthPage() {
   }, []);
 
   function redirectTo(): string {
-    const next = portRef.current ? `/cli-auth?port=${portRef.current}` : "/cli-auth";
+    const next = portRef.current && stateRef.current ? `/cli-auth?port=${portRef.current}&state=${stateRef.current}` : "/cli-auth";
     return `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
   }
 
